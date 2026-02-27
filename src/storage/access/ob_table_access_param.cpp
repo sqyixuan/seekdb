@@ -79,11 +79,6 @@ ObTableIterParam::~ObTableIterParam()
   ObSSTableIndexFilterFactory::destroy_sstable_index_filter(sstable_index_filter_);
 }
 
-void ObTableIterParam::reuse()
-{
-  is_advance_skip_scan_ = false;
-}
-
 void ObTableIterParam::reset()
 {
   table_id_ = 0;
@@ -266,11 +261,6 @@ void ObTableAccessParam::reset()
   row2exprs_projector_ = NULL;
   output_sel_mask_ = NULL;
   is_inited_ = false;
-}
-
-void ObTableAccessParam::reuse()
-{
-  iter_param_.reuse();
 }
 
 int ObTableAccessParam::init(

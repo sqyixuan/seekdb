@@ -51,7 +51,6 @@ public:
   ObTableIterParam();
   virtual ~ObTableIterParam();
   void reset();
-  void reuse();
   OB_INLINE bool is_valid() const
   {
     return (OB_INVALID_ID != table_id_ || tablet_id_.is_valid()) // TODO: use tablet id replace table id
@@ -265,7 +264,6 @@ public:
   ObTableAccessParam();
   virtual ~ObTableAccessParam();
   void reset();
-  void reuse();
   OB_INLINE bool is_valid() const { return is_inited_ && iter_param_.is_valid(); }
   // used for query
   int init(
