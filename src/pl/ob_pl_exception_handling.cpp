@@ -638,6 +638,8 @@ _Unwind_Reason_Code ObPLEH::eh_personality(int version, _Unwind_Action actions,
                                    struct _Unwind_Context *context)
 {
   const uint8_t *lsda = reinterpret_cast<const uint8_t *>(_Unwind_GetLanguageSpecificData(context));
+  uintptr_t ip = _Unwind_GetIP(context);
+  uintptr_t funcStart = _Unwind_GetRegionStart(context);
   _Unwind_Reason_Code ret = handleLsda(version, lsda, actions, exceptionClass, exceptionObject, context);
   LOG_DEBUG(">>>>>>>>>>0", K(version), K(actions), K(exceptionClass), K(lsda));
   return ret;
