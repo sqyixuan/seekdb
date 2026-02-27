@@ -183,15 +183,6 @@ int ObDDLService::fork_database(
             LOG_WARN("table schema is null", KR(ret), K(i));
           } else if (!table_schema->is_user_table()) {
             // Skip non-user tables silently
-          } else if (table_schema->has_lob_aux_table()) {
-            // Check if table has LOB auxiliary tables
-            ret = OB_NOT_SUPPORTED;
-            LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                           "fork database containing tables with LOB columns");
-            LOG_WARN("fork database with LOB aux tables is not supported", K(ret),
-                     K(tenant_id), "table_name", table_schema->get_table_name(),
-                     "lob_meta_tid", table_schema->get_aux_lob_meta_tid(),
-                     "lob_piece_tid", table_schema->get_aux_lob_piece_tid());
           } else if (OB_FAIL(check_fork_table_supported(*table_schema,
                                                         schema_guard))) {
             LOG_WARN("fork table is not supported for source table", K(ret));
