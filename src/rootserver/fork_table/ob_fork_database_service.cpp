@@ -102,6 +102,70 @@ int ObDDLService::fork_database(
       }
     }
 
+    // Check unsupported database objects: Routine, Package, Trigger, Sequence, LOB aux tables.
+    if (OB_SUCC(ret)) {
+      const uint64_t database_id = src_db_schema->get_database_id();
+
+      // Check if database has Routine (procedures/functions)
+      ObArray<uint64_t> routine_ids;
+      if (OB_FAIL(schema_guard.get_routine_ids_in_database(
+              tenant_id, database_id, routine_ids))) {
+        LOG_WARN("failed to get routine ids in database", KR(ret),
+                 K(tenant_id), K(database_id));
+      } else if (routine_ids.count() > 0) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                       "fork database containing routines (procedures/functions)");
+        LOG_WARN("fork database with routines is not supported", K(ret),
+                 K(tenant_id), K(database_id), "routine_count", routine_ids.count());
+      }
+
+      // Check if database has Package
+      ObArray<const ObSimplePackageSchema *> packages;
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(schema_guard.get_simple_package_schemas_in_database(
+                tenant_id, database_id, packages))) {
+          LOG_WARN("failed to get package schemas in database", KR(ret),
+                   K(tenant_id), K(database_id));
+        } else if (packages.count() > 0) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database containing packages");
+          LOG_WARN("fork database with packages is not supported", K(ret),
+                   K(tenant_id), K(database_id), "package_count", packages.count());
+        }
+      }
+
+      // Check if database has Trigger
+      ObArray<uint64_t> trigger_ids;
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(schema_guard.get_trigger_ids_in_database(
+                tenant_id, database_id, trigger_ids))) {
+          LOG_WARN("failed to get trigger ids in database", KR(ret),
+                   K(tenant_id), K(database_id));
+        } else if (trigger_ids.count() > 0) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database containing triggers");
+          LOG_WARN("fork database with triggers is not supported", K(ret),
+                   K(tenant_id), K(database_id), "trigger_count", trigger_ids.count());
+        }
+      }
+
+      // Check if database has Sequence
+      ObArray<const ObSequenceSchema *> sequences;
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(schema_guard.get_sequence_schemas_in_database(
+                tenant_id, database_id, sequences))) {
+          LOG_WARN("failed to get sequence schemas in database", KR(ret),
+                   K(tenant_id), K(database_id));
+        } else if (sequences.count() > 0) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database containing sequences");
+          LOG_WARN("fork database with sequences is not supported", K(ret),
+                   K(tenant_id), K(database_id), "sequence_count", sequences.count());
+        }
+      }
+    }
+
     // Get all user tables in source database
     if (OB_SUCC(ret)) {
       if (OB_FAIL(schema_guard.get_table_schemas_in_database(
@@ -110,7 +174,7 @@ int ObDDLService::fork_database(
         LOG_WARN("failed to get table schemas in database", KR(ret),
                  K(tenant_id), "database_id", src_db_schema->get_database_id());
       } else {
-        // Filter user tables only
+        // Filter user tables only and check for LOB aux tables
         for (int64_t i = 0; OB_SUCC(ret) && i < src_db_table_schemas.count();
              ++i) {
           const ObTableSchema *table_schema = src_db_table_schemas.at(i);
@@ -119,6 +183,15 @@ int ObDDLService::fork_database(
             LOG_WARN("table schema is null", KR(ret), K(i));
           } else if (!table_schema->is_user_table()) {
             // Skip non-user tables silently
+          } else if (table_schema->has_lob_aux_table()) {
+            // Check if table has LOB auxiliary tables
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                           "fork database containing tables with LOB columns");
+            LOG_WARN("fork database with LOB aux tables is not supported", K(ret),
+                     K(tenant_id), "table_name", table_schema->get_table_name(),
+                     "lob_meta_tid", table_schema->get_aux_lob_meta_tid(),
+                     "lob_piece_tid", table_schema->get_aux_lob_piece_tid());
           } else if (OB_FAIL(check_fork_table_supported(*table_schema,
                                                         schema_guard))) {
             LOG_WARN("fork table is not supported for source table", K(ret));
