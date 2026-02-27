@@ -86,6 +86,11 @@ int ObDDLService::fork_database(
         ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
         LOG_WARN("can not fork database from database in recyclebin", K(ret),
                  K(*src_db_schema), K(is_db_in_recyclebin));
+      } else if (is_sys_database_id(src_db_schema->get_database_id())) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database from system or internal database");
+        LOG_WARN("fork database from system/internal database is not supported", K(ret),
+                 K(*src_db_schema));
       } else if (OB_FAIL(schema_service_->check_database_exist(
                      tenant_id, fork_database_arg.dst_database_name_, dst_db_id,
                      is_dst_db_exist))) {
