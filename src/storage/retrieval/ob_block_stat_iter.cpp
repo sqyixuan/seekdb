@@ -619,7 +619,7 @@ int ObBlockStatIterator::build_merge_heap(const ObITableReadInfo *rowkey_read_in
       } else if (OB_FAIL(merge_heap_->push(ObBlockStatKeyItem(i, iter.get_curr_index_row()->endkey_)))) {
         LOG_WARN("failed to push endkey to merge heap", K(ret), K(i), K(iter));
       } else {
-        LOG_DEBUG("build merge heap, push endkey to merge heap", K(ret), K(i), KPC(iter.get_curr_index_row()->endkey_));
+        LOG_DEBUG("build merge heap, push endkey to merge heap", K(ret), K(i), K(iter), KPC(iter.get_curr_index_row()->endkey_));
       }
     }
   }
@@ -651,7 +651,7 @@ int ObBlockStatIterator::fill_merge_heap()
     } else if (OB_FAIL(merge_heap_->push(ObBlockStatKeyItem(iter_idx, iter->get_curr_index_row()->endkey_)))) {
       LOG_WARN("failed to push endkey to merge heap", K(ret), K(iter_idx), K(iter));
     } else {
-      LOG_DEBUG("fill merge heap", K(ret), K(iter_idx), K(iter_idxs_), KPC(iter->get_curr_index_row()->endkey_));
+      LOG_DEBUG("fill merge heap", K(ret), K(iter_idx), K(iter), K(iter_idxs_), KPC(iter->get_curr_index_row()->endkey_));
     }
   }
   if (OB_FAIL(ret)) {
@@ -748,7 +748,7 @@ int ObBlockStatIterator::next_merged_range(bool &beyond_range)
         } else if (OB_FAIL(iter.next())) {
           LOG_WARN("failed to get next row from sstable iter", K(ret), K(item->iter_idx_), K(iter));
         } else {
-          LOG_DEBUG("collect sstable idx rows", KPC(item), K(iter), K(merge_heap_->count()), K(iter_idxs_));
+          LOG_DEBUG("next merged range", KPC(item), K(iter), K(merge_heap_->count()), K(iter_idxs_), KPC(curr_endkey_));
         }
       }
     }

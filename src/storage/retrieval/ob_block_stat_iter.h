@@ -100,7 +100,7 @@ private:
       idx_row_ = nullptr;
       iter_end_ = false;
     }
-    TO_STRING_KV(KP_(idx_scanner));
+    TO_STRING_KV(KP_(idx_scanner), K_(iter_end));
   private:
     ObSSTableIndexScanner *idx_scanner_;
     const ObSSTableIndexRow *idx_row_;
