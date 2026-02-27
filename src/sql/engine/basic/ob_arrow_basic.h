@@ -104,7 +104,6 @@ public:
 private:
   common::ObArenaAllocator alloc_;
   common::ObMemAttr mem_attr_;
-  arrow::internal::MemoryPoolStats stats_;
   int64_t total_alloc_size_;
   int64_t total_hold_size_;
   int64_t num_allocations_;
