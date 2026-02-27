@@ -1,0 +1,2596 @@
+drop database if exists db_fork_index_types;
+create database db_fork_index_types;
+use db_fork_index_types;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+# 启用debug sync
+alter system set debug_sync_timeout = '10s';
+alter system set _ob_ddl_timeout = '5s';
+set ob_global_debug_sync = 'reset';
+# 设置向量索引内存限制
+alter system set ob_vector_memory_limit_percentage = 20;
+============================================
+1. 普通索引（Normal Index）
+============================================
+# 1.1 随表创建普通索引
+drop table if exists t_normal_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_normal_with_index'
+drop table if exists t_normal_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_normal_with_index_fork'
+create table t_normal_with_index (
+id int primary key,
+name varchar(50),
+age int,
+email varchar(100),
+index idx_name(name),
+index idx_age(age),
+index idx_email(email)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_normal_with_index values (1, 'Alice', 25, 'alice@example.com');
+insert into t_normal_with_index values (101, 'Bob', 30, 'bob@example.com');
+insert into t_normal_with_index values (50, 'Charlie', 35, 'charlie@example.com');
+# Fork表
+fork table t_normal_with_index to t_normal_with_index_fork;
+# 验证fork后源表和目标表的索引结构
+show create table t_normal_with_index;
+Table	Create Table
+t_normal_with_index	CREATE TABLE `t_normal_with_index` (
+  `id` int(11) NOT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  `age` int(11) DEFAULT NULL,
+  `email` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_name` (`name`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx_age` (`age`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx_email` (`email`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show create table t_normal_with_index_fork;
+Table	Create Table
+t_normal_with_index_fork	CREATE TABLE `t_normal_with_index_fork` (
+  `id` int(11) NOT NULL,
+  `name` varchar(50) DEFAULT NULL,
+  `age` int(11) DEFAULT NULL,
+  `email` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_name` (`name`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx_age` (`age`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx_email` (`email`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+# 验证fork后源表的索引功能
+show indexes from t_normal_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_normal_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_normal_with_index	1	idx_name	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_with_index	1	idx_age	1	age	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_with_index	1	idx_email	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_normal_with_index where name = 'Alice';
+id	name	age	email
+1	Alice	25	alice@example.com
+select * from t_normal_with_index where age = 30;
+id	name	age	email
+101	Bob	30	bob@example.com
+select * from t_normal_with_index where email = 'charlie@example.com';
+id	name	age	email
+50	Charlie	35	charlie@example.com
+explain select * from t_normal_with_index where name = 'Alice';
+Query Plan
+==================================================================================
+|ID|OPERATOR                 |NAME                         |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                             |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                     |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                             |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_normal_with_index(idx_name)|1       |12          |
+==================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_normal_with_index.id, t_normal_with_index.name, t_normal_with_index.age, t_normal_with_index.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_normal_with_index.id, t_normal_with_index.name, t_normal_with_index.age, t_normal_with_index.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_normal_with_index.id], [t_normal_with_index.name], [t_normal_with_index.age], [t_normal_with_index.email]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_normal_with_index.id], [t_normal_with_index.name], [t_normal_with_index.age], [t_normal_with_index.email]), filter(nil), rowset=16
+      access([t_normal_with_index.id], [t_normal_with_index.name], [t_normal_with_index.age], [t_normal_with_index.email]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_normal_with_index.name], [t_normal_with_index.id]), range(Alice,MIN ; Alice,MAX), 
+      range_cond([t_normal_with_index.name = 'Alice'])
+# 验证fork后目标表的索引功能
+show indexes from t_normal_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_normal_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_normal_with_index_fork	1	idx_name	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_with_index_fork	1	idx_age	1	age	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_with_index_fork	1	idx_email	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_normal_with_index_fork where name = 'Alice';
+id	name	age	email
+1	Alice	25	alice@example.com
+select * from t_normal_with_index_fork where age = 30;
+id	name	age	email
+101	Bob	30	bob@example.com
+select * from t_normal_with_index_fork where email = 'charlie@example.com';
+id	name	age	email
+50	Charlie	35	charlie@example.com
+explain select * from t_normal_with_index_fork where name = 'Alice';
+Query Plan
+=======================================================================================
+|ID|OPERATOR                 |NAME                              |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                                  |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                          |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                                  |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_normal_with_index_fork(idx_name)|1       |12          |
+=======================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_normal_with_index_fork.id, t_normal_with_index_fork.name, t_normal_with_index_fork.age, t_normal_with_index_fork.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_normal_with_index_fork.id, t_normal_with_index_fork.name, t_normal_with_index_fork.age, t_normal_with_index_fork.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_normal_with_index_fork.id], [t_normal_with_index_fork.name], [t_normal_with_index_fork.age], [t_normal_with_index_fork.email]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_normal_with_index_fork.id], [t_normal_with_index_fork.name], [t_normal_with_index_fork.age], [t_normal_with_index_fork.email]), filter(nil), rowset=16
+      access([t_normal_with_index_fork.id], [t_normal_with_index_fork.name], [t_normal_with_index_fork.age], [t_normal_with_index_fork.email]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_normal_with_index_fork.name], [t_normal_with_index_fork.id]), range(Alice,MIN ; Alice,MAX), 
+      range_cond([t_normal_with_index_fork.name = 'Alice'])
+# 1.2 后建普通索引
+drop table if exists t_normal_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_normal_post_index'
+drop table if exists t_normal_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_normal_post_index_fork'
+create table t_normal_post_index (
+id int primary key,
+name varchar(50),
+age int,
+email varchar(100)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_normal_post_index values (1, 'Alice', 25, 'alice@example.com');
+insert into t_normal_post_index values (101, 'Bob', 30, 'bob@example.com');
+# Fork表
+fork table t_normal_post_index to t_normal_post_index_fork;
+# 在源表上后建索引
+create index idx_name_src on t_normal_post_index(name);
+create index idx_age_src on t_normal_post_index(age);
+# 在目标表上后建索引
+create index idx_name_fork on t_normal_post_index_fork(name);
+create index idx_age_fork on t_normal_post_index_fork(age);
+# 验证源表和目标表的后建索引功能
+show indexes from t_normal_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_normal_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_normal_post_index	1	idx_name_src	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_post_index	1	idx_age_src	1	age	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_normal_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_normal_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_normal_post_index_fork	1	idx_name_fork	1	name	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t_normal_post_index_fork	1	idx_age_fork	1	age	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_normal_post_index where name = 'Alice';
+id	name	age	email
+1	Alice	25	alice@example.com
+select * from t_normal_post_index_fork where name = 'Alice';
+id	name	age	email
+1	Alice	25	alice@example.com
+explain select * from t_normal_post_index where name = 'Alice';
+Query Plan
+======================================================================================
+|ID|OPERATOR                 |NAME                             |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                                 |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                         |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                                 |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_normal_post_index(idx_name_src)|1       |12          |
+======================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_normal_post_index.id, t_normal_post_index.name, t_normal_post_index.age, t_normal_post_index.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_normal_post_index.id, t_normal_post_index.name, t_normal_post_index.age, t_normal_post_index.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_normal_post_index.id], [t_normal_post_index.name], [t_normal_post_index.age], [t_normal_post_index.email]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_normal_post_index.id], [t_normal_post_index.name], [t_normal_post_index.age], [t_normal_post_index.email]), filter(nil), rowset=16
+      access([t_normal_post_index.id], [t_normal_post_index.name], [t_normal_post_index.age], [t_normal_post_index.email]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_normal_post_index.name], [t_normal_post_index.id]), range(Alice,MIN ; Alice,MAX), 
+      range_cond([t_normal_post_index.name = 'Alice'])
+explain select * from t_normal_post_index_fork where name = 'Alice';
+Query Plan
+============================================================================================
+|ID|OPERATOR                 |NAME                                   |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                                       |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                               |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                                       |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_normal_post_index_fork(idx_name_fork)|1       |12          |
+============================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_normal_post_index_fork.id, t_normal_post_index_fork.name, t_normal_post_index_fork.age, t_normal_post_index_fork.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_normal_post_index_fork.id, t_normal_post_index_fork.name, t_normal_post_index_fork.age, t_normal_post_index_fork.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_normal_post_index_fork.id], [t_normal_post_index_fork.name], [t_normal_post_index_fork.age], [t_normal_post_index_fork.email]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_normal_post_index_fork.id], [t_normal_post_index_fork.name], [t_normal_post_index_fork.age], [t_normal_post_index_fork.email]), filter(nil), rowset=16
+      access([t_normal_post_index_fork.id], [t_normal_post_index_fork.name], [t_normal_post_index_fork.age], [t_normal_post_index_fork.email]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_normal_post_index_fork.name], [t_normal_post_index_fork.id]), range(Alice,MIN ; Alice,MAX), 
+      range_cond([t_normal_post_index_fork.name = 'Alice'])
+drop table t_normal_with_index;
+drop table t_normal_with_index_fork;
+drop table t_normal_post_index;
+drop table t_normal_post_index_fork;
+============================================
+2. 全局索引（Global Index）
+============================================
+# 2.0 无分区表+全局索引+fork（验证fork后索引表正常）
+drop table if exists t_global_nopart_global_idx;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_nopart_global_idx'
+drop table if exists t_global_nopart_global_idx_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_nopart_global_idx_fork'
+create table t_global_nopart_global_idx (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+);
+insert into t_global_nopart_global_idx values (1, 'Alice', 10);
+insert into t_global_nopart_global_idx values (2, 'Bob', 110);
+insert into t_global_nopart_global_idx values (3, 'Charlie', 50);
+# Fork表
+fork table t_global_nopart_global_idx to t_global_nopart_global_idx_fork;
+# fork后给全局索引加分区（删除后重建带分区的索引）
+create index gidx_c on t_global_nopart_global_idx(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+create index gidx_c on t_global_nopart_global_idx_fork(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+# 验证全局索引分区是否正确
+show create table t_global_nopart_global_idx;
+Table	Create Table
+t_global_nopart_global_idx	CREATE TABLE `t_global_nopart_global_idx` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+show create table t_global_nopart_global_idx_fork;
+Table	Create Table
+t_global_nopart_global_idx_fork	CREATE TABLE `t_global_nopart_global_idx_fork` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+# 检查源表全局索引分区信息
+select table_name, partition_name, partition_expression, partition_method 
+from information_schema.partitions 
+where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx%'
+order by table_name, partition_ordinal_position;
+table_name	partition_name	partition_expression	partition_method
+# 检查目标表全局索引分区信息
+select table_name, partition_name, partition_expression, partition_method 
+from information_schema.partitions 
+where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx_fork%'
+order by table_name, partition_ordinal_position;
+table_name	partition_name	partition_expression	partition_method
+insert into t_global_nopart_global_idx values (108, 'Bob', 110);
+insert into t_global_nopart_global_idx_fork values (108, 'Charlie', 50);
+# 验证fork后源表和目标表的全局索引功能
+show indexes from t_global_nopart_global_idx;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_nopart_global_idx	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_nopart_global_idx	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_nopart_global_idx	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_global_nopart_global_idx_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_nopart_global_idx_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_nopart_global_idx_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_nopart_global_idx_fork	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_global_nopart_global_idx where c = 10;
+a	b	c
+1	Alice	10
+select * from t_global_nopart_global_idx_fork where c = 10;
+a	b	c
+1	Alice	10
+explain select * from t_global_nopart_global_idx where c = 10;
+Query Plan
+==============================================================================
+|ID|OPERATOR        |NAME                              |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_nopart_global_idx(gidx_c)|1       |3           |
+==============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), filter(nil), rowset=16
+      access([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_nopart_global_idx.c], [t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_nopart_global_idx.c = 10])
+explain select * from t_global_nopart_global_idx_fork where c = 10;
+Query Plan
+===================================================================================
+|ID|OPERATOR        |NAME                                   |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_nopart_global_idx_fork(gidx_c)|1       |3           |
+===================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), filter(nil), rowset=16
+      access([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_nopart_global_idx_fork.c], [t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b]), range(10,MIN,MIN ; 10,MAX,
+      MAX), 
+      range_cond([t_global_nopart_global_idx_fork.c = 10])
+select * from t_global_nopart_global_idx where c = 108;
+a	b	c
+select * from t_global_nopart_global_idx_fork where c = 108;
+a	b	c
+explain select * from t_global_nopart_global_idx where c = 108;
+Query Plan
+==============================================================================
+|ID|OPERATOR        |NAME                              |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_nopart_global_idx(gidx_c)|1       |3           |
+==============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), filter(nil), rowset=16
+      access([t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b], [t_global_nopart_global_idx.c]), partitions(p1)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_nopart_global_idx.c], [t_global_nopart_global_idx.a], [t_global_nopart_global_idx.b]), range(108,MIN,MIN ; 108,MAX,MAX), 
+      range_cond([t_global_nopart_global_idx.c = 108])
+explain select * from t_global_nopart_global_idx_fork where c = 108;
+Query Plan
+===================================================================================
+|ID|OPERATOR        |NAME                                   |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_nopart_global_idx_fork(gidx_c)|1       |3           |
+===================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), filter(nil), rowset=16
+      access([t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b], [t_global_nopart_global_idx_fork.c]), partitions(p1)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_nopart_global_idx_fork.c], [t_global_nopart_global_idx_fork.a], [t_global_nopart_global_idx_fork.b]), range(108,MIN,MIN ; 108,
+      MAX,MAX), 
+      range_cond([t_global_nopart_global_idx_fork.c = 108])
+drop table t_global_nopart_global_idx;
+drop table t_global_nopart_global_idx_fork;
+# 2.1 随表创建全局索引
+drop table if exists t_global_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_with_index'
+drop table if exists t_global_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_with_index_fork'
+Global Index with partition
+create table t_global_with_index (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+) partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+create index gidx_c on t_global_with_index(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+insert into t_global_with_index values (1, 'Alice', 10);
+insert into t_global_with_index values (101, 'Bob', 110);
+insert into t_global_with_index values (50, 'Charlie', 50);
+# Fork表bug not support
+fork table t_global_with_index to t_global_with_index_fork;
+ERROR 0A000: fork table on partitioned table with global index is not supported
+# 验证fork后源表和目标表的全局索引功能
+# 2.2 后建全局索引
+drop table if exists t_global_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_post_index'
+drop table if exists t_global_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_post_index_fork'
+create table t_global_post_index (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+) partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_global_post_index values (1, 'Alice', 10);
+insert into t_global_post_index values (101, 'Bob', 110);
+# Fork表
+fork table t_global_post_index to t_global_post_index_fork;
+# 在源表和目标表上后建全局索引
+create index gidx_c_src on t_global_post_index(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+create index gidx_c_fork on t_global_post_index_fork(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+# 验证后建全局索引功能
+show indexes from t_global_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_post_index	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_post_index	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_post_index	1	gidx_c_src	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_global_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_post_index_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_post_index_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_post_index_fork	1	gidx_c_fork	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_global_post_index where c = 10;
+a	b	c
+1	Alice	10
+select * from t_global_post_index_fork where c = 10;
+a	b	c
+1	Alice	10
+explain select * from t_global_post_index where c = 10;
+Query Plan
+===========================================================================
+|ID|OPERATOR        |NAME                           |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_post_index(gidx_c_src)|1       |3           |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_post_index.a], [t_global_post_index.b], [t_global_post_index.c]), filter(nil), rowset=16
+      access([t_global_post_index.a], [t_global_post_index.b], [t_global_post_index.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_post_index.c], [t_global_post_index.a], [t_global_post_index.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_post_index.c = 10])
+explain select * from t_global_post_index_fork where c = 10;
+Query Plan
+=================================================================================
+|ID|OPERATOR        |NAME                                 |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------
+|0 |TABLE RANGE SCAN|t_global_post_index_fork(gidx_c_fork)|1       |3           |
+=================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_post_index_fork.a], [t_global_post_index_fork.b], [t_global_post_index_fork.c]), filter(nil), rowset=16
+      access([t_global_post_index_fork.a], [t_global_post_index_fork.b], [t_global_post_index_fork.c]), partitions(p0)
+      is_index_back=false, is_global_index=true, 
+      range_key([t_global_post_index_fork.c], [t_global_post_index_fork.a], [t_global_post_index_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_post_index_fork.c = 10])
+# 2.3 先建全局索引，fork后再加分区表（fork后做DDL/DML确保分区表与全局索引无误）
+drop table if exists t_global_first_then_part;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_first_then_part'
+drop table if exists t_global_first_then_part_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_global_first_then_part_fork'
+create table t_global_first_then_part (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+);
+create index gidx_c on t_global_first_then_part(c) global partition by range(c) (
+partition p0 values less than (100),
+partition p1 values less than MAXVALUE
+);
+insert into t_global_first_then_part values (1, 'Alice', 10);
+insert into t_global_first_then_part values (2, 'Bob', 110);
+insert into t_global_first_then_part values (3, 'Charlie', 50);
+# Fork表
+fork table t_global_first_then_part to t_global_first_then_part_fork;
+# fork后给源表和目标表加分区
+alter table t_global_first_then_part partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+alter table t_global_first_then_part_fork partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# fork后做DDL：加列
+alter table t_global_first_then_part add column d int default 0;
+alter table t_global_first_then_part_fork add column d int default 0;
+# fork后做DML：源表与目标表各插入/更新/删除
+insert into t_global_first_then_part values (50, 'Dave', 50, 1);
+insert into t_global_first_then_part_fork values (60, 'Eve', 60, 2);
+update t_global_first_then_part set d = 10 where a = 1;
+update t_global_first_then_part_fork set d = 20 where a = 2;
+delete from t_global_first_then_part where a = 3;
+delete from t_global_first_then_part_fork where a = 2 and b = 'Bob';
+# 验证分区表与全局索引：源表
+show create table t_global_first_then_part;
+Table	Create Table
+t_global_first_then_part	CREATE TABLE `t_global_first_then_part` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  `d` int(11) DEFAULT '0',
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show indexes from t_global_first_then_part;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_first_then_part	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_first_then_part	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_first_then_part	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_global_first_then_part where c = 10;
+a	b	c	d
+1	Alice	10	10
+select * from t_global_first_then_part where c = 50;
+a	b	c	d
+50	Dave	50	1
+explain select * from t_global_first_then_part where c = 10;
+Query Plan
+========================================================================================
+|ID|OPERATOR                    |NAME                            |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------------------------
+|0 |DISTRIBUTED TABLE RANGE SCAN|t_global_first_then_part(gidx_c)|1       |31          |
+========================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_first_then_part.a], [t_global_first_then_part.b], [t_global_first_then_part.c], [t_global_first_then_part.d]), filter(nil), rowset=16
+      access([t_global_first_then_part.a], [t_global_first_then_part.b], [t_global_first_then_part.c], [t_global_first_then_part.d]), partitions(p0)
+      is_index_back=true, is_global_index=true, 
+      range_key([t_global_first_then_part.c], [t_global_first_then_part.a], [t_global_first_then_part.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_global_first_then_part.c = 10])
+# 验证分区表与全局索引：目标表
+show create table t_global_first_then_part_fork;
+Table	Create Table
+t_global_first_then_part_fork	CREATE TABLE `t_global_first_then_part_fork` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  `d` int(11) DEFAULT '0',
+  PRIMARY KEY (`a`, `b`),
+  KEY `gidx_c` (`c`) BLOCK_SIZE 16384 GLOBAL
+ partition by range(c)
+(partition `p0` values less than (100),
+partition `p1` values less than (MAXVALUE))
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show indexes from t_global_first_then_part_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_global_first_then_part_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_first_then_part_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_global_first_then_part_fork	1	gidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_global_first_then_part_fork where c = 10;
+a	b	c	d
+1	Alice	10	0
+select * from t_global_first_then_part_fork where c = 60;
+a	b	c	d
+60	Eve	60	2
+explain select * from t_global_first_then_part_fork where c = 10;
+Query Plan
+=============================================================================================
+|ID|OPERATOR                    |NAME                                 |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------
+|0 |DISTRIBUTED TABLE RANGE SCAN|t_global_first_then_part_fork(gidx_c)|1       |31          |
+=============================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b], [t_global_first_then_part_fork.c], [t_global_first_then_part_fork.d]), filter(nil), rowset=16
+      access([t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b], [t_global_first_then_part_fork.c], [t_global_first_then_part_fork.d]), partitions(p0)
+      is_index_back=true, is_global_index=true, 
+      range_key([t_global_first_then_part_fork.c], [t_global_first_then_part_fork.a], [t_global_first_then_part_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX),
+       
+      range_cond([t_global_first_then_part_fork.c = 10])
+drop table t_global_first_then_part;
+drop table t_global_first_then_part_fork;
+drop table t_global_with_index;
+drop table t_global_post_index;
+drop table t_global_post_index_fork;
+============================================
+3. 局部索引（Local Index）
+============================================
+# 3.1 随表创建局部索引
+drop table if exists t_local_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_local_with_index'
+drop table if exists t_local_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_local_with_index_fork'
+create table t_local_with_index (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+) partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+create index lidx_c on t_local_with_index(c) local;
+insert into t_local_with_index values (1, 'Alice', 10);
+insert into t_local_with_index values (101, 'Bob', 110);
+insert into t_local_with_index values (50, 'Charlie', 50);
+# Fork表
+fork table t_local_with_index to t_local_with_index_fork;
+# 验证fork后源表和目标表的局部索引功能
+show create table t_local_with_index;
+Table	Create Table
+t_local_with_index	CREATE TABLE `t_local_with_index` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `lidx_c` (`c`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show create table t_local_with_index_fork;
+Table	Create Table
+t_local_with_index_fork	CREATE TABLE `t_local_with_index_fork` (
+  `a` int(11) NOT NULL,
+  `b` varchar(150) NOT NULL,
+  `c` int(11) DEFAULT NULL,
+  PRIMARY KEY (`a`, `b`),
+  KEY `lidx_c` (`c`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(a)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show indexes from t_local_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_local_with_index	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_with_index	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_with_index	1	lidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_local_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_local_with_index_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_with_index_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_with_index_fork	1	lidx_c	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_local_with_index where c = 10;
+a	b	c
+1	Alice	10
+select * from t_local_with_index_fork where c = 10;
+a	b	c
+1	Alice	10
+explain select * from t_local_with_index where c = 10;
+Query Plan
+===============================================================================
+|ID|OPERATOR                 |NAME                      |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                          |1       |8           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                  |1       |7           |
+|2 |  └─PX PARTITION ITERATOR|                          |1       |5           |
+|3 |    └─TABLE RANGE SCAN   |t_local_with_index(lidx_c)|1       |5           |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_local_with_index.a, t_local_with_index.b, t_local_with_index.c)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_local_with_index.a, t_local_with_index.b, t_local_with_index.c)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_local_with_index.a], [t_local_with_index.b], [t_local_with_index.c]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_local_with_index.a], [t_local_with_index.b], [t_local_with_index.c]), filter(nil), rowset=16
+      access([t_local_with_index.a], [t_local_with_index.b], [t_local_with_index.c]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_local_with_index.c], [t_local_with_index.a], [t_local_with_index.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_local_with_index.c = 10])
+explain select * from t_local_with_index_fork where c = 10;
+Query Plan
+====================================================================================
+|ID|OPERATOR                 |NAME                           |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                               |1       |8           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                       |1       |7           |
+|2 |  └─PX PARTITION ITERATOR|                               |1       |5           |
+|3 |    └─TABLE RANGE SCAN   |t_local_with_index_fork(lidx_c)|1       |5           |
+====================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_local_with_index_fork.a, t_local_with_index_fork.b, t_local_with_index_fork.c)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_local_with_index_fork.a, t_local_with_index_fork.b, t_local_with_index_fork.c)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_local_with_index_fork.a], [t_local_with_index_fork.b], [t_local_with_index_fork.c]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_local_with_index_fork.a], [t_local_with_index_fork.b], [t_local_with_index_fork.c]), filter(nil), rowset=16
+      access([t_local_with_index_fork.a], [t_local_with_index_fork.b], [t_local_with_index_fork.c]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_local_with_index_fork.c], [t_local_with_index_fork.a], [t_local_with_index_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_local_with_index_fork.c = 10])
+# 3.2 后建局部索引
+drop table if exists t_local_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_local_post_index'
+drop table if exists t_local_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_local_post_index_fork'
+create table t_local_post_index (
+a int,
+b varchar(150),
+c int,
+primary key(a, b)
+) partition by range(a) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_local_post_index values (1, 'Alice', 10);
+insert into t_local_post_index values (101, 'Bob', 110);
+# Fork表
+fork table t_local_post_index to t_local_post_index_fork;
+# 在源表和目标表上后建局部索引
+create index lidx_c_src on t_local_post_index(c) local;
+create index lidx_c_fork on t_local_post_index_fork(c) local;
+# 验证后建局部索引功能
+show indexes from t_local_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_local_post_index	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_post_index	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_post_index	1	lidx_c_src	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+show indexes from t_local_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_local_post_index_fork	0	PRIMARY	1	a	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_post_index_fork	0	PRIMARY	2	b	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_local_post_index_fork	1	lidx_c_fork	1	c	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+select * from t_local_post_index where c = 10;
+a	b	c
+1	Alice	10
+select * from t_local_post_index_fork where c = 10;
+a	b	c
+1	Alice	10
+explain select * from t_local_post_index where c = 10;
+Query Plan
+===================================================================================
+|ID|OPERATOR                 |NAME                          |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                              |1       |8           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                      |1       |7           |
+|2 |  └─PX PARTITION ITERATOR|                              |1       |5           |
+|3 |    └─TABLE RANGE SCAN   |t_local_post_index(lidx_c_src)|1       |5           |
+===================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_local_post_index.a, t_local_post_index.b, t_local_post_index.c)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_local_post_index.a, t_local_post_index.b, t_local_post_index.c)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_local_post_index.a], [t_local_post_index.b], [t_local_post_index.c]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_local_post_index.a], [t_local_post_index.b], [t_local_post_index.c]), filter(nil), rowset=16
+      access([t_local_post_index.a], [t_local_post_index.b], [t_local_post_index.c]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_local_post_index.c], [t_local_post_index.a], [t_local_post_index.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_local_post_index.c = 10])
+explain select * from t_local_post_index_fork where c = 10;
+Query Plan
+=========================================================================================
+|ID|OPERATOR                 |NAME                                |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                                    |1       |8           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                            |1       |7           |
+|2 |  └─PX PARTITION ITERATOR|                                    |1       |5           |
+|3 |    └─TABLE RANGE SCAN   |t_local_post_index_fork(lidx_c_fork)|1       |5           |
+=========================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_local_post_index_fork.a, t_local_post_index_fork.b, t_local_post_index_fork.c)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_local_post_index_fork.a, t_local_post_index_fork.b, t_local_post_index_fork.c)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_local_post_index_fork.a], [t_local_post_index_fork.b], [t_local_post_index_fork.c]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_local_post_index_fork.a], [t_local_post_index_fork.b], [t_local_post_index_fork.c]), filter(nil), rowset=16
+      access([t_local_post_index_fork.a], [t_local_post_index_fork.b], [t_local_post_index_fork.c]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_local_post_index_fork.c], [t_local_post_index_fork.a], [t_local_post_index_fork.b]), range(10,MIN,MIN ; 10,MAX,MAX), 
+      range_cond([t_local_post_index_fork.c = 10])
+drop table t_local_with_index;
+drop table t_local_with_index_fork;
+drop table t_local_post_index;
+drop table t_local_post_index_fork;
+============================================
+4. 全文索引（Fulltext Index）
+============================================
+# 4.1 随表创建全文索引
+drop table if exists t_fulltext_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_fulltext_with_index'
+drop table if exists t_fulltext_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_fulltext_with_index_fork'
+create table t_fulltext_with_index (
+id int primary key,
+title varchar(200),
+content text,
+fulltext index idx_content(content)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_fulltext_with_index values (1, 'Title1', 'This is a test content for fulltext search');
+insert into t_fulltext_with_index values (101, 'Title2', 'Another test content with different words');
+insert into t_fulltext_with_index values (50, 'Title3', 'Search functionality testing');
+# Fork表
+fork table t_fulltext_with_index to t_fulltext_with_index_fork;
+# 验证fork后源表和目标表的全文索引功能
+show indexes from t_fulltext_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_fulltext_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_fulltext_with_index	1	idx_content	1	content	A	NULL	NULL	NULL	YES	FULLTEXT	available		YES	NULL
+show indexes from t_fulltext_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_fulltext_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_fulltext_with_index_fork	1	idx_content	1	content	A	NULL	NULL	NULL	YES	FULLTEXT	available		YES	NULL
+select * from t_fulltext_with_index where match(content) against('test' in natural language mode);
+id	title	content
+1	Title1	This is a test content for fulltext search
+101	Title2	Another test content with different words
+select * from t_fulltext_with_index_fork where match(content) against('test' in natural language mode);
+id	title	content
+1	Title1	This is a test content for fulltext search
+101	Title2	Another test content with different words
+explain select * from t_fulltext_with_index where match(content) against('test' in natural language mode);
+Query Plan
+=========================================================================================
+|ID|OPERATOR                   |NAME                              |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |                                  |2       |91          |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000                          |2       |88          |
+|2 |  └─SORT                   |                                  |2       |81          |
+|3 |    └─PX PARTITION ITERATOR|                                  |2       |80          |
+|4 |      └─TEXT RETRIEVAL SCAN|t_fulltext_with_index(idx_content)|2       |80          |
+=========================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_fulltext_with_index.id, t_fulltext_with_index.title, t_fulltext_with_index.content)]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_with_index.content) AGAINST('test'), DESC])
+  1 - output([MATCH(t_fulltext_with_index.content) AGAINST('test')], [INTERNAL_FUNCTION(t_fulltext_with_index.id, t_fulltext_with_index.title, t_fulltext_with_index.content)]), filter(nil), rowset=16
+      dop=1
+  2 - output([MATCH(t_fulltext_with_index.content) AGAINST('test')], [t_fulltext_with_index.content], [t_fulltext_with_index.id], [t_fulltext_with_index.title]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_with_index.content) AGAINST('test'), DESC])
+  3 - output([t_fulltext_with_index.id], [t_fulltext_with_index.content], [t_fulltext_with_index.title], [MATCH(t_fulltext_with_index.content) AGAINST('test')]), filter(nil), rowset=16
+      force partition granule
+  4 - output([t_fulltext_with_index.id], [t_fulltext_with_index.content], [t_fulltext_with_index.title], [MATCH(t_fulltext_with_index.content) AGAINST('test')]), filter(nil), rowset=16
+      access([t_fulltext_with_index.id], [t_fulltext_with_index.content], [t_fulltext_with_index.title]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      calc_relevance=true, match_expr(MATCH(t_fulltext_with_index.content) AGAINST('test')), 
+      pushdown_match_filter(MATCH(t_fulltext_with_index.content) AGAINST('test'))
+explain select * from t_fulltext_with_index_fork where match(content) against('test' in natural language mode);
+Query Plan
+==============================================================================================
+|ID|OPERATOR                   |NAME                                   |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |                                       |2       |91          |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000                               |2       |88          |
+|2 |  └─SORT                   |                                       |2       |81          |
+|3 |    └─PX PARTITION ITERATOR|                                       |2       |80          |
+|4 |      └─TEXT RETRIEVAL SCAN|t_fulltext_with_index_fork(idx_content)|2       |80          |
+==============================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_fulltext_with_index_fork.id, t_fulltext_with_index_fork.title, t_fulltext_with_index_fork.content)]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_with_index_fork.content) AGAINST('test'), DESC])
+  1 - output([MATCH(t_fulltext_with_index_fork.content) AGAINST('test')], [INTERNAL_FUNCTION(t_fulltext_with_index_fork.id, t_fulltext_with_index_fork.title,
+       t_fulltext_with_index_fork.content)]), filter(nil), rowset=16
+      dop=1
+  2 - output([MATCH(t_fulltext_with_index_fork.content) AGAINST('test')], [t_fulltext_with_index_fork.content], [t_fulltext_with_index_fork.id], [t_fulltext_with_index_fork.title]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_with_index_fork.content) AGAINST('test'), DESC])
+  3 - output([t_fulltext_with_index_fork.id], [t_fulltext_with_index_fork.content], [t_fulltext_with_index_fork.title], [MATCH(t_fulltext_with_index_fork.content) 
+      AGAINST('test')]), filter(nil), rowset=16
+      force partition granule
+  4 - output([t_fulltext_with_index_fork.id], [t_fulltext_with_index_fork.content], [t_fulltext_with_index_fork.title], [MATCH(t_fulltext_with_index_fork.content) 
+      AGAINST('test')]), filter(nil), rowset=16
+      access([t_fulltext_with_index_fork.id], [t_fulltext_with_index_fork.content], [t_fulltext_with_index_fork.title]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      calc_relevance=true, match_expr(MATCH(t_fulltext_with_index_fork.content) AGAINST('test')), 
+      pushdown_match_filter(MATCH(t_fulltext_with_index_fork.content) AGAINST('test'))
+# 4.2 后建全文索引
+drop table if exists t_fulltext_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_fulltext_post_index'
+drop table if exists t_fulltext_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_fulltext_post_index_fork'
+create table t_fulltext_post_index (
+id int primary key,
+title varchar(200),
+content text
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_fulltext_post_index values (1, 'Title1', 'This is a test content for fulltext search');
+insert into t_fulltext_post_index values (101, 'Title2', 'Another test content with different words');
+# Fork表
+fork table t_fulltext_post_index to t_fulltext_post_index_fork;
+# 在源表和目标表上后建全文索引
+create fulltext index idx_content_src on t_fulltext_post_index(content);
+create fulltext index idx_content_fork on t_fulltext_post_index_fork(content);
+# 验证后建全文索引功能
+show indexes from t_fulltext_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_fulltext_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_fulltext_post_index	1	idx_content_src	1	content	A	NULL	NULL	NULL	YES	FULLTEXT	available		YES	NULL
+show indexes from t_fulltext_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_fulltext_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_fulltext_post_index_fork	1	idx_content_fork	1	content	A	NULL	NULL	NULL	YES	FULLTEXT	available		YES	NULL
+select * from t_fulltext_post_index where match(content) against('test' in natural language mode);
+id	title	content
+1	Title1	This is a test content for fulltext search
+101	Title2	Another test content with different words
+select * from t_fulltext_post_index_fork where match(content) against('test' in natural language mode);
+id	title	content
+1	Title1	This is a test content for fulltext search
+101	Title2	Another test content with different words
+explain select * from t_fulltext_post_index where match(content) against('test' in natural language mode);
+Query Plan
+=============================================================================================
+|ID|OPERATOR                   |NAME                                  |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |                                      |2       |91          |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000                              |2       |88          |
+|2 |  └─SORT                   |                                      |2       |81          |
+|3 |    └─PX PARTITION ITERATOR|                                      |2       |80          |
+|4 |      └─TEXT RETRIEVAL SCAN|t_fulltext_post_index(idx_content_src)|2       |80          |
+=============================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_fulltext_post_index.id, t_fulltext_post_index.title, t_fulltext_post_index.content)]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_post_index.content) AGAINST('test'), DESC])
+  1 - output([MATCH(t_fulltext_post_index.content) AGAINST('test')], [INTERNAL_FUNCTION(t_fulltext_post_index.id, t_fulltext_post_index.title, t_fulltext_post_index.content)]), filter(nil), rowset=16
+      dop=1
+  2 - output([MATCH(t_fulltext_post_index.content) AGAINST('test')], [t_fulltext_post_index.content], [t_fulltext_post_index.id], [t_fulltext_post_index.title]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_post_index.content) AGAINST('test'), DESC])
+  3 - output([t_fulltext_post_index.id], [t_fulltext_post_index.content], [t_fulltext_post_index.title], [MATCH(t_fulltext_post_index.content) AGAINST('test')]), filter(nil), rowset=16
+      force partition granule
+  4 - output([t_fulltext_post_index.id], [t_fulltext_post_index.content], [t_fulltext_post_index.title], [MATCH(t_fulltext_post_index.content) AGAINST('test')]), filter(nil), rowset=16
+      access([t_fulltext_post_index.id], [t_fulltext_post_index.content], [t_fulltext_post_index.title]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      calc_relevance=true, match_expr(MATCH(t_fulltext_post_index.content) AGAINST('test')), 
+      pushdown_match_filter(MATCH(t_fulltext_post_index.content) AGAINST('test'))
+explain select * from t_fulltext_post_index_fork where match(content) against('test' in natural language mode);
+Query Plan
+===================================================================================================
+|ID|OPERATOR                   |NAME                                        |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |                                            |2       |91          |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000                                    |2       |88          |
+|2 |  └─SORT                   |                                            |2       |81          |
+|3 |    └─PX PARTITION ITERATOR|                                            |2       |80          |
+|4 |      └─TEXT RETRIEVAL SCAN|t_fulltext_post_index_fork(idx_content_fork)|2       |80          |
+===================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_fulltext_post_index_fork.id, t_fulltext_post_index_fork.title, t_fulltext_post_index_fork.content)]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_post_index_fork.content) AGAINST('test'), DESC])
+  1 - output([MATCH(t_fulltext_post_index_fork.content) AGAINST('test')], [INTERNAL_FUNCTION(t_fulltext_post_index_fork.id, t_fulltext_post_index_fork.title,
+       t_fulltext_post_index_fork.content)]), filter(nil), rowset=16
+      dop=1
+  2 - output([MATCH(t_fulltext_post_index_fork.content) AGAINST('test')], [t_fulltext_post_index_fork.content], [t_fulltext_post_index_fork.id], [t_fulltext_post_index_fork.title]), filter(nil), rowset=16
+      sort_keys([MATCH(t_fulltext_post_index_fork.content) AGAINST('test'), DESC])
+  3 - output([t_fulltext_post_index_fork.id], [t_fulltext_post_index_fork.content], [t_fulltext_post_index_fork.title], [MATCH(t_fulltext_post_index_fork.content) 
+      AGAINST('test')]), filter(nil), rowset=16
+      force partition granule
+  4 - output([t_fulltext_post_index_fork.id], [t_fulltext_post_index_fork.content], [t_fulltext_post_index_fork.title], [MATCH(t_fulltext_post_index_fork.content) 
+      AGAINST('test')]), filter(nil), rowset=16
+      access([t_fulltext_post_index_fork.id], [t_fulltext_post_index_fork.content], [t_fulltext_post_index_fork.title]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      calc_relevance=true, match_expr(MATCH(t_fulltext_post_index_fork.content) AGAINST('test')), 
+      pushdown_match_filter(MATCH(t_fulltext_post_index_fork.content) AGAINST('test'))
+drop table t_fulltext_with_index;
+drop table t_fulltext_with_index_fork;
+drop table t_fulltext_post_index;
+drop table t_fulltext_post_index_fork;
+============================================
+5. JSON多值索引（JSON Multi-Value Index）
+============================================
+# 5.1 随表创建JSON多值索引
+drop table if exists t_json_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_json_with_index'
+drop table if exists t_json_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_json_with_index_fork'
+create table t_json_with_index (
+id int primary key,
+name varchar(50),
+tags json,
+index idx_tags ((cast(tags->'$[*]' as char(100) array)))
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_json_with_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
+insert into t_json_with_index values (101, 'Item2', '["tag2", "tag4"]');
+insert into t_json_with_index values (50, 'Item3', '["tag1", "tag5"]');
+# Fork表
+fork table t_json_with_index to t_json_with_index_fork;
+# 验证fork后源表和目标表的JSON多值索引功能
+show indexes from t_json_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_json_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_json_with_index	1	idx_tags	1	SYS_NC_mvi_19	A	NULL	NULL	NULL	YES	BTREE	available		YES	json_query(`tags`,'$[*]' RETURNING char(100) charset utf8mb4 WITHOUT ARRAY WRAPPER asis error on error null on empty null on mismatch)
+t_json_with_index	1	idx_tags	2	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_json_with_index	1	idx_tags	3	__doc_id_DOC_ID	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+show indexes from t_json_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_json_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_json_with_index_fork	1	idx_tags	1	SYS_NC_mvi_19	A	NULL	NULL	NULL	YES	BTREE	available		YES	json_query(`tags`,'$[*]' RETURNING char(100) charset utf8mb4 WITHOUT ARRAY WRAPPER asis error on error null on empty null on mismatch)
+t_json_with_index_fork	1	idx_tags	2	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_json_with_index_fork	1	idx_tags	3	__doc_id_DOC_ID	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+select * from t_json_with_index where json_contains(tags, '"tag1"');
+id	name	tags
+1	Item1	["tag1", "tag2", "tag3"]
+50	Item3	["tag1", "tag5"]
+select * from t_json_with_index_fork where json_contains(tags, '"tag1"');
+id	name	tags
+1	Item1	["tag1", "tag2", "tag3"]
+50	Item3	["tag1", "tag5"]
+explain select * from t_json_with_index where json_contains(tags, '"tag1"');
+Query Plan
+======================================================================
+|ID|OPERATOR                 |NAME             |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------
+|0 |PX COORDINATOR           |                 |2       |83          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000         |2       |82          |
+|2 |  └─PX PARTITION ITERATOR|                 |2       |78          |
+|3 |    └─TABLE FULL SCAN    |t_json_with_index|2       |78          |
+======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_json_with_index.id, t_json_with_index.name, t_json_with_index.tags)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_json_with_index.id, t_json_with_index.name, t_json_with_index.tags)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_json_with_index.id], [t_json_with_index.tags], [t_json_with_index.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_json_with_index.id], [t_json_with_index.tags], [t_json_with_index.name]), filter([json_contains(t_json_with_index.tags, '\"tag1\"')]), rowset=16
+      access([t_json_with_index.id], [t_json_with_index.tags], [t_json_with_index.name]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t_json_with_index.id]), range(MIN ; MAX)always true
+explain select * from t_json_with_index_fork where json_contains(tags, '"tag1"');
+Query Plan
+===========================================================================
+|ID|OPERATOR                 |NAME                  |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                      |2       |83          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000              |2       |82          |
+|2 |  └─PX PARTITION ITERATOR|                      |2       |78          |
+|3 |    └─TABLE FULL SCAN    |t_json_with_index_fork|2       |78          |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_json_with_index_fork.id, t_json_with_index_fork.name, t_json_with_index_fork.tags)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_json_with_index_fork.id, t_json_with_index_fork.name, t_json_with_index_fork.tags)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_json_with_index_fork.id], [t_json_with_index_fork.tags], [t_json_with_index_fork.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_json_with_index_fork.id], [t_json_with_index_fork.tags], [t_json_with_index_fork.name]), filter([json_contains(t_json_with_index_fork.tags,
+       '\"tag1\"')]), rowset=16
+      access([t_json_with_index_fork.id], [t_json_with_index_fork.tags], [t_json_with_index_fork.name]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t_json_with_index_fork.id]), range(MIN ; MAX)always true
+# 5.2 后建JSON多值索引
+drop table if exists t_json_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_json_post_index'
+drop table if exists t_json_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_json_post_index_fork'
+create table t_json_post_index (
+id int primary key,
+name varchar(50),
+tags json
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_json_post_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
+insert into t_json_post_index values (101, 'Item2', '["tag2", "tag4"]');
+# Fork前
+create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
+ERROR 0A000: build multivalue index afterward not supported
+# Fork表
+fork table t_json_post_index to t_json_post_index_fork;
+# 在源表和目标表上后建JSON多值索引
+create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
+ERROR 0A000: build multivalue index afterward not supported
+create index idx_tags_fork on t_json_post_index_fork((cast(tags->'$[*]' as char(100) array)));
+ERROR 0A000: build multivalue index afterward not supported
+# 验证后建JSON多值索引功能
+show indexes from t_json_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_json_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+show indexes from t_json_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_json_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+drop table t_json_with_index;
+drop table t_json_with_index_fork;
+drop table t_json_post_index;
+drop table t_json_post_index_fork;
+============================================
+6. HNSW索引（重点关注）
+============================================
+# 6.1 随表创建HNSW索引
+drop table if exists t_hnsw_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_with_index'
+drop table if exists t_hnsw_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_with_index_fork'
+create table t_hnsw_with_index (
+id int primary key,
+name varchar(50),
+vec vector(3),
+vector index idx_vec(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_hnsw_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_hnsw_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+insert into t_hnsw_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
+# Fork表
+fork table t_hnsw_with_index to t_hnsw_with_index_fork;
+# 验证fork后源表和目标表的HNSW索引功能
+show indexes from t_hnsw_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_with_index	1	idx_vec	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_hnsw_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_with_index_fork	1	idx_vec	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 源表、目标表HNSW索引查询（近似查询和精确查询）
+select * from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
+select * from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
+select * from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
+select * from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+50	Vec3	[0.3,0.3,0.3]
+# 验证近似查询和精确查询结果一致性
+# 源表：比较近似查询和精确查询的前3条记录的ID是否一致
+select count(*) as match_count from (
+select id from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as tmp1
+inner join (
+select id from t_hnsw_with_index order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as tmp2 on tmp1.id = tmp2.id;
+match_count
+3
+# 目标表：比较近似查询和精确查询的前3条记录的ID是否一致
+select count(*) as match_count from (
+select id from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as tmp1
+inner join (
+select id from t_hnsw_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as tmp2 on tmp1.id = tmp2.id;
+match_count
+3
+# 更详细的一致性验证：显示匹配的具体记录
+select 
+approx.id as approx_id,
+exact.id as exact_id,
+case when approx.id = exact.id then 'MATCH' else 'MISMATCH' end as status
+from (
+select id, row_number() over() as rn 
+from t_hnsw_with_index 
+order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as approx
+full outer join (
+select id, row_number() over() as rn 
+from t_hnsw_with_index 
+order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as exact on approx.rn = exact.rn;
+approx_id	exact_id	status
+1	1	MATCH
+101	101	MATCH
+50	50	MATCH
+select 
+approx.id as approx_id,
+exact.id as exact_id,
+case when approx.id = exact.id then 'MATCH' else 'MISMATCH' end as status
+from (
+select id, row_number() over() as rn 
+from t_hnsw_with_index_fork 
+order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3
+) as approx
+full outer join (
+select id, row_number() over() as rn 
+from t_hnsw_with_index_fork 
+order by l2_distance(vec, [0.1,0.1,0.1]) limit 3
+) as exact on approx.rn = exact.rn;
+approx_id	exact_id	status
+1	1	MATCH
+101	101	MATCH
+50	50	MATCH
+# 6.2 后建HNSW索引
+drop table if exists t_hnsw_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_post_index'
+drop table if exists t_hnsw_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_post_index_fork'
+create table t_hnsw_post_index (
+id int primary key,
+name varchar(50),
+vec vector(3)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_hnsw_post_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_hnsw_post_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+# Fork表
+fork table t_hnsw_post_index to t_hnsw_post_index_fork;
+# 在源表和目标表上后建HNSW索引
+create vector index idx_vec_src on t_hnsw_post_index(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200);
+create vector index idx_vec_fork on t_hnsw_post_index_fork(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200, ef_search=200);
+# 等待索引构建完成
+# 验证后建HNSW索引功能
+show indexes from t_hnsw_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_post_index	1	idx_vec_src	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_hnsw_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_post_index_fork	1	idx_vec_fork	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+select * from t_hnsw_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+select * from t_hnsw_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+# 验证HNSW索引重建功能
+call dbms_vector.rebuild_index('idx_vec_src', 't_hnsw_post_index', 'vec');
+call dbms_vector.rebuild_index('idx_vec_fork', 't_hnsw_post_index_fork', 'vec');
+select * from t_hnsw_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+select * from t_hnsw_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+drop table t_hnsw_with_index;
+drop table t_hnsw_with_index_fork;
+drop table t_hnsw_post_index;
+drop table t_hnsw_post_index_fork;
+============================================
+7. 向量查询表HNSW内积距离索引测试（重点关注）
+============================================
+# 7.1 随表创建HNSW索引（内积距离）
+drop table if exists t_vec_query;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_vec_query'
+drop table if exists t_vec_query_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_vec_query_fork'
+# 创建带HNSW索引的向量查询表
+create table t_vec_query (
+c1 int primary key, 
+c2 vector(3),
+vector index idx1(c2) with (distance=inner_product, type=hnsw, lib=vsag)
+) partition by range(c1) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 插入向量数据（使用内积距离有意义的数据）
+insert into t_vec_query values (1, '[1.0, 0.0, 0.0]');
+insert into t_vec_query values (2, '[0.0, 1.0, 0.0]');
+insert into t_vec_query values (3, '[0.0, 0.0, 1.0]');
+insert into t_vec_query values (4, '[0.5, 0.5, 0.0]');
+insert into t_vec_query values (5, '[0.5, 0.0, 0.5]');
+insert into t_vec_query values (101, '[0.0, 0.5, 0.5]');
+insert into t_vec_query values (50, '[0.7, 0.7, 0.0]');
+# Fork表
+fork table t_vec_query to t_vec_query_fork;
+# 验证fork后源表和目标表的HNSW索引
+show indexes from t_vec_query;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_vec_query	0	PRIMARY	1	c1	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_vec_query	1	idx1	1	c2	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_vec_query_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_vec_query_fork	0	PRIMARY	1	c1	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_vec_query_fork	1	idx1	1	c2	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 源表HNSW索引查询（内积距离近似查询和精确查询）
+# 查询与X轴向量最相似的向量（内积越大越相似）
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity 
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[1,0,0]	1
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+select '源表精确查询（内积距离）:' as query_type;
+query_type
+源表精确查询（内积距离）:
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3;
+c1	c2	similarity
+1	[1,0,0]	1
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+# 目标表HNSW索引查询（内积距离近似查询和精确查询）
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[1,0,0]	1
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3;
+c1	c2	similarity
+1	[1,0,0]	1
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+# 验证近似查询和精确查询结果一致性（内积距离）
+select count(*) as match_count from (
+select c1 from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3
+) as approx
+inner join (
+select c1 from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3  
+) as exact on approx.c1 = exact.c1;
+match_count
+3
+select count(*) as match_count from (
+select c1 from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 3
+) as approx
+inner join (
+select c1 from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc limit 3
+) as exact on approx.c1 = exact.c1;
+match_count
+3
+# 7.2 后建HNSW索引（内积距离）
+drop table if exists t_vec_query_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_vec_query_post_index'
+drop table if exists t_vec_query_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_vec_query_post_index_fork'
+# 创建不带索引的向量查询表
+create table t_vec_query_post_index (
+c1 int primary key,
+c2 vector(3)
+) partition by range(c1) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 插入测试数据
+insert into t_vec_query_post_index values (1, '[0.8, 0.2, 0.0]');
+insert into t_vec_query_post_index values (2, '[0.2, 0.8, 0.0]');
+insert into t_vec_query_post_index values (3, '[0.0, 0.2, 0.8]');
+insert into t_vec_query_post_index values (4, '[0.6, 0.3, 0.1]');
+insert into t_vec_query_post_index values (101, '[0.1, 0.6, 0.3]');
+insert into t_vec_query_post_index values (50, '[0.3, 0.1, 0.6]');
+# Fork表
+fork table t_vec_query_post_index to t_vec_query_post_index_fork;
+# 在源表和目标表上后建HNSW索引（内积距离）
+create vector index idx_vec_query_src on t_vec_query_post_index(c2) with (distance=inner_product, type=hnsw, lib=vsag);
+create vector index idx_vec_query_fork on t_vec_query_post_index_fork(c2) with (distance=inner_product, type=hnsw, lib=vsag);
+# 等待索引构建完成
+# 验证后建HNSW索引功能
+show indexes from t_vec_query_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_vec_query_post_index	0	PRIMARY	1	c1	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_vec_query_post_index	1	idx_vec_query_src	1	c2	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_vec_query_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_vec_query_post_index_fork	0	PRIMARY	1	c1	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_vec_query_post_index_fork	1	idx_vec_query_fork	1	c2	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 源表后建索引查询测试
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[0.8,0.2,0]	0.6800000481307507
+4	[0.6,0.3,0.1]	0.5400000214576721
+2	[0.2,0.8,0]	0.320000022649765
+# 目标表后建索引查询测试  
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index_fork order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[0.8,0.2,0]	0.6800000481307507
+4	[0.6,0.3,0.1]	0.5400000214576721
+2	[0.2,0.8,0]	0.320000022649765
+# 8.3 验证HNSW索引重建功能（内积距离）
+# 重建源表索引
+call dbms_vector.rebuild_index('idx_vec_query_src', 't_vec_query_post_index', 'c2');
+# 重建目标表索引
+call dbms_vector.rebuild_index('idx_vec_query_fork', 't_vec_query_post_index_fork', 'c2');
+# 等待索引重建完成
+# 验证重建后索引功能
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[0.8,0.2,0]	0.6800000481307507
+4	[0.6,0.3,0.1]	0.5400000214576721
+2	[0.2,0.8,0]	0.320000022649765
+select c1, c2, inner_product(c2, '[0.8, 0.2, 0.0]') as similarity
+from t_vec_query_post_index_fork order by inner_product(c2, '[0.8, 0.2, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+1	[0.8,0.2,0]	0.6800000481307507
+4	[0.6,0.3,0.1]	0.5400000214576721
+2	[0.2,0.8,0]	0.320000022649765
+# 8.4 数据隔离测试
+# 在源表插入新数据
+insert into t_vec_query values (6, '[0.9, 0.1, 0.0]');
+# 在目标表插入新数据  
+insert into t_vec_query_fork values (7, '[0.95, 0.05, 0.0]');
+# 验证数据隔离性
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 5;
+c1	c2	similarity
+1	[1,0,0]	1
+6	[0.9,0.1,0]	0.8999999761581421
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+5	[0.5,0,0.5]	0.5
+select c1, c2, inner_product(c2, '[1.0, 0.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[1.0, 0.0, 0.0]') desc APPROXIMATE limit 5;
+c1	c2	similarity
+1	[1,0,0]	1
+7	[0.95,0.05,0]	0.949999988079071
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+5	[0.5,0,0.5]	0.5
+# 7.5 不同查询向量测试
+# 测试不同方向的查询向量
+select c1, c2, inner_product(c2, '[0.0, 1.0, 0.0]') as similarity
+from t_vec_query_fork order by inner_product(c2, '[0.0, 1.0, 0.0]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+2	[0,1,0]	1
+50	[0.7,0.7,0]	0.699999988079071
+4	[0.5,0.5,0]	0.5
+select c1, c2, inner_product(c2, '[0.577, 0.577, 0.577]') as similarity  
+from t_vec_query_fork order by inner_product(c2, '[0.577, 0.577, 0.577]') desc APPROXIMATE limit 3;
+c1	c2	similarity
+50	[0.7,0.7,0]	0.8077999949455261
+2	[0,1,0]	0.5770000219345093
+3	[0,0,1]	0.5770000219345093
+# 清理测试表
+drop table if exists t_vec_query;
+drop table if exists t_vec_query_fork;
+drop table if exists t_vec_query_post_index;
+drop table if exists t_vec_query_post_index_fork;
+============================================
+8. IVF_QP索引
+============================================
+# 8.1 随表创建IVF_QP索引
+drop table if exists t_ivf_qp_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_qp_with_index'
+drop table if exists t_ivf_qp_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_qp_with_index_fork'
+create table t_ivf_qp_with_index (id int primary key,name varchar(50),vec vector(3));
+CREATE VECTOR INDEX idx1 ON t_ivf_qp_with_index(vec) WITH (distance=l2, type=ivf_qp, lib=vsag);
+ERROR 0A000: this type of vector index type is not supported
+drop table if exists t_ivf_qp_with_index;
+============================================
+8. hnsw_sq索引
+============================================
+# 8.1 随表创建hnsw_sq索引
+drop table if exists t_hnsw_sq_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_sq_with_index'
+drop table if exists t_hnsw_sq_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_sq_with_index_fork'
+CREATE TABLE t_hnsw_sq_with_index (
+id INT PRIMARY KEY, 
+name VARCHAR(50),
+vec VECTOR(3)
+);
+CREATE VECTOR INDEX idx1 ON t_hnsw_sq_with_index(vec) WITH (distance=l2, type=hnsw_sq, lib=vsag);
+# 插入向量数据（为HNSW_SQ优化）
+insert into t_hnsw_sq_with_index values (1, 'HNSW_SQ_Point1', '[0.1, 0.1, 0.1]');
+insert into t_hnsw_sq_with_index values (2, 'HNSW_SQ_Point2', '[0.2, 0.2, 0.2]');
+insert into t_hnsw_sq_with_index values (3, 'HNSW_SQ_Point3', '[0.15, 0.15, 0.15]');
+insert into t_hnsw_sq_with_index values (4, 'HNSW_SQ_Point4', '[0.3, 0.3, 0.3]');
+insert into t_hnsw_sq_with_index values (5, 'HNSW_SQ_Point5', '[0.25, 0.25, 0.25]');
+insert into t_hnsw_sq_with_index values (101, 'HNSW_SQ_Point6', '[0.4, 0.4, 0.4]');
+insert into t_hnsw_sq_with_index values (50, 'HNSW_SQ_Point7', '[0.35, 0.35, 0.35]');
+# Fork表
+fork table t_hnsw_sq_with_index to t_hnsw_sq_with_index_fork;
+# 验证fork后源表和目标表的HNSW_SQ索引
+show indexes from t_hnsw_sq_with_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_sq_with_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_sq_with_index	1	idx1	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_hnsw_sq_with_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_sq_with_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_sq_with_index_fork	1	idx1	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 源表HNSW_SQ索引查询（L2距离近似查询和精确查询）
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance 
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+# 目标表HNSW_SQ索引查询（L2距离近似查询和精确查询）
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+# 验证近似查询和精确查询结果一致性（L2距离）
+select count(*) as match_count from (
+select id from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3
+) as approx
+inner join (
+select id from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3  
+) as exact on approx.id = exact.id;
+match_count
+3
+select count(*) as match_count from (
+select id from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 3
+) as approx
+inner join (
+select id from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc limit 3
+) as exact on approx.id = exact.id;
+match_count
+3
+# 10.2 后建HNSW_SQ索引
+drop table if exists t_hnsw_sq_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_sq_post_index'
+drop table if exists t_hnsw_sq_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_hnsw_sq_post_index_fork'
+# 创建不带索引的向量表
+create table t_hnsw_sq_post_index (
+id int primary key,
+name varchar(50),
+vec vector(3)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 插入测试数据
+insert into t_hnsw_sq_post_index values (1, 'Post_HNSW_SQ1', '[0.5, 0.5, 0.5]');
+insert into t_hnsw_sq_post_index values (2, 'Post_HNSW_SQ2', '[0.6, 0.6, 0.6]');
+insert into t_hnsw_sq_post_index values (3, 'Post_HNSW_SQ3', '[0.55, 0.55, 0.55]');
+insert into t_hnsw_sq_post_index values (4, 'Post_HNSW_SQ4', '[0.7, 0.7, 0.7]');
+insert into t_hnsw_sq_post_index values (101, 'Post_HNSW_SQ5', '[0.8, 0.8, 0.8]');
+insert into t_hnsw_sq_post_index values (50, 'Post_HNSW_SQ6', '[0.75, 0.75, 0.75]');
+# Fork表
+fork table t_hnsw_sq_post_index to t_hnsw_sq_post_index_fork;
+# 在源表和目标表上后建HNSW_SQ索引
+create vector index idx_hnsw_sq_src on t_hnsw_sq_post_index(vec) with (distance=l2, type=hnsw_sq, lib=vsag);
+create vector index idx_hnsw_sq_fork on t_hnsw_sq_post_index_fork(vec) with (distance=l2, type=hnsw_sq, lib=vsag);
+# 等待索引构建完成
+# 验证后建HNSW_SQ索引功能
+show indexes from t_hnsw_sq_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_sq_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_sq_post_index	1	idx_hnsw_sq_src	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_hnsw_sq_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_hnsw_sq_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_hnsw_sq_post_index_fork	1	idx_hnsw_sq_fork	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 源表后建索引查询测试
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	Post_HNSW_SQ1	[0.5,0.5,0.5]	0
+3	Post_HNSW_SQ3	[0.55,0.55,0.55]	0.08660256102609849
+2	Post_HNSW_SQ2	[0.6,0.6,0.6]	0.17320512205219699
+# 目标表后建索引查询测试  
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index_fork order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	Post_HNSW_SQ1	[0.5,0.5,0.5]	0
+3	Post_HNSW_SQ3	[0.55,0.55,0.55]	0.08660256102609849
+2	Post_HNSW_SQ2	[0.6,0.6,0.6]	0.17320512205219699
+# 10.3 验证HNSW_SQ索引重建功能
+# 重建源表索引
+call dbms_vector.rebuild_index('idx_hnsw_sq_src', 't_hnsw_sq_post_index', 'vec');
+# 重建目标表索引
+call dbms_vector.rebuild_index('idx_hnsw_sq_fork', 't_hnsw_sq_post_index_fork', 'vec');
+# 等待索引重建完成
+# 验证重建后索引功能
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	Post_HNSW_SQ1	[0.5,0.5,0.5]	0
+3	Post_HNSW_SQ3	[0.55,0.55,0.55]	0.08660256102609849
+2	Post_HNSW_SQ2	[0.6,0.6,0.6]	0.17320512205219699
+select id, name, vec, l2_distance(vec, '[0.5, 0.5, 0.5]') as distance
+from t_hnsw_sq_post_index_fork order by l2_distance(vec, '[0.5, 0.5, 0.5]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+1	Post_HNSW_SQ1	[0.5,0.5,0.5]	0
+3	Post_HNSW_SQ3	[0.55,0.55,0.55]	0.08660256102609849
+2	Post_HNSW_SQ2	[0.6,0.6,0.6]	0.17320512205219699
+# 10.4 数据隔离测试
+# 在源表插入新数据
+insert into t_hnsw_sq_with_index values (6, 'Source_New_Point', '[0.12, 0.12, 0.12]');
+# 在目标表插入新数据  
+insert into t_hnsw_sq_with_index_fork values (7, 'Fork_New_Point', '[0.08, 0.08, 0.08]');
+# 验证数据隔离性
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 5;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+6	Source_New_Point	[0.12,0.12,0.12]	0.03464100892469843
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+5	HNSW_SQ_Point5	[0.25,0.25,0.25]	0.2598076314591589
+select id, name, vec, l2_distance(vec, '[0.1, 0.1, 0.1]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[0.1, 0.1, 0.1]') asc APPROXIMATE limit 5;
+id	name	vec	distance
+1	HNSW_SQ_Point1	[0.1,0.1,0.1]	0
+7	Fork_New_Point	[0.08,0.08,0.08]	0.03464102182948257
+3	HNSW_SQ_Point3	[0.15,0.15,0.15]	0.08660254812131435
+2	HNSW_SQ_Point2	[0.2,0.2,0.2]	0.17320508333784457
+5	HNSW_SQ_Point5	[0.25,0.25,0.25]	0.2598076314591589
+# 10.5 HNSW_SQ特性测试（量化效果验证）
+# 测试不同距离的查询点
+select id, name, vec, l2_distance(vec, '[1.0, 1.0, 1.0]') as distance
+from t_hnsw_sq_with_index_fork order by l2_distance(vec, '[1.0, 1.0, 1.0]') asc APPROXIMATE limit 3;
+id	name	vec	distance
+101	HNSW_SQ_Point6	[0.4,0.4,0.4]	1.0392305258366357
+50	HNSW_SQ_Point7	[0.35,0.35,0.35]	1.125832983624461
+4	HNSW_SQ_Point4	[0.3,0.3,0.3]	1.2124355446505595
+# 10.6 清理测试表
+drop table if exists t_hnsw_sq_with_index;
+drop table if exists t_hnsw_sq_with_index_fork;
+drop table if exists t_hnsw_sq_post_index;
+drop table if exists t_hnsw_sq_post_index_fork;
+============================================
+8.5 ivf_sq索引
+============================================
+# 8.5.1 随表创建ivf_sq索引
+drop table if exists t_ivf_sq_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_sq_with_index'
+drop table if exists t_ivf_sq_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_sq_with_index_fork'
+CREATE TABLE t_ivf_sq_with_index (
+id INT PRIMARY KEY, 
+name VARCHAR(50),
+vec VECTOR(3)
+);
+CREATE VECTOR INDEX idx1 ON t_ivf_sq_with_index(vec) WITH (distance=l2, type=ivf_sq, lib=vsag);
+ERROR 0A000: this type of vector index type is not supported
+============================================
+9. IVF_FLAT索引
+============================================
+# 9.1 随表创建IVF_FLAT索引
+drop table if exists t_ivf_flat_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_flat_with_index'
+drop table if exists t_ivf_flat_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_flat_with_index_fork'
+create table t_ivf_flat_with_index (
+id int primary key,
+name varchar(50),
+vec vector(3),
+vector index idx_vec(vec) with (distance=l2, type=ivf_flat)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_ivf_flat_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_ivf_flat_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+insert into t_ivf_flat_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
+# Fork表 ivf不支持
+fork table t_ivf_flat_with_index to t_ivf_flat_with_index_fork;
+ERROR 0A000: fork table on table with ivf index is not supported
+# 验证fork后源表和目标表的IVF_FLAT索引功能
+# 9.2 后建IVF_FLAT索引
+drop table if exists t_ivf_flat_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_flat_post_index'
+drop table if exists t_ivf_flat_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_ivf_flat_post_index_fork'
+create table t_ivf_flat_post_index (
+id int primary key,
+name varchar(50),
+vec vector(3)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_ivf_flat_post_index values (1, 'Vec1', '[0.1,0.1,0.1]');
+insert into t_ivf_flat_post_index values (101, 'Vec2', '[0.2,0.2,0.2]');
+# Fork表
+fork table t_ivf_flat_post_index to t_ivf_flat_post_index_fork;
+# 在源表和目标表上后建IVF_FLAT索引
+create vector index idx_vec_src on t_ivf_flat_post_index(vec) with (distance=l2, type=ivf_flat);
+create vector index idx_vec_fork on t_ivf_flat_post_index_fork(vec) with (distance=l2, type=ivf_flat);
+# 等待索引构建完成
+# 验证后建IVF_FLAT索引功能
+show indexes from t_ivf_flat_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_ivf_flat_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_ivf_flat_post_index	1	idx_vec_src	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_ivf_flat_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_ivf_flat_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_ivf_flat_post_index_fork	1	idx_vec_fork	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+select * from t_ivf_flat_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+select * from t_ivf_flat_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+id	name	vec
+1	Vec1	[0.1,0.1,0.1]
+101	Vec2	[0.2,0.2,0.2]
+drop table t_ivf_flat_with_index;
+drop table t_ivf_flat_post_index;
+drop table t_ivf_flat_post_index_fork;
+============================================
+10. 语义索引（Semantic Index）
+============================================
+# 10.1 随表创建语义索引
+drop table if exists t_semantic_with_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_with_index'
+drop table if exists t_semantic_with_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_with_index_fork'
+# 创建AI模型和端点
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "BAAI/bge-m3"
+  }');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT (
+'ob_embed_endpoint', '{
+    "ai_model_name": "ob_embed",
+    "scope": "all",
+    "url": "https://api.siliconflow.cn/v1/embeddings",
+    "access_key": "sk-dlqskwikiwvxplsiwlslpirjqpseohcupdfnnicpgmrtxsjg",
+    "request_model_name": "BAAI/bge-m3",
+    "provider": "siliconflow"
+  }');
+CREATE TABLE t_semantic_with_index (
+id int primary key,
+name varchar(50),
+text_content varchar(500),
+VECTOR INDEX idx_semantic(text_content)
+WITH (
+distance=cosine,
+lib=vsag,
+type=hnsw,
+model=ob_embed,
+dim=1024,
+sync_mode=immediate
+)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 插入测试数据
+insert into t_semantic_with_index values (1, 'text1', 'This is the first text content for semantic search');
+insert into t_semantic_with_index values (2, 'text2', 'This is the second text content for semantic search');
+insert into t_semantic_with_index values (101, 'text3', 'This is the third text content for semantic search');
+# Fork表
+fork table t_semantic_with_index to t_semantic_with_index_fork;
+ERROR 0A000: fork table on table with semantic index is not supported
+# 验证fork后源表和目标表的语义索引功能
+select id, name, text_content from t_semantic_with_index order by semantic_distance(text_content, 'first text') approximate limit 2;
+id	name	text_content
+1	text1	This is the first text content for semantic search
+2	text2	This is the second text content for semantic search
+# 清理测试表和AI模型
+drop table t_semantic_with_index;
+# 10.2 先fork后建语义索引
+drop table if exists t_semantic_post_index;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_post_index'
+drop table if exists t_semantic_post_index_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_semantic_post_index_fork'
+# 创建不带语义索引的表
+CREATE TABLE t_semantic_post_index (
+id int primary key,
+name varchar(50),
+text_content varchar(500)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+show indexes from t_semantic_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+# 插入初始数据
+insert into t_semantic_post_index values (1, 'initial_text1', 'This is the first initial text content');
+insert into t_semantic_post_index values (2, 'initial_text2', 'This is the second initial text content');
+insert into t_semantic_post_index values (50, 'initial_text3', 'This is the third initial text content');
+# Fork表
+fork table t_semantic_post_index to t_semantic_post_index_fork;
+show indexes from t_semantic_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+show indexes from t_semantic_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+# 在源表和目标表上后建语义索引
+create vector index idx_semantic_src on t_semantic_post_index(text_content) WITH (
+distance=cosine,
+lib=vsag,
+type=hnsw,
+model=ob_embed,
+dim=1024,
+sync_mode=immediate
+);
+create vector index idx_semantic_fork on t_semantic_post_index_fork(text_content) WITH (
+distance=cosine,
+lib=vsag,
+type=hnsw,
+model=ob_embed,
+dim=1024,
+sync_mode=immediate
+);
+# 等待索引构建完成
+# 验证后建语义索引功能
+show indexes from t_semantic_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_semantic_post_index	1	idx_semantic_src	1	text_content	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+show indexes from t_semantic_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_semantic_post_index_fork	1	idx_semantic_fork	1	text_content	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+# 增删查改操作测试
+# 在源表插入新数据
+insert into t_semantic_post_index values (3, 'source_new_text', 'This is new source text content');
+insert into t_semantic_post_index values (101, 'source_new_text2', 'This is another new source text content');
+# 在目标表插入新数据
+insert into t_semantic_post_index_fork values (4, 'fork_new_text', 'This is new fork text content');
+insert into t_semantic_post_index_fork values (101, 'fork_new_text2', 'This is another new fork text content');
+# 更新源表数据
+update t_semantic_post_index set text_content = 'This is updated first text content' where id = 1;
+update t_semantic_post_index set name = 'updated_source_text1' where id = 2;
+# 更新目标表数据
+update t_semantic_post_index_fork set text_content = 'This is updated fork first text content' where id = 1;
+update t_semantic_post_index_fork set name = 'updated_fork_text1' where id = 2;
+# 删除源表数据
+delete from t_semantic_post_index where id = 3;
+# 删除目标表数据
+delete from t_semantic_post_index_fork where id = 4;
+# 查询验证：检查源表数据是否正确
+select id, name from t_semantic_post_index order by id;
+id	name
+1	initial_text1
+2	updated_source_text1
+50	initial_text3
+101	source_new_text2
+select id, name 
+from t_semantic_post_index order by semantic_distance(text_content, 'first text') approximate limit 3;
+id	name
+2	updated_source_text1
+1	initial_text1
+50	initial_text3
+# 查询验证：检查目标表数据是否正确
+select id, name from t_semantic_post_index_fork order by id;
+id	name
+1	initial_text1
+2	updated_fork_text1
+50	initial_text3
+101	fork_new_text2
+select id, name 
+from t_semantic_post_index_fork order by semantic_distance(text_content, 'first text') approximate limit 3;
+id	name
+2	updated_fork_text1
+50	initial_text3
+1	initial_text1
+# 验证索引是否正确：检查源表索引
+show indexes from t_semantic_post_index;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_semantic_post_index	1	idx_semantic_src	1	text_content	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+explain select * from t_semantic_post_index order by semantic_distance(text_content, 'first text') approximate limit 3;
+Query Plan
+================================================================================================
+|ID|OPERATOR                     |NAME                                   |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------------------
+|0 |LIMIT                        |                                       |3       |35          |
+|1 |└─PX COORDINATOR MERGE SORT  |                                       |3       |35          |
+|2 |  └─EXCHANGE OUT DISTR       |:EX10000                               |3       |31          |
+|3 |    └─TOP-N SORT             |                                       |3       |23          |
+|4 |      └─PX PARTITION ITERATOR|                                       |5       |22          |
+|5 |        └─VECTOR INDEX SCAN  |t_semantic_post_index(idx_semantic_src)|5       |22          |
+================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_semantic_post_index.id], [t_semantic_post_index.name], [t_semantic_post_index.text_content]), filter(nil), rowset=16
+      limit(3), offset(nil)
+  1 - output([t_semantic_post_index.id], [t_semantic_post_index.name], [t_semantic_post_index.text_content]), filter(nil), rowset=16
+      sort_keys([semantic_distance(t_semantic_post_index.text_content, 'first text'), ASC])
+  2 - output([t_semantic_post_index.id], [t_semantic_post_index.name], [t_semantic_post_index.text_content], [semantic_distance(t_semantic_post_index.text_content,
+       'first text')]), filter(nil), rowset=16
+      dop=1
+  3 - output([t_semantic_post_index.id], [t_semantic_post_index.name], [t_semantic_post_index.text_content], [semantic_distance(t_semantic_post_index.text_content,
+       'first text')]), filter(nil), rowset=16
+      sort_keys([semantic_distance(t_semantic_post_index.text_content, 'first text'), ASC]), topn(3)
+  4 - output([t_semantic_post_index.id], [t_semantic_post_index.text_content], [t_semantic_post_index.name], [semantic_distance(t_semantic_post_index.text_content,
+       'first text')]), filter(nil), rowset=16
+      force partition granule
+  5 - output([t_semantic_post_index.id], [t_semantic_post_index.text_content], [t_semantic_post_index.name], [semantic_distance(t_semantic_post_index.text_content,
+       'first text')]), filter(nil), rowset=16
+      access([t_semantic_post_index.id], [t_semantic_post_index.text_content], [t_semantic_post_index.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_semantic_post_index.__vid_1769763599995662], [t_semantic_post_index.__type_18_1769763600368492]), range(MIN,MIN ; MAX,MAX)always true
+# 验证索引是否正确：检查目标表索引
+show indexes from t_semantic_post_index_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_semantic_post_index_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_semantic_post_index_fork	1	idx_semantic_fork	1	text_content	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+explain select * from t_semantic_post_index_fork order by semantic_distance(text_content, 'first text') approximate limit 3;
+Query Plan
+======================================================================================================
+|ID|OPERATOR                     |NAME                                         |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------------------------
+|0 |LIMIT                        |                                             |3       |35          |
+|1 |└─PX COORDINATOR MERGE SORT  |                                             |3       |35          |
+|2 |  └─EXCHANGE OUT DISTR       |:EX10000                                     |3       |31          |
+|3 |    └─TOP-N SORT             |                                             |3       |23          |
+|4 |      └─PX PARTITION ITERATOR|                                             |5       |22          |
+|5 |        └─VECTOR INDEX SCAN  |t_semantic_post_index_fork(idx_semantic_fork)|5       |22          |
+======================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.name], [t_semantic_post_index_fork.text_content]), filter(nil), rowset=16
+      limit(3), offset(nil)
+  1 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.name], [t_semantic_post_index_fork.text_content]), filter(nil), rowset=16
+      sort_keys([semantic_distance(t_semantic_post_index_fork.text_content, 'first text'), ASC])
+  2 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.name], [t_semantic_post_index_fork.text_content], [semantic_distance(t_semantic_post_index_fork.text_content,
+       'first text')]), filter(nil), rowset=16
+      dop=1
+  3 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.name], [t_semantic_post_index_fork.text_content], [semantic_distance(t_semantic_post_index_fork.text_content,
+       'first text')]), filter(nil), rowset=16
+      sort_keys([semantic_distance(t_semantic_post_index_fork.text_content, 'first text'), ASC]), topn(3)
+  4 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.text_content], [t_semantic_post_index_fork.name], [semantic_distance(t_semantic_post_index_fork.text_content,
+       'first text')]), filter(nil), rowset=16
+      force partition granule
+  5 - output([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.text_content], [t_semantic_post_index_fork.name], [semantic_distance(t_semantic_post_index_fork.text_content,
+       'first text')]), filter(nil), rowset=16
+      access([t_semantic_post_index_fork.id], [t_semantic_post_index_fork.text_content], [t_semantic_post_index_fork.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_semantic_post_index_fork.__vid_1769763601462173], [t_semantic_post_index_fork.__type_18_1769763601759305]), range(MIN,MIN ; MAX,MAX)always 
+      true
+# 清理测试表和AI模型
+drop table t_semantic_post_index;
+drop table t_semantic_post_index_fork;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('ob_embed');
+============================================
+11. 稀疏向量SPIV索引测试
+============================================
+# 11.1 随表创建稀疏向量表
+drop table if exists t_spiv_basic;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_spiv_basic'
+drop table if exists t_spiv_basic_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_spiv_basic_fork'
+# 创建稀疏向量表（使用简单表结构）
+create table t_spiv_basic (
+id int primary key,
+sv sparsevector
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# 插入稀疏向量数据
+insert into t_spiv_basic values (1, '{0:1.0, 10:2.0, 100:3.0}');
+insert into t_spiv_basic values (2, '{1:1.5, 20:2.5, 200:3.5}');
+insert into t_spiv_basic values (3, '{0:0.8, 15:1.8, 150:2.8}');
+insert into t_spiv_basic values (4, '{5:1.2, 50:2.2, 500:3.2}');
+insert into t_spiv_basic values (101, '{2:1.1, 25:2.1, 250:3.1}');
+insert into t_spiv_basic values (50, '{3:0.9, 30:1.9, 300:2.9}');
+# Fork表
+fork table t_spiv_basic to t_spiv_basic_fork;
+# 验证fork后源表和目标表的表结构
+show create table t_spiv_basic;
+Table	Create Table
+t_spiv_basic	CREATE TABLE `t_spiv_basic` (
+  `id` int(11) NOT NULL,
+  `sv` SPARSEVECTOR DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+show create table t_spiv_basic_fork;
+Table	Create Table
+t_spiv_basic_fork	CREATE TABLE `t_spiv_basic_fork` (
+  `id` int(11) NOT NULL,
+  `sv` SPARSEVECTOR DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(id)
+(partition `p0` values less than (100),
+partition `p1` values less than (200))
+# 验证稀疏向量数据
+select count(*) as cnt from t_spiv_basic_fork;
+cnt
+6
+select id, sv from t_spiv_basic_fork order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+4	{5:1.2,50:2.2,500:3.2}
+50	{3:0.9,30:1.9,300:2.9}
+101	{2:1.1,25:2.1,250:3.1}
+# 验证源表数据未受影响
+select count(*) as cnt from t_spiv_basic;
+cnt
+6
+select id, sv from t_spiv_basic order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+4	{5:1.2,50:2.2,500:3.2}
+50	{3:0.9,30:1.9,300:2.9}
+101	{2:1.1,25:2.1,250:3.1}
+# 11.2 稀疏向量基本操作测试
+select * from t_spiv_basic where id = 1;
+id	sv
+1	{0:1,10:2,100:3}
+select * from t_spiv_basic_fork where id = 1;
+id	sv
+1	{0:1,10:2,100:3}
+select id, sv from t_spiv_basic where id between 1 and 3 order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+select id, sv from t_spiv_basic_fork where id between 1 and 3 order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+# 稀疏向量距离计算（如果支持）
+# 11.3 数据隔离测试
+insert into t_spiv_basic values (6, '{0:1.5, 12:2.5, 120:3.5}');
+# 在目标表插入新稀疏向量数据
+insert into t_spiv_basic_fork values (7, '{1:1.3, 18:2.3, 180:3.3}');
+# 验证数据隔离性
+select id, sv from t_spiv_basic order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+4	{5:1.2,50:2.2,500:3.2}
+6	{0:1.5,12:2.5,120:3.5}
+50	{3:0.9,30:1.9,300:2.9}
+101	{2:1.1,25:2.1,250:3.1}
+select id, sv from t_spiv_basic_fork order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+4	{5:1.2,50:2.2,500:3.2}
+7	{1:1.3,18:2.3,180:3.3}
+50	{3:0.9,30:1.9,300:2.9}
+101	{2:1.1,25:2.1,250:3.1}
+# 11.4 稀疏向量功能测试（如果支持索引）
+# 11.5 复杂稀疏向量测试
+drop table if exists t_spiv_complex;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_spiv_complex'
+drop table if exists t_spiv_complex_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_spiv_complex_fork'
+# 创建带额外字段的稀疏向量表
+create table t_spiv_complex (
+id int primary key,
+name varchar(50),
+features sparsevector,
+created_time timestamp default current_timestamp
+);
+# 插入数据并测试Fork
+insert into t_spiv_complex (id, name, features) values 
+(1, 'Document1', '{0:0.8, 5:0.6, 10:0.9, 50:0.7}'),
+(2, 'Document2', '{1:0.7, 6:0.8, 11:0.5, 51:0.9}'),
+(3, 'Document3', '{2:0.9, 7:0.4, 12:0.8, 52:0.6}'),
+(4, 'Document4', '{3:0.6, 8:0.9, 13:0.7, 53:0.8}'),
+(101, 'Document5', '{4:0.8, 9:0.7, 14:0.9, 54:0.5}'),
+(50, 'Document6', '{5:0.7, 10:0.8, 15:0.6, 55:0.9}');
+fork table t_spiv_complex to t_spiv_complex_fork;
+# 验证复杂表Fork
+select count(*) as cnt from t_spiv_complex_fork;
+cnt
+6
+select id, name, features from t_spiv_complex_fork order by id;
+id	name	features
+1	Document1	{0:0.8,5:0.6,10:0.9,50:0.7}
+2	Document2	{1:0.7,6:0.8,11:0.5,51:0.9}
+3	Document3	{2:0.9,7:0.4,12:0.8,52:0.6}
+4	Document4	{3:0.6,8:0.9,13:0.7,53:0.8}
+50	Document6	{5:0.7,10:0.8,15:0.6,55:0.9}
+101	Document5	{4:0.8,9:0.7,14:0.9,54:0.5}
+# 稀疏向量操作测试（只使用支持的基本操作）
+# 1. 基本SELECT查询
+select id, name, features from t_spiv_complex_fork where id = 1;
+id	name	features
+1	Document1	{0:0.8,5:0.6,10:0.9,50:0.7}
+# 2. 范围查询
+select id, name, features from t_spiv_complex_fork where id between 1 and 3 order by id;
+id	name	features
+1	Document1	{0:0.8,5:0.6,10:0.9,50:0.7}
+2	Document2	{1:0.7,6:0.8,11:0.5,51:0.9}
+3	Document3	{2:0.9,7:0.4,12:0.8,52:0.6}
+# 3. 名称模式查询
+select id, name, features from t_spiv_complex_fork where name like 'Document%' order by id;
+id	name	features
+1	Document1	{0:0.8,5:0.6,10:0.9,50:0.7}
+2	Document2	{1:0.7,6:0.8,11:0.5,51:0.9}
+3	Document3	{2:0.9,7:0.4,12:0.8,52:0.6}
+4	Document4	{3:0.6,8:0.9,13:0.7,53:0.8}
+50	Document6	{5:0.7,10:0.8,15:0.6,55:0.9}
+101	Document5	{4:0.8,9:0.7,14:0.9,54:0.5}
+# 4. 排序查询
+select id, name from t_spiv_complex_fork order by name;
+id	name
+1	Document1
+2	Document2
+3	Document3
+4	Document4
+101	Document5
+50	Document6
+# 5. 统计查询
+select count(*) as total_docs, 
+min(id) as min_id, 
+max(id) as max_id,
+count(distinct name) as unique_names
+from t_spiv_complex_fork;
+total_docs	min_id	max_id	unique_names
+6	1	101	6
+# 稀疏向量更新测试
+update t_spiv_complex_fork set name = 'Updated_Doc1' where id = 1;
+# 验证更新结果
+select id, name, features from t_spiv_complex_fork where id = 1;
+id	name	features
+1	Updated_Doc1	{0:0.8,5:0.6,10:0.9,50:0.7}
+# 验证源表数据未受影响
+select id, name, features from t_spiv_complex where id = 1;
+id	name	features
+1	Document1	{0:0.8,5:0.6,10:0.9,50:0.7}
+# 11.7 边界值测试
+insert into t_spiv_basic values (8, '{}');
+# 测试单元素稀疏向量
+insert into t_spiv_basic_fork values (9, '{1000:1.0}');
+# 验证边界值数据
+select id, sv from t_spiv_basic where id in (8);
+id	sv
+8	{}
+select '边界值测试 - Fork表:' as test_type;
+test_type
+边界值测试 - Fork表:
+select id, sv from t_spiv_basic_fork where id in (9);
+id	sv
+9	{1000:1}
+# 11.8 稀疏向量查询功能测试
+# 基本查询功能
+select id, sv from t_spiv_basic_fork where id between 1 and 3 order by id;
+id	sv
+1	{0:1,10:2,100:3}
+2	{1:1.5,20:2.5,200:3.5}
+3	{0:0.8,15:1.8,150:2.8}
+# 按向量特性查询（如果支持）
+# 11.9 性能对比测试（数据量较大时）
+insert into t_spiv_basic_fork values 
+(10, '{6:1.1, 60:2.1, 600:3.1}'),
+(11, '{7:1.2, 70:2.2, 700:3.2}'),
+(12, '{8:1.3, 80:2.3, 800:3.3}'),
+(13, '{9:1.4, 90:2.4, 900:3.4}');
+# 验证批量插入后数据完整性
+select count(*) as total_count from t_spiv_basic_fork;
+total_count
+12
+select id, sv from t_spiv_basic_fork where id >= 10 order by id;
+id	sv
+10	{6:1.1,60:2.1,600:3.1}
+11	{7:1.2,70:2.2,700:3.2}
+12	{8:1.3,80:2.3,800:3.3}
+13	{9:1.4,90:2.4,900:3.4}
+50	{3:0.9,30:1.9,300:2.9}
+101	{2:1.1,25:2.1,250:3.1}
+# 11.10 清理测试表
+drop table if exists t_spiv_basic;
+drop table if exists t_spiv_basic_fork;
+drop table if exists t_spiv_complex;
+drop table if exists t_spiv_complex_fork;
+============================================
+13. 混合索引隔离测试 - Fork后源表和目标表索引独立
+============================================
+# 验证fork后，源表和目标表的索引修改互不影响
+drop table if exists t_isolation_test;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_isolation_test'
+drop table if exists t_isolation_test_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_index_types.t_isolation_test_fork'
+create table t_isolation_test (
+id int primary key,
+name varchar(50) not null,
+age int not null,
+vec vector(3) not null,
+index idx_name(name) ,
+index idx_age(age) ,
+vector index idx_vec(vec) with (distance=l2, type=hnsw, lib=vsag, m=16, ef_construction=200)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+insert into t_isolation_test values (1, 'Alice', 25, '[0.1,0.1,0.1]');
+insert into t_isolation_test values (101, 'Bob', 30, '[0.2,0.2,0.2]');
+# Fork表
+fork table t_isolation_test to t_isolation_test_fork;
+# 在源表上插入新数据并验证索引
+insert into t_isolation_test values (50, 'Charlie', 35, '[0.3,0.3,0.3]');
+select * from t_isolation_test where name = 'Charlie';
+id	name	age	vec
+50	Charlie	35	[0.3,0.3,0.3]
+select * from t_isolation_test where age = 35;
+id	name	age	vec
+50	Charlie	35	[0.3,0.3,0.3]
+explain select * from t_isolation_test where name = 'Charlie';
+Query Plan
+===============================================================================
+|ID|OPERATOR                 |NAME                      |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                          |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                  |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                          |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test(idx_name)|1       |12          |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      access([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test.name], [t_isolation_test.id]), range(Charlie,MIN ; Charlie,MAX), 
+      range_cond([t_isolation_test.name = 'Charlie'])
+explain select * from t_isolation_test where age = 35;
+Query Plan
+==============================================================================
+|ID|OPERATOR                 |NAME                     |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                         |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                 |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                         |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test(idx_age)|1       |12          |
+==============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), filter(nil), rowset=16
+      access([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test.age], [t_isolation_test.id]), range(35,MIN ; 35,MAX), 
+      range_cond([t_isolation_test.age = 35])
+select * from t_isolation_test order by l2_distance(vec, [0.3,0.3,0.3]) APPROXIMATE limit 3;
+id	name	age	vec
+50	Charlie	35	[0.3,0.3,0.3]
+101	Bob	30	[0.2,0.2,0.2]
+1	Alice	25	[0.1,0.1,0.1]
+# 验证目标表索引不受源表影响
+select * from t_isolation_test_fork where name = 'Charlie';
+id	name	age	vec
+select * from t_isolation_test_fork where age = 35;
+id	name	age	vec
+explain select * from t_isolation_test_fork where name = 'Charlie';
+Query Plan
+====================================================================================
+|ID|OPERATOR                 |NAME                           |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                               |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                       |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                               |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test_fork(idx_name)|1       |12          |
+====================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      access([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test_fork.name], [t_isolation_test_fork.id]), range(Charlie,MIN ; Charlie,MAX), 
+      range_cond([t_isolation_test_fork.name = 'Charlie'])
+explain select * from t_isolation_test_fork where age = 35;
+Query Plan
+===================================================================================
+|ID|OPERATOR                 |NAME                          |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                              |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                      |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                              |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test_fork(idx_age)|1       |12          |
+===================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), filter(nil), rowset=16
+      access([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test_fork.age], [t_isolation_test_fork.id]), range(35,MIN ; 35,MAX), 
+      range_cond([t_isolation_test_fork.age = 35])
+# 在目标表上插入新数据并验证索引
+insert into t_isolation_test_fork values (99, 'Fork_User', 40, '[0.4,0.4,0.4]');
+select * from t_isolation_test_fork where name = 'Fork_User';
+id	name	age	vec
+99	Fork_User	40	[0.4,0.4,0.4]
+select * from t_isolation_test_fork where age = 40;
+id	name	age	vec
+99	Fork_User	40	[0.4,0.4,0.4]
+explain select * from t_isolation_test_fork where name = 'Fork_User';
+Query Plan
+====================================================================================
+|ID|OPERATOR                 |NAME                           |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                               |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                       |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                               |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test_fork(idx_name)|1       |12          |
+====================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      access([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test_fork.name], [t_isolation_test_fork.id]), range(Fork_User,MIN ; Fork_User,MAX), 
+      range_cond([t_isolation_test_fork.name = 'Fork_User'])
+explain select * from t_isolation_test_fork where age = 40;
+Query Plan
+===================================================================================
+|ID|OPERATOR                 |NAME                          |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                              |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                      |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                              |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test_fork(idx_age)|1       |12          |
+===================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), filter(nil), rowset=16
+      access([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.age], [t_isolation_test_fork.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test_fork.age], [t_isolation_test_fork.id]), range(40,MIN ; 40,MAX), 
+      range_cond([t_isolation_test_fork.age = 40])
+select * from t_isolation_test_fork order by l2_distance(vec, [0.4,0.4,0.4]) APPROXIMATE limit 3;
+id	name	age	vec
+99	Fork_User	40	[0.4,0.4,0.4]
+101	Bob	30	[0.2,0.2,0.2]
+1	Alice	25	[0.1,0.1,0.1]
+# 验证源表索引不受目标表影响
+select * from t_isolation_test where name = 'Fork_User';
+id	name	age	vec
+select * from t_isolation_test where age = 40;
+id	name	age	vec
+explain select * from t_isolation_test where name = 'Fork_User';
+Query Plan
+===============================================================================
+|ID|OPERATOR                 |NAME                      |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                          |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                  |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                          |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test(idx_name)|1       |12          |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      access([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.name], [t_isolation_test.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test.name], [t_isolation_test.id]), range(Fork_User,MIN ; Fork_User,MAX), 
+      range_cond([t_isolation_test.name = 'Fork_User'])
+explain select * from t_isolation_test where age = 40;
+Query Plan
+==============================================================================
+|ID|OPERATOR                 |NAME                     |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                         |1       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                 |1       |14          |
+|2 |  └─PX PARTITION ITERATOR|                         |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test(idx_age)|1       |12          |
+==============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), filter(nil), rowset=16
+      access([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.age], [t_isolation_test.name]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test.age], [t_isolation_test.id]), range(40,MIN ; 40,MAX), 
+      range_cond([t_isolation_test.age = 40])
+# 在源表上后建新索引
+ALTER TABLE t_isolation_test ADD COLUMN email VARCHAR(100);
+create index idx_email_src on t_isolation_test(email) ;
+# 验证源表有新索引
+show indexes from t_isolation_test;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_isolation_test	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_name	1	name	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_age	1	age	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_vec	1	vec	A	NULL	NULL	NULL		VECTOR	available		YES	NULL
+t_isolation_test	1	idx_email_src	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+insert into t_isolation_test values (2, 'Test2', 20, '[0.5,0.5,0.5]', 'test2@example.com');
+select * from t_isolation_test where email = 'test2@example.com';
+id	name	age	vec	email
+2	Test2	20	[0.5,0.5,0.5]	test2@example.com
+explain select * from t_isolation_test where email = 'test2@example.com';
+Query Plan
+====================================================================================
+|ID|OPERATOR                 |NAME                           |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                               |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                       |1       |15          |
+|2 |  └─PX PARTITION ITERATOR|                               |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test(idx_email_src)|1       |12          |
+====================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec, t_isolation_test.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test.id, t_isolation_test.name, t_isolation_test.age, t_isolation_test.vec, t_isolation_test.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.email], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.email], [t_isolation_test.name], [t_isolation_test.age]), filter(nil), rowset=16
+      access([t_isolation_test.id], [t_isolation_test.vec], [t_isolation_test.email], [t_isolation_test.name], [t_isolation_test.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test.email], [t_isolation_test.id]), range(test2@example.com,MIN ; test2@example.com,MAX), 
+      range_cond([t_isolation_test.email = 'test2@example.com'])
+# 验证目标表没有新索引（索引独立）
+show indexes from t_isolation_test_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_isolation_test_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_name	1	name	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_age	1	age	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_vec	1	vec	A	NULL	NULL	NULL		VECTOR	available		YES	NULL
+# 在目标表上后建新索引
+ALTER TABLE t_isolation_test_fork ADD COLUMN email VARCHAR(100);
+create index idx_email_fork on t_isolation_test_fork(email) ;
+# 验证目标表有新索引
+show indexes from t_isolation_test_fork;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_isolation_test_fork	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_name	1	name	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_age	1	age	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test_fork	1	idx_vec	1	vec	A	NULL	NULL	NULL		VECTOR	available		YES	NULL
+t_isolation_test_fork	1	idx_email_fork	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+insert into t_isolation_test_fork values (3, 'Test3', 25, '[0.6,0.6,0.6]', 'test3@example.com');
+select * from t_isolation_test_fork where email = 'test3@example.com';
+id	name	age	vec	email
+3	Test3	25	[0.6,0.6,0.6]	test3@example.com
+explain select * from t_isolation_test_fork where email = 'test3@example.com';
+Query Plan
+==========================================================================================
+|ID|OPERATOR                 |NAME                                 |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR           |                                     |1       |16          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000                             |1       |15          |
+|2 |  └─PX PARTITION ITERATOR|                                     |1       |12          |
+|3 |    └─TABLE RANGE SCAN   |t_isolation_test_fork(idx_email_fork)|1       |12          |
+==========================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec, t_isolation_test_fork.email)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_isolation_test_fork.id, t_isolation_test_fork.name, t_isolation_test_fork.age, t_isolation_test_fork.vec, t_isolation_test_fork.email)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.email], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.email], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), filter(nil), rowset=16
+      access([t_isolation_test_fork.id], [t_isolation_test_fork.vec], [t_isolation_test_fork.email], [t_isolation_test_fork.name], [t_isolation_test_fork.age]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t_isolation_test_fork.email], [t_isolation_test_fork.id]), range(test3@example.com,MIN ; test3@example.com,MAX), 
+      range_cond([t_isolation_test_fork.email = 'test3@example.com'])
+# 验证源表索引不受影响
+show indexes from t_isolation_test;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t_isolation_test	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_name	1	name	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_age	1	age	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t_isolation_test	1	idx_vec	1	vec	A	NULL	NULL	NULL		VECTOR	available		YES	NULL
+t_isolation_test	1	idx_email_src	1	email	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+drop table t_isolation_test;
+drop table t_isolation_test_fork;
+============================================
+14. 清理
+============================================
+drop database if exists db_fork_index_types;
+# 恢复向量索引内存限制
+alter system set ob_vector_memory_limit_percentage = 0;
