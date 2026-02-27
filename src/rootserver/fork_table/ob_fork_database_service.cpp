@@ -107,7 +107,7 @@ int ObDDLService::fork_database(
       }
     }
 
-    // Check unsupported database objects: Routine, Package, Trigger, Sequence, LOB aux tables.
+    // Check unsupported database objects: Routine, Package, Trigger, Sequence and Outline.
     if (OB_SUCC(ret)) {
       const uint64_t database_id = src_db_schema->get_database_id();
 
@@ -167,6 +167,21 @@ int ObDDLService::fork_database(
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database containing sequences");
           LOG_WARN("fork database with sequences is not supported", K(ret),
                    K(tenant_id), K(database_id), "sequence_count", sequences.count());
+        }
+      }
+
+      // Check if database has Outline
+      ObArray<const ObSimpleOutlineSchema *> outlines;
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(schema_guard.get_simple_outline_schemas_in_database(
+                tenant_id, database_id, outlines))) {
+          LOG_WARN("failed to get outline schemas in database", KR(ret),
+                   K(tenant_id), K(database_id));
+        } else if (outlines.count() > 0) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "fork database containing outlines");
+          LOG_WARN("fork database with outlines is not supported", K(ret),
+                   K(tenant_id), K(database_id), "outline_count", outlines.count());
         }
       }
     }
