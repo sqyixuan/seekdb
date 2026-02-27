@@ -147,6 +147,7 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
     ObArenaAllocator allocator(lib::ObLabel("ForkTable"));
     bool is_db_in_recyclebin = false;
     ObSArray<ObTableSchema> table_schemas;
+    ObSEArray<const ObTableSchema*, 1> src_table_schemas;
 
     if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(
             tenant_id, schema_guard))) {
@@ -240,8 +241,9 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
                               refreshed_schema_version))) {
         LOG_WARN("start transaction failed", KR(ret), K(tenant_id),
                  K(refreshed_schema_version));
+      } else if (FALSE_IT(src_table_schemas.push_back(src_table_schema))) {
       } else if (OB_FAIL(ObForkTableUtil::obtain_snapshot(
-                     trans, schema_guard, *src_table_schema,
+                     trans, schema_guard, tenant_id, src_table_schemas,
                      fork_snapshot_version))) {
         LOG_WARN("fail to obtain snapshot", K(ret), K(fork_snapshot_version));
       } else if (fork_snapshot_version <= 0) {

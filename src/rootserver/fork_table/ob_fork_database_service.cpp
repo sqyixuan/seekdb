@@ -163,11 +163,28 @@ int ObDDLService::fork_database(
       }
     }
 
-    // Fork each user table.
+    // Obtain snapshot for all user tables at once to ensure consistency.
     ObArray<ObDDLTaskRecord> task_records;
     ObSchemaService *schema_service =
         OB_NOT_NULL(schema_service_) ? schema_service_->get_schema_service()
                                      : nullptr;
+    int64_t fork_snapshot_version = 0;
+    if (OB_SUCC(ret) && user_table_schemas.count() > 0) {
+      if (OB_FAIL(ObForkTableUtil::obtain_snapshot(trans, schema_guard,
+                                                   tenant_id, user_table_schemas,
+                                                   fork_snapshot_version))) {
+        LOG_WARN("fail to obtain snapshot for all tables", K(ret),
+                 "table_count", user_table_schemas.count());
+      } else if (fork_snapshot_version <= 0) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid snapshot version", K(ret), K(fork_snapshot_version));
+      } else {
+        LOG_INFO("fork database snapshot acquired for all tables", K(tenant_id),
+                 K(fork_snapshot_version), "table_count", user_table_schemas.count());
+      }
+    }
+
+    // Fork each user table using the unified snapshot.
     for (int64_t i = 0; OB_SUCC(ret) && i < user_table_schemas.count(); ++i) {
       const ObTableSchema *src_table_schema = user_table_schemas.at(i);
       if (OB_ISNULL(src_table_schema) || OB_ISNULL(schema_service)) {
@@ -175,29 +192,10 @@ int ObDDLService::fork_database(
         LOG_WARN("table schema or schema service is null", KR(ret),
                  KP(src_table_schema), KP(schema_service));
       } else {
-        int64_t fork_snapshot_version = 0;
         ObSArray<ObTableSchema> table_schemas;
         ObArenaAllocator inner_allocator(ObModIds::OB_RS_PARTITION_TABLE_TEMP);
         ObArray<ObMockFKParentTableSchema> mock_fk_parent_table_schema_array;
         const ObTableSchema *dst_table_schema = nullptr;
-
-        // Obtain snapshot for this table.
-        if (OB_FAIL(ObForkTableUtil::obtain_snapshot(trans, schema_guard,
-                                                     *src_table_schema,
-                                                     fork_snapshot_version))) {
-          LOG_WARN("fail to obtain snapshot", K(ret), K(i), "table_name",
-                   src_table_schema->get_table_name());
-        } else if (fork_snapshot_version <= 0) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid snapshot version", K(ret),
-                   K(fork_snapshot_version));
-        } else {
-          LOG_INFO("fork table snapshot acquired", K(tenant_id),
-                   K(fork_snapshot_version), "src_table_id",
-                   src_table_schema->get_table_id(), "src_table_name",
-                   src_table_schema->get_table_name(), "src_schema_version",
-                   src_table_schema->get_schema_version());
-        }
 
         // Rebuild table schema with new id.
         if (OB_SUCC(ret)) {
