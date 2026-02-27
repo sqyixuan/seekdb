@@ -852,6 +852,9 @@ int ObBlockStatIterator::advance_sstable_iters(const ObDatumRowkey &advance_key,
   if (OB_SUCC(ret) && iter_advanced && use_merged_range()) {
     iter_idxs_.reuse();
     merge_heap_->reuse();
+    if (OB_FAIL(merge_heap_->open(sstable_iters_.count()))) {
+      LOG_WARN("failed to open merge heap", K(ret));
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < sstable_iters_.count(); ++i) {
       if (!sstable_iters_.at(i).is_iter_end() && OB_FAIL(iter_idxs_.push_back(i))) {
         LOG_WARN("failed to push iter idx to array", K(ret), K(iter_idxs_));
