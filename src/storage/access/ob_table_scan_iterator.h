@@ -106,7 +106,7 @@ private:
   int init_and_open_row_sample_iter_();
   int init_and_open_memtable_row_sample_iter_(const ObIArray<blocksstable::ObDatumRange> &scan_ranges);
   int sort_sample_ranges();
-
+  int check_advance_scan_supported();
 private:
   bool is_inited_;
   ObQRIterType current_iter_type_;

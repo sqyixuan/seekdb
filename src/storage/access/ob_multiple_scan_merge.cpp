@@ -420,10 +420,6 @@ int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
 {
   int ret = OB_SUCCESS;
   ObStoreRowIterator *iter = nullptr;
-  if (OB_UNLIKELY(access_ctx_->query_flag_.scan_order_ != ObQueryFlag::Forward)) {
-    ret = OB_NOT_SUPPORTED;
-    STORAGE_LOG(WARN, "query flag is not forward scan", K(ret), K(access_ctx_->query_flag_));
-  }
   for (int64_t i = 0; OB_SUCC(ret) && i < iters_.count(); ++i) {
     if (OB_ISNULL(iter = iters_.at(i))) {
       ret = OB_ERR_UNEXPECTED;
@@ -473,7 +469,7 @@ int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
       } else if (OB_FAIL(rows_merger_->push(item))) {
         STORAGE_LOG(WARN, "loser tree push error", K(ret));
       } else {
-        STORAGE_LOG(DEBUG, "[CONTRIBUTOR] debug", K(consumer_cnt_), K(top_item->iter_idx_));
+        STORAGE_LOG(DEBUG, "yuanzhe debug", K(consumer_cnt_), K(top_item->iter_idx_));
       }
     }
     if (FAILEDx(rows_merger_->rebuild())) {
