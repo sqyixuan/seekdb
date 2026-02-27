@@ -40,7 +40,8 @@ static int check_table_index_features(const ObTableSchema &table_schema,
                                       bool &has_semantic_index,
                                       bool &has_ivf_index,
                                       bool &has_spatial_index,
-                                      bool &has_global_index) {
+                                      bool &has_global_index) 
+{
   int ret = OB_SUCCESS;
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
   has_semantic_index = false;
@@ -86,7 +87,8 @@ static int check_table_index_features(const ObTableSchema &table_schema,
 
 int check_fork_table_supported(const ObTableSchema &src_table_schema,
                                ObSchemaGetterGuard &schema_guard,
-                               const ObForkTableArg *fork_table_arg) {
+                               const ObForkTableArg *fork_table_arg) 
+{
   int ret = OB_SUCCESS;
   bool has_semantic_index = false;
   bool has_ivf_index = false;
@@ -157,7 +159,8 @@ int check_fork_table_supported(const ObTableSchema &src_table_schema,
 }
 
 int ObForkTableHelper::init(
-    const common::ObIArray<share::schema::ObTableSchema> &table_schemas) {
+    const common::ObIArray<share::schema::ObTableSchema> &table_schemas) 
+{
   int ret = OB_SUCCESS;
 
   if (inited_) {
@@ -229,7 +232,8 @@ int ObForkTableHelper::init(
   return ret;
 }
 
-int ObForkTableHelper::execute() {
+int ObForkTableHelper::execute() 
+{
   int ret = OB_SUCCESS;
 
   if (!inited_) {
@@ -257,7 +261,8 @@ int ObForkTableHelper::execute() {
   return ret;
 }
 
-int ObForkTableHelper::copy_tablet_autoinc_seq_info_() {
+int ObForkTableHelper::copy_tablet_autoinc_seq_info_() 
+{
   int ret = OB_SUCCESS;
   ObSEArray<share::ObMigrateTabletAutoincSeqParam, 4> autoinc_params;
 
@@ -317,7 +322,8 @@ int ObForkTableHelper::copy_tablet_autoinc_seq_info_() {
   return ret;
 }
 
-int ObForkTableHelper::copy_tablet_truncate_info_() {
+int ObForkTableHelper::copy_tablet_truncate_info_() 
+{
   int ret = OB_SUCCESS;
 
   if (OB_UNLIKELY(!inited_)) {
@@ -405,7 +411,8 @@ int ObForkTableHelper::copy_tablet_truncate_info_() {
   return ret;
 }
 
-int ObForkTableHelper::copy_table_autoinc_seq_info_() {
+int ObForkTableHelper::copy_table_autoinc_seq_info_() 
+{
   int ret = OB_SUCCESS;
   ObDDLOperator ddl_operator(schema_service_, sql_proxy_);
   const uint64_t src_autoinc_column_id =
@@ -474,7 +481,8 @@ int ObForkTableHelper::copy_table_autoinc_seq_info_() {
 }
 
 // TODO(fankun.fan): copy table statistics
-int ObForkTableHelper::copy_table_statistics_() {
+int ObForkTableHelper::copy_table_statistics_() 
+{
   int ret = OB_SUCCESS;
 
   if (OB_UNLIKELY(!inited_)) {
@@ -542,7 +550,8 @@ int ObForkTableHelper::copy_stat_info_(const char *table_name,
                                        const uint64_t src_table_id,
                                        const int64_t src_part_id,
                                        const uint64_t dst_table_id,
-                                       const int64_t dst_part_id) {
+                                       const int64_t dst_part_id) 
+{
   int ret = OB_SUCCESS;
   int64_t affected_rows = 0;
   const char *table_schema = get_table_schema_(table_name);
@@ -572,7 +581,8 @@ int ObForkTableHelper::copy_stat_info_(const char *table_name,
 }
 
 // TODO(fankun.fan): copy table statistics
-const char *ObForkTableHelper::get_table_schema_(const char *table_name) {
+const char *ObForkTableHelper::get_table_schema_(const char *table_name) 
+{
   const char *ret_schema = nullptr;
   if (OB_NOT_NULL(table_name) &&
       0 == STRCMP(table_name, OB_ALL_TABLE_STAT_TNAME)) {
@@ -609,7 +619,8 @@ const char *ObForkTableHelper::get_table_schema_(const char *table_name) {
 
 int ObForkTableHelper::get_tablet_handle_(
     const common::ObTabletID &tablet_id,
-    storage::ObTabletHandle &tablet_handle) const {
+    storage::ObTabletHandle &tablet_handle) const 
+{
   int ret = OB_SUCCESS;
   ObLSService *ls_service = nullptr;
   ObLS *ls = nullptr;
