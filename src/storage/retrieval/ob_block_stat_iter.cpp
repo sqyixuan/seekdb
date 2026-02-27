@@ -738,7 +738,7 @@ int ObBlockStatIterator::next_merged_range(bool &beyond_range)
         if (OB_UNLIKELY(nullptr == idx_row || idx_row->endkey_ != item->endkey_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected null idx row or endkey", K(ret), K(item->iter_idx_), KPC(idx_row),
-              KP(curr_endkey_), KP(idx_row->endkey_));
+              KP(curr_endkey_));
         } else if (OB_FAIL(stat_collector_.collect_agg_row(idx_row->skip_index_row_))) {
           LOG_WARN("failed to collect agg row", K(ret), K(item->iter_idx_), K(iter));
         } else if (OB_FAIL(iter_idxs_.push_back(item->iter_idx_))) {
@@ -821,6 +821,7 @@ int ObBlockStatIterator::collect_memtable_scan_rows(const bool drain_all_iters)
 int ObBlockStatIterator::advance_sstable_iters(const ObDatumRowkey &advance_key, const bool inclusive)
 {
   int ret = OB_SUCCESS;
+  bool iter_advanced = false;
   for (int64_t i = 0; OB_SUCC(ret) && i < sstable_iters_.count(); ++i) {
     SSTableIter &iter = sstable_iters_.at(i);
     const ObSSTableIndexRow *idx_row = iter.get_curr_index_row();
@@ -843,8 +844,22 @@ int ObBlockStatIterator::advance_sstable_iters(const ObDatumRowkey &advance_key,
       // skip
     } else if (OB_FAIL(iter.advance_to(advance_key, inclusive))) {
       LOG_WARN("failed to advance to key", K(ret), K(i), K(iter));
+    } else if (FALSE_IT(iter_advanced = true)) {
     } else if ((0 != i || use_merged_range()) && OB_FAIL(iter.next())) {
       LOG_WARN("failed move forward iter for non-baseline sstable", K(ret), K(i), K(iter));
+    }
+  }
+  if (OB_SUCC(ret) && iter_advanced && use_merged_range()) {
+    iter_idxs_.reuse();
+    merge_heap_->reuse();
+    for (int64_t i = 0; OB_SUCC(ret) && i < sstable_iters_.count(); ++i) {
+      if (!sstable_iters_.at(i).is_iter_end() && OB_FAIL(iter_idxs_.push_back(i))) {
+        LOG_WARN("failed to push iter idx to array", K(ret), K(iter_idxs_));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(fill_merge_heap())) {
+      LOG_WARN("failed to fill merge heap", K(ret));
     }
   }
   return ret;
