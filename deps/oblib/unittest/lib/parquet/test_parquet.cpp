@@ -214,6 +214,7 @@ public:
   ///   may use this for tracking the amount of allocated bytes as well as for
   ///   faster deallocation if supported by its backend.
   virtual void Free(uint8_t* buffer, int64_t size, int64_t alignment) override
+  {
     UNUSED(alignment);
     std::cout << "Freed : " << size << std::endl;
     alloc_.free(buffer);
