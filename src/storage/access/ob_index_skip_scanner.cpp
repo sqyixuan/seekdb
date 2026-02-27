@@ -122,7 +122,7 @@ int ObAdvanceSkipScanner::advance_scan(const ObDatumRange &scan_range)
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), KP(this), K(lbt()));
-  } else if (OB_FAIL(scan_range.end_key_.compare(complete_range_.end_key_, datum_utils_, cmp_ret))) {
+  } else if (OB_FAIL(scan_range.end_key_.compare(complete_range_.end_key_, datum_utils_, cmp_ret, false/*compare_datum_cnt*/))) {
     LOG_WARN("failed to compare end_key_", KR(ret), K(scan_range), K_(complete_range));
   } else if (cmp_ret != 0) {
     ret = OB_ERR_UNEXPECTED;
