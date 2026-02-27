@@ -419,6 +419,7 @@ void ObMultipleScanMerge::reclaim()
 int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
 {
   int ret = OB_SUCCESS;
+  is_unprojected_row_valid_ = false;
   ObStoreRowIterator *iter = nullptr;
   for (int64_t i = 0; OB_SUCC(ret) && i < iters_.count(); ++i) {
     if (OB_ISNULL(iter = iters_.at(i))) {
