@@ -233,8 +233,10 @@ int ObDDLService::fork_database(
         OB_NOT_NULL(schema_service_) ? schema_service_->get_schema_service()
                                      : nullptr;
     int64_t fork_snapshot_version = 0;
-    if (OB_SUCC(ret) && user_table_schemas.count() > 0) {
-      if (OB_FAIL(ObForkTableUtil::obtain_snapshot(trans, schema_guard,
+    if (OB_SUCC(ret)) {
+      if (user_table_schemas.count() == 0) {
+        LOG_INFO("no user tables to fork", K(tenant_id), "src_database_name", fork_database_arg.src_database_name_);
+      } else if (OB_FAIL(ObForkTableUtil::obtain_snapshot(trans, schema_guard,
                                                    tenant_id, user_table_schemas,
                                                    fork_snapshot_version))) {
         LOG_WARN("fail to obtain snapshot for all tables", K(ret),
