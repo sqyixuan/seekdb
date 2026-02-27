@@ -1,189 +1,76 @@
-drop database if exists db_ddl_src;
-drop database if exists db_ddl_fork;
+drop database if exists db_dsync_src;
+drop database if exists db_dsync_fork;
+drop database if exists db_dsync_src2;
+drop database if exists db_dsync_fork2;
 SET wait_timeout=30000000;
 SET ob_trx_timeout = 100000000;
 SET ob_query_timeout = 100000000;
+# 启用 debug sync，DDL 超时设短以便验证阻塞后超时
+alter system set debug_sync_timeout = '60s';
+alter system set _ob_ddl_timeout = '3s';
+set ob_global_debug_sync = 'reset';
 ============================================
-1. Fork数据库
+1. Fork Database 进行中 DROP 源表：应被阻塞，_ob_ddl_timeout 后超时
 ============================================
-create database db_ddl_src;
-use db_ddl_src;
+create database db_dsync_src;
+use db_dsync_src;
 create table t1 (
 id int primary key,
-name varchar(50),
-value int
+name varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
 );
-create table t2 (
+insert into t1 values (1, 'A');
+insert into t1 values (101, 'B');
+# 设置 debug sync：fork 卡在 BUILD_DATA 阶段
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for fork_db_drop_table_signal execute 10000';
+# 执行 Fork Database（后台表 fork 任务会在 BUILD_DATA 处卡住）
+fork database db_dsync_src to db_dsync_fork;
+# 等待至少一个 fork table 任务进入 BUILD_DATA
+# Fork 进行中对源表 DROP TABLE：预期被阻塞后超时
+drop table t1;
+ERROR HY000: Timeout
+# 放开 debug sync，让 Fork Database 完成
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal fork_db_drop_table_signal';
+# 验证：源库表可正常使用（之前 drop 已超时未生效）
+use db_dsync_src;
+select count(*) as cnt from t1;
+cnt
+2
+============================================
+2. Fork Database 进行中 DROP 源库：应被阻塞，_ob_ddl_timeout 后超时
+============================================
+create database db_dsync_src2;
+use db_dsync_src2;
+create table t1 (
 id int primary key,
-data varchar(100)
+name varchar(50)
 );
-insert into t1 values (1, 'Test1', 100), (2, 'Test2', 200);
-insert into t2 values (1, 'Data1'), (2, 'Data2');
-# Fork数据库
-fork database db_ddl_src to db_ddl_fork;
+insert into t1 values (1, 'X');
+# 设置 debug sync：fork 卡在 BUILD_DATA 阶段
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for fork_db_drop_db_signal execute 10000';
+fork database db_dsync_src2 to db_dsync_fork2;
+# 等待至少一个 fork table 任务进入 BUILD_DATA
+use oceanbase;
+# Fork 进行中对源库 DROP DATABASE：预期被阻塞后超时
+drop database db_dsync_src2;
+ERROR HY000: Timeout
+# 放开 debug sync，让 Fork Database 完成
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal fork_db_drop_db_signal';
+# 验证：源库仍存在（之前 drop database 已超时未生效）
+show databases like 'db_dsync_src2';
+Database (db_dsync_src2)
+db_dsync_src2
 ============================================
-2. 在源库中执行DDL - ADD COLUMN
+3. 清理
 ============================================
-use db_ddl_src;
-alter table t1 add column phone varchar(20);
-desc t1;
-Field	Type	Null	Key	Default	Extra
-id	int(11)	NO	PRI	NULL	
-name	varchar(50)	YES		NULL	
-value	int(11)	YES		NULL	
-phone	varchar(20)	YES		NULL	
-# 验证Fork库表结构未受影响
-use db_ddl_fork;
-desc t1;
-Field	Type	Null	Key	Default	Extra
-id	int(11)	NO	PRI	NULL	
-name	varchar(50)	YES		NULL	
-value	int(11)	YES		NULL	
-============================================
-3. 在Fork库中执行DDL - ADD COLUMN（不同列）
-============================================
-use db_ddl_fork;
-alter table t1 add column address varchar(200);
-desc t1;
-Field	Type	Null	Key	Default	Extra
-id	int(11)	NO	PRI	NULL	
-name	varchar(50)	YES		NULL	
-value	int(11)	YES		NULL	
-address	varchar(200)	YES		NULL	
-# 验证源库表结构未受影响
-use db_ddl_src;
-desc t1;
-Field	Type	Null	Key	Default	Extra
-id	int(11)	NO	PRI	NULL	
-name	varchar(50)	YES		NULL	
-value	int(11)	YES		NULL	
-phone	varchar(20)	YES		NULL	
-============================================
-4. 在源库中执行DDL - CREATE INDEX
-============================================
-use db_ddl_src;
-create index idx_value on t1(value);
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `phone` varchar(20) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_value` (`value`) BLOCK_SIZE 16384 LOCAL
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-# 验证Fork库无此索引
-use db_ddl_fork;
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `address` varchar(200) DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-============================================
-5. 在Fork库中执行DDL - CREATE INDEX（不同索引）
-============================================
-use db_ddl_fork;
-create index idx_name on t1(name);
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `address` varchar(200) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_name` (`name`) BLOCK_SIZE 16384 LOCAL
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-# 验证源库无此索引
-use db_ddl_src;
-show create table t1;
-Table	Create Table
-t1	CREATE TABLE `t1` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `phone` varchar(20) DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_value` (`value`) BLOCK_SIZE 16384 LOCAL
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
-============================================
-6. 在源库中执行DDL - CREATE TABLE
-============================================
-use db_ddl_src;
-create table t3 (id int primary key, info varchar(100));
-insert into t3 values (1, 'OnlyInSrc');
-show tables;
-Tables_in_db_ddl_src
-t1
-t2
-t3
-# 验证Fork库无此表
-use db_ddl_fork;
-show tables;
-Tables_in_db_ddl_fork
-t1
-t2
-============================================
-7. 在Fork库中执行DDL - CREATE TABLE
-============================================
-use db_ddl_fork;
-create table t4 (id int primary key, info varchar(100));
-insert into t4 values (1, 'OnlyInFork');
-show tables;
-Tables_in_db_ddl_fork
-t1
-t2
-t4
-# 验证源库无此表
-use db_ddl_src;
-show tables;
-Tables_in_db_ddl_src
-t1
-t2
-t3
-============================================
-8. 在源库中执行DDL - DROP TABLE
-============================================
-use db_ddl_src;
-drop table t2;
-show tables;
-Tables_in_db_ddl_src
-t1
-t3
-# 验证Fork库仍有此表
-use db_ddl_fork;
-show tables;
-Tables_in_db_ddl_fork
-t1
-t2
-t4
-select * from t2;
-id	data
-1	Data1
-2	Data2
-============================================
-9. 删除Fork库不影响源库
-============================================
-drop database db_ddl_fork;
-# 验证源库仍可用
-use db_ddl_src;
-select * from t1;
-id	name	value	phone
-1	Test1	100	NULL
-2	Test2	200	NULL
-show tables;
-Tables_in_db_ddl_src
-t1
-t3
-============================================
-10. 清理
-============================================
-drop database if exists db_ddl_src;
-drop database if exists db_ddl_fork;
-Warnings:
-Note	1008	Can't drop database 'db_ddl_fork'; database doesn't exist
+alter system set _ob_ddl_timeout = '1000s';
+set ob_global_debug_sync = 'reset';
+use oceanbase;
+drop database if exists db_dsync_src;
+drop database if exists db_dsync_fork;
+drop database if exists db_dsync_src2;
+drop database if exists db_dsync_fork2;

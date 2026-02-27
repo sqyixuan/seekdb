@@ -1,12 +1,14 @@
 ##owner: [CONTRIBUTOR]
-##owner group: [INTERNAL_PROJECT]
-##description: Fork Database后DDL独立性测试
-##tags: fork_database ddl independence
+##owner group: 底层引擎部-轻量版
+##description: Fork Database 过程中 DDL 行为测试（debug sync 卡在数据构建阶段时 drop 原表/原库应被阻塞并超时）
+##tags: fork_database ddl debug_sync timeout
 ##author: [CONTRIBUTOR]
 
 --disable_warnings
-drop database if exists db_ddl_src;
-drop database if exists db_ddl_fork;
+drop database if exists db_dsync_src;
+drop database if exists db_dsync_fork;
+drop database if exists db_dsync_src2;
+drop database if exists db_dsync_fork2;
 --enable_warnings
 
 connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
@@ -16,136 +18,108 @@ SET wait_timeout=30000000;
 SET ob_trx_timeout = 100000000;
 SET ob_query_timeout = 100000000;
 
+--echo # 启用 debug sync，DDL 超时设短以便验证阻塞后超时
+connection obsys;
+alter system set debug_sync_timeout = '60s';
+alter system set _ob_ddl_timeout = '3s';
+sleep 2;
+set ob_global_debug_sync = 'reset';
+connection default;
+
 --echo ============================================
---echo 1. Fork数据库
+--echo 1. Fork Database 进行中 DROP 源表：应被阻塞，_ob_ddl_timeout 后超时
 --echo ============================================
 
-create database db_ddl_src;
-use db_ddl_src;
-
+create database db_dsync_src;
+use db_dsync_src;
 create table t1 (
     id int primary key,
-    name varchar(50),
-    value int
+    name varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
 );
+insert into t1 values (1, 'A');
+insert into t1 values (101, 'B');
 
-create table t2 (
-    id int primary key,
-    data varchar(100)
-);
+--echo # 设置 debug sync：fork 卡在 BUILD_DATA 阶段
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for fork_db_drop_table_signal execute 10000';
+sleep 1;
+connection default;
 
-insert into t1 values (1, 'Test1', 100), (2, 'Test2', 200);
-insert into t2 values (1, 'Data1'), (2, 'Data2');
+--echo # 执行 Fork Database（后台表 fork 任务会在 BUILD_DATA 处卡住）
+fork database db_dsync_src to db_dsync_fork;
 
---echo # Fork数据库
-fork database db_ddl_src to db_ddl_fork;
+--echo # 等待至少一个 fork table 任务进入 BUILD_DATA
+sleep 3;
+
+--echo # Fork 进行中对源表 DROP TABLE：预期被阻塞后超时
+--error 4012
+drop table t1;
+
+--echo # 放开 debug sync，让 Fork Database 完成
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal fork_db_drop_table_signal';
+connection default;
+
 --source mysql_test/test_suite/fork_database/include/wait_fork_database.inc
 
---echo ============================================
---echo 2. 在源库中执行DDL - ADD COLUMN
---echo ============================================
-
-use db_ddl_src;
-alter table t1 add column phone varchar(20);
-desc t1;
-
---echo # 验证Fork库表结构未受影响
-use db_ddl_fork;
-desc t1;
+--echo # 验证：源库表可正常使用（之前 drop 已超时未生效）
+use db_dsync_src;
+select count(*) as cnt from t1;
 
 --echo ============================================
---echo 3. 在Fork库中执行DDL - ADD COLUMN（不同列）
+--echo 2. Fork Database 进行中 DROP 源库：应被阻塞，_ob_ddl_timeout 后超时
 --echo ============================================
 
-use db_ddl_fork;
-alter table t1 add column address varchar(200);
-desc t1;
+create database db_dsync_src2;
+use db_dsync_src2;
+create table t1 (
+    id int primary key,
+    name varchar(50)
+);
+insert into t1 values (1, 'X');
 
---echo # 验证源库表结构未受影响
-use db_ddl_src;
-desc t1;
+--echo # 设置 debug sync：fork 卡在 BUILD_DATA 阶段
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for fork_db_drop_db_signal execute 10000';
+sleep 1;
+connection default;
 
---echo ============================================
---echo 4. 在源库中执行DDL - CREATE INDEX
---echo ============================================
+fork database db_dsync_src2 to db_dsync_fork2;
 
-use db_ddl_src;
-create index idx_value on t1(value);
---replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-show create table t1;
+--echo # 等待至少一个 fork table 任务进入 BUILD_DATA
+sleep 3;
 
---echo # 验证Fork库无此索引
-use db_ddl_fork;
---replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-show create table t1;
+use oceanbase;
+--echo # Fork 进行中对源库 DROP DATABASE：预期被阻塞后超时
+--error 4012
+drop database db_dsync_src2;
 
---echo ============================================
---echo 5. 在Fork库中执行DDL - CREATE INDEX（不同索引）
---echo ============================================
+--echo # 放开 debug sync，让 Fork Database 完成
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal fork_db_drop_db_signal';
+connection default;
 
-use db_ddl_fork;
-create index idx_name on t1(name);
---replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-show create table t1;
+--source mysql_test/test_suite/fork_database/include/wait_fork_database.inc
 
---echo # 验证源库无此索引
-use db_ddl_src;
---replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-show create table t1;
-
---echo ============================================
---echo 6. 在源库中执行DDL - CREATE TABLE
---echo ============================================
-
-use db_ddl_src;
-create table t3 (id int primary key, info varchar(100));
-insert into t3 values (1, 'OnlyInSrc');
-show tables;
-
---echo # 验证Fork库无此表
-use db_ddl_fork;
-show tables;
+--echo # 验证：源库仍存在（之前 drop database 已超时未生效）
+show databases like 'db_dsync_src2';
 
 --echo ============================================
---echo 7. 在Fork库中执行DDL - CREATE TABLE
+--echo 3. 清理
 --echo ============================================
 
-use db_ddl_fork;
-create table t4 (id int primary key, info varchar(100));
-insert into t4 values (1, 'OnlyInFork');
-show tables;
+connection obsys;
+alter system set _ob_ddl_timeout = '1000s';
+set ob_global_debug_sync = 'reset';
+connection default;
 
---echo # 验证源库无此表
-use db_ddl_src;
-show tables;
-
---echo ============================================
---echo 8. 在源库中执行DDL - DROP TABLE
---echo ============================================
-
-use db_ddl_src;
-drop table t2;
-show tables;
-
---echo # 验证Fork库仍有此表
-use db_ddl_fork;
-show tables;
-select * from t2;
-
---echo ============================================
---echo 9. 删除Fork库不影响源库
---echo ============================================
-
-drop database db_ddl_fork;
-
---echo # 验证源库仍可用
-use db_ddl_src;
-select * from t1;
-show tables;
-
---echo ============================================
---echo 10. 清理
---echo ============================================
-
-drop database if exists db_ddl_src;
-drop database if exists db_ddl_fork;
+use oceanbase;
+drop database if exists db_dsync_src;
+drop database if exists db_dsync_fork;
+drop database if exists db_dsync_src2;
+drop database if exists db_dsync_fork2;
