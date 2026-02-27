@@ -41,14 +41,6 @@ ObAdvanceSkipScanner::~ObAdvanceSkipScanner()
   }
 }
 
-void ObAdvanceSkipScanner::reuse()
-{
-  left_border_reached_ = false;
-  micro_start_ = -1;
-  micro_last_ = -1;
-  micro_current_ = -1;
-}
-
 void ObAdvanceSkipScanner::reset()
 {
   is_inited_ = false;

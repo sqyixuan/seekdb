@@ -113,7 +113,6 @@ class ObAdvanceSkipScanner
 public:
   ObAdvanceSkipScanner(const blocksstable::ObStorageDatumUtils &datum_utils);
   ~ObAdvanceSkipScanner();
-  void reuse();
   void reset();
   int init(
       const bool is_reverse_scan,
