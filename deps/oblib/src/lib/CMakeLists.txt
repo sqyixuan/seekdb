@@ -527,6 +527,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     libroaring.a
     libantlr4-runtime.a
     libantlr4-autogen.a
+    libfmt.a
   )
 else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
