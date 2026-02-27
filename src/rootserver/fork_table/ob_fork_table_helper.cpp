@@ -158,31 +158,29 @@ int check_fork_table_supported(const ObTableSchema &src_table_schema,
   return ret;
 }
 
-int ObForkTableHelper::init(
-    const common::ObIArray<share::schema::ObTableSchema> &table_schemas) 
+int ObForkTableHelper::init(const common::ObIArray<share::schema::ObTableSchema> 
+&table_schemas) 
 {
   int ret = OB_SUCCESS;
 
   if (inited_) {
     ret = OB_INIT_TWICE;
-    LOG_WARN("fork table helper init twice", KR(ret), K(tenant_id_),
-             K(fork_table_info_));
+    LOG_WARN("fork table helper init twice", KR(ret), K(tenant_id_), K(fork_table_info_));
   } else if (!fork_table_info_.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("fork table info is invalid", KR(ret), K(fork_table_info_));
   } else if (table_schemas.empty()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("table schemas is empty", KR(ret));
-  } else if (FALSE_IT(src_table_id_ =
-                          fork_table_info_.get_fork_src_table_id())) {
-  } else if (OB_FAIL(schema_guard_.get_table_schema(tenant_id_, src_table_id_,
-                                                    src_table_schema_))) {
+  } else if (FALSE_IT(src_table_id_ = fork_table_info_.get_fork_src_table_id())) {
+  } else if (OB_FAIL(schema_guard_.get_table_schema(tenant_id_, src_table_id_, 
+src_table_schema_))) {
     LOG_WARN("failed to get source table schema", KR(ret), K(tenant_id_),
              K(fork_table_info_.get_fork_src_table_id()));
   } else if (OB_ISNULL(src_table_schema_)) {
     ret = OB_TABLE_NOT_EXIST;
-    LOG_WARN("source table not exist", KR(ret),
-             K(fork_table_info_.get_fork_src_table_id()));
+    LOG_WARN("source table not exist", KR(ret), 
+K(fork_table_info_.get_fork_src_table_id()));
   } else if (OB_ISNULL(dst_table_schema_ = &table_schemas.at(0))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("dst table schema is null", KR(ret));
@@ -355,12 +353,11 @@ int ObForkTableHelper::copy_tablet_truncate_info_()
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("tablet handle is null", K(ret), K(src_tablet_id));
       } else if (OB_FAIL(src_tablet_handle.get_obj()->read_truncate_info_array(
-                     allocator,
-                     common::ObVersionRange(
-                         src_tablet_handle.get_obj()
-                             ->get_last_major_snapshot_version(),
+                         allocator,
+                         common::ObVersionRange(
+                         src_tablet_handle.get_obj()->get_last_major_snapshot_version(),
                          max_readable_scn.get_val_for_tx()),
-                     false /*for_access*/, truncate_info_array))) {
+                         false /*for_access*/, truncate_info_array))) {
         LOG_WARN("failed to read truncate info array", K(ret),
                  K(src_tablet_id));
       } else if (truncate_info_array.empty()) {
