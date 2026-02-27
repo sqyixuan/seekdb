@@ -459,8 +459,6 @@ if(NOT APPLE)
   target_link_libraries(malloc_hook oblib_base)
 endif()
 
-target_compile_options(oblib_lib PUBLIC -D_GLIBCXX_USE_CXX11_ABI=0)
-
 target_link_libraries(oblib_lib
   PUBLIC ob_malloc compress restore
   ${DEP_DIR}/lib/libxml2.a
@@ -495,7 +493,6 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     libroaring.a
     libantlr4-runtime.a
     libantlr4-autogen.a
-    libfmt.a
   )
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
   target_link_libraries(oblib_lib
@@ -510,7 +507,6 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     libroaring.a
     libantlr4-runtime.a
     libantlr4-autogen.a
-    libfmt.a
   )
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
   target_link_libraries(oblib_lib
@@ -529,7 +525,6 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     libroaring.a
     libantlr4-runtime.a
     libantlr4-autogen.a
-    libfmt.a
   )
 else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
