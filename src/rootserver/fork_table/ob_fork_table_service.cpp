@@ -30,107 +30,6 @@ using namespace obrpc;
 using namespace storage;
 namespace rootserver {
 
-int ObDDLService::fork_single_table_in_trans_(
-    const uint64_t tenant_id, const ObTableSchema &src_table_schema,
-    const ObDatabaseSchema &src_db_schema, const ObDatabaseSchema &dst_db_schema,
-    const ObString &dst_table_name, const int64_t fork_snapshot_version,
-    const uint64_t session_id, const ObString &ddl_stmt_str,
-    ObSchemaGetterGuard &schema_guard, ObDDLSQLTransaction &trans,
-    ObIAllocator &allocator, ObDDLTaskRecord &task_record) {
-  int ret = OB_SUCCESS;
-  ObSchemaService *schema_service = schema_service_->get_schema_service();
-  ObArenaAllocator inner_allocator(ObModIds::OB_RS_PARTITION_TABLE_TEMP);
-  ObSArray<ObTableSchema> table_schemas;
-  ObArray<ObMockFKParentTableSchema> mock_fk_parent_table_schema_array;
-  const ObTableSchema *dst_table_schema = nullptr;
-
-  if (OB_ISNULL(schema_service)) {
-    ret = OB_ERR_SYS;
-    LOG_WARN("schema_service must not null", K(ret));
-  } else {
-    // Rebuild table schema with new id for fork table.
-    if (OB_FAIL(rebuild_table_schema_with_new_id(
-            src_table_schema, dst_db_schema, dst_table_name,
-            ObString(), // create_host
-            session_id, USER_TABLE, *schema_service, table_schemas,
-            inner_allocator,
-            OB_INVALID_ID, // define_user_id
-            false /* delete_unused_columns */))) {
-      LOG_WARN("failed to rebuild table schema with new id", KR(ret),
-               K(src_table_schema.get_table_name()));
-    } else if (OB_FAIL(
-                   generate_object_id_for_partition_schemas(table_schemas))) {
-      LOG_WARN("fail to generate object_id for partition schema", KR(ret),
-               K(table_schemas));
-    } else if (OB_FAIL(generate_tables_tablet_id(table_schemas))) {
-      LOG_WARN("failed to generate tables tablet id", KR(ret), K(table_schemas));
-    } else if (table_schemas.count() > 0) {
-      dst_table_schema = &table_schemas.at(0);
-    }
-
-    // Create tables using fork logic.
-    if (OB_SUCC(ret)) {
-      share::ObForkTableInfo fork_table_info(src_table_schema.get_table_id(),
-                                             fork_snapshot_version);
-      obrpc::ObSequenceDDLArg empty_sequence_ddl_arg;
-
-      if (OB_FAIL(create_tables_for_fork_(
-              ddl_stmt_str, table_schemas, empty_sequence_ddl_arg,
-              mock_fk_parent_table_schema_array, schema_guard, trans,
-              fork_table_info))) {
-        LOG_WARN("failed to create tables for fork", KR(ret), "table_name",
-                 src_table_schema.get_table_name());
-      }
-    }
-  }
-
-  // Create DDL task and lock for fork table.
-  if (OB_SUCC(ret) && OB_NOT_NULL(dst_table_schema)) {
-    ObTableLockOwnerID lock_owner;
-
-    // Construct ObForkTableArg for this table.
-    ObForkTableArg fork_table_arg;
-    fork_table_arg.tenant_id_ = tenant_id;
-    fork_table_arg.src_database_name_ = src_db_schema.get_database_name_str();
-    fork_table_arg.src_table_name_ = src_table_schema.get_table_name_str();
-    fork_table_arg.dst_database_name_ = dst_db_schema.get_database_name_str();
-    fork_table_arg.dst_table_name_ = dst_table_schema->get_table_name_str();
-    fork_table_arg.if_not_exist_ = false;
-    fork_table_arg.session_id_ = session_id;
-
-    ObCreateDDLTaskParam param(
-        tenant_id, ObDDLType::DDL_FORK_TABLE, &src_table_schema,
-        dst_table_schema, src_table_schema.get_table_id(),
-        dst_table_schema->get_schema_version(), 0 /* parallelism */,
-        0 /* consumer_group_id */, &allocator, &fork_table_arg,
-        0 /* parent task id*/);
-    param.new_snapshot_version_ = fork_snapshot_version;
-
-    if (OB_FAIL(
-            ObSysDDLSchedulerUtil::create_ddl_task(param, trans, task_record))) {
-      LOG_WARN("submit ddl task failed", K(ret), "table_name",
-               src_table_schema.get_table_name());
-    } else if (OB_FAIL(lock_owner.convert_from_value(
-                   ObLockOwnerType::FORK_TABLE_OWNER_TYPE,
-                   FORK_TABLE_LOCK_OWNER_ID))) {
-      LOG_WARN("failed to convert owner id", K(ret), K(task_record.task_id_));
-    } else if (OB_FAIL(ObDDLLock::lock_for_fork_table(
-                   schema_guard, src_table_schema, table_schemas, lock_owner,
-                   trans))) {
-      LOG_WARN("failed to lock for fork table", K(ret), K(task_record.task_id_));
-    } else {
-      LOG_INFO("fork single table task created", K(tenant_id), "task_id",
-               task_record.task_id_, "src_table_id",
-               src_table_schema.get_table_id(), "src_table_name",
-               src_table_schema.get_table_name(), "dst_table_id",
-               dst_table_schema->get_table_id(), "dst_table_name",
-               dst_table_schema->get_table_name());
-    }
-  }
-
-  return ret;
-}
-
 int ObDDLService::create_tables_for_fork_(
     const common::ObString &ddl_stmt_str,
     common::ObIArray<share::schema::ObTableSchema> &table_schemas,
@@ -247,7 +146,7 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
     ObDDLSQLTransaction trans(schema_service_);
     ObArenaAllocator allocator(lib::ObLabel("ForkTable"));
     bool is_db_in_recyclebin = false;
-    ObSEArray<const ObTableSchema*, 1> src_table_schemas;
+    ObSArray<ObTableSchema> table_schemas;
 
     if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(
             tenant_id, schema_guard))) {
@@ -341,9 +240,8 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
                               refreshed_schema_version))) {
         LOG_WARN("start transaction failed", KR(ret), K(tenant_id),
                  K(refreshed_schema_version));
-      } else if (FALSE_IT(src_table_schemas.push_back(src_table_schema))) {
       } else if (OB_FAIL(ObForkTableUtil::obtain_snapshot(
-                     trans, schema_guard, tenant_id, src_table_schemas,
+                     trans, schema_guard, *src_table_schema,
                      fork_snapshot_version))) {
         LOG_WARN("fail to obtain snapshot", K(ret), K(fork_snapshot_version));
       } else if (fork_snapshot_version <= 0) {
@@ -354,15 +252,73 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
                  K(fork_snapshot_version), "src_table_id",
                  src_table_schema->get_table_id(), "src_schema_version",
                  src_table_schema->get_schema_version());
+        share::ObForkTableInfo fork_table_info(src_table_schema->get_table_id(),
+                                               fork_snapshot_version);
+        ObSchemaService *schema_service = schema_service_->get_schema_service();
+        ObArenaAllocator inner_allocator(ObModIds::OB_RS_PARTITION_TABLE_TEMP);
+        ObArray<ObMockFKParentTableSchema> mock_fk_parent_table_schema_array;
+        int64_t ddl_task_id = 0;
 
-        // Use the unified helper function to fork the single table.
-        if (OB_FAIL(fork_single_table_in_trans_(
-                tenant_id, *src_table_schema, *src_db_schema, *dst_db_schema,
-                fork_table_arg.dst_table_name_, fork_snapshot_version,
-                fork_table_arg.session_id_, fork_table_arg.ddl_stmt_str_,
-                schema_guard, trans, allocator, task_record))) {
-          LOG_WARN("failed to fork single table in transaction", K(ret),
-                   K(fork_table_arg));
+        if (OB_ISNULL(schema_service)) {
+          ret = OB_ERR_SYS;
+          LOG_WARN("schema_service must not null", K(ret));
+        } else {
+          share::schema::ObErrorInfo error_info;
+          ObString empty_ddl_stmt_str;
+          obrpc::ObSequenceDDLArg empty_sequence_ddl_arg;
+
+          // Rebuild table schema with new id for fork table
+          if (OB_FAIL(rebuild_table_schema_with_new_id(
+                  *src_table_schema, *dst_db_schema,
+                  fork_table_arg.dst_table_name_,
+                  ObString(), // create_host
+                  fork_table_arg.session_id_, USER_TABLE, *schema_service,
+                  table_schemas, inner_allocator,
+                  OB_INVALID_ID, // define_user_id
+                  false /* delete_unused_columns */))) {
+            LOG_WARN("failed to rebuild table schema with new id", KR(ret));
+          } else if (OB_FAIL(generate_object_id_for_partition_schemas(
+                         table_schemas))) {
+            LOG_WARN("fail to generate object_id for partition schema", KR(ret),
+                     K(table_schemas));
+          } else if (OB_FAIL(generate_tables_tablet_id(table_schemas))) {
+            LOG_WARN("failed to generate_tables_id", KR(ret), K(table_schemas));
+          } else if (table_schemas.count() > 0) {
+            dst_table_schema = &table_schemas.at(0);
+          }
+
+          if (OB_SUCC(ret) &&
+              OB_FAIL(create_tables_for_fork_(
+                  fork_table_arg.ddl_stmt_str_, table_schemas,
+                  empty_sequence_ddl_arg, mock_fk_parent_table_schema_array,
+                  schema_guard, trans, fork_table_info))) {
+            LOG_WARN("failed to create tables in transaction", K(ret));
+          }
+        }
+      }
+
+      if (OB_SUCC(ret)) {
+        ObTableLockOwnerID lock_owner;
+        ObCreateDDLTaskParam param(
+            tenant_id, ObDDLType::DDL_FORK_TABLE, src_table_schema,
+            dst_table_schema, src_table_schema->get_table_id(),
+            dst_table_schema->get_schema_version(), 0 /* parallelism */,
+            0 /* consumer_group_id */, &allocator, &fork_table_arg,
+            0 /* parent task id*/);
+        param.new_snapshot_version_ = fork_snapshot_version;
+        if (OB_FAIL(ObSysDDLSchedulerUtil::create_ddl_task(param, trans,
+                                                           task_record))) {
+          LOG_WARN("submit ddl task failed", K(ret), K(fork_table_arg));
+        } else if (OB_FAIL(lock_owner.convert_from_value(
+                       ObLockOwnerType::FORK_TABLE_OWNER_TYPE,
+                       FORK_TABLE_LOCK_OWNER_ID))) {
+          LOG_WARN("failed to convert owner id", K(ret),
+                   K(task_record.task_id_));
+        } else if (OB_FAIL(storage::ObDDLLock::lock_for_fork_table(
+                       schema_guard, *src_table_schema, table_schemas,
+                       lock_owner, trans))) {
+          LOG_WARN("failed to lock for fork table", K(ret),
+                   K(task_record.task_id_));
         }
       }
 
@@ -393,7 +349,8 @@ int ObDDLService::fork_table(const obrpc::ObForkTableArg &fork_table_arg,
           res.task_id_ = task_record.task_id_;
           LOG_INFO("fork table task scheduled", K(tenant_id), "task_id",
                    task_record.task_id_, K(fork_snapshot_version),
-                   "src_table_id", src_table_schema->get_table_id());
+                   "src_table_id", src_table_schema->get_table_id(),
+                   "dst_table_id", dst_table_schema->get_table_id());
         }
       }
     }
