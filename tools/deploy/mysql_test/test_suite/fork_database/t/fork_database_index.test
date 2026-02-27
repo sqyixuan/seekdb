@@ -1,0 +1,126 @@
+##owner: [CONTRIBUTOR]
+##owner group: [INTERNAL_PROJECT]
+##description: Fork Database多种索引类型测试
+##tags: fork_database index unique composite
+##author: [CONTRIBUTOR]
+
+--disable_warnings
+drop database if exists db_idx_src;
+drop database if exists db_idx_fork;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo ============================================
+--echo 1. Fork含多种索引类型的数据库
+--echo ============================================
+
+create database db_idx_src;
+use db_idx_src;
+
+--echo # 创建带普通索引的表
+create table t_normal_idx (
+    id int primary key,
+    name varchar(50),
+    age int,
+    index idx_name(name),
+    index idx_age(age)
+);
+
+--echo # 创建带唯一索引的表
+create table t_unique_idx (
+    id int primary key,
+    email varchar(100) unique,
+    phone varchar(20),
+    unique key uk_phone(phone)
+);
+
+--echo # 创建带复合索引的表
+create table t_composite_idx (
+    id int primary key,
+    a int,
+    b int,
+    c int,
+    index idx_ab(a, b),
+    index idx_abc(a, b, c)
+);
+
+--echo # 创建带前缀索引的表
+create table t_prefix_idx (
+    id int primary key,
+    content varchar(500),
+    index idx_content(content(20))
+);
+
+--echo # 插入数据
+insert into t_normal_idx values (1, 'Alice', 25), (2, 'Bob', 30), (3, 'Charlie', 35);
+insert into t_unique_idx values (1, 'a@test.com', '111'), (2, 'b@test.com', '222');
+insert into t_composite_idx values (1, 10, 20, 30), (2, 11, 21, 31), (3, 10, 21, 32);
+insert into t_prefix_idx values (1, repeat('Hello ', 50)), (2, repeat('World ', 50));
+
+--echo # Fork数据库
+fork database db_idx_src to db_idx_fork;
+--source mysql_test/test_suite/fork_database/include/wait_fork_database.inc
+
+--echo ============================================
+--echo 2. 验证Fork库中索引工作正常
+--echo ============================================
+
+use db_idx_fork;
+
+--echo # 验证普通索引
+select * from t_normal_idx where name = 'Alice';
+select * from t_normal_idx where age = 30;
+
+--echo # 验证唯一索引
+select * from t_unique_idx where email = 'a@test.com';
+select * from t_unique_idx where phone = '111';
+
+--echo # 验证复合索引
+select * from t_composite_idx where a = 10;
+select * from t_composite_idx where a = 10 and b = 20;
+select * from t_composite_idx where a = 10 and b = 21 and c = 32;
+
+--echo # 验证前缀索引
+select id, left(content, 20) as preview from t_prefix_idx where content like 'Hello%';
+
+--echo ============================================
+--echo 3. 验证唯一索引约束在Fork库中生效
+--echo ============================================
+
+--error 1062
+insert into t_unique_idx values (3, 'a@test.com', '333');
+
+--error 1062
+insert into t_unique_idx values (4, 'c@test.com', '111');
+
+--echo # 合法插入
+insert into t_unique_idx values (5, 'c@test.com', '333');
+select * from t_unique_idx order by id;
+
+--echo ============================================
+--echo 4. 验证索引独立性
+--echo ============================================
+
+--echo # 在源库中添加新索引
+use db_idx_src;
+create index idx_name_age on t_normal_idx(name, age);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_normal_idx;
+
+--echo # 验证Fork库无此索引
+use db_idx_fork;
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_normal_idx;
+
+--echo ============================================
+--echo 5. 清理
+--echo ============================================
+
+drop database if exists db_idx_src;
+drop database if exists db_idx_fork;
