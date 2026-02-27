@@ -328,7 +328,7 @@ int ObTableScanIterator::advance_scan(ObTableScanParam &scan_param)
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "The ObTableScanStoreRowIterator has not been inited, ", K(ret));
   } else {
-    STORAGE_LOG(DEBUG, "table scan iterate advance scan", K_(is_inited), K(scan_param_));
+    STORAGE_LOG(DEBUG, "table scan iterate advance scan", K_(is_inited), K(lbt()), K(scan_param_));
     const ObTablet *tablet = get_table_param_.tablet_iter_.get_tablet_handle().get_obj();
     bool is_tablet_spliting = false;
     main_table_param_.iter_param_.set_is_advance_skip_scan();

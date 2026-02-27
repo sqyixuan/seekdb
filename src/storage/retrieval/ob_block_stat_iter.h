@@ -100,7 +100,7 @@ private:
       idx_row_ = nullptr;
       iter_end_ = false;
     }
-    TO_STRING_KV(KP_(idx_scanner), K_(iter_end));
+    TO_STRING_KV(KP_(idx_scanner));
   private:
     ObSSTableIndexScanner *idx_scanner_;
     const ObSSTableIndexRow *idx_row_;
@@ -148,15 +148,14 @@ private:
 
   struct ObBlockStatKeyCmp
   {
-    ObBlockStatKeyCmp() : datum_utils_(nullptr), cmp_cnt_(0), is_inited_(false) {}
+    ObBlockStatKeyCmp() : datum_utils_(nullptr), is_inited_(false) {}
     ~ObBlockStatKeyCmp() = default;
-    int init(const blocksstable::ObStorageDatumUtils &datum_utils, const int64_t cmp_cnt);
+    int init(const blocksstable::ObStorageDatumUtils &datum_utils);
     int cmp(const ObBlockStatKeyItem &l, const ObBlockStatKeyItem &r, int64_t &cmp_ret);
-    OB_INLINE void reset() { datum_utils_ = nullptr; cmp_cnt_ = 0; is_inited_ = false; }
+    OB_INLINE void reset() { datum_utils_ = nullptr; is_inited_ = false; }
     OB_INLINE bool is_valid() const { return is_inited_; }
   private:
     const blocksstable::ObStorageDatumUtils *datum_utils_;
-    int64_t cmp_cnt_;
     bool is_inited_;
   };
   typedef ObSimpleRowsMerger<ObBlockStatKeyItem, ObBlockStatKeyCmp> ObBSSimpleMerger;
