@@ -152,10 +152,7 @@ public:
                KP_(stmt_alloc),
                K_(left_border_reached));
 private:
-  int prepare_ranges(
-      const blocksstable::ObDatumRange &scan_range,
-      const int64_t schema_rowkey_cnt,
-      ObIAllocator &alloc);
+  common::ObArenaAllocator range_alloc_;
   bool is_inited_;
   bool left_border_reached_;
   int64_t micro_start_;

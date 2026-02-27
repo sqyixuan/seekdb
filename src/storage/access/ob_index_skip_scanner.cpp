@@ -20,7 +20,8 @@ using namespace blocksstable;
 namespace storage
 {
 ObAdvanceSkipScanner::ObAdvanceSkipScanner(const ObStorageDatumUtils &datum_utils)
-  : is_inited_(false),
+  : range_alloc_("SS_RANGE", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+    is_inited_(false),
     left_border_reached_(false),
     micro_start_(-1),
     micro_last_(-1),
@@ -62,6 +63,7 @@ void ObAdvanceSkipScanner::reset()
   range_datums_ = nullptr;
   read_info_ = nullptr;
   stmt_alloc_ = nullptr;
+  range_alloc_.reset();
 }
 
 int ObAdvanceSkipScanner::init(
@@ -77,8 +79,8 @@ int ObAdvanceSkipScanner::init(
   } else if (OB_UNLIKELY(is_reverse_scan)) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("reverse scan is not supported", KR(ret), K(is_reverse_scan));
-  } else if (OB_FAIL(prepare_ranges(scan_range, read_info.get_schema_rowkey_count(), stmt_allocator))) {
-    LOG_WARN("failed to prepare range", KR(ret));
+  } else if (OB_FAIL(complete_range_.deep_copy(scan_range, range_alloc_))) {
+    LOG_WARN("failed to deep copy scan range", KR(ret));
   } else {
     read_info_ = &read_info;
     stmt_alloc_ = &stmt_allocator;
@@ -105,8 +107,8 @@ int ObAdvanceSkipScanner::switch_info(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected argument in rescan", KR(ret),
              KP_(read_info), KP(&read_info), KP_(stmt_alloc), KP(&stmt_allocator), K(lbt()));
-  } else if (OB_FAIL(prepare_ranges(scan_range, read_info.get_schema_rowkey_count(), stmt_allocator))) {
-    LOG_WARN("failed to prepare ranges", KR(ret));
+  } else if (OB_FAIL(complete_range_.deep_copy(scan_range, range_alloc_))) {
+    LOG_WARN("failed to deep copy scan range", KR(ret));
   } else {
     LOG_TRACE("[INDEX SKIP SCAN] success to switch info", KR(ret), K(*this));
   }
@@ -122,20 +124,18 @@ int ObAdvanceSkipScanner::advance_scan(const ObDatumRange &scan_range)
     LOG_WARN("not init", KR(ret), KP(this), K(lbt()));
   } else if (OB_FAIL(scan_range.end_key_.compare(complete_range_.end_key_, datum_utils_, cmp_ret))) {
     LOG_WARN("failed to compare end_key_", KR(ret), K(scan_range), K_(complete_range));
-  } else if (cmp_ret > 0) {
+  } else if (cmp_ret != 0) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("endkey is larger", KR(ret), K(cmp_ret), K(scan_range), K_(complete_range));
+    LOG_WARN("endkey is not same", KR(ret), K(cmp_ret), K(scan_range), K_(complete_range));
   } else if (OB_FAIL(scan_range.start_key_.compare(complete_range_.start_key_, datum_utils_, cmp_ret))) {
     LOG_WARN("failed to compare start_key_", KR(ret), K(scan_range), K_(complete_range));
   } else if (cmp_ret <= 0) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("startkey is smaller", KR(ret), K(cmp_ret), K(scan_range), K_(complete_range));
+    LOG_WARN("new startkey is not greater", KR(ret), K(cmp_ret), K(scan_range), K_(complete_range));
+  } else if (FALSE_IT(range_alloc_.reuse())) {
+  } else if (OB_FAIL(complete_range_.deep_copy(scan_range, range_alloc_))) {
+    LOG_WARN("failed to deep copy scan range", KR(ret));
   } else {
-    complete_range_.start_key_.reuse();
-    for (int64_t i = 0; i < scan_range.start_key_.datum_cnt_; ++i) {
-      complete_range_.start_key_.datums_[i] = scan_range.start_key_.datums_[i];
-    }
-    complete_range_.set_border_flag(scan_range.border_flag_);
     left_border_reached_ = false;
   }
   LOG_DEBUG("[INDEX SKIP SCAN] advance scan", KR(ret), K(scan_range), K_(complete_range), KPC(this));
@@ -233,48 +233,6 @@ int ObAdvanceSkipScanner::skip(
     }
     LOG_DEBUG("[INDEX SKIP SCAN] micro scanner skip to range", KR(ret), K(has_data), K(range_covered), K(state), KPC(this));
   }
-  return ret;
-}
-
-int ObAdvanceSkipScanner::prepare_ranges(
-    const ObDatumRange &scan_range,
-    const int64_t schema_rowkey_cnt,
-    ObIAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  if (nullptr == range_datums_) {
-    void *buf = nullptr;
-    const int64_t total_datum_cnt = schema_rowkey_cnt * 2;
-    if (OB_ISNULL(buf = allocator.alloc(sizeof(ObStorageDatum) * total_datum_cnt))) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to alloc memory", KR(ret));
-    } else {
-      range_datums_ = new (buf) ObStorageDatum[total_datum_cnt];
-    }
-  }
-  if (OB_SUCC(ret)) {
-    OZ(complete_range_.start_key_.assign(range_datums_, schema_rowkey_cnt));
-    OZ(complete_range_.end_key_.assign(range_datums_ + schema_rowkey_cnt, schema_rowkey_cnt));
-    if (OB_FAIL(ret)) {
-      if (nullptr != range_datums_) {
-        allocator.free(range_datums_);
-        range_datums_ = nullptr;
-      }
-    } else {
-      complete_range_.start_key_.reuse();
-      complete_range_.end_key_.reuse();
-      for (int64_t i = 0; i < schema_rowkey_cnt; ++i) {
-        if (i < scan_range.start_key_.datum_cnt_) {
-          complete_range_.start_key_.datums_[i] = scan_range.start_key_.datums_[i];
-        }
-        if (i < scan_range.end_key_.datum_cnt_) {
-          complete_range_.end_key_.datums_[i] = scan_range.end_key_.datums_[i];
-        }
-      }
-      complete_range_.set_border_flag(scan_range.border_flag_);
-    }
-  }
-  LOG_DEBUG("[INDEX SKIP SCAN] prepare range", KR(ret), K_(complete_range), K(scan_range));
   return ret;
 }
 
