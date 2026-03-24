@@ -1,0 +1,82 @@
+# owner: yanyuan.cxf
+# owner group: transaction
+# description: 宕机重启恢复事务状态表
+
+--disable_query_log
+ob1=OBI(cluster=2:2, proxy_num=0, init_unit_cpu=2);
+ob1.z1.obs0.set extra_config=devname=eth2;
+ob1.z1.obs1.set extra_config=devname=eth2;
+ob1.z2.obs0.set extra_config=devname=eth2;
+ob1.z2.obs1.set extra_config=devname=eth2;
+
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+#ob1.mysql alter system set syslog_level='debug';
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_obtest MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_obtest UNIT = 'unit_obtest', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT bobtest RESOURCE_POOL_LIST = ('pool_obtest'), locality='F@z1, F@z2' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "bobtest", tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root,,test,USE_OB_CONNECTOR);
+ob_connect(conn_obtest, ob1.z1.obs0, root@bobtest,,test,USE_OB_CONNECTOR);
+connection conn_obtest;
+set global ob_query_timeout = 1000000000;
+set global ob_trx_timeout = 1000000000;
+set global ob_trx_idle_timeout = 1000000000;
+sleep 2;
+
+
+connection conn_obtest;
+create table t1(a int primary key, b int);
+
+ob1.z1.obs0.switch_partition bobtest:test:t1;
+sleep 5;
+ob1.z1.obs0.check_leader bobtest:test:t1;
+
+
+insert into t1 (a, b) values (1, 1), (2, 2), (3, 3);
+
+# <----------------------- 事务执行 -------------------------->
+
+sleep 2;
+
+connection conn_obtest;
+begin;
+insert into t1 value(6, 6);
+insert into t1 values(7, 7);
+commit;
+# <----------------------- 冻结并转储 -------------------------->
+
+connection sys_conn;
+alter system minor freeze tenant bobtest;
+let $tid = deploy_get_value(ob1.select select table_id v from oceanbase.__all_virtual_table where table_name='t1', v, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id=$tid and table_type=0 and is_active=0, 0, 200;
+
+# <----------------------- 事务提交前，另一个事务查 -------------------------->
+
+
+connection conn_obtest;
+commit;
+
+let $src_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$tid" and partition_id = 0 and role = 2 and zone = "z2", addr, 1);
+
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = "z2" and concat(svr_ip, ":", svr_port) != "$src_addr", addr, 1);
+
+--disable_query_log
+connection sys_conn;
+eval alter system move replica partition_id = "0%0@$tid" source = "$src_addr" destination = "$dest_addr";
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$tid" and partition_id = 0 and role = 2 and zone = "z2" and concat(svr_ip, ":", svr_port) = '$src_addr', 0, 20;
+
+sleep 1;
+

@@ -1,0 +1,292 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test balance and transfer new views
+#####################
+
+ob1=OBI(cluster=2:2:2,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=10,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='40G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z3.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+set @@session.ob_query_timeout = 1000000000;
+
+--echo # create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%';
+
+--echo # create oracle tenant
+CREATE RESOURCE POOL if not exists pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+source include/check_schema_sync.inc;
+
+--echo # create not used pool
+CREATE RESOURCE POOL if not exists pool_3 UNIT = 'unit_1', UNIT_NUM = 1;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $oracle_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'oracle', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 1 limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+let $oracle_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $oracle_tenant_id and ls_id =  1 and role = 1 limit 1, host, 1);
+let $oracle_leader_obs =deploy_get_value(ob1.get_obs_by_addr $oracle_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_oracle, $oracle_leader_obs, sys@oracle, , sys, , USE_OB_CONNECTOR);
+
+--echo # create table
+connection conn_mysql;
+create table t1(c1 int primary key) partition by hash(c1) partitions 10;
+connection conn_oracle;
+create table t1(c1 int primary key) partition by hash(c1) partitions 10;
+
+--echo # uint_num 1->2
+--echo # verify unit_num of meta tenant in DBA_OB_TENANTS
+connection conn_sys;
+select tenant_id, unit_num from DBA_OB_TENANTS;
+alter resource tenant mysql unit_num = 2;
+select tenant_id, unit_num from DBA_OB_TENANTS;
+alter resource tenant oracle unit_num = 2;
+ob1.check_until_timeout select count(*) = 4 from DBA_OB_TENANTS where unit_num = 2 and tenant_id != 1, 1, 1;
+
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal_lock_finish";
+
+ob1.check_until_timeout select count(*) != 0 from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'START', 1, 120;
+ob1.check_until_timeout select count(*) != 0 from oceanbase.__all_virtual_transfer_task where tenant_id = $oracle_tenant_id and status = 'START', 1, 120;
+
+--echo ##########################
+--echo # 1.verify new views in sys
+connection conn_sys;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from DBA_OB_BALANCE_JOBS;
+select tenant_id, balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from CDB_OB_BALANCE_JOBS order by tenant_id;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from DBA_OB_BALANCE_TASKS;
+select tenant_id, task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from CDB_OB_BALANCE_TASKS order by tenant_id;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from DBA_OB_TRANSFER_TASKS;
+select tenant_id, src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from CDB_OB_TRANSFER_TASKS order by tenant_id;
+--echo # verify new views in mysql
+connection conn_mysql;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.DBA_OB_BALANCE_JOBS;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from oceanbase.DBA_OB_BALANCE_TASKS;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from oceanbase.DBA_OB_TRANSFER_TASKS;
+--echo # verify new views in oracle
+connection conn_oracle;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, "COMMENT" from DBA_OB_BALANCE_JOBS;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, "COMMENT" from DBA_OB_BALANCE_TASKS;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, "COMMENT" from DBA_OB_TRANSFER_TASKS;
+
+ob1.mysql set ob_global_debug_sync = "now signal signal_lock_finish";
+--echo # wait balance finish
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_balance_job, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_balance_task, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_transfer_task, 1, 120;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.CDB_OB_LS where status != 'NORMAL', 1, 120;
+ob1.check_until_timeout select count(*) = 0 from (select * from __all_virtual_ls_meta_table group by tenant_id, ls_id, zone having count(*) != 1), 1, 120;
+
+--echo
+--echo # verify new history views in sys
+connection conn_sys;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from DBA_OB_BALANCE_JOB_HISTORY;
+select tenant_id, balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from CDB_OB_BALANCE_JOB_HISTORY;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from DBA_OB_BALANCE_TASK_HISTORY;
+select tenant_id, task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from CDB_OB_BALANCE_TASK_HISTORY;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from DBA_OB_TRANSFER_TASK_HISTORY;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from CDB_OB_TRANSFER_TASK_HISTORY;
+--echo # verify new history views in mysql
+connection conn_mysql;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, comment from oceanbase.DBA_OB_BALANCE_JOB_HISTORY;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, comment from oceanbase.DBA_OB_BALANCE_TASK_HISTORY;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY;
+--echo # verify new history views in oracle
+connection conn_oracle;
+select balance_strategy, job_type, target_unit_num, target_primary_zone_num, status, "COMMENT" from DBA_OB_BALANCE_JOB_HISTORY;
+select task_type, src_ls, dest_ls, part_list, finished_part_list, part_count, finished_part_count, ls_group_id, status, "COMMENT" from DBA_OB_BALANCE_TASK_HISTORY;
+select src_ls, dest_ls, part_list, part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list, tablet_count, status, "COMMENT" from DBA_OB_TRANSFER_TASK_HISTORY;
+
+--echo ##########################
+--echo # 2.verify changed views
+--echo # 2.1 DBA_OB_TENANTS (unit_num, compatible)
+--echo # sys
+connection conn_sys;
+select tenant_id, resource_pool_id, unit_count as unit_num from __all_resource_pool;
+select tenant_id, unit_num from DBA_OB_TENANTS;
+select count(*) from oceanbase.DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM oceanbase.GV$OB_PARAMETERS WHERE NAME = 'compatible');
+--echo # mysql
+connection conn_mysql;
+select tenant_id, unit_num from oceanbase.DBA_OB_TENANTS;
+select count(*) from oceanbase.DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM oceanbase.GV$OB_PARAMETERS WHERE NAME = 'compatible');
+--echo # oracle
+connection conn_oracle;
+select tenant_id, unit_num from DBA_OB_TENANTS;
+select count(*) from DBA_OB_TENANTS where COMPATIBLE != (SELECT MIN(VALUE) FROM GV$OB_PARAMETERS WHERE NAME = 'compatible');
+
+--echo
+--echo # 2.2 DBA/CDB_OB_LS_LOCATIONS
+--echo # sys
+connection conn_sys;
+select count(*) from DBA_OB_LS_LOCATIONS;
+select count(*) from CDB_OB_LS_LOCATIONS;
+--echo # mysql
+connection conn_mysql;
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS;
+--echo # oracle
+connection conn_oracle;
+select count(*) from DBA_OB_LS_LOCATIONS;
+
+--echo
+--echo # 2.3 DBA/CDB_OB_TABLE_LOCATIONS (object_id, tablegroup_name, tablegroup_id)
+--echo # 2.3.1 prepare data
+--disable_query_log
+# tablegroup with different sharding
+connection conn_mysql;
+create tablegroup tg_none sharding = 'NONE';
+create tablegroup tg_partition sharding = 'PARTITION';
+create tablegroup tg_adaptive sharding = 'ADAPTIVE';
+
+# nonpart table
+create table t_nonpart_1 (c1 int primary key, c2 int);
+create table t_nonpart_2 (c1 int primary key, c2 int);
+alter tablegroup tg_none add t_nonpart_1, t_nonpart_2;
+
+# part table
+## range
+CREATE TABLE t_part_r (log_id BIGINT NOT NULL,log_value VARCHAR(50),log_date TIMESTAMP NOT NULL)
+       PARTITION BY RANGE(UNIX_TIMESTAMP(log_date)) 
+        (PARTITION M202003 VALUES LESS THAN(UNIX_TIMESTAMP('2020/04/01'))
+       , PARTITION M202004 VALUES LESS THAN(UNIX_TIMESTAMP('2020/08/01'))
+       , PARTITION M202011 VALUES LESS THAN(UNIX_TIMESTAMP('2020/12/01'))
+       );
+## list
+CREATE TABLE t_part_l (col1 BIGINT PRIMARY KEY,col2 VARCHAR(50))
+       PARTITION BY LIST(col1) 
+        (PARTITION p0 VALUES IN (1, 2, 3),
+         PARTITION p1 VALUES IN (5, 6),
+         PARTITION p2 VALUES IN (DEFAULT)
+        );
+## hash
+CREATE TABLE t_part_h(col1 INT,col2 VARCHAR(50))
+       PARTITION BY HASH(col1) PARTITIONS 3;
+## key
+CREATE TABLE t_part_k(id INT,gmt_create DATETIME,info VARCHAR(20))
+       PARTITION BY KEY(id,gmt_create) PARTITIONS 3;
+alter tablegroup tg_partition add t_part_k;
+
+# sub part table
+## Hash + Range
+CREATE TABLE t_subpart_h_r (col1 INT,col2 INT) 
+       PARTITION BY KEY(col1) 
+       SUBPARTITION BY RANGE(col2)
+         (PARTITION p1
+          (SUBPARTITION sp0 VALUES LESS THAN (2020)
+          ,SUBPARTITION sp1 VALUES LESS THAN (2021)
+          ,SUBPARTITION sp2 VALUES LESS THAN (2022)
+          ),
+          PARTITION p2
+          (SUBPARTITION sp4 VALUES LESS THAN (2020)
+          ,SUBPARTITION sp5 VALUES LESS THAN (2021)
+          ,SUBPARTITION sp6 VALUES LESS THAN (2022)
+          )
+         );
+## List Columns + Hash
+CREATE TABLE t_subpart_lc_h(col1 INT,col2 INT) 
+       PARTITION BY LIST COLUMNS(col1)
+       SUBPARTITION BY HASH(col2) SUBPARTITIONS 2
+        (PARTITION p0 VALUES IN(100),
+         PARTITION p1 VALUES IN(200),
+         PARTITION p2 VALUES IN(300)
+        ); 
+## Range Columns + List Columns
+CREATE TABLE t_subpart_rc_lc (col1 INT,col2 INT) 
+       PARTITION BY RANGE COLUMNS(col1)
+       SUBPARTITION BY LIST COLUMNS(col2)
+       (PARTITION p0 VALUES LESS THAN(100)
+         (SUBPARTITION sp0 VALUES IN(1,3),
+          SUBPARTITION sp1 VALUES IN(4,6),
+          SUBPARTITION sp2 VALUES IN(7,9)),
+        PARTITION p1 VALUES LESS THAN(200)
+         (SUBPARTITION sp3 VALUES IN(1,3),
+          SUBPARTITION sp4 VALUES IN(4,6),
+          SUBPARTITION sp5 VALUES IN(7,9))
+       );
+alter tablegroup tg_adaptive add t_subpart_rc_lc;
+
+# "'XXX'" will be applied as ''XXX'', so remove first and last '
+let $table_in_tablegroup = "t_nonpart_1', 't_nonpart_2', 't_part_k', 't_subpart_rc_lc";
+let $nonpart_table_name = "t_nonpart_1', 't_nonpart_2";
+let $part_table_name = "t_part_h', 't_part_k', 't_part_l', 't_part_r";
+let $subpart_table_name = "t_subpart_h_r', 't_subpart_lc_h', 't_subpart_rc_lc";
+let $all_table_name = $nonpart_table_name, $part_table_name, $subpart_table_name;
+
+# oracle
+connection conn_oracle;
+create tablegroup tg_none_oracle sharding = 'NONE';
+create table t_nonpart_oracle (c1 int primary key, c2 int);
+alter tablegroup tg_none_oracle add t_nonpart_oracle;
+--enable_query_log
+
+--echo
+--echo # 2.3.2 verify DBA_OB_TABLE_LOCATIONS
+--echo # sys
+connection conn_sys;
+eval select distinct tenant_id, table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from CDB_OB_TABLE_LOCATIONS where table_name in ($all_table_name) order by object_id;
+# verify tablegroup_id
+--echo # 36 = 3 * (1/*__all_core_table*/ + 1/*t_nonpart_1*/ + 1/*t_nonpart_2*/ + 3/*t_part_k*/ + 6/*t_subpart_rc_lc*/)
+eval select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.TABLEGROUP_NAME = B.OBJECT_NAME and B.OBJECT_TYPE = 'TABLEGROUP' and A.TABLEGROUP_ID = B.OBJECT_ID where A.TABLE_NAME in ('__all_core_table', $table_in_tablegroup) and A.TENANT_ID = $mysql_tenant_id;
+# verify object_id
+--echo # 6 = 3 * (1/*t_nonpart_1*/ + 1/*t_nonpart_2*/)
+eval select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ($nonpart_table_name) and A.TENANT_ID = $mysql_tenant_id;
+--echo # 36 = 3 * (3/*t_part_h*/ + 3/*t_part_k*/ + 3/*t_part_l*/ + 3/*t_part_r*/)
+eval select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.PARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ($part_table_name) and A.TENANT_ID = $mysql_tenant_id;
+--echo # 54 = 3 * (6/*t_subpart_h_r*/ + 6/*t_subpart_lc_h*/ + 6/*t_subpart_rc_lc*/)
+eval select count(*) from CDB_OB_TABLE_LOCATIONS A join CDB_OBJECTS B on A.TENANT_ID = B.CON_ID and A.DATABASE_NAME = B.OWNER and A.TABLE_NAME = B.OBJECT_NAME and A.SUBPARTITION_NAME = B.SUBOBJECT_NAME and A.OBJECT_ID = B.OBJECT_ID where A.TABLE_NAME in ($subpart_table_name) and A.TENANT_ID = $mysql_tenant_id;
+--echo # mysql
+connection conn_mysql;
+eval select /*+query_timeout(100000000)*/distinct table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ($all_table_name) order by object_id;
+--echo # oracle
+connection conn_oracle;
+eval select distinct table_name, table_type, partition_name, subpartition_name, object_id, tablegroup_name, tablegroup_id, sharding from DBA_OB_TABLE_LOCATIONS where table_name = 'T_NONPART_ORACLE';
+
+--echo ##########################
+--echo # 3.verify changed config
+--echo # verify changed config in sys
+connection conn_sys;
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+alter system set partition_balance_schedule_interval = '1h' tenant sys;
+alter system set partition_balance_schedule_interval = '1h' tenant all_user;
+alter system set partition_balance_schedule_interval = '1h' tenant all_meta;
+alter system set partition_balance_schedule_interval = '1h' tenant = 'mysql';
+--error 1210
+alter system set partition_balance_schedule_interval = '1s';
+--error 1210
+alter system set partition_balance_schedule_interval = '1s' tenant = 'mysql';
+
+--echo # verify changed config in mysql
+connection conn_mysql;
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+--error 1210
+alter system set partition_balance_schedule_interval = '1s';
+--error 1227
+alter system set partition_balance_schedule_interval = '1h' tenant = 'mysql';
+
+--echo # verify changed config in oracle
+connection conn_oracle;
+alter system set partition_balance_schedule_interval = '0';
+alter system set partition_balance_schedule_interval = '0s';
+alter system set partition_balance_schedule_interval = '1h';
+--error 600
+alter system set partition_balance_schedule_interval = '1s';
+--error 600
+alter system set partition_balance_schedule_interval = '1h' tenant = 'oracle';

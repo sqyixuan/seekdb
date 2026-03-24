@@ -1,0 +1,103 @@
+# owner: dengzhi.ldz
+# description: pushdown status check for vectorized engine
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+disconnect default;
+sleep 1;
+connect (default,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+# major table
+create table t1 (a bigint primary key, b bigint, c bigint GENERATED ALWAYS AS (a+b) STORED, d char(100), e varchar(1000), f varchar(1204) GENERATED ALWAYS AS (CONCAT(d, ' ', e))) row_format = compressed block_size = 2048;
+insert into t1 (a, b, d, e) values(1, 9, "a", repeat('a', 1000));
+insert into t1 (a, b, d, e) values(2, 2, "ab", repeat("ab", 500));
+insert into t1 (a, b, d, e) values(3, 5, "abcd", repeat("ab", 500));
+insert into t1 (a, b, d, e) values(4, 7, NULL, repeat("abcd", 250));
+insert into t1 (a, b, d, e) values(5, NULL, "ab c ", repeat("a", 1000));
+insert into t1 (a, b, d, e) values(6, 9, NULL, repeat("abbb", 250));
+insert into t1 (a, b, d, e) values(7, 1, "abc ", repeat("abcd", 250));
+insert into t1 (a, b, d, e) values(8, 3, "abcde", NULL);
+insert into t1 (a, b, d, e) values(9, 100, "abd", repeat("abc", 200));
+--let $loop=5
+while($loop > 0)
+{
+  eval insert into t1 (a, b, d, e) select a * 10 + $loop, b + 1, d, e from t1;
+  dec $loop;
+}
+select count(1) from t1;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set _rowsets_enabled=true tenant=all;
+alter system flush plan cache global;
+--enable_query_log
+
+alter system major freeze tenant = all;
+--source mysql_test/include/wait_daily_merge.inc
+
+# minor table
+--let $loop=5
+while($loop > 0)
+{
+  eval insert into t1 (a, b, d, e) values($loop * 1000 + 90, 50, "ab", repeat("ab", 500));
+  dec $loop;
+}
+select count(1) from t1;
+
+connection obsys;
+alter system minor freeze tenant = all;
+--source mysql_test/include/wait_minor_merge.inc
+
+# memtable
+insert into t1 (a, b, d, e) values(10000, 0, "ab c", repeat('ab ', 300));
+insert into t1 (a, b, d, e) values(1000000, 50, "abcd", repeat('abcd', 100));
+
+# basic
+select count(1) from t1;
+select sum(c) from t1;
+select max(a+b), max(c), min(f), max(f) from t1;
+select count(1) from t1 where c is null;
+select count(1) from t1 where c > 20;
+select count(1) from t1 where f > "abc";
+select count(1) from t1 where f < "ab";
+
+# pushdown status change
+select count(1) from t1 where b < 1;
+select sum(c) from t1 where b > 1;
+select sum(c), max(f) from t1 where c > 20;
+
+# black/white filter 
+select max(c), max(f) from t1 where d like "abc%";
+select c, f from t1 where d = "ab ";
+select sum(c) from t1 where f > "ab";
+select max(f) from t1 where c > 20 and f > "abc";
+select sum(a+b), sum(c) from t1 where b <> 8;
+select sum(a+b), sum(c), max(f) from t1 where c > 20 and f like "abc%";
+select max(c) from t1 where b is not null;
+select concat(d, ' ', e), f from t1 where b > 4 and d > "ab ";
+select sum(c) from t1 where a < 30 and a > 10 and b > 4 and d > "ab ";
+
+# skip minor table
+insert into t1 (a, b, d, e) values(1000001, 10, "a", repeat('a', 300));
+select sum(c) from t1 where c < "ab";
+
+# skip minor table and memtable
+select * from t1 where b > 60;
+
+--disable_query_log
+drop table t1;
+set global max_allowed_packet=16777216;
+set global ob_sql_work_area_percentage=5;
+set @@recyclebin = on;
+connection obsys;
+alter system flush plan cache global;
+--enable_query_log

@@ -1,0 +1,84 @@
+# owner: muwei.ym
+# owner group: storage
+# description: this case is use for  batch migration
+#
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2, init_unit_num=1);
+ob1.reboot;
+
+ob1.mysql alter system set resource_soft_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = true;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = true;
+ob1.mysql alter system set sys_bkgd_migration_change_member_list_timeout='10s';
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $ip=deploy_get_value(ob1.z1.obs1.ip);
+let $port=deploy_get_value(ob1.z1.obs1.mysql_port);
+connect (conn1,$ip,root@obtest,,test,$port);
+
+connection conn1;
+create tablegroup test_group;
+
+let $table_idx = 1;
+
+while ($table_idx < 10)
+{
+  eval create table test$table_idx(c1 int, c2 int, c3 varchar(4096), primary key(c1)) tablegroup='test_group' primary_zone='z1';
+  inc $table_idx;
+}
+
+
+#create table test01(c1 int, c2 int, c3 varchar(4096), primary key(c1)) tablegroup='test_group' primary_zone='z1';
+#create table test02(c1 int, c2 int, c3 varchar(4096), primary key(c1)) tablegroup='test_group' primary_zone='z1';
+#create table test03(c1 int, c2 int, c3 varchar(4096), primary key(c1)) tablegroup='test_group' primary_zone='z1';
+
+let $table_idx = 1;
+while ($table_idx < 10)
+{
+  eval insert into test$table_idx values(1, 1, 'oceanbase');
+  inc $table_idx;
+}
+
+
+#eval insert into test01 values(1, 1, 'oceanbase');
+#eval insert into test02 values(1, 1, 'oceanbase');
+#eval insert into test03 values(1, 1, 'oceanbase');
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'obtest' and zone='z2', unit_id, 1);
+let $src_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'obtest' and zone='z2', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'obtest' and zone='z2', svr_port, 1);
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test1', table_id, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2' and (svr_ip!='$src_ip' or svr_port != $src_port), host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+
+ob1.mysql alter system migrate unit $unit_id destination = "$dst_host";
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_partition_migration_status, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_rebalance_task_stat, 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_migration_status where result != 0, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sys_task_status, 0, 60;
+ob1.mysql_p select result from oceanbase.__all_virtual_partition_migration_status;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 4;
+
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_concurrency_object_pool where free_list_name like '%ObPartitionBaseDataInfo%' and count != 0, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_concurrency_object_pool where free_list_name like '%ObPartitionMacroBlockObReader%' and count != 0, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_concurrency_object_pool where free_list_name like '%ObPartitionBaseDataMetaObReader%' and count != 0, 0, 10;
+ob1.check_until_timeout select sum(USED) from oceanbase.__all_virtual_memory_info where mod_name like 'OB_PARTITION_MIGRATE', 0, 10;
+ob1.check_until_timeout select sum(COUNT) from oceanbase.__all_virtual_memory_info where mod_name like 'OB_PARTITION_MIGRATE', 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and svr_ip = '$src_ip' and svr_port = $src_port and unit_id = $unit_id, 0, 10;

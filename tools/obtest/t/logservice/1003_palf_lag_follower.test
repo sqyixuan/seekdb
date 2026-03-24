@@ -1,0 +1,161 @@
+##########################
+# owner : debin.jdb
+# owner group: CLOG
+# description: test for palf log sync
+# 测试点：
+# 1. 多副本日志同步;
+# 2. follower_1宕机重启导致落后, 追赶leader的日志;
+# 3. 切主到落后的follower_1上, 查询数据;
+# 4. follower_2宕机重启，切为主，插入数据，查询数据.
+# 5. 集群宕机重启，插入数据，查询数据.
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size=100G";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证建租户
+let $max_cpu = 4;
+let $min_cpu = 1;
+let $memory_size = 8589934592;
+let $log_disk_size = 2147483648;
+let $max_iops = 100000;
+let $min_iops = 1024;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+# case 3. 验证mysql租户下表的DML/SELECT
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 3;
+create table t1 (c1 int);
+source include/check_schema_sync.inc;
+insert into t1 values (1), (2), (3), (4), (5);
+select * from t1;
+select count(*) from t1;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+# 确认leader已经汇报成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+# 获取第一个follower
+let $follower_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 order by svr_ip, svr_port limit 1, host, 1);
+let $follower_obs=deploy_get_value(ob1.get_obs_by_addr $follower_ip_port);
+# 获取第二个follower
+let $follower_2_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 and concat(svr_ip,':',svr_port) not like "%$follower_ip_port%" limit 1, host, 1);
+let $follower_2_obs=deploy_get_value(ob1.get_obs_by_addr $follower_2_ip_port);
+
+let $leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 order by svr_ip, svr_port limit 1, host, 1);
+let $leader_obs=deploy_get_value(ob1.get_obs_by_addr $leader_ip_port);
+
+# kill follower_obs
+$follower_obs.force_stop;
+ob_connect(conn_mysql, $follower_2_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 插入更多数据
+--disable_query_log
+let $cnt=200;
+while($cnt>0)
+{
+  eval insert into t1 values ($cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from t1;
+
+# start follower
+$follower_obs.nstart;
+sleep 20;
+
+# 切主到宕机重启的follower上
+ob_connect(conn_sys, $leader_obs, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+--disable_query_log
+eval alter system switch replica leader ls=1001 server='$follower_ip_port' tenant='mysql';
+# 确认切主成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_ip_port' and ls_id = 1001 and role = 1, 1, 60;
+--enable_query_log
+
+# 写入数据
+ob_connect(conn_mysql, $leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+insert into t1 values (6), (7), (8), (9), (10);
+select count(*) from t1;
+
+# kill follower_2_obs
+$follower_2_obs.force_stop;
+sleep 5;
+# start follower_2_obs
+$follower_2_obs.nstart;
+sleep 30;
+
+# 确认leader存在
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 'LEADER', 1, 60;
+
+# 切主到宕机重启的follower_2上
+ob_connect(conn_sys, $leader_obs, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+source include/check_schema_sync.inc;
+--disable_query_log
+eval alter system switch replica leader ls=1001 server='$follower_2_ip_port' tenant='mysql';
+# 确认切主成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$mysql_tenant_id' and concat(svr_ip,':',svr_port) = '$follower_2_ip_port' and ls_id = 1001 and role = 1, 1, 60;
+--enable_query_log
+
+# 写入数据
+ob_connect(conn_mysql, $leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+insert into t1 values (11), (12), (13), (14), (15);
+select count(*) from t1;
+
+let $leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id = 1001 and role = 2 order by svr_ip, svr_port limit 1, host, 1);
+let $leader_obs=deploy_get_value(ob1.get_obs_by_addr $leader_ip_port);
+
+ob_connect(conn_mysql, $leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# 插入更多数据
+--disable_query_log
+let $cnt=400;
+while($cnt>200)
+{
+  eval insert into t1 values ($cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from t1;
+
+# 集群重启
+ob1.force_stop;
+sleep 2;
+ob1.nstart;
+sleep 60;
+
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = '$mysql_tenant_id' and ls_id = 1001 and role = 'LEADER', 1, 60;
+
+# 插入更多数据
+ob_connect(conn_mysql, $leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+--disable_query_log
+let $cnt=600;
+while($cnt>400)
+{
+  eval insert into t1 values ($cnt);
+  dec $cnt;
+}
+--enable_query_log
+select count(*) from t1;
+

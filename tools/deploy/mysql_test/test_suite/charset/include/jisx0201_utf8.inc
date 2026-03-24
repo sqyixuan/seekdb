@@ -1,0 +1,10 @@
+INSERT INTO `Ｔ１`VALUES(' !"#$%&\'()*+,-./');
+INSERT INTO `Ｔ１`VALUES('0123456789:;<=>?');
+INSERT INTO `Ｔ１`VALUES('@ABCDEFGHIJKLMNO');
+INSERT INTO `Ｔ１`VALUES('PQRSTUVWXYZ[\\]^_');
+INSERT INTO `Ｔ１`VALUES('abcdefghijklmno ');
+INSERT INTO `Ｔ１`VALUES('pqrstuvwxyz{|}~ ');
+INSERT INTO `Ｔ１`VALUES(' ｡｢｣､･ｦｧｨｩｪｫｬｭｮｯ');
+INSERT INTO `Ｔ１`VALUES('ｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿ');
+INSERT INTO `Ｔ１`VALUES('ﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏ');
+INSERT INTO `Ｔ１`VALUES('ﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝﾞﾟ');

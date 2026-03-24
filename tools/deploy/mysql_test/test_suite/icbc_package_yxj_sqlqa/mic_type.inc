@@ -1,0 +1,22 @@
+CREATE OR REPLACE TYPE "DAMS_ARRYTYPE" IS TABLE OF VARCHAR2(4000);
+
+CREATE OR REPLACE TYPE "ARRYTYPE" is table of Varchar2(10);
+
+CREATE OR REPLACE TYPE "CONNECT_TYPE" AS OBJECT
+(
+  v_result VARCHAR2(32767),
+  STATIC FUNCTION odciaggregateinitialize(sctx IN OUT connect_type)
+    RETURN NUMBER,
+  MEMBER FUNCTION odciaggregateiterate(SELFx  IN OUT connect_type,
+    VALUE IN VARCHAR2) RETURN NUMBER,
+  MEMBER FUNCTION odciaggregatemerge(SELFx IN OUT connect_type,
+    ctx2 IN connect_type) RETURN NUMBER,
+  MEMBER FUNCTION odciaggregateterminate(SELFx IN connect_type,
+    returnvalue OUT VARCHAR2,
+    flags IN VARCHAR2) RETURN NUMBER
+);	
+ 
+
+CREATE OR REPLACE TYPE "TP_ARRAY_TABLE" IS TABLE OF VARCHAR2(4000);
+
+

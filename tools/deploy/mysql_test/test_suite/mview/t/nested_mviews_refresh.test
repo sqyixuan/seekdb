@@ -1,0 +1,161 @@
+# owner:wyh329796
+# owner group: data
+# tags: mview
+# descriotion: 嵌套mv级联刷新测试用例
+
+--disable_warnings
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on ta;
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on tb;
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on tc;
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on mv1;
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on mv2;
+--source mysql_test/include/ignore_drop_mlog_err_mysql.inc
+drop materialized view log on mv3;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+drop table if exists ta;
+drop table if exists tb;
+drop table if exists tc;
+--enable_warnings
+
+create table ta(id int primary key, name varchar(30));
+create table tb(id int primary key, age int);
+create table tc(id int primary key, salary int);
+insert into ta values (1, 'jack');
+insert into tb values (1, 21);
+insert into tc values (1, 10000);
+
+###### 测试点1： 创建物化视图时， 设置表级nested refresh属性以及修改相关属性，验证后台任务创建成功
+create materialized view log on ta with primary key (name) including new values;
+create materialized view log on tb with primary key (age) including new values;
+create materialized view log on tc with primary key (salary) including new values;
+
+create materialized view mv1 (primary key (id_a)) refresh fast inconsistent on demand as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+
+--disable_query_log
+let $mv1_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv1', table_id, 1);
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv1_id;
+
+create materialized view mv2 (primary key (id_a)) refresh fast inconsistent on demand  as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+create materialized view log on mv2 with primary key (name, salary) including new values;
+let $mv2_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv2', table_id, 1);
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv2_id;
+
+create materialized view mv3 refresh fast individual as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+let $mv3_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv3', table_id, 1);
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv3_id;
+
+drop materialized view mv3;
+create materialized view mv3 refresh fast as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv3_id;
+alter materialized view mv1 refresh next sysdate() + interval 5 second;
+
+##### 检查修改属性和dbms_job
+alter materialized view mv1 refresh individual;
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv1_id;
+let $mv1_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv1_id, refresh_job, 1);
+eval select count(*) > 0 from oceanbase.__all_tenant_scheduler_job where job_name = '$mv1_refresh_job' and job_action like '%nested=>FALSE%';
+
+--error 1235
+alter materialized view mv1 refresh consistent;
+
+alter materialized view mv1 refresh inconsistent;
+eval select nested_refresh_mode from oceanbase.__all_mview where mview_id = $mv1_id;
+let $mv1_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv1_id, refresh_job, 1);
+eval select count(*) > 0 from oceanbase.__all_tenant_scheduler_job where job_name = '$mv1_refresh_job' and job_action like '%nested=>TRUE,nested_refresh_mode=>\'INCONSISTENT\'%';
+--enable_query_log
+
+##### 测试点2: 验证DBMS包语法正确性
+#--error 1235
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'consistent');
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'inconsistent');
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'INCONSISTENT');
+
+--error 1210
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'xxx');
+--error 1210
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'');
+
+--error 1210
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>false, nested_refresh_mode=>'consistent');
+--error 1210
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>false, nested_refresh_mode=>'inconsistent');
+--error 1210
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>false, nested_refresh_mode=>'');
+
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>false);
+
+#--error 1235
+CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'consistent');
+CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'inconsistent');
+CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>false);
+
+###### 测试点3: 级联非一致刷新，下层MV全量刷新后，上层mv使用增量刷新时自动转换为全量刷新（兼容ORACLE行为）
+## 上一次刷新是增量刷新
+--disable_query_log
+CALL DBMS_MVIEW.REFRESH('mv2', 'f');
+eval select last_refresh_type = 1 from oceanbase.__all_mview where mview_id = $mv2_id; 
+CALL DBMS_MVIEW.REFRESH('mv1', 'c');
+eval select last_refresh_type = 0 from oceanbase.__all_mview where mview_id = $mv1_id; 
+## 本次刷新是全量刷新
+CALL DBMS_MVIEW.REFRESH('mv2', 'f');
+eval select last_refresh_type = 0 from oceanbase.__all_mview where mview_id = $mv2_id;
+
+## 上一次刷新是增量刷新
+CALL DBMS_MVIEW.REFRESH('mv2', 'f');
+eval select last_refresh_type = 1 from oceanbase.__all_mview where mview_id = $mv2_id; 
+drop materialized view log on mv1;
+drop materialized view mv1;
+
+create materialized view mv1 (primary key (id_a)) refresh fast inconsistent on demand as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+let $mv1_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv1', table_id, 1);
+## 删除依赖的mv，重建后，调度mv2的增量刷新可以走全量刷新 （此行为不兼容oracle，oracle会报错mlog younger）
+CALL DBMS_MVIEW.REFRESH('mv2', 'f');
+eval select last_refresh_type = 0 from oceanbase.__all_mview where mview_id = $mv2_id;
+--enable_query_log
+
+##### 测试点3: 级联刷新后，每层物化视图都刷新到正确的结果，分别测试全量和增量
+## 检验每一层都刷新得到最新结果
+insert into ta values (2, 'jj');
+insert into tb values (2, 22);
+insert into tc values (2, 20000);
+
+CALL DBMS_MVIEW.REFRESH('mv3', 'C');
+CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true);
+select * from mv1;
+select * from mv2;
+select * from mv3;
+
+insert into ta values (3, 'jjj');
+insert into tb values (3, 23);
+insert into tc values (3, 30000);
+
+CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true);
+
+select * from mv1;
+select * from mv2;
+select * from mv3;
+
+--enable_query_log
+
+drop materialized view mv3;
+drop materialized view log on mv2;
+drop materialized view mv2;
+drop materialized view log on mv1;
+drop materialized view mv1;
+drop materialized view log on ta;
+drop materialized view log on tb;
+drop materialized view log on tc;
+drop table ta;
+drop table tb;
+drop table tc;

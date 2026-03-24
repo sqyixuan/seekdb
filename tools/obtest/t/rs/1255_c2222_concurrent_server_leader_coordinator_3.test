@@ -1,0 +1,109 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: leader coordinator切主要考虑zone的suspend_merging属性
+ob1=OBI(cluster=2:2:2:2,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = "true";
+ob1.mysql alter system set enable_rebalance = "false";
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set wait_leader_batch_count = 128;
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.mysql CREATE RESOURCE UNIT unit1 max_cpu 1, max_memory '1G', max_iops 100000,max_disk_size '10G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='1G', MIN_IOPS=128;
+
+ob1.mysql CREATE RESOURCE POOL tt_pool UNIT = "unit1", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE RESOURCE POOL xx_pool UNIT = "unit1", UNIT_NUM = 2, ZONE_LIST = ('z3', 'z4');
+ob1.mysql CREATE TENANT tt resource_pool_list=('tt_pool'), locality = "F,R@z1,F,R@z2,F,R@z3", primary_zone = "z1;z2;z3" set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE TENANT xx resource_pool_list=('xx_pool'), locality = "F@z3,F@z4", primary_zone = "z3" set ob_tcp_invited_nodes='%';
+sleep 3;
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+connect(xx_conn, $proxy_ip, root@xx,,test, $proxy_port);
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+# 创建若干用户表
+connection tt_conn;
+# create dummy database with primary zone to let this not a small tenant
+let $count = 0;
+--disable_query_log
+create tablegroup tg1 primary_zone = 'z1;z2' partition by hash partitions 10;
+while ($count < 200)
+{
+  eval create table tt$count (pk bigint primary key) primary_zone = DEFAULT, tablegroup = 'tg1' partition by hash(pk) partitions 10;
+  inc $count;
+}
+let $count = 0;
+--enable_query_log
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+
+let $svr_ip1 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_server where zone = 'z1', svr_ip, 1);
+let $svr_port1 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where zone = 'z1', svr_port, 1);
+let $svr_ip2 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_server where zone = 'z1', svr_ip, 2);
+let $svr_port2 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where zone = 'z1', svr_port, 2);
+
+eval update oceanbase.__all_zone set value = 1 where zone in ('z2', 'z3') and name = 'is_merging';
+eval alter system reload zone;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and role = 1 and zone = 'z1', 2000, 180;
+
+
+let $server1_leader_cnt_a = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and role=1 and svr_ip='$svr_ip1' and svr_port=$svr_port1, c, 1);
+let $server2_leader_cnt_a = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and role=1 and svr_ip='$svr_ip2' and svr_port=$svr_port2, c, 1);
+
+eval update oceanbase.__all_zone set value = 0 where zone in ('z2', 'z3') and name = 'is_merging';
+eval update oceanbase.__all_zone set value = 1 where zone in ('z1') and name = 'is_merging';
+eval alter system reload zone;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and role = 1 and zone = 'z1', 0, 180;
+
+eval update oceanbase.__all_zone set value = 1 where zone in ('z2', 'z3') and name = 'is_merging';
+eval update oceanbase.__all_zone set value = 0 where zone in ('z1') and name = 'is_merging';
+eval alter system reload zone;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and role = 1 and zone = 'z1', 2000, 180;
+
+sleep 60;
+let $server1_leader_cnt_b = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and role=1 and svr_ip='$svr_ip1' and svr_port=$svr_port1, c, 1);
+let $server2_leader_cnt_b = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and role=1 and svr_ip='$svr_ip2' and svr_port=$svr_port2, c, 1);
+
+if ($server1_leader_cnt_a == $server1_leader_cnt_b)
+{
+  echo 'pass';
+}
+
+if ($server2_leader_cnt_a == $server2_leader_cnt_b)
+{
+  echo 'pass';
+}
+
+eval update oceanbase.__all_zone set value = 0 where zone in ('z2', 'z3') and name = 'is_merging';
+eval alter system reload zone;
+
+ob1.mysql DROP TENANT tt;
+
+connection xx_conn;
+let $count = 0;
+--disable_query_log
+create tablegroup tg1 primary_zone = "z3;z4" partition by hash partitions 10;
+while ($count < 2)
+{
+  eval create table tt$count(pk bigint primary key) primary_zone = DEFAULT, tablegroup = 'tg1' partition by hash(pk) partitions 10;
+  inc $count;
+}
+--enable_query_log
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "xx", tenant_id, 1);
+let $z4_svr_ip1 = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_svr_port1 = deploy_get_value(ob1.z4.obs0.port);
+let $z4_svr_ip2 = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_svr_port2 = deploy_get_value(ob1.z4.obs1.port);
+let $down_part_num = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and svr_ip = '$z4_svr_ip2' and svr_port = $z4_svr_port2, c, 1);
+let $part_num = deploy_get_value(ob1.select select (20 - $down_part_num) c, c, 1);
+ob1.z4.obs1.stop;
+sleep 30;
+connection xx_conn;
+alter tablegroup tg1 primary_zone = "z4;z3";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and role = 1 and zone = 'z4', $part_num, 180;
+alter tablegroup tg1 primary_zone = "z3;z4";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where tenant_id = $tenant_id and role = 1 and zone = 'z3', $part_num, 180;

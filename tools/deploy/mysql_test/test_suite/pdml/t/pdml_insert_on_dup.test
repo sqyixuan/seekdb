@@ -1,0 +1,154 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: dachuan.sdc
+# owner group: sql2
+# tags: pdml,optimizer 
+
+
+--result_format 4
+--disable_warnings
+--disable_warnings
+drop database if exists pdml;
+--enable_warnings
+create database pdml;
+use pdml;
+
+create table t(c1 int, c2 int, primary key(c1)) partition by hash(c1) partitions 4;
+create table src1(c1 int, c2 int);
+create table src2(c1 int, c2 int);
+insert into src1 values(1, 1);
+insert into src1 values(2, 2);
+insert into src2 values(10, 10);
+insert into src2 values(20, 20);
+insert into src2 values(20, 30);
+
+explain basic insert /*+ enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+select * from t order by 1;
+
+explain insert /*+ enable_parallel_dml parallel(2) */into t select * from src2 on duplicate key update c2 = c2 + src2.c2;
+explain insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src2 on duplicate key update c2 = c2 + src2.c2;
+insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src2 on duplicate key update c2 = c2 + src2.c2;
+select * from t order by 1;
+
+##disable pdml if update unique key
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c1 = c1 + 1;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c1 = src1.c2;
+
+##disable pdml if exists unique index besides primary key.
+create unique index idx on t(c2, c1);
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+
+alter table t drop index idx;
+
+create unique index idx on t(c2, c1) global partition by hash(c2) partitions 4;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+
+##disable pdml if exist global index.
+alter table t drop index idx;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+create index idx on t(c2) global;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+
+
+## test single partition table.
+drop table t;
+create table t(c1 int, c2 int, primary key(c1));
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+create index idx on t(c1, c2) global;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+create unique index idx2 on t(c2);
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+
+##test heap table
+drop table t;
+create table t(c1 int primary key, c2 int) ORGANIZATION HEAP;
+explain basic insert /*+ opt_param('enable_pdml_insert_up', 'true') enable_parallel_dml parallel(2) */into t select * from src1 on duplicate key update c2 = c2 + src1.c2;
+drop table t;
+CREATE TABLE `t1` (
+`c1` int(11) NOT NULL,
+`c2` varchar(50) DEFAULT NULL,
+`c3` int(11) GENERATED ALWAYS AS ((`c1` + 1)) STORED,
+`c4` varchar(100) GENERATED ALWAYS AS (substr(`c2`,10)) VIRTUAL,
+PRIMARY KEY (`c1`),
+KEY `t1_c3idx` (`c3`) BLOCK_SIZE 16384 LOCAL,
+KEY `t1_c4idx` (`c4`) BLOCK_SIZE 16384 LOCAL
+);
+CREATE TABLE `t2` (
+`c1` int(11) NOT NULL AUTO_INCREMENT,
+`c2` varchar(50) DEFAULT NULL
+);
+
+insert into t2(c1, c2) values(1, 'aaaaaaaaaaaaaaa');
+insert into t2(c1, c2) values(2, 'bbbbbbbbbbbbbbb');
+insert into t2(c1, c2) values(3, 'ccccccccccccccc');
+insert into t2(c1, c2) values(4, 'ddddddddddddddd');
+insert into t2(c1, c2) values(5, 'eeeeeeeeeeeeeee');
+
+
+insert into t1(c1, c2) values(3, 'qqqqqqqqqqqqqqq');
+insert into t1(c1, c2) values(4, 'wwwwwwwwwwwwwww');
+
+insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/ into t1(c1,c2) select * from t2 on duplicate key update c2 = values(c2);
+select /*+ index(t1 t1_c4idx)*/ c1, c4 from t1 order by 1;
+drop table t1;
+drop table t2;
+
+## test different data type.
+create table t1(c1 int primary key, c2 int, c3 int);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 geometry);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 array(int));
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 json);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 roaringbitmap);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 string);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 text);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+create table t1(c1 int primary key, c2 int, c3 blob);
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+## test generated column
+create table t1(c1 int primary key, c2 int, c3 int generated always as (c1 + 1));
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1(c1, c2) select c1, c2 from t1 on duplicate key update c2 = c2 + 1;
+drop table t1;
+
+## test fulltext index
+create table t1(c1 int primary key, c2 varchar(100), fulltext index idx(c2));
+--replace_regex /[0-9]{16}/xxx/g
+explain basic insert /*+parallel(10) enable_parallel_dml opt_param('enable_pdml_insert_up','true')*/
+  into t1 select * from t1 on duplicate key update c2 = c2;
+
+drop table t1;
+drop database pdml;
+use test;

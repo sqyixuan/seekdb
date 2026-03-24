@@ -1,0 +1,108 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# pg内table过滤, 处理到未来表
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant.inc;
+source include/liboblog/enable_oracle_archive.inc;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* sort_trans_participants=1 test_mode_on=1 test_mode_block_alter_table_ddl_sec=3 log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+alter session set current_schema = oblog_db;
+sleep 1;
+
+################### 1. create PG, 默认不过滤table数据
+create tablegroup tg1 binding true;
+ob1.oblog.next;
+create table tant1(c1 int primary key, c2 int, c3 int, c4 int, index(c2), index(c2, c3), unique(c4)) tablegroup = tg1;
+ob1.oblog.next;
+create table tant2 (c1 int primary key ,c2 int) tablegroup = tg1;
+ob1.oblog.next;
+
+# sys-mysql租户
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+use oceanbase;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oracle", tenant_id, 1);
+## 主表
+let $tant1_table_id = query_get_value(select table_id from __all_virtual_table where tenant_id=$tenant_id and table_name="TANT1", table_id, 1);
+let $tant2_schema_version = query_get_value(select schema_version from __all_virtual_ddl_operation where tenant_id=$tenant_id order by schema_version desc limit 1, schema_version, 1);
+let $idxc2_table_id = query_get_value(select table_id from __all_virtual_ddl_operation where tenant_id=$tenant_id and operation_type=20, table_id, 1);
+let $idxc2c3_table_id = query_get_value(select table_id from __all_virtual_ddl_operation where tenant_id=$tenant_id and operation_type=20, table_id, 2);
+let $uidxc4_table_id = query_get_value(select table_id from __all_virtual_ddl_operation where tenant_id=$tenant_id and operation_type=20, table_id, 3);
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+# 操作tant1表, 推进tant1的schema version, 保证tant1后续的数据table_version推进
+alter table tant1 add c5 varchar(20);
+alter table tant1 add c6 varchar(20);
+alter table tant1 add c7 varchar(20);
+
+# sys-mysql租户
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+use oceanbase;
+let $tant1_newest_schema_version = query_get_value(select schema_version from __all_virtual_ddl_operation where tenant_id=$tenant_id and operation_type=3 order by schema_version desc limit 1, schema_version, 1);
+
+#echo $tant2_schema_version;
+#echo $tant1_table_id;
+#echo $idxc2_table_id;
+#echo $idxc2c3_table_id;
+#echo $tant1_newest_schema_version;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+######## 测试不在TableIDCache, 其实本质上黑名单数据, 处理未来表发现是黑名单过滤掉
+# 1. 关于table version: 该事务, tant1 行数据table_version为"alter table tant1 add c7 varchar(20)"的schema version
+# 2. TableIDCache维护了TANT1，unique(c4), TANT2
+# 3. 这里通过阻塞alter table, 当处理到普通索引的数据，比如index(c2), index(c2, c3), 不在TableIDCache, 走未来表处理逻辑, 再次check发现需要过滤
+begin;
+insert into tant1 values(1, 1, 1, 1, 'ali5', 'ali6', 'ali7');
+insert into tant2 values(2, 2);
+commit;
+ob1.oblog.next_dml;
+
+drop table tant1;
+drop table tant2;
+
+# 唯一索引数据不会过滤
+ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$uidxc4_table_id, need_filter_row=false";
+# DDL and DML trans will sort, so this will not happen
+#ob1.oblog.check_log "[STAT] [PartMgr] [HANDLE_FUTURE_TABLE] [BEGIN] TENANT=$tenant_id TABLE=$idxc2_table_id TABLE_VERSION=$tant1_newest_schema_version CUR_SCHEMA_VERSION=$tant2_schema_version";
+# 普通索引过滤掉
+ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$idxc2_table_id, need_filter_row=true";
+ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$idxc2c3_table_id, need_filter_row=true";
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* sort_trans_participants=1 test_mode_on=1 test_mode_block_create_table_ddl_sec=3 test_mode_block_filter_row_data_sec=6 log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create tablegroup tg2 binding true;
+ob1.oblog.next;
+create table tant3(c1 int primary key, c2 int, c3 int, c4 int, index(c2), unique(c4)) tablegroup = tg2;
+
+# 操作tant1表, 推进tant1的schema version, 保证tant1后续的数据table_version推进
+alter table tant3 add c5 varchar(20);
+alter table tant3 add c6 varchar(20);
+alter table tant3 add c7 varchar(20);
+
+##########测试不在TableIDCache, 其实本质上是未来表, 处理未来表，发现不需要过滤, 而不能过滤掉数据
+insert into tant3 values(1, 1, 1, 1, 'ali5', 'ali6', 'ali7');
+ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;

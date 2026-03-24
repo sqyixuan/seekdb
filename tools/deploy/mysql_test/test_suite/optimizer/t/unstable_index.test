@@ -1,0 +1,79 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+#owner:zhenling.zzg
+#owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+create table t1 (pk int primary key, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int);
+create index t1_i1 on t1(c1, pk);
+create index t1_i2 on t1(c2, c3);
+
+create table t2(c1 int, c2 int, c3 int, c4 int, primary key(c1,c2));
+create index t2_i1 on t2(c1,c3);
+create index t2_i2 on t2(c1,c4);
+
+create table t3(c1 int, c2 int, c3 int, c4 int, c5 int, c6 int);
+create index t3_i1 on t3(c1,c2,c3,c4);
+create index t3_i2 on t3(c1, c5, c4);
+
+call dbms_stats.set_table_stats(NULL, 't1', numrows=>100000);
+call dbms_stats.set_column_stats(NULL, 't1', 'pk', distcnt=>100000);
+call dbms_stats.set_column_stats(NULL, 't1', 'c2', distcnt=>10);
+call dbms_stats.set_column_stats(NULL, 't1', 'c3', distcnt=>100000);
+
+call dbms_stats.set_table_stats(NULL, 't2', numrows=>100000);
+call dbms_stats.set_column_stats(NULL, 't2', 'c1', distcnt=>100000);
+call dbms_stats.set_column_stats(NULL, 't2', 'c3', distcnt=>100000);
+
+--echo -------------------------------------------------------------------
+--echo range行数大于1000，range索引不会裁剪主表，pruned_index预期只有：t1_i1
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t1 
+where c2 = 1;
+
+--echo -------------------------------------------------------------------
+--echo range行数小于1000，只会选择range索引，pruned_index预期有：t1_i2，unstable_index预期有：t1
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t1 
+where c1 = 1;
+
+--echo -------------------------------------------------------------------
+--echo range行数小于1000，只会选择range索引，unstable_index预期有：t1、t1_i2
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t1 
+where c1 = 1 order by c2;
+
+--echo -------------------------------------------------------------------
+--echo 所有索引都无法抽取range，并且索引都需要回表，pruned_index预期有：t1_i1、t1_i2
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t1 
+where c3 = 1;
+
+--echo -------------------------------------------------------------------
+--echo range行数小于1000，忽略回表维度信息，尽可能选择range多的索引，pruned_index预期有：t2_i2, unstable_index预期有：t2
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t2 
+where c1 = 1 and c3 = 1;
+
+--echo -------------------------------------------------------------------
+--echo range行数小于1000，忽略回表维度信息，尽可能选择range多的索引，但是不能裁剪有interesting order的索引，unstable_index预期有：t2
+--echo -------------------------------------------------------------------
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select /*+OPT_PARAM('_ENABLE_STORAGE_CARDINALITY_ESTIMATION', 'false')*/* from t2 
+where c1 = 1 and c3 = 1 order by c4;
+
+--replace_regex /version=[0-9]+-[0-9]+-[0-9]+ [0-9]+:[0-9]+:[0-9]+.[0-9]+//g
+explain extended_noaddr select distinct c1,c6
+from t3 
+where c1 in (1,2) and c2 in (3,4) and c3 = 1 and c4 = 1;

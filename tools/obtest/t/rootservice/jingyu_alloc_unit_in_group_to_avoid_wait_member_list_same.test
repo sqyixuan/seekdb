@@ -1,0 +1,103 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test allocate unit to do migration.
+#    If unit_group_id is specified, allocate unti belong to this
+#    group regardless of status of unti and server
+#    We designed following cases to simulate different scenes:
+#
+#    1. create tenant with unit_num = 2 and FFF
+#    2. wait permanent offline replica in zone3
+#    3. shrink unit_num from 2 to 1
+#
+#    Bug: 
+
+--echo =========================================================
+--echo                 create inital objects
+--echo =========================================================
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant tenant_for_migrate_locality
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_migrate_locality RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1, z2" SET ob_tcp_invited_nodes='%';
+# turn off delay gc
+ob1.mysql alter system set ls_gc_delay_time='0s' tenant = sys;
+ob1.mysql alter system set ls_gc_delay_time='0s' tenant = ALL_USER;
+ob1.mysql alter system set ls_gc_delay_time='0s' tenant = ALL_META;
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_migrate_locality", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_migrate_locality", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+# get tenant_for_migrate_locality's unit info in z3
+let $min_user_ls_id = deploy_get_value(ob1.select select min(ls_id) as min_user_ls_id from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and ls_id != 1, min_user_ls_id, 1);
+let $min_user_ls_unit = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $min_user_ls_id and zone = 'z3', unit_id, 1);
+let $z3_current_ip = deploy_get_value(ob1.select SELECT svr_ip as z3_current_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $min_user_ls_unit, z3_current_ip, 1);
+let $z3_current_port = deploy_get_value(ob1.select SELECT svr_port as z3_current_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $min_user_ls_unit, z3_current_port, 1);
+let $z3_current = $z3_current_ip:$z3_current_port;
+
+# get servers' addr in z1, z2 and z3
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_ip1 = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst_port1 = deploy_get_value(ob1.z1.obs1.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z1_dst1 = $z1_dst_ip1:$z1_dst_port1;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_ip1 = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst_port1 = deploy_get_value(ob1.z2.obs1.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z2_dst1 = $z2_dst_ip1:$z2_dst_port1;
+
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+
+--echo =========================================================
+--echo      kill observer in z3 and wait permanent offline
+--echo =========================================================
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_ADD_REPLICA_DRTASK wait_for signal';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+--disable_all_result_log
+if ($z3_current == $z3_dst0)
+{
+  ob1.z3.obs0.force_stop;
+  ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and role like "%LEADER%" and member_list like "%$z3_dst0%", 0, 120;
+}
+if ($z3_current == $z3_dst1)
+{
+  ob1.z3.obs1.force_stop;
+  ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and role like "%LEADER%" and member_list like "%$z3_dst1%", 0, 120;
+}
+
+--echo =========================================================
+--echo                      shrink unit_num
+--echo =========================================================
+connection sys_conn;
+ob1.mysql alter system set_tp tp_name = ERRSIM_EXECUTE_ADD_REPLICA_ERROR, error_code = 4012, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+let $unit_group_id = deploy_get_value(ob1.select SELECT unit_group_id FROM oceanbase.__all_unit WHERE resource_pool_id = $resource_pool_id and unit_id = $min_user_ls_unit, unit_group_id, 1);
+eval alter resource tenant tenant_for_migrate_locality unit_num = 1 delete unit_group ($unit_group_id);
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_unit where unit_group_id = $unit_group_id and status like "%DELETING%", 3, 30;
+ob1.mysql alter system set_tp tp_name = ERRSIM_EXECUTE_ADD_REPLICA_ERROR, error_code = 4012, frequency = 0;
+ob1.check_until_timeout select count(distinct ls_id) as ls_cnt from oceanbase.CDB_OB_LS_LOCATIONS where TENANT_ID = $tenant_id and role like "%LEADER%", 3, 120;

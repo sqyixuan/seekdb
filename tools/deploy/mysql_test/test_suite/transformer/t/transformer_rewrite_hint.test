@@ -1,0 +1,204 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: zhanyue.zzy
+# owner group: SQL1
+# tags: optimizer, outline
+# description: add no_expand/use_concat, mereg/no_merge, unnest/no_unnest, place_group_by/no_place_group_by 
+# hints for controling rewrite rules.
+#
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+drop table if exists t8;
+drop table if exists t9;
+drop table if exists t10;
+drop view  if exists v1;
+--enable_warnings
+
+create table t1(a int, b int, c int);
+create table t2(a int, b int, c int);
+create table t3(a int, b int, c int);
+create table t4(a int, b int, c int);
+create table t5(a int, b int, c int);
+create table t6(d int, e int, f int);
+create table t7(d int, e int, f int);
+create table t8(d int, e int, f int);
+create table t9(d int, e int, f int);
+create table t10(d int, e int, f int);
+
+select * from t1;
+select * from t2;
+select * from t3;
+select * from t4;
+select * from t5;
+select * from t6;
+select * from t7;
+select * from t8;
+select * from t9;
+select * from t10;
+
+--explain_protocol 2
+
+#测试no_expand/use_concat for or_expansion rule.
+#包含no_expand, no_expand(@qb) and outline banding situation.
+#包含规则中由于cost计算失败，仍然采用该改写
+select * from t1 where t1.a = 1 or t1.b = 1;
+select /*+no_expand*/* from t1 where t1.a = 1 or t1.b = 1;
+select /*+use_concat*/* from t1 where t1.a = 1 or t1.b = 1;
+select /*+qb_name(qb1) use_concat(@qb1)*/* from t1 where t1.a = 1 or t1.b = 1;
+explain outline select /*+qb_name(qb1) use_concat(@qb1)*/* from t1 where t1.a = 1 or t1.b = 1;
+explain outline select /*+ BEGIN_OUTLINE_DATA FULL(@"SEL$2" "TEST"."t1"@"SEL$2") FULL(@"SEL$3" "TEST"."t1"@"SEL$3") USE_CONCAT(@"SEL$1") END_OUTLINE_DATA*/* from t1 where t1.a = 1 or t1.b = 1;
+#outline统一放在之后处理，之前由于qb_name的原因无法绑定
+
+select * from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+select /*+no_expand*/* from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+select /*+use_concat*/* from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+select /*+qb_name(qb1) no_expand(@qb1)*/* from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+explain outline select /*+qb_name(qb1) no_expand(@qb1)*/* from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+explain outline select /*+ BEGIN_OUTLINE_DATA LEADING(@"SEL$1" ("TEST"."t3"@"SEL$1" "TEST"."t4"@"SEL$1" )) USE_NL(@"SEL$1" ("TEST"."t4"@"SEL$1" )) FULL(@"SEL$1" "TEST"."t3"@"SEL$1") FULL(@"SEL$1" "TEST"."t4"@"SEL$1") NO_EXPAND(@"SEL$1") END_OUTLINE_DATA */* from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+
+create view v1 as select /*+no_expand*/ count(*) from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+show create view v1;
+explain select * from v1;
+drop view v1;
+create view v1 as select /*+use_concat*/ count(*) from t3, t4 where t3.a = t4.a or t3.b = t4.b;
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+#测试merge/no_merge for view_merge and groupby_pullup rule.
+#包含merge, no_merge(@qb) and outline banding situation.
+#包含规则中由于cost计算失败，仍然采用该改写,view merge不涉及到代价计算，以下groupby_rollup例子为强制合并
+select * from (select * from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a; 
+select * from (select /*+no_merge*/* from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a; 
+select /*+no_merge(@qb1)*/* from (select /*+qb_name(qb1)*/* from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a; 
+select * from (select /*+no_merge*/* from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a; 
+explain outline select /*+merge(@qb1)*/* from (select /*+qb_name(qb1)*/* from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a; 
+explain outline select /*+ BEGIN_OUTLINE_DATA LEADING(@"SEL$1" (("TEST"."T1"@"SEL$2" "TEST"."T2"@"SEL$1" )"TEST"."T6"@"SEL$2" )) USE_MERGE(@"SEL$1" ("TEST"."T6"@"SEL$2" )) USE_MERGE(@"SEL$1" ("TEST"."T2"@"SEL$1" )) FULL(@"SEL$2" "TEST"."T1"@"SEL$2") FULL(@"SEL$1" "TEST"."T2"@"SEL$1") FULL(@"SEL$2" "TEST"."T6"@"SEL$2") MERGE(@"SEL$2") END_OUTLINE_DATA*/* from (select * from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a;
+
+select t1.a, v.* from t1, (select t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+select /*+no_merge(@qb1)*/ t1.a, v.* from t1, (select /*+qb_name(qb1)*/t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+select t1.a, v.* from t1, (select /*+no_merge*/t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+select /*+merge(@qb1)*/ t1.a, v.* from t1, (select /*+qb_name(qb1)*/t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+select /*+merge(@qb1)*/ t1.a, v.* from t1, (select /*+qb_name(qb1)*/t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+explain outline select /*+merge(@qb1)*/ t1.a, v.* from t1, (select /*+qb_name(qb1)*/t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+explain outline select /*+ BEGIN_OUTLINE_DATA USE_HASH_AGGREGATION(@"SEL$4") LEADING(@"SEL$4" ("TEST"."t1"@"SEL$4" "TEST"."t2"@"SEL$3" )) USE_HASH(@"SEL$4" ("TEST"."t2"@"SEL$3" )) FULL(@"SEL$4" "TEST"."t1"@"SEL$4") FULL(@"SEL$3" "TEST"."t2"@"SEL$3") MERGE(@"SEL$2") END_OUTLINE_DATA*/ t1.a, v.* from t1, (select t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a; 
+
+create view v1 as select count(*) from (select /*+no_merge*/* from t1, t6 where t1.a = t6.d) v, t2 where v.a = t2.a;
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+create view v1 as select t1.a, v.* from t1, (select /*+merge*/ t2.b, max(t2.c) from t2 group by t2.b) v where t1.a < 4 and t1.b = v.b order by t1.a;
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+#测试unnest/no_unnest for ja, subquery pullup and win magic rule.
+#包含unnest, unnest(@qb) and outline banding situation.
+#包含规则中由于cost计算失败，仍然采用该改写
+select avg(t1.c) from t1 where t1.b >= (select avg(t2.b) from t2 where t1.a = t2.a);
+select /*+no_unnest(@qb1)*/avg(t1.c) from t1 where t1.b >= (select /*+qb_name(qb1)*/avg(t2.b) from t2 where t1.a = t2.a);
+select avg(t1.c) from t1 where t1.b >= (select /*+no_unnest*/avg(t2.b) from t2 where t1.a = t2.a);
+select /*+unnest(@qb1)*/avg(t1.c) from t1 where t1.b >= (select /*+qb_name(qb1)*/avg(t2.b) from t2 where t1.a = t2.a);
+explain outline select avg(t1.c) from t1 where t1.b >= (select /*+no_unnest*/avg(t2.b) from t2 where t1.a = t2.a);
+explain outline select /*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "TEST"."t1"@"SEL$1") FULL(@"SEL$2" "TEST"."t2"@"SEL$2") NO_AGGR_FIRST_UNNEST(@"SEL$2") NO_JOIN_FIRST_UNNEST(@"SEL$2") END_OUTLINE_DATA*/avg(t1.c) from t1 where t1.b >= (select avg(t2.b) from t2 where t1.a = t2.a);
+
+#原始相关子查询未改写，但是view直接被view merge了
+select avg(t2.c), avg(v.c) from t2, (select * from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select avg(t2.b) from t2 where t2.c = v.c);
+select avg(t2.c), avg(v.c) from t2, (select /*+no_merge*/* from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select /*+no_unnest*/avg(t2.b) from t2 where t2.c = v.c);
+select /*+no_unnest(@qb1) no_merge(@qb2)*/avg(t2.c), avg(v.c) from t2, (select /*+qb_name(qb2)*/* from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select /*+qb_name(qb1)*/avg(t2.b) from t2 where t2.c = v.c);
+select /*+unnest(@qb1)*/avg(t2.c), avg(v.c) from t2, (select * from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select /*+qb_name(qb1)*/avg(t2.b) from t2 where t2.c = v.c);
+select /*+no_merge(@qb1)*/avg(t2.c), avg(v.c) from t2, (select /*+qb_name(qb1)*/* from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select avg(t2.b) from t2 where t2.c = v.c);
+explain outline select /*+no_merge(@qb1)*/avg(t2.c), avg(v.c) from t2, (select /*+qb_name(qb1)*/* from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select avg(t2.b) from t2 where t2.c = v.c);
+explain outline select /*+ BEGIN_OUTLINE_DATA LEADING(@"SEL$1" (("v"@"SEL$1" "SUBQUERY_TABLE"@"SEL$1" )"TEST"."t2"@"SEL$1" )) USE_HASH(@"SEL$1" ("TEST"."t2"@"SEL$1" )) USE_HASH(@"SEL$1" ("SUBQUERY_TABLE"@"SEL$1" )) FULL(@"SEL$2" "TEST"."t1"@"SEL$2") USE_HASH_AGGREGATION(@"SEL$3") FULL(@"SEL$3" "TEST"."t2"@"SEL$3") FULL(@"SEL$1" "TEST"."t2"@"SEL$1") NO_MERGE(@"SEL$2") END_OUTLINE_DATA*/avg(t2.c), avg(v.c) from t2, (select * from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select avg(t2.b) from t2 where t2.c = v.c);
+
+create view v1 as select avg(t2.c), avg(v.c) from t2, (select  * from t1 order by a limit 10) v where t2.c = v.c and v.a > 0 and t2.b >= (select /*+unnest*/avg(t2.b) from t2 where t2.c = v.c);
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+create view v1 as select avg(t1.c) from t1 where t1.b >= (select /*+no_unnest*/avg(t2.b) from t2 where t1.a = t2.a);
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+#测试place_group_by/no_place_group_by for groupby_placement rule.
+#包含place_group_by, place_group_by(@qb) and outline banding situation.
+#包含规则中由于cost计算失败，仍然采用该改写
+select sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a; 
+select /*+no_place_group_by*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a; 
+select /*+qb_name(qb1) no_place_group_by(@qb1)*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a; 
+explain outline select /*+qb_name(qb1) no_place_group_by(@qb1)*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a; 
+explain outline select /*+BEGIN_OUTLINE_DATA NO_USE_HASH_AGGREGATION(@"SEL$1") LEADING(@"SEL$1" ("TEST"."t1"@"SEL$1" "TEST"."t2"@"SEL$1" )) USE_MERGE(@"SEL$1" ("TEST"."t2"@"SEL$1" )) FULL(@"SEL$1" "TEST"."t1"@"SEL$1") FULL(@"SEL$1" "TEST"."t2"@"SEL$1") NO_PLACE_GROUP_BY(@"SEL$1") END_OUTLINE_DATA*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a; 
+
+create view v1 as select /*+no_place_group_by*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a;
+show create view v1;
+explain select * from v1;
+drop view v1;
+create view v1 as select /*+place_group_by*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a;
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+#subquery指定hint功能
+select * from t1 where t1.a in (select t1.a from t1) and t1.b in (select t1.b from t1);
+select /*+leading(t1, view1, view2) use_merge(view1) use_nl(view2)*/* from t1 where t1.a in (select t1.a from t1) and t1.b in (select t1.b from t1);
+select /*+leading(t1, view2, view1) use_hash(view1)*/* from t1 where t1.a in (select t1.a from t1) and t1.b in (select t1.b from t1);
+select /*+use_merge(t1, view1)*/avg(t1.c) from t1 where t1.b >= (select /*+unnest*/avg(t2.b) from t2 where t1.a = t2.a);
+select /*+use_nl(t1, view1)*/avg(t1.c) from t1 where t1.b >= (select /*+unnest*/avg(t2.b) from t2 where t1.a = t2.a);
+select /*+leading(view1, view2)*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a;
+select /*+leading(view1, view2) use_merge(view2)*/sum(t1.c), sum(t2.c) from t1, t2 where t1.a = t2.a and t1.b > 10 and t2.b > 10 group by t1.a;
+select /*+leading(v, view1)*/avg(t2.c), avg(v.c) from t2, (select * from t1 order by a) v where t2.c = v.c and v.a > 0 and t2.b >= (select avg(t2.b) from t2 where t2.c = v.c);
+
+
+## test no_pred_deduce
+
+select /*+no_pred_deduce*/ * from t1, t2 where t1.a = t2.a and t1.a = 1;
+select * from (select /*+no_merge, no_pred_deduce*/ t1.a, t2.b from t1, t2 where t1.a = t2.a) v, t3 where t3.a = 1 and t3.a = v.a;
+select * from (select /*+no_merge, no_pred_deduce*/ t1.a, t2.b from t1, t2 where t1.a = t2.a and t1.a = 1) v, t3 where t3.a = v.a;
+select /*+no_pred_deduce*/ * from (select /*+no_merge*/ t1.a, t2.b from t1, t2 where t1.a = t2.a) v, t3 where v.a = 1 and t3.a = v.a;
+select /*+no_pred_deduce*/ * from (select /*+no_merge*/ t1.a, t2.b from t1, t2 where t1.a = t2.a and t1.a = 1) v, t3 where t3.a = v.a;
+select /*+no_pred_deduce(@qb1)*/ * from (select /*+no_merge qb_name(qb1)*/ t1.a, t2.b from t1, t2 where t1.a = t2.a) v, t3 where t3.a = 1 and t3.a = v.a;
+
+explain outline select /*+no_pred_deduce*/ t1.a,t2.b from t1, t2 where t1.a = t2.a and t1.a = 1;
+create view v1 as select /*+no_pred_deduce*/ t1.a,t2.b from t1, t2 where t1.a = t2.a and t1.a = 1;
+show create view v1;
+explain select * from v1;
+drop view v1;
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t5;
+drop table t6;
+drop table t7;
+drop table t8;
+drop table t9;
+drop table t10;
+
+## bug: 
+## query push down 丢失 upper stmt no_unnest/no_merge hint
+
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int, c2 int);
+
+explain select (select /*+no_unnest*/ c1 from (select c1 from t1) v where v.c1 = t2.c1) as s from t2;
+explain select (select /*+no_unnest*/ c1 from (select /*+no_merge*/ c1 from t1) v where v.c1 = t2.c1) as s from t2;
+explain select * from (select /*+no_merge*/* from (select * from t1) v1 ) v2;
+explain select * from (select * from (select /*+no_merge*/* from t1) v1 ) v2;
+
+## bug: 
+## SEMI_TO_INNER 和 COALESCE_SQ 不指定参数时无效
+explain outline select /*+semi_to_inner*/ * from t1 where exists (select * from t2 where t2.c1 = t1.c1);
+explain outline update /*+coalesce_sq*/ t1 set 
+        c1 = (select c1 from t2 A),
+        c2 = (select c2+1 from t2 B);

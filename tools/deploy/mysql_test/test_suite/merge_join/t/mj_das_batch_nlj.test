@@ -1,0 +1,104 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhenling.zzg
+#owner group: sql1
+# tags: optimizer, global_index
+#this file try to test select statement from global index
+
+--result_format 4
+--enable_info
+--enable_sorted_result
+
+--disable_warnings
+drop database if exists global_index;
+--enable_warnings
+create database global_index;
+use global_index;
+# 
+alter system set _rowsets_enabled = false;
+
+create table t1(a int primary key, b int, c int) partition by hash(a) partitions 4;
+create index i1 on t1(b) partition by hash(b) partitions 4;
+--disable_info
+--disable_query_log
+--let $count = 1
+while($count <= 10000)
+{
+  --let $stmt=insert into t1(a, b, c) values ($count, $count+1, $count+2)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+create table t2(a int primary key, b int, c int) partition by hash(a) partitions 2;
+create index i1 on t2(b) global;
+
+--disable_query_log
+--let $count = 1
+while($count <= 10000)
+{
+  --let $stmt=insert into t2(a, b, c) values ($count, $count+1, $count+2)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+--enable_info
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+## insert a trace event to throw an error that das result buffer overflow, test send remaining result through DTL
+alter system set_tp tp_no = 301, error_code = 1, frequency = 1;
+connection default;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ t1.* from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a limit 100;
+connection conn_admin;
+alter system set_tp tp_no = 301, error_code = 0, frequency = 1;
+connection default;
+
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ count(1) from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ count(1) from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b;
+SET _NLJ_BATCHING_ENABLED=false;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ t1.* from t1 join t2 where t1.b>2 and t1.b<10 and t1.b=t2.b order by t1.a;
+SET _NLJ_BATCHING_ENABLED=true;
+explain extended_noaddr select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ t1.a, t1.c, t2.a, t2.c from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+## test batch row count is less than partition count
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ * from t1 join t2 where t1.b>1 and t1.b<3 and t1.b=t2.b;
+## test nested loop cartesian join, expected unuse batch nlj opt
+select /*+index(t1 primary), index(t2 primary), use_merge(t1 t2)*/ * from t1, t2 where t1.a=t2.a and t1.a=100;
+## test scan row count large than the batch row count, need many batch rescan
+connection conn_admin;
+alter system set_tp tp_no = 400, error_code = 100, frequency = 1;
+connection default;
+select /*+index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b=t2.b order by t1.a, t2.a limit 100;
+## test left table not match with right table, expected empty result
+select /*+query_timeout(1000000000), index(t1 i1), index(t2 i1), use_merge(t1 t2)*/ * from t1 join t2 where t1.b>2 and t1.b<10000 and t1.b-10000=t2.b;
+connection conn_admin;
+alter system set_tp tp_no = 400, error_code = 0, frequency = 1;
+connection default;
+drop table t1;
+drop table t2;
+
+create table t1(a int, b int, c int) partition by hash(a) partitions 2;
+create index i1 on t1(a) global;
+insert into t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3);
+create table t2(a int primary key, b int, c int) partition by hash(a) partitions 2;
+create index i2 on t2(b) global;
+explain extended_noaddr select /*+index(t1 i1), use_merge(t1 t2)*/ * from t1 join t2 on t1.b=t2.b where t1.a>0;
+select /*+index(t1 i1), use_merge(t1 t2)*/ * from t1 join t2 on t1.b=t2.b where t1.a>0;
+explain extended_noaddr select /*+index(t1 i1), use_merge(t1 t2)*/ * from t1 left join t2 on t1.b=t2.b where t1.a>0;
+select /*+index(t1 i1), use_merge(t1 t2)*/ * from t1 left join t2 on t1.b=t2.b where t1.a>0;
+
+drop table t1;
+drop table t2;
+create table t1(a int, b varchar(10), key a(a, b)) partition by hash(a) partitions 2;
+create table t2(a int primary key, b varchar(10), key b(b)) partition by hash(a) partitions 2;
+create table t3(a int primary key, b varchar(10)) partition by hash(a) partitions 2;
+insert into t1 values(1, 'aaaaaaa'), (2, 'bbbbb');
+insert into t2 select * from t1;
+insert into t3 select * from t1;
+explain extended_noaddr select /*+use_merge(t1 t2), leading(t1), index(t1 a)*/ (select a from t3 where t3.a=t1.b) a, t1.b from t1 join t2 on t1.b=t2.b where t1.a>0 and t1.a<10;
+select /*+use_merge(t1 t2), leading(t1)*/ (select a from t3 where t3.b=t1.b) a, t1.b from t1 join t2 on t1.b=t2.b where t1.a>0 and t1.a<10;
+drop database global_index;
+alter system set _rowsets_enabled = true;

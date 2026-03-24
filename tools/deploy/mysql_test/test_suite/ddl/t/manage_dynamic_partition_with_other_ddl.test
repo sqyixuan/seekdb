@@ -1,0 +1,221 @@
+# owner: zhaoziqian.zzq
+# owner group: rs
+# tags: ddl
+# description: test dbms_partition.manage_dynamic_partition() executing concurrently with other ddl 
+
+connect (sys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection sys;
+alter system set debug_sync_timeout = '1000s';
+sleep 3;
+
+connect (conn1, $OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connect (conn2, $OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+set recyclebin = off;
+connection conn1;
+set recyclebin = off;
+--disable_warnings
+drop database if exists ziqian_dynamic_part;
+--enable_warnings
+create database ziqian_dynamic_part;
+use ziqian_dynamic_part;
+
+# turn off scheduled manage dynamic partition
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+
+let now = '2025-03-01 01:02:03';
+set time_zone = '+8:00';
+let mock_current_timestamp = query_get_value(select unix_timestamp($now) * 1000000 as ts, ts, 1);
+connection sys;
+eval alter system set_tp tp_name = ERRSIM_DYNAMIC_PARTITION_MOCK_TIME, error_code = $mock_current_timestamp, frequency = 1;
+connection conn1;
+
+create table t1 (c1 datetime primary key, c2 int)
+dynamic_partition_policy
+(
+  time_unit = 'day',
+  precreate_time = '3day',
+  expire_time = '1day'
+)
+partition by range columns (c1)
+(
+  partition p0 values less than ('2025-02-28'),
+  partition p1 values less than ('2025-03-01')
+);
+
+let database_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'ziqian_dynamic_part', database_id, 1);
+let table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't1' and database_id = $database_id, table_id, 1);
+
+# case 1: add partition
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION_ON_TABLE wait_for signal1 execute 1';
+sleep 1;
+
+connection conn2;
+use ziqian_dynamic_part;
+send call dbms_partition.manage_dynamic_partition();
+
+connection conn1;
+sleep 1;
+alter table t1 add partition (partition p2 values less than ('2025-03-02'));
+
+connection sys;
+set ob_global_debug_sync = 'now signal signal1';
+
+connection conn2;
+reap;
+
+# calc failed table count
+--disable_query_log
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$table_id%';
+--enable_query_log
+
+# case 2: drop partition
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION_ON_TABLE wait_for signal1 execute 1';
+sleep 1;
+
+connection conn2;
+use ziqian_dynamic_part;
+send call dbms_partition.manage_dynamic_partition();
+
+connection conn1;
+sleep 1;
+alter table t1 drop partition p0;
+
+connection sys;
+set ob_global_debug_sync = 'now signal signal1';
+
+connection conn2;
+reap;
+
+# calc failed table count
+--disable_query_log
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$table_id%';
+--enable_query_log
+
+
+# case 3: split partition
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION_ON_TABLE wait_for signal1 execute 1';
+sleep 1;
+
+connection conn2;
+use ziqian_dynamic_part;
+alter table t1 set dynamic_partition_policy (precreate_time = '5day');
+send call dbms_partition.manage_dynamic_partition();
+
+connection conn1;
+sleep 1;
+alter table t1 reorganize partition P20250304 into (partition P2025030401 values less than ('2025-03-04 12:00:00'), partition P20250304 values less than ('2025-03-05 00:00:00'));
+
+connection sys;
+set ob_global_debug_sync = 'now signal signal1';
+
+connection conn2;
+reap;
+
+# calc failed table count
+--disable_query_log
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$table_id%';
+--enable_query_log
+
+
+# case 4: create index
+connection conn1;
+insert into t1 values ('2025-03-01 00:00:01', 1);
+insert into t1 values ('2025-03-01 00:00:02', 2);
+insert into t1 values ('2025-03-01 00:00:03', 3);
+insert into t1 values ('2025-03-01 00:00:04', 4);
+insert into t1 values ('2025-03-01 00:00:05', 5);
+
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION_ON_TABLE wait_for signal1 execute 1';
+sleep 1;
+
+connection conn2;
+use ziqian_dynamic_part;
+alter table t1 set dynamic_partition_policy (precreate_time = '7day');
+send call dbms_partition.manage_dynamic_partition();
+
+connection conn1;
+sleep 1;
+create index i1 on t1 (c2);
+
+connection sys;
+set ob_global_debug_sync = 'now signal signal1';
+
+connection conn2;
+reap;
+
+# calc failed table count
+--disable_query_log
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$table_id%';
+--enable_query_log
+drop table t1;
+
+
+# case 5: add primary key
+connection conn2;
+use ziqian_dynamic_part;
+
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_SWAP_ORIG_AND_HIDDEN_TABLE_STATE wait_for signal1 execute 1';
+sleep 1;
+
+connection conn1;
+create table t2 (c1 datetime, c2 int)
+dynamic_partition_policy
+(
+  time_unit = 'day',
+  precreate_time = '3day',
+  expire_time = '1day'
+)
+partition by range columns (c1)
+(
+  partition p0 values less than ('2025-02-28'),
+  partition p1 values less than ('2025-03-01')
+);
+let table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't2' and database_id = $database_id, table_id, 1);
+
+send alter table t2 add primary key (c1);
+
+connection conn2;
+sleep 3;
+--disable_query_log
+eval select count(*) from oceanbase.__all_table where table_name like '%hidden%' and database_id = $database_id;
+--enable_query_log
+let hidden_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name like '%hidden%' and database_id = $database_id, table_id, 1);
+
+send call dbms_partition.manage_dynamic_partition();
+
+connection sys;
+set ob_global_debug_sync = 'now signal signal1';
+
+connection conn1;
+reap;
+
+connection conn2;
+reap;
+
+--disable_query_log
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value1 like '%$table_id%';
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$table_id%';
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value1 like '%$hidden_table_id%';
+eval select count(*) from oceanbase.DBA_OB_TENANT_EVENT_HISTORY where event = 'MANAGE_DYNAMIC_PARTITION' and value2 like '%$hidden_table_id%';
+--enable_query_log
+
+
+# recover & clear
+drop database ziqian_dynamic_part;
+CALL DBMS_SCHEDULER.ENABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.ENABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+purge recyclebin;
+connection sys;
+eval alter system set_tp tp_name = ERRSIM_DYNAMIC_PARTITION_MOCK_TIME, error_code = 0, frequency = 0;
+alter system set debug_sync_timeout = 0;

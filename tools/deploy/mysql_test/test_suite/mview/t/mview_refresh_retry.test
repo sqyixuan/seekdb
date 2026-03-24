@@ -1,0 +1,59 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: the refresh job of materialized views should not be cancled due to failures
+#
+
+# 0. prepare
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_mv_refresh_retry;
+--enable_warnings
+create database test_mv_refresh_retry;
+use test_mv_refresh_retry;
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test_mv_refresh_retry,$OBMYSQL_PORT);
+
+# 1. test mv refresh job can be scheduled normaly after failures
+connection default;
+create table t1(c1 int);
+create materialized view log on t1 with (c1);
+insert into t1 values(1),(2),(3),(4),(5),(6),(7),(8),(9),(10);
+
+connection sys;
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_COMPLETE_REFRESH wait_for signalxxx execute 10000';
+sleep 10;
+connection conn1;
+send create materialized view test_mv_refresh_retry_mv1 refresh fast start with sysdate() next sysdate() + interval 1 second as select count(*) cnt, c1 from t1 group by c1;
+
+connection default;
+sleep 5;
+let $refresh_job = query_get_value(select a.refresh_job from oceanbase.__all_mview a inner join oceanbase.__all_table b on a.mview_id = b.table_id where b.table_name = 'test_mv_refresh_retry_mv1', refresh_job, 1);
+sleep 60;
+--disable_query_log
+eval select count(*) > 16 from oceanbase.DBA_SCHEDULER_JOB_RUN_DETAILS where job_name = '$refresh_job' and code = '-5019';
+--enable_query_log
+
+connection sys;
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'reset';
+sleep 10;
+
+connection conn1;
+reap;
+
+connection default;
+--disable_query_log
+eval select count(*) > 0 from oceanbase.DBA_SCHEDULER_JOB_RUN_DETAILS where job_name = '$refresh_job' and code = '0';
+--enable_query_log
+
+# 2. clean up
+drop database test_mv_refresh_retry;

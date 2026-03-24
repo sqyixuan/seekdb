@@ -1,0 +1,13 @@
+####################################################
+#owner : fenggu.yh
+#owner group: cloud_storage
+#description: quick test
+# 测试点：验证checkpoint slog
+####################################################
+connection conn_sys;
+let $svr_ip_0 = deploy_get_value(ob1.select select svr_ip from DBA_OB_UNITS where tenant_id = 1 limit 1, svr_ip, 1);
+let $svr_port_0 = deploy_get_value(ob1.select select svr_port from DBA_OB_UNITS where tenant_id = 1 limit 1, svr_port, 1);
+--disable_query_log
+eval alter system checkpoint slog tenant = 'sys' server = '$svr_ip_0:$svr_port_0';
+eval alter system checkpoint slog tenant_id = 500 server = '$svr_ip_0:$svr_port_0';
+--enable_query_log

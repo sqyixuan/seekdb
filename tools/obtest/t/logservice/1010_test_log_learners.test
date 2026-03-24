@@ -1,0 +1,154 @@
+##########################
+# owner : yunlong.cb
+# owner group: clog
+# description: test log learners
+# 测试点：
+# 1. 多 R 副本日志同步
+# 2. R 副本级联结构
+##########################
+# 测试场景2F4R：
+# 1. 启动 2F4R, 检查日志同步
+# 2. 修改 zone 的 region 信息，检查级联结构
+# 3. F 切主，检查级联结构
+# 4. 变更副本类型，检查级联结构
+
+ob1=OBI(cluster=1:1:1:1:1:1, proxy_num=0);
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',_hidden_sys_tenant_memory='1G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='30G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z4.obs0.set extra_config=$extra_conf;
+ob1.z5.obs0.set extra_config=$extra_conf;
+ob1.z6.obs0.set extra_config=$extra_conf;
+
+# bootstrap
+ob1.reboot;
+sleep 3;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--enable_query_log
+let $sys_tenant_id=1;
+set @@session.ob_query_timeout = 1000000000;
+
+# create mysql tenant (2F4R)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5', 'z6');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, R@z2, R@z3, F@z4, R@z5, R@z6', primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+# check log sync
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where in_sync=0, 0, 120;
+
+# prepare variables
+let $number_of_ls = 3;
+let $number_of_mysql_tenant_ls = 2;
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z4_dst_ip0 = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_dst_port0 = deploy_get_value(ob1.z4.obs0.port);
+let $z4_dst0 = $z4_dst_ip0:$z4_dst_port0;
+let $z5_dst_ip0 = deploy_get_value(ob1.z5.obs0.ip);
+let $z5_dst_port0 = deploy_get_value(ob1.z5.obs0.port);
+let $z5_dst0 = $z5_dst_ip0:$z5_dst_port0;
+let $z6_dst_ip0 = deploy_get_value(ob1.z6.obs0.ip);
+let $z6_dst_port0 = deploy_get_value(ob1.z6.obs0.port);
+let $z6_dst0 = $z6_dst_ip0:$z6_dst_port0;
+
+# 1. modify regions of zones (beijing(z1, z2, z3), shanghai(z4, z5, z6))
+# expected:
+# - z1 is the parent of z2 or z3, z4 is the parent of z5 and z6
+# - only one replica's parent is the leader
+#    beijing     |     shanghai
+#      z1--------|------z4
+#         \      |     /  \
+#  z2 --- z3     |    z5   z6
+#    
+#    beijing     |     shanghai
+#      z1--------|------z4
+#     /          |     /  \
+#  z2 --- z3     |    z5   z6
+eval ALTER SYSTEM ALTER ZONE z1 SET REGION 'beijing';
+eval ALTER SYSTEM ALTER ZONE z2 SET REGION 'beijing';
+eval ALTER SYSTEM ALTER ZONE z3 SET REGION 'beijing';
+eval ALTER SYSTEM ALTER ZONE z4 SET REGION 'shanghai';
+eval ALTER SYSTEM ALTER ZONE z5 SET REGION 'shanghai';
+eval ALTER SYSTEM ALTER ZONE z6 SET REGION 'shanghai';
+
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z1' and region like 'beijing', 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z2' and region like 'beijing', 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z3' and region like 'beijing', 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z4' and region like 'shanghai', 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z5' and region like 'shanghai', 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z6' and region like 'shanghai', 1, 30;
+
+# z2's parent is z1 or z3
+# z3's parent is z1 or z2
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z2_dst_ip0' and svr_port = $z2_dst_port0 and (parent like '$z1_dst0' or parent like '$z3_dst0'), $number_of_ls, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z3_dst_ip0' and svr_port = $z3_dst_port0 and (parent like '$z1_dst0' or parent like '$z2_dst0'), $number_of_ls, 30;
+# z4 is the parent of z5 and z6
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z5_dst_ip0' and svr_port = $z5_dst_port0 and parent like '$z4_dst0', $number_of_ls, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z6_dst_ip0' and svr_port = $z6_dst_port0 and parent like '$z4_dst0', $number_of_ls, 30;
+# only one replica's parent is the leader
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where parent like '$z1_dst0', $number_of_ls, 30;
+
+# 2. modify the region of z2 from beijing to tianjin
+# expected:
+# tianjin |  beijing |     shanghai
+#   z2----|---z1-----|------z4
+#         |    |     |     /  \
+#         |   z3     |    z5   z6
+eval ALTER SYSTEM ALTER ZONE z2 SET REGION 'tianjin';
+ob1.check_until_timeout select count(*) from DBA_OB_ZONES where zone like 'z2' and region like 'tianjin', 1, 30;
+
+# z2's parent is z1
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z2_dst_ip0' and svr_port = $z2_dst_port0 and (parent like '$z1_dst0'), $number_of_ls, 30;
+# z3's parent is z1
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where svr_ip like '$z3_dst_ip0' and svr_port = $z3_dst_port0 and (parent like '$z1_dst0'), $number_of_ls, 30;
+
+# 3. switch the leadership from z1 to z4
+# expected:
+#|  beijing |     shanghai | tianjin 
+#|   z1-----|------z4------|---z2
+#|    |     |        \     |         
+#|   z3     |   z5----z6   |         
+#                          |
+#|  beijing |     shanghai | tianjin 
+#|   z1-----|------z4------|---z2
+#|    |     |     /        |         
+#|   z3     |   z5----z6   |         
+eval alter system switch replica leader ls=1 server='$z4_dst0' tenant='mysql';
+eval alter system switch replica leader ls=1001 server='$z4_dst0' tenant='mysql';
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and ls_id=1 and svr_ip like '$z4_dst_ip0' and svr_port = $z4_dst_port0 and role = 'LEADER', 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and ls_id=1001 and svr_ip like '$z4_dst_ip0' and svr_port = $z4_dst_port0 and role = 'LEADER', 1, 30;
+
+# z5's parent is z4 or z6
+# z6's parent is z4 or z5
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where tenant_id=$mysql_tenant_id and svr_ip like '$z5_dst_ip0' and svr_port = $z5_dst_port0 and (parent like '$z4_dst0' or parent like '$z6_dst0'), $number_of_mysql_tenant_ls, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where tenant_id=$mysql_tenant_id and svr_ip like '$z6_dst_ip0' and svr_port = $z6_dst_port0 and (parent like '$z4_dst0' or parent like '$z5_dst0'), $number_of_mysql_tenant_ls, 30;
+# z2's parent is z4
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where tenant_id=$mysql_tenant_id and svr_ip like '$z2_dst_ip0' and svr_port = $z2_dst_port0 and parent like '$z4_dst0', $number_of_mysql_tenant_ls, 30;
+
+# 4. alter locality of the mysql tenant from FRRFRR to FRFFRR (z3 from R to F)
+# expected:
+# z3's parent becomes null because the F replica do not have a parent
+#|  beijing |     shanghai | tianjin 
+#|   z1-----|------z4------|---z2
+#|          |        \     |         
+#|   z3     |   z5----z6   |         
+#                          |
+#|  beijing |     shanghai | tianjin 
+#|   z1-----|------z4------|---z2
+#|          |     /        |         
+#|   z3     |   z5----z6   |         
+
+eval ALTER TENANT mysql locality="F{1}@z1,R{1}@z2,F{1}@z3,F{1}@z4,R{1}@z5,R{1}@z6";
+ob1.check_until_timeout select count(*) from __all_tenant where tenant_id=$mysql_tenant_id and previous_locality='', 1, 60;
+# the parent of z3 becomes null
+ob1.check_until_timeout select count(*) from __all_virtual_ha_diagnose where tenant_id=$mysql_tenant_id and svr_ip like '$z3_dst_ip0' and svr_port = $z3_dst_port0 and parent like '', $number_of_mysql_tenant_ls, 30;

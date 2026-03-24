@@ -1,0 +1,7 @@
+function(sensitive_shared_storage_unfarm_unittest case)
+  sensitive_unittest(${case})
+  target_link_libraries(${case} PRIVATE observer_test)
+  if (case MATCHES "^test_.*")
+    set_tests_properties(${case} PROPERTIES TIMEOUT 5400)
+  endif()
+endfunction()

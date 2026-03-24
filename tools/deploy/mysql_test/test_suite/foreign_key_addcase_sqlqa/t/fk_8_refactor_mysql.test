@@ -1,0 +1,614 @@
+# owner: laibingzheng.lbz
+#owner group: 技术部-sql-存储过程
+#description: 【mysql兼容】 外键支持建立在非唯一键上
+#tags: sql,pl
+#author:whh01047778
+
+--result_format 4
+connection default;
+
+--echo # ◆ 准备测试用户
+--disable_warnings
+drop user if exists fk_testuser;
+drop database if exists fk_testuser_db;
+create user 'fk_testuser' identified by 'fk_testuser';
+CREATE DATABASE IF NOT EXISTS  fk_testuser_db;
+grant all on *.* to fk_testuser WITH GRANT OPTION;
+--enable_warnings
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn1_sessiion1,$obmysql_ms0,fk_testuser,fk_testuser,fk_testuser_db,$obmysql_port);
+connect (conn1_sessiion2,$obmysql_ms0,fk_testuser,fk_testuser,fk_testuser_db,$obmysql_port);
+connection conn1_sessiion1;
+
+--disable_warnings
+drop table if exists t6;
+drop table if exists t5;
+drop table if exists t4;
+drop table if exists t3;
+drop table if exists t2;
+drop table if exists t1;
+--enable_warnings
+
+--echo ##################################
+--echo ###### 级联操作，触发触发器
+create table t1(c1 int primary key, id int);
+create table t2(c1 int primary key, c2 int, id int);
+create table t3(c1 int, c2 int, id int, c3 varchar(2000));
+alter table t2 add foreign key(c2) references t1(c1) on update cascade on delete cascade;
+
+insert into t1 values(1, 110),(2, 111);
+insert into t2 values(1, 1, 110),(2, 1, 110),(3, 2, 111);
+
+delimiter /;
+CREATE TRIGGER tri1 BEFORE update ON t2 FOR EACH ROW
+BEGIN
+   insert into t3 values(old.c1,old.c2,old.id,'表t2有更新，触发触发器，记录旧值');
+   update t1 set c1 = c1 * 10 where id = 110;
+END;
+/
+delimiter ;/
+
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+#更新子表
+--error 1456
+update t2 set c2 = 1 where c1 = 3;
+
+#ob 报错，mysql 成功,已知问题
+--error 1456
+update t2 set c2 = 2,id=1110 where c1 = 3;
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+--error 1456
+update t2 set c2 = 1 where c1 = 2;
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+--error 1456
+update t2 set c2 = 2 where c1 = 2;
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+--error 1456
+update t2 set c2 = null where c1 = 1;
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+#更新父表，级联操作 ob 会触发子表上定义的触发器,mysql 不会
+update t1 set c1 = c1 * 10 where c1 = 1;
+
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+select * from t3 order by 1,2 for update;
+
+drop table t3;
+drop table t2;
+drop table t1;
+
+--echo ##################################
+--echo ###### Prepared 语句创建表
+PREPARE stmt1 FROM 'create table t1(id int primary key,c1 int,c2 int,index index1(c1,c2))';
+EXECUTE stmt1;
+
+PREPARE stmt2 FROM 'create table t2(id int primary key,c1 int,c2 int,foreign key(c1) references t1(c1) on update cascade on delete cascade)';
+EXECUTE stmt2; 
+
+PREPARE stmt3 FROM 'alter table t2 add foreign key(c1,c2) references t1(c1,c2) on update cascade on delete cascade;';
+EXECUTE stmt3;
+
+insert into t1 values(1,1,1),(2,2,2),(3,2,2),(4,3,3);
+insert into t2 values(1,1,1),(2,3,3);
+
+#mysql失败，ob成功
+update t1 set c1 = 10 where id = 1;
+select * from t1 order by 1,2 for update;
+select * from t2 order by 1,2 for update;
+
+drop table t2;
+drop table t1;
+
+--echo ##################################
+--echo ###### 非unique key的特性
+create table t1(id int primary key,c1 int,c2 int ,index index1(c1));
+create table t2(id int primary key,c1 int,c2 int);
+alter table t2 add CONSTRAINT fk1  foreign key(c1) references t1(c1) on update cascade on delete cascade;
+
+insert into t1 values(1,1,1),(2,1,1),(3,1,1),(4,1,1);
+insert into t1 values(5,2,2),(6,2,2),(7,2,2),(8,2,2),(9,2,2),(10,2,2);
+insert into t1 values(11,3,3),(12,3,3),(13,3,3),(14,3,3),(15,3,3),(16,3,3),(17,3,3),(18,3,3),(19,3,3),(20,3,3);
+insert into t1 values(21,4,4),(22,4,4),(23,4,4),(24,4,4);
+insert into t1 values(25,5,5),(26,5,5),(27,5,5),(28,5,5),(29,5,5),(30,5,5);
+
+insert into t2 values(1,1,1);
+insert into t2 values(2,2,2),(3,2,2);
+insert into t2 values(4,3,3),(5,3,3),(6,3,3);
+
+--error 0,1051
+drop table t1_bk;
+create table t1_bk as select * from t1;
+
+--error 0,1051
+drop table t2_bk;
+create table t2_bk as select * from t2;
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 1、更新父表部分数据
+update t1 set c1 = c1 * 2 where c2 = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+
+update t1 set c1 = c1 * 3 where c2 = 2 and id between 5 and 7;
+select * from t1 where c2 = 2 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+
+update t1 set c1 = c1 * 4 where c2 = 2;
+select * from t1 where c2 = 2 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+
+--echo ## 2、锁父表 LOCK TABLES
+LOCK TABLES t1 WRITE;
+--error 1452
+insert into t2 values(7,1,1);
+
+#ob 成功，mysql 报错
+#官网说明(当前版本的 OceanBase 数据库对 MySQL 模式下的 LOCK TABLES 语句将被忽略，并不会对表上锁)
+insert into t2 values(7,2,2);
+
+UNLOCK TABLES;
+--error 1452
+insert into t2 values(8,1,1);
+insert into t2 values(8,2,2);
+select * from t1 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+
+##锁父表
+LOCK TABLES t1 READ;
+--error 1452
+insert into t2 values(9,1,1);
+insert into t2 values(9,2,2);
+
+UNLOCK TABLES;
+--error 1452
+insert into t2 values(10,1,1);
+insert into t2 values(10,2,2);
+select * from t1 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+
+--echo ## 3、行锁父表 FOR UPDATE 排他锁（部分数据加了锁）
+--echo ## 用户1 session 1
+START TRANSACTION;
+SELECT * FROM t1 WHERE c2 = 3 FOR UPDATE;
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+--error 1205
+insert into t2 values(11,3,3);
+
+--echo ## 连接用户1
+connection conn1_sessiion1;
+COMMIT; 
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+insert into t2 values(12,3,3);
+
+select * from t2 order by 1,2,3;
+select * from t1 order by 1,2,3;
+
+--echo ## 4、行锁父表 FOR UPDATE 排他锁（其中一行数据加了锁）
+--echo ## 用户1 session 1
+connection conn1_sessiion1;
+START TRANSACTION;
+SELECT * FROM t1 WHERE c2 = 3 and id = 11 FOR UPDATE;
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+--error 1205
+insert into t2 values(13,3,3);
+
+--echo ## 连接用户1 session 1
+connection conn1_sessiion1;
+COMMIT; 
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+insert into t2 values(14,3,3);
+
+select * from t2 order by 1,2,3;
+select * from t1 order by 1,2,3;
+
+--echo ## 5.1、删除父表行数据
+--echo ## 用户1 session 1
+connection conn1_sessiion1;
+
+delete from t1 where c1 = 3 and id = 20;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+insert into t2 values(15,2,2),(16,2,2),(17,3,3),(18,4,4),(19,4,4);
+
+delete from t1 where c1 = 2;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+delete from t1 where c1 = 2 ORDER BY id DESC LIMIT 1;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 5.2、多表删除父表行数据
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+DELETE t1, t2 FROM t1, t2 WHERE t1.c1 = t2.c1 AND (t1.id = 5 or t2.id = 4);
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+--error 1066
+DELETE t1, t1 FROM t1, t1 WHERE t1.c1 = t1.c1 AND (t1.id = 1 or t1.id = 10);
+--error 1235
+DELETE t1, t2 FROM t1, t1 as t2 WHERE t1.c1 = t2.c1 AND (t1.id = 1 or t2.id = 10);
+
+--error 1066
+DELETE FROM t1, t1 USING t1, t1 WHERE t1.c1 = t1.c1 AND (t1.id = 1 or t1.id = 10);
+--error 1235
+DELETE FROM t1, t2 USING t1, t1 t2 WHERE t1.c1 = t2.c1 AND (t1.id = 1 or t2.id = 10);
+--error 1235
+DELETE FROM t1, t2 USING t1, (select * from t1) t2 WHERE t1.c1 = t2.c1 AND (t1.id = 1 or t2.id = 10);
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 6、truncate 父表
+--error 1701
+truncate table t1;
+
+--echo ## 7、行锁父表  LOCK IN SHARE MODE 共享锁
+--echo ## 用户1 session 1
+START TRANSACTION;
+SELECT * FROM t1 WHERE c1 = 4 and id = 21 LOCK IN SHARE MODE;
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+
+START TRANSACTION;
+#mysql成功，ob报错
+--error 1205
+insert into t2 values(20,4,4);
+
+--echo ## 连接用户1
+connection conn1_sessiion1;
+COMMIT; 
+
+--echo ## 连接用户1 session 2
+connection conn1_sessiion2;
+
+insert into t2 values(20,4,4);
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+COMMIT; 
+
+--echo ## 8、子表插入数据
+--echo ## 用户1 session 1
+connection conn1_sessiion1;
+
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+insert into t2 values(21,4,4),(22,4,4),(23,4,4),(24,4,4),(25,4,4);
+insert into t2 values (1,5,1) on duplicate key update c1 = values(c1);
+insert into t2 select * from t1 where id > 25 for update;
+--error 1235
+insert overwrite t2 select * from t1 where id < 5 for update;
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 9、父表插入数据
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+insert into t1 values(32,6,6),(33,5,5),(34,4,4),(35,3,3);
+insert into t1 values (5,10,2) on duplicate key update c1 = values(c1);
+insert into t1 select id*100,c1,c2 from t2 where id < 5 for update;
+--error 1235
+insert overwrite t1 select * from t2 where id < 5 for update;
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 10、修改多个表
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+#ob报错，mysql成功
+--error 1451
+UPDATE t1,t2 SET t1.c1 = t1.c1 * 10,t2.c2 = t1.c2*10 WHERE t1.c2 = t2.c2 and t1.c2 = 3;
+
+UPDATE t1,t2 SET t1.c1 = 200,t2.c1 = 1 WHERE t1.c2 = t2.c2 and t1.c2 = 2;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+UPDATE t1,t1 as t2 SET t1.c1 = 300,t1.c2 = 300 WHERE t1.c1 = t2.c1 and t1.c2 = 3;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+UPDATE t1,t1 as t2 SET t1.c1 = 200,t1.c1 = 201 WHERE t1.c1 = t2.c1 and t1.c2 = 2;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 11、UPDATE IGNORE 更新父表
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+#[bug] 子表结果不符合预期 issues: 2025022700107358495
+--error 1452
+UPDATE IGNORE t1 SET id = 2,c1 = 100 WHERE id = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+
+UPDATE IGNORE t1 SET id = 31,c1 = 20 WHERE id = 5;
+select * from t1 where c2 = 2 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+
+--echo ## 12、REPLACE 父表
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+
+REPLACE INTO t1 VALUES (1,10,10),(2,11,11),(5,20,20),(31,6,6);
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+REPLACE INTO t1 VALUES (11,30,30);
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+--echo ## 13、重命名表
+delete from t1;
+delete from t2;
+insert into t1 select * from t1_bk;
+insert into t2 select * from t2_bk;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+RENAME TABLE t1 TO t11;
+RENAME TABLE t11 TO t1;
+select * from t2 order by 1,2,3;
+
+RENAME TABLE t2 TO t22;
+RENAME TABLE t22 TO t2;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+
+drop table t2;
+drop table t1;
+
+--echo ## 14、子表对应多个父表 t3->t1,t2
+create table t1(id int primary key,c1 int,c2 int,index index1(c1));
+create table t2(id int primary key,c1 int,c2 int,index index1(c2));
+
+create table t3(id int primary key,c1 int,c2 int);
+alter table t3 add CONSTRAINT fk1 foreign key(c1) references t1(c1) on update cascade on delete cascade;
+alter table t3 add CONSTRAINT fk2 foreign key(c2) references t2(c2) on update cascade on delete cascade;
+
+insert into t1 values(1,1,1),(2,1,1),(3,1,1),(4,1,1);
+insert into t1 values(5,2,2),(6,2,2),(7,2,2),(8,2,2),(9,2,2),(10,2,2);
+insert into t1 values(11,3,3),(12,3,3),(13,3,3),(14,3,3),(15,3,3),(16,3,3),(17,3,3),(18,3,3),(19,3,3),(20,3,3);
+insert into t1 values(21,4,4),(22,4,4),(23,4,4),(24,4,4);
+insert into t1 values(25,5,5),(26,5,5),(27,5,5),(28,5,5),(29,5,5),(30,5,5);
+
+insert into t2 values(1,11,11),(2,11,11),(3,11,11),(4,11,11);
+insert into t2 values(5,12,12),(6,12,12),(7,12,12),(8,12,12),(9,12,12),(10,12,12);
+insert into t2 values(11,13,13),(12,13,13),(13,13,13),(14,13,13),(15,13,13),(16,13,13),(17,13,13),(18,13,13),(19,13,13),(20,13,13);
+insert into t2 values(21,14,14),(22,14,14),(23,14,14),(24,14,14);
+insert into t2 values(25,15,15),(26,15,15),(27,15,15),(28,15,15),(29,15,15),(30,15,15);
+
+insert into t3 values(1,1,11),(2,1,11);
+insert into t3 values(3,2,12),(4,2,12),(5,2,12);
+insert into t3 values(6,3,13),(7,3,13),(8,3,13),(9,3,13);
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#更新 t1
+UPDATE t1 SET c1 = c1 * 100 WHERE id = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+UPDATE t1 SET c1 = c1 * 100 WHERE c2 = 2;
+select * from t1 where c2 = 2 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#更新 t2
+UPDATE t2 SET c2 = c2 * 100 WHERE id = 1;
+select * from t2 where id <= 4 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+UPDATE t2 SET c2 = c2 * 100 WHERE id between 5 and 7;
+select * from t2 where id between 5 and 10 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#更新 t1,t2
+UPDATE t1,t2 SET t1.c1 = t1.c1 * 100,t2.c2 = t2.c2 * 100 WHERE t1.id = t2.id and t1.id = 12;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c1 = 13 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+UPDATE t1,t2 SET t1.c1 = t1.c1 * 100,t2.c2 = t2.c2 * 100 WHERE t1.id = t2.id and t1.id <= 4;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c1 = 11 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#t3 插入数据
+insert into t3 values(10,4,14),(11,5,15);
+--error 1452
+insert into t3 values(12,444,14),(13,5,15);
+--error 1452
+insert into t3 values(14,4,14),(15,55555,15);
+select * from t3 order by 1,2,3;
+
+insert into t3 select t1.id*100,t1.c1,t2.c2 from t1,t2 where t1.id = t2.id and t1.id >= 21 for update;
+select * from t3 order by 1,2,3;
+
+#删除 t1
+delete from t1 where id = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#删除 t2
+delete from t2 where c1 = 12;
+select * from t2 where c1 = 12 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#删除 t1,t2
+DELETE t1, t2 FROM t1, t2 WHERE t1.id = t2.id AND (t1.id = 12 or t2.c2 = 14);
+select * from t1, t2 WHERE t1.id = t2.id order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+insert into t3 select t1.id*10,t1.c1,t2.c2 from t1,t2 where t1.id = t2.id and t1.id < 21 for update;
+select * from t3 order by 1,2,3;
+
+DELETE t1 FROM t1 INNER JOIN t2 ON t1.id = t2.id WHERE t1.c2= 3;
+select * from t1 INNER JOIN t2 ON t1.id = t2.id order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+drop table t3;
+drop table t2;
+drop table t1;
+
+--echo ## 15、多个表级联引用 t3->t2->t1
+create table t1(id int primary key,c1 int,c2 int,index index1(c1));
+
+create table t2(id int primary key,c1 int,c2 int,index index1(c1));
+alter table t2 add CONSTRAINT fk1 foreign key(c1) references t1(c1) on update cascade on delete cascade;
+
+create table t3(id int primary key,c1 int,c2 int);
+alter table t3 add CONSTRAINT fk2 foreign key(c1) references t2(c1) on update cascade on delete cascade;
+
+insert into t1 values(1,1,1),(2,1,1),(3,1,1),(4,1,1);
+insert into t1 values(5,2,2),(6,2,2),(7,2,2),(8,2,2),(9,2,2),(10,2,2);
+insert into t1 values(11,3,3),(12,3,3),(13,3,3),(14,3,3),(15,3,3),(16,3,3),(17,3,3),(18,3,3),(19,3,3),(20,3,3);
+insert into t1 values(21,4,4),(22,4,4),(23,4,4),(24,4,4);
+insert into t1 values(25,5,5),(26,5,5),(27,5,5),(28,5,5),(29,5,5),(30,5,5);
+
+insert into t2 values(1,1,1),(2,1,1),(3,1,1);
+insert into t2 values(4,2,2),(5,2,2),(6,2,2),(7,2,2);
+insert into t2 values(8,3,3),(9,3,3),(10,3,3),(11,3,3),(12,3,3);
+insert into t2 values(13,4,4),(14,4,4),(15,4,4),(16,4,4),(17,4,4),(18,4,4),(19,4,4);
+insert into t2 values(20,5,5),(21,5,5),(22,5,5),(23,5,5),(24,5,5),(25,5,5),(26,5,5),(27,5,5),(28,5,5),(29,5,5),(30,5,5);
+
+insert into t3 values(1,1,1),(2,1,1);
+insert into t3 values(3,2,2),(4,2,2),(5,2,2);
+insert into t3 values(6,3,3),(7,3,3),(8,3,3),(9,3,3);
+insert into t3 values(10,4,4),(11,4,4),(12,4,4),(13,4,4);
+insert into t3 values(14,5,5),(15,5,5),(16,5,5),(17,5,5),(18,5,5);
+
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#修改 t1
+UPDATE t1 SET c1 = c1 * 10 WHERE id = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+select * from t3 where c2 = 1 order by 1,2,3;
+
+UPDATE t1 SET c1 = c1 * 10 WHERE c2 = 2;
+select * from t1 where c2 = 2 order by 1,2,3;
+select * from t2 where c2 = 2 order by 1,2,3;
+select * from t3 where c2 = 2 order by 1,2,3;
+
+#修改 t2
+UPDATE t2 SET c1 = c2 WHERE id = 2;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+select * from t3 where c2 = 1 order by 1,2,3;
+
+--error 1452
+UPDATE t2 SET c1 = c2 WHERE c2 = 2;
+UPDATE t2 SET c1 = c2 WHERE c2 = 1;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+select * from t3 where c2 = 1 order by 1,2,3;
+
+#更新 t1,t2
+#ob 报错，mysql 成功
+--error 1451
+UPDATE t1,t2 SET t1.c1 = 10,t2.c1 = 1 WHERE t1.id = t2.id and t1.id = 2;
+select * from t1 where c2 = 1 order by 1,2,3;
+select * from t2 where c2 = 1 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#更新 t1,t3
+UPDATE t1,t3 SET t1.c1 = t1.c2,t3.c1 = 1 WHERE t1.c2 = t3.c2 and t1.c2 = 2;
+select * from t1 order by 1,2,3;
+select * from t2 order by 1,2,3;
+select * from t3 order by 1,2,3;
+
+#更新 t2,t3
+--error 1451
+UPDATE t2,t3 SET t2.c1 = 1,t3.c1 = 3 WHERE t2.c2 = t3.c2 and t2.c2 = 3;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c2 = 3 order by 1,2,3;
+select * from t3 where c2 = 3 order by 1,2,3;
+
+UPDATE t2,t3 SET t2.c1 = 2,t3.c1 = 1 WHERE t2.c2 = t3.c2 and t2.c2 = 3;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c2 = 3 order by 1,2,3;
+select * from t3 where c2 = 3 order by 1,2,3;
+
+UPDATE t2,t3 SET t2.c1 = 3,t3.c1 = 4 WHERE t2.c2 = t3.c2 and t2.c2 = 3;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c2 = 3 order by 1,2,3;
+select * from t3 where c2 = 3 order by 1,2,3;
+
+UPDATE t2,t3 SET t2.c1 = 2,t3.c1 = null WHERE t2.c2 = t3.c2 and t2.c2 = 3;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c2 = 3 order by 1,2,3;
+select * from t3 where c2 = 3 order by 1,2,3;
+
+UPDATE t2,t3 SET t2.c1 = 4,t3.c1 = 4 WHERE t2.c2 = t3.c2 and t2.c2 = 3;
+select * from t1 where c2 = 3 order by 1,2,3;
+select * from t2 where c2 = 3 order by 1,2,3;
+select * from t3 where c2 = 3 order by 1,2,3;
+
+drop table t3;
+drop table t2;
+drop table t1;
+
+connection default;
+--disable_warnings
+--error 0,600
+drop user fk_testuser;
+--enable_warnings
+purge recyclebin;

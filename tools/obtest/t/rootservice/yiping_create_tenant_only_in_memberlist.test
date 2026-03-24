@@ -1,0 +1,82 @@
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.port);
+
+let $z3s1ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3s1port= deploy_get_value(ob1.z3.obs1.port);
+
+let $z3s0ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3s0port= deploy_get_value(ob1.z3.obs0.port);
+
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.check_until_timeout select role from oceanbase.__all_ls_meta_table where tenant_id=1 and ls_id=1 and zone='z1', 1, 40;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_rootservice_event_history where event='full_rootservice' and value1=0 and value2 like '%$ip:$port%' order by 1 desc, 1, 10;
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql create resource unit box max_cpu 2, memory_size='6G';
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql create tenant mysql resource_pool_list ('pool'), primary_zone='z2';
+
+ob1.z3.obs1.force_stop;
+
+ob_connect(conn_sys1, ob1.z2.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys1;
+eval alter system change tenant tenant_id=$meta_tenant_id;
+--disable_query_log
+eval select count(*) from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+eval delete from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+eval select count(*) from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+--enable_query_log
+
+let $unit = deploy_get_value(ob1.select select unit_id a from dba_ob_units where tenant_id=$user_tenant_id and svr_ip='$z3s1ip' and svr_port=$z3s1port, a, 1);
+
+# 模拟宕机场景，可以手动运维
+# 先迁移unit
+ob1.mysql ALTER SYSTEM MIGRATE UNIT = $unit DESTINATION = '$z3s0ip:$z3s0port'; 
+ob1.check_until_timeout select count(*) from dba_ob_units where MIGRATE_FROM_SVR_PORT is not NULL and tenant_id=$user_tenant_id, 0, 600;
+# 再给新机器补副本
+ob1.mysql ALTER SYSTEM ADD REPLICA LS 1 SERVER '$z3s0ip:$z3s0port' REPLICA_TYPE 'FULL' paxos_replica_num 4 TENANT 'mysql';
+ob1.check_until_timeout select count(*) from dba_ob_rootservice_event_history where module like '%disaster%' and event='finish_add_ls_replica' and value1='$user_tenant_id' and value2=1 and value4 like '%$z3s0ip:$z3s0port%' and value6 like '%OB_SUCCESS%', 1, 600;
+
+ob1.mysql ALTER SYSTEM REMOVE REPLICA LS 1 SERVER '$z3s1ip:$z3s1port' paxos_replica_num 3 TENANT 'mysql';
+ob1.check_until_timeout select count(*) from dba_ob_rootservice_event_history where module like '%disaster%' and event='finish_remove_ls_paxos_replica' and value1='$user_tenant_id' and value2=1 and value5 like '%$z3s1ip:$z3s1port%' and value6 like '%OB_SUCCESS%', 1, 600;
+
+ob1.z3.obs1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time <= 0  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($user_tenant_id, $meta_tenant_id), 0, 180;
+
+ob1.mysql ALTER SYSTEM MIGRATE UNIT = $unit DESTINATION = '$z3s1ip:$z3s1port'; 
+ob1.check_until_timeout select count(*) from dba_ob_units where MIGRATE_FROM_SVR_PORT is not NULL and tenant_id=$user_tenant_id, 0, 600;
+
+# 机器永久下线，可以自动恢复
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql create tenant mysql resource_pool_list ('pool'), primary_zone='z2';
+ob1.z3.obs1.force_stop;
+
+ob_connect(conn_sys1, ob1.z2.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys1;
+eval alter system change tenant tenant_id=$meta_tenant_id;
+--disable_query_log
+eval select count(*) from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+eval delete from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+eval select count(*) from __all_ls_meta_table where svr_ip='$z3s1ip' and svr_port=$z3s1port and ls_id=1 and tenant_id=$user_tenant_id;
+--enable_query_log
+
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.check_until_timeout select count(*) from dba_ob_rootservice_event_history where event='permanent_offline' and value1 like '%$z3s1ip:$z3s1port%', 1, 30;
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id=$user_tenant_id and ls_id=1, 3, 600;

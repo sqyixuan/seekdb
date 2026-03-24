@@ -1,0 +1,74 @@
+# owner: gengli.wzy
+# owner group: transaction
+# description: 
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn_sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connect (conn_test_tenant,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+let $__timeout_def__ = 5 * 3600 * 1000 * 1000;
+
+connection conn_test_tenant;
+eval set SESSION ob_query_timeout = $__timeout_def__;
+eval set SESSION ob_trx_timeout = $__timeout_def__;
+eval set SESSION ob_trx_idle_timeout = $__timeout_def__;
+alter system set writing_throttling_trigger_percentage = 99;
+
+--disable_query_log
+--disable_warnings
+drop table if exists memtable_simple_scan_t;
+drop sequence if exists s1;
+--enable_warnings
+--enable_query_log
+
+create table memtable_simple_scan_t (col_0 bigint primary key, col_1 bigint, col_2 bigint, col_3 bigint, col_4 bigint, col_5 varchar(20));
+create sequence s1 cache 1000000 noorder;
+
+alter system set freeze_trigger_percentage = 80;
+
+# 构造数据
+INSERT INTO memtable_simple_scan_t SELECT 
+  s1.nextval col_0,
+  abs(random(269381) % 10000) col_1,
+  zipf(1, 100, random(269381)) col_2,
+  normal(0, 1, random(269381)) col_3,
+  uniform(1, 100, random(269381)) col_4,
+  randstr(1+zipf(1, 20, random(269381)), random(269381)) col_5
+FROM 
+  table(generator(1000));
+
+# 场景1 单个range
+SELECT * FROM memtable_simple_scan_t  WHERE col_0 > 10 and col_0 < 15;
+
+# 场景2 单个range, range reserve
+EXPLAIN SELECT * FROM memtable_simple_scan_t  WHERE col_0 > 10 and col_0 < 15 order by col_0 desc;
+SELECT * FROM memtable_simple_scan_t  WHERE col_0 > 10 and col_0 < 15 order by col_0 desc;
+
+# 场景3 单个range (rowkey)
+SELECT * FROM memtable_simple_scan_t WHERE col_0 >= 10 and col_0 <= 10;
+
+# 场景4 多个range
+EXPLAIN SELECT * FROM memtable_simple_scan_t 
+WHERE 
+  (col_0 >= 10 and col_0 <= 10)   or
+  (col_0 > 10 and col_0 < 15)     or 
+  (col_0 >= 100 and col_0 <= 100) or
+  (col_0 <= 110 and col_0 >= 110) or 
+  (col_0 >= 999)                  or 
+  (col_0 < 1);
+
+SELECT * FROM memtable_simple_scan_t 
+WHERE 
+  (col_0 >= 10 and col_0 <= 10)   or
+  (col_0 > 10 and col_0 < 15)     or 
+  (col_0 >= 100 and col_0 <= 100) or
+  (col_0 <= 110 and col_0 >= 110) or 
+  (col_0 >= 999)                  or 
+  (col_0 < 1);
+
+# 恢复租户配置项
+alter system set freeze_trigger_percentage = 20;
+alter system set writing_throttling_trigger_percentage = 70;

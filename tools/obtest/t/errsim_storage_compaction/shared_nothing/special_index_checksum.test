@@ -1,0 +1,55 @@
+# owner: xiekaige.xkg
+# owner group: storage
+# description: spatial index test case with 1:1:1 cluster and RS validation skip
+# 测试点：
+# 1. 单表创建一个多值索引、两个普通索引 
+# 2. 先校验特殊索引，再校验普通索引
+# 3. 最后合并能够成功校验完成
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+--echo ===============================================================
+--echo ============     special index test case     ==================
+--echo ===============================================================
+--echo test case for spatial index begin
+ob1.reboot;
+
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set merger_check_interval='10s';
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+eval CREATE RESOURCE UNIT unit_special MAX_CPU =2, MEMORY_SIZE ='4G';
+eval CREATE RESOURCE POOL pool_special UNIT = 'unit_special', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+eval CREATE TENANT test01 RESOURCE_POOL_LIST = ('pool_special'), primary_zone='z1,z2,z3', locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+
+let $tenant_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $tenant_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $test_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'test01', tenant_id, 1);
+connect(conn_tenant, $tenant_ip, root@test01,, test, $tenant_port);
+connection conn_tenant;
+
+--echo ===============================================================
+--echo =========== case 1: special index construct ===================
+--echo ===============================================================
+
+--source include/compaction/create_table_for_rs_check.inc 
+--source include/compaction/insert_rows_for_rs_check.inc
+
+--echo ===============================================================
+--echo =========== case 2: major merge and checksum validation ====
+--echo ===============================================================
+connection conn_sys;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.mysql alter system major freeze tenant test01;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id , 1, 30;
+ob1.mysql alter system set_tp tp_name = "EN_SPECIAL_INDEX_TABLE_VERIFY", error_code = 4016, frequency = 1;
+ob1.check_until_timeout select count(*) > 51 from oceanbase.__all_server_event_history where module = 'storage_engine' and event = 'special_index_table_verify', 1, 500;
+ob1.mysql alter system set_tp tp_name = "EN_SPECIAL_INDEX_TABLE_VERIFY", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $test_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;

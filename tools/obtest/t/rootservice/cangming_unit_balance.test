@@ -1,0 +1,97 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     case 1: 新增机器后，可以unit均衡
+#     case 2: 按照磁盘策略的均衡
+#     case 3: 机器永久下线后，可以unit自动迁走
+#     case 4: 存在空资源池时，可以执行均衡
+
+ob1=OBI(cluster=2:1:1,proxy_num=1);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=datafile_size='5G';
+ob1.z1.obs1.set extra_config=datafile_size='5G';
+ob1.z2.obs0.set extra_config=datafile_size='5G';
+ob1.z3.obs0.set extra_config=datafile_size='5G';
+
+ob1.z1.obs1.set status=disable;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+set @@session.ob_query_timeout = 1000000000;
+#==================================================================================
+# Initialize
+#==================================================================================
+#mysql tenant
+alter system set_tp tp_name = ERRSIM_SERVER_DISK_ASSIGN, error_code = 4000, frequency = 0;
+alter system set_tp tp_name = ERRSIM_UNIT_DISK_ASSIGN, error_code = 4000, frequency = 0;
+CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+CREATE TENANT mysql1 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+#==================================================================================
+# case1: unit balance after adding server
+#==================================================================================
+ob1.z1.obs1.set status=enable;
+ob1.z1.obs1.start;
+ob1.z1.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z1.obs1.add;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time != 0, 4, 100;
+
+let $obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port = deploy_get_value(ob1.z1.obs0.port);
+
+# check if one of the 3 unit migrate from obs0 to obs1
+# check finish migration
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_unit where svr_ip='$obs1_ip' and svr_port =$obs1_port and migrate_from_svr_ip = '', 1,400;
+
+#==================================================================================
+# case2: unit balance by disk in use strategy
+#==================================================================================
+connection conn_sys;
+let $unit_id0 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port=$obs0_port and unit_id <> 1, unit_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip='$obs1_ip' and svr_port=$obs1_port and unit_id <> 1, unit_id, 1);
+## disable rebalance and set disk_in_use by errsim
+alter system set ENABLE_REBALANCE = 'false';
+alter system set_tp tp_name = ERRSIM_SERVER_DISK_ASSIGN, error_code = 4000, frequency = 1;
+alter system set_tp tp_name = ERRSIM_UNIT_DISK_ASSIGN, error_code = 4000, frequency = 1;
+alter system set server_balance_critical_disk_waterlevel = 40;
+select data_disk_capacity, ss_data_disk_operation_suggested, ss_data_disk_size_suggested from oceanbase.__all_virtual_server;
+select ss_data_disk_operation_suggested, ss_data_disk_size_suggested from oceanbase.gv$ob_servers;
+select ss_data_disk_operation_suggested, ss_data_disk_size_suggested from oceanbase.v$ob_servers;
+## manually migrate all units to obs0
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where svr_ip='$obs0_ip' and svr_port=$obs0_port and unit_id = $unit_id1, 0, 400;
+ob1.mysql_p alter system migrate unit $unit_id1 destination '$obs0_ip:$obs0_port';
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port =$obs0_port and migrate_from_svr_ip ='', 3, 400;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where svr_ip='$obs1_ip' and svr_port =$obs1_port, 0, 400;
+## enable rebalance and check migration
+alter system set ENABLE_REBALANCE = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip='$obs1_ip' and svr_port =$obs1_port and migrate_from_svr_ip ='', 1, 400;
+ob1.mysql_p select count(*) from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port =$obs0_port;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where svr_ip='$obs0_ip' and svr_port =$obs0_port, 3, 400;
+## reset parameters
+alter system set_tp tp_name = ERRSIM_SERVER_DISK_ASSIGN, error_code = 4000, frequency = 0;
+alter system set_tp tp_name = ERRSIM_UNIT_DISK_ASSIGN, error_code = 4000, frequency = 0;
+alter system set server_balance_critical_disk_waterlevel = 80;
+
+#==================================================================================
+# case3: auto migrate out units when server is down (permanent offline)
+#==================================================================================
+alter system set server_permanent_offline_time = '20s';
+ob1.z1.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs0_ip' and svr_port =$obs0_port and status = 'INACTIVE' and start_service_time = 0 and last_offline_time > 0,1,60;
+# check all units on z1.obs0 migrate out
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port =$obs0_port, 0, 400;
+ob1.mysql_p select count(*) from oceanbase.__all_unit where svr_ip='$obs1_ip' and svr_port =$obs1_port;
+
+#==================================================================================
+# case4: can do balance when empty pool exists
+#==================================================================================
+CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.z1.obs0.start;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time != 0, 4, 100;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_unit where svr_ip='$obs0_ip' and svr_port =$obs0_port and migrate_from_svr_ip = '', 1, 400;

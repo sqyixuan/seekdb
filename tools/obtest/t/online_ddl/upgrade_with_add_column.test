@@ -1,0 +1,296 @@
+## 
+# owner      : zhenjiang.xzj
+# owner group: qa
+# description: 测试从2_0_0 升级到master分支 2.1.0 版本
+##
+ob1=OBI(cluster=1:1:1,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120,version=2_0_0);
+ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter RESOURCE UNIT proxyunit max_memory=5368709120,min_memory=5368709120;
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z2.obs0.workdir);
+ob1.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z3.obs0.workdir);
+ob1.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+# 2. 修改配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set resource_soft_limit=200;
+ob1.mysql alter system set resource_hard_limit=200;
+
+# 3. proxy同步集群状态的时间间隔
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_proxy,$ip,root@obproxy,,test,$port);
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+alter proxyconfig set server_state_refresh_interval='1s';
+
+# 4.数据准备
+# 4.1 基础数据准备,设置obtest租户的primary zone
+connection conn_obtest;
+create database db1;
+create tablegroup tg;
+create table db1.t1(id int primary key, name varchar(3000), age int, description varchar(3000)) tablet_size=2097152 compression='none';
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+
+let $table_size = 0;
+let $pkey=0;
+let $version=2;
+while($table_size < 10485760)
+{
+  let $i=0;
+  while($i < 10000)
+  {
+    eval insert into db1.t1 values($pkey, repeat(rand(),60), $i, repeat(rand(),60));
+    inc $i;
+    inc $pkey;
+  }
+  ob1.mysql alter system major freeze;
+  ob1.check_version $version;
+  inc $version;
+  let $table_size = deploy_get_value(ob1.select select data_size from oceanbase.__all_virtual_meta_table where table_id=$data_table_id, data_size, 1);
+}
+
+--disable_query_log
+--disable_result_log
+
+--enable_query_log
+--enable_result_log
+
+# 5.2 设置租户的主
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.mysql alter tenant obtest set primary_zone='z2';
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+sleep 5;
+
+# 5.3.1 第1次合并
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version $version;
+inc $version;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+# 6 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+ob1.mysql alter system begin upgrade;
+sleep 2;
+
+# 7.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+sleep 5;
+
+# 8. 先升级z2 rs在老server上
+# 8.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @saved_ob_query_timeout = @@session.ob_query_timeout;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z2';
+set @@session.ob_query_timeout = @saved_ob_query_timeout;
+ob1.check_until_timeout select info from __all_zone where zone='z2' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z2',0,20;
+sleep 2;
+ob1.z2.check_state_in_congest upgrade;
+# 8.3 升级版本
+ob1.z2.stop;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z2';
+sleep 2;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.z2.check_state_in_congest active;
+
+# 8.4 验证
+# 等obtest租户切主到z2上
+sleep 10;
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_obtest_z1,$ipz1,root@obtest,,db1,$portz1);
+
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn_obtest_z2,$ipz2,root@obtest,,db1,$portz2);
+
+# 8.4.3 sys租户sql
+ob1.z1.mysql_p show global variables like 'sql_mode';
+ob1.z1.mysql_p show variables like 'sql_mode';
+ob1.z1.mysql_p show create table oceanbase.__all_table;
+
+ob1.z2.mysql_p show global variables like 'sql_mode';
+ob1.z2.mysql_p show variables like 'sql_mode';
+ob1.z2.mysql_p show create table oceanbase.__all_table;
+
+# 9. 再升级z1 rs在新server上
+# 9.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z1';
+ob1.check_until_timeout select info from __all_zone where zone='z1' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z1',0,20;
+sleep 2;
+ob1.z1.check_state_in_congest upgrade;
+
+# 9.2 升级版本
+ob1.z1.stop;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z1';
+sleep 2;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.z1.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+
+# 9.3.4 sys租户sql
+ob1.z1.mysql_p show global variables like 'sql_mode';
+ob1.z1.mysql_p show variables like 'sql_mode';
+ob1.z1.mysql_p show create table oceanbase.__all_table;
+
+ob1.z2.mysql_p show global variables like 'sql_mode';
+ob1.z2.mysql_p show variables like 'sql_mode';
+ob1.z2.mysql_p show create table oceanbase.__all_table;
+
+# 10. 最后升级z3 
+# 10.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z3';
+ob1.check_until_timeout select info from __all_zone where zone='z3' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z3',0,20;
+sleep 2;
+ob1.z3.check_state_in_congest upgrade;
+
+# 10.2 升级版本
+ob1.z3.stop;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z3';
+sleep 2;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.z3.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 5;
+
+# 10.3 验证
+# 10.3.2 验证 variables表可读
+connect (conn_sys_z1,$ipz1,root,,oceanbase,$portz1);
+--disable_query_log
+--disable_result_log
+let $i=0;
+while($i<16)
+{
+    eval select count(*) from __all_virtual_sys_variable partition(p$i);
+    eval select count(*) from __all_virtual_tablegroup partition(p$i);
+    inc $i;
+}
+--enable_query_log
+--enable_result_log
+#ob1.check_until_timeout select count(*) > 0  from oceanbase.__all_sys_variable,1,60;
+
+# 11. 执行升级后SQL
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system upgrade virtual schema;
+sleep 5;
+ob1.upgrade_commond_for_server post;
+sleep 5;
+ob1.mysql alter system end upgrade;
+sleep 5;
+ob1.mysql alter system run job 'root_inspection';
+sleep 5;
+
+# 12. 升级后检查schema
+# 12.1
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where info != "succeed", 0, 300;
+ob1.mysql_p select zone,value from oceanbase.__all_virtual_sys_parameter_stat where name='min_observer_version' order by zone;
+# 12.2 校验拆分后的表可以查询
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+desc oceanbase.__all_sequence_v2;
+desc oceanbase.__all_tenant_meta_table;
+desc oceanbase.__all_tenant_gc_partition_info;
+select count(*)>0 from oceanbase.__all_sequence_v2;
+select count(*)>0 from oceanbase.__all_tenant_meta_table;
+select count(*)>0 from oceanbase.__all_tenant_gc_partition_info;
+# 12.3 检查删除的索引是否补齐了data_table_id
+ob1.mysql_p select 1 from oceanbase.__all_virtual_table_history where is_deleted = 1 and data_table_id = (select distinct table_id from oceanbase.__all_virtual_table_history where table_name = 'tb_table_drop');
+
+# 13. 升级后检查
+# 13.1 查询数据
+connect (conn_obtest_z1,$ipz1,root@obtest,,db1,$portz1);
+# 13.2 首先检查日志是同步状态,然后合并
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version $version;
+inc $version;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+#13.5 重启
+ob1.force_stop;
+sleep 5;
+ob1.nstart;
+sleep 30;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,600;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version $version;
+inc $version;
+
+ob1.mysql alter tenant obtest set rewrite_merge_version = $version;
+connection conn_obtest;
+alter table db1.t1 set progressive_merge_num = 3;
+ob1.mysql alter system major freeze;
+ob1.check_version $version;
+inc $version;
+create index idx_age on db1.t1(age);
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where table_name like '%idx_age%', 2, 60;
+
+alter table db1.t1 add column col_new varchar(20) default "oceanbase_test";
+
+let $i=0;
+while($i < 100)
+{
+  eval insert into db1.t1 values($pkey, repeat(rand(),60), $i, repeat(rand(),60), "new_column_test");
+  inc $i;
+  inc $pkey;
+}
+
+ob1.mysql alter system major freeze;
+ob1.check_version $version;
+inc $version;
+
+ob1.mysql alter system major freeze;
+ob1.check_version $version;
+inc $version;
+
+ob1.mysql alter system major freeze;
+ob1.check_version $version;
+inc $version;
+
+create index idx_age2 on db1.t1(age);
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where table_name like '%idx_age2%', 2, 60;
+ob1.mysql alter system major freeze;
+ob1.check_version $version;
+inc $version;

@@ -1,0 +1,63 @@
+# owner: zhuoran.zzr
+# owner group: storage
+# description: test GV$SESSION_LONGOPS for inserting into column group
+#              now mainly include actions: create index, table redefinition,
+#
+--result_format 4
+connect (obsys0,$OBMYSQL_MS0,root@sys,,Oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn1;
+--source mysql_test/test_suite/direct_load_data/include/copy_data_for_direct_load.inc
+--disable_warnings
+drop table if exists lineitem;
+--enable_warnings
+
+create table lineitem(
+    l_orderkey           bigint NOT NULL ,
+    l_partkey            bigint NOT NULL ,
+    l_suppkey            bigint NOT NULL ,
+    l_linenumber         bigint NOT NULL ,
+    l_quantity           bigint NOT NULL ,
+    l_extendedprice      decimal(10,2) NOT NULL ,
+    l_discount           decimal(10,2) NOT NULL ,
+    l_tax                decimal(10,2) NOT NULL ,
+    l_returnflag         char(1) ,
+    l_linestatus         char(1) ,
+    l_shipdate           date ,
+    l_commitdate         date ,
+    l_receiptdate        date ,
+    l_shipinstruct       char(25) ,
+    l_shipmode           char(10) ,
+    l_comment            varchar(44),
+    primary key(L_ORDERKEY, L_LINENUMBER)
+) partition by hash(l_orderkey) partitions 10;
+
+set @@ob_query_timeout = 1000000*60*60*10, @@ob_trx_timeout=1000000*60*60*10;
+
+# Start load data
+--disable_query_log
+eval load data /*+ direct(true,0) parallel(2) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem/lineitem-100k.tbl" into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+
+connection obsys0;
+--enable_query_log
+
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+
+# test for row store table
+create /*+parallel(2)*/index idx1 on lineitem(l_quantity, l_suppkey,l_extendedprice);
+select sum(OTHERSTAT_1_VALUE), sum(OTHERSTAT_2_VALUE) from (select OTHERSTAT_1_VALUE,OTHERSTAT_2_VALUE from oceanbase.__all_virtual_sql_plan_monitor where PLAN_OPERATION = 'PHY_PX_MULTI_PART_SSTABLE_INSERT' order by LAST_REFRESH_TIME desc limit 2);
+
+
+
+# create index, use parallel 4
+# index have 4 column * 5 column_group = 20 * row_count
+# don't use all_virutal_longops_status, since it's more easily to use than __all_virtual_longops_status;
+create /*+parallel(4)*/index idx2 on lineitem(l_partkey, l_suppkey,l_orderkey) with column group(all columns, each column);
+select sum(OTHERSTAT_1_VALUE), sum(OTHERSTAT_2_VALUE) from (select OTHERSTAT_1_VALUE, OTHERSTAT_2_VALUE from oceanbase.__all_virtual_sql_plan_monitor where PLAN_OPERATION = 'PHY_PX_MULTI_PART_SSTABLE_INSERT' order by LAST_REFRESH_TIME desc limit 4);
+
+# alter table, user parallel 1
+# select 3 record, since 2 index will rebuild at the same time 
+alter table lineitem add column group(all columns, each column);
+select OTHERSTAT_1_VALUE, OTHERSTAT_2_VALUE from oceanbase.__all_virtual_sql_plan_monitor where PLAN_OPERATION = 'PHY_PX_MULTI_PART_SSTABLE_INSERT' order by LAST_REFRESH_TIME desc limit 3;

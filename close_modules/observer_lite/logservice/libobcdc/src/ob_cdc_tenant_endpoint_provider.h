@@ -1,0 +1,66 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_TENANT_ENDPOINT_PROVIDER_H__
+#define OCEANBASE_LIBOBCDC_TENANT_ENDPOINT_PROVIDER_H__
+
+#include "lib/lock/ob_spin_rwlock.h"                    // SpinRWLock
+#include "lib/mysqlclient/ob_mysql_server_provider.h"   // ObMySQLServerProvider
+#include "ob_cdc_server_endpoint_access_info.h"
+#include "ob_log_svr_blacklist.h"                       // ObLogSvrBlacklist
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+class ObLogConfig;
+
+typedef common::ObArray<common::ObAddr> SQLServerList;
+class ObCDCEndpointProvider : public common::sqlclient::ObMySQLServerProvider
+{
+public:
+  ObCDCEndpointProvider();
+  virtual ~ObCDCEndpointProvider();
+public:
+  int init(const char *tenant_endpoint_str);
+  void destroy();
+  int refresh_server_list(ObIArray<ObAddr> &svr_list);
+  const ObLogSvrBlacklist &get_svr_black_list() const { return svr_blacklist_; }
+  void configure(const ObLogConfig &cfg);
+public:
+  // override ObMySQLServerProvider
+  virtual int64_t get_server_count() const override;
+  virtual int get_server(const int64_t svr_idx, common::ObAddr &server) override;
+  virtual int get_tenant_ids(common::ObIArray<uint64_t> &tenant_ids) override;
+  virtual int get_tenant_servers(const uint64_t tenant_id, common::ObIArray<ObAddr> &tenant_servers) override;
+  virtual int refresh_server_list(void) { return OB_SUCCESS; }
+  virtual int prepare_refresh() override { return OB_SUCCESS; }
+  virtual int end_refresh() override { return OB_SUCCESS; }
+private:
+  int parse_tenant_endpoint_list_(const char *tenant_endpoint_str);
+  int init_sql_svr_list_();
+private:
+  bool                        is_inited_;
+  mutable common::SpinRWLock  refresh_lock_; // lock to protect refresh ServerList server_list_
+  SQLServerList               sql_svr_list_;
+  ObCDCEndpointList           endpoint_list_; // user provided tenant_endpoint, only used while init cause may use hostname.
+  ObLogSvrBlacklist           svr_blacklist_;
+};
+
+} // namespace libobcdc
+} // namespace oceanbase
+
+#endif

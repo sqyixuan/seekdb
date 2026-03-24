@@ -1,0 +1,214 @@
+# owner: zhanyue.zzy
+# owner group: SQL1
+# tags: optimizer
+
+--result_format 4
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+set ob_query_timeout = 30000000;
+create table t1(c1 int, c2 int, c3 int) partition by hash(c1) partitions 10;
+create table t2(c1 int, c2 int, c3 int) partition by hash(c1) partitions 10;
+create table t3(c1 int, c2 int, c3 int) partition by hash(c1) partitions 10;
+explain select /*+parallel(2) leading(v) use_hash(t3) no_px_part_join_filter(t3) px_join_filter(t3) pq_distribute(t3 none broadcast)*/ *
+from (select /*+no_merge no_rewrite leading(t1) use_hash(t2) px_join_filter(t2) pq_distribute(t2 hash hash)*/ t1.c1 t1c1, t1.c2 t1c2, t2.c1 t2c1, t2.c2 t2c2
+      from t1, t2 where t1.c1 = t2.c1 group by t1.c1, t1.c2, t2.c1, t2.c2) v, t3 where t2c1 = t3.c1;
+select /*+parallel(2) leading(v) use_hash(t3) no_px_part_join_filter(t3) px_join_filter(t3) pq_distribute(t3 none broadcast)*/ *
+from (select /*+no_merge no_rewrite leading(t1) use_hash(t2) px_join_filter(t2) pq_distribute(t2 hash hash)*/ t1.c1 t1c1, t1.c2 t1c2, t2.c1 t2c1, t2.c2 t2c2 
+      from t1, t2 where t1.c1 = t2.c1 group by t1.c1, t1.c2, t2.c1, t2.c2) v, t3 where t2c1 = t3.c1;
+
+drop table t1, t2, t3;
+
+create table t1(c1 int)partition by hash(c1) partitions 1024;
+create table t2(c1 int);
+
+explain select /*+parallel(2) leading(t2 t1) use_hash(t1) pq_distribute(t1 bc2host none)*/ count(*) from t1, t2 where t1.c1 = t2.c1;
+drop table t1;
+drop table t2;
+
+create table t1(c1 bigint);
+create table t2(c1 bigint);
+create table t3(c1 bigint primary key);
+insert into t1 select abs(random(123)) % 1000 from table(generator(1000));
+insert into t2 select abs(random(123)) % 1000 from table(generator(1000));
+insert into t3 select abs(random(123)) % 100000000 from table(generator(1000));
+explain basic (select /*+parallel(8) leading(t1 t3) px_join_filter(t3)*/ t1.* from t1 join t3 on t1.c1=t3.c1 ) union all (select /*+parallel(8)*/ t1.* from t1 join t2 on t1.c1=t2.c1);
+(select /*+parallel(8) leading(t1 t3) px_join_filter(t3)*/ t1.* from t1 join t3 on t1.c1=t3.c1 ) union all (select /*+parallel(8)*/ t1.* from t1 join t2 on t1.c1=t2.c1);
+drop table t1, t2;
+
+
+CREATE TABLE t1(c1 INT, c2 INT, c3 INT) PARTITION BY HASH(c1) PARTITIONS 5;
+CREATE TABLE t2(c1 int);
+
+insert into t1 select mod(random(123), 10000), mod(random(123), 20000), mod(random(123), 30000) from table(generator(110000));
+insert into t2 select mod(random(123), 10000) from table(generator(110000));
+
+CREATE INDEX t1_idx_c1 ON t1(c1) GLOBAL
+PARTITION BY RANGE(c1)
+(PARTITION p0 VALUES LESS THAN(3333), 
+PARTITION p1 VALUES LESS THAN(6666), 
+PARTITION p2 VALUES LESS THAN(10000)
+);
+
+#global index without index back
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) PX_JOIN_FILTER(t1) no_use_das(t1) index("t1" "t1_idx_c1") */ t1.c1, t2.* from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) PX_JOIN_FILTER(t1) use_das(t1) index("t1" "t1_idx_c1") */ t1.c1, t2.* from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) PX_JOIN_FILTER(v1 t2 t1@SEL$2)*/ * from (select /*+no_merge no_use_das(t1) index("t1" "t1_idx_c1") */ c1 from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) PX_JOIN_FILTER(v1 t2 t1@SEL$2)*/ * from (select /*+no_merge use_das(t1) index("t1" "t1_idx_c1") */ c1 from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+
+#global index with index back
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) PX_JOIN_FILTER(t1) no_use_das(t1) index("t1" "t1_idx_c1") */ * from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) PX_JOIN_FILTER(t1) use_das(t1) index("t1" "t1_idx_c1") */ * from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) PX_JOIN_FILTER(v1 t2 t1@SEL$2)*/ * from (select /*+no_merge no_use_das(t1) index("t1" "t1_idx_c1")*/ * from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) PX_JOIN_FILTER(v1 t2 t1@SEL$2)*/ * from (select /*+no_merge use_das(t1) index("t1" "t1_idx_c1")*/ * from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+
+#without px join filter hint
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) no_use_das(t1) index("t1" "t1_idx_c1") */ * from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) use_das(t1) index("t1" "t1_idx_c1") */ * from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 t1) use_hash(t2 t1) use_das(t1) index("t1" "t1_idx_c1") */ t1.c1, t2.* from t1, t2 where t1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) */ * from (select /*+no_merge no_use_das(t1) index("t1" "t1_idx_c1") */ * from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) */ * from (select /*+no_merge use_das(t1) index("t1" "t1_idx_c1") */ * from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+explain basic select /*+no_rewrite parallel(2) leading(t2 v1) use_hash(t2 v1) */ * from (select /*+no_merge use_das(t1) index("t1" "t1_idx_c1") */ c1 from t1) v1, t2 where v1.c1 = t2.c1 and t2.c1 = 1;
+
+drop table t1, t2;
+
+--disable_warnings
+drop table if exists pos_order_detail;
+drop table if exists pos_order;
+--enable_warnings
+
+CREATE TABLE `pos_order_detail` (
+  `fid` varchar(25) NOT NULL COMMENT 'COLUMNAR=1',
+  `detail_num` int(11) NOT NULL COMMENT 'COLUMNAR=1',
+  `bizday` varchar(20) NOT NULL COMMENT '营业日',
+  `item_id` bigint(20) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `item_name` varchar(50) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `basic_original_price` decimal(19,4) DEFAULT NULL COMMENT '原价',
+  `basic_price` decimal(19,4) DEFAULT NULL COMMENT '实际售价',
+  `basic_quantity` decimal(16,4) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `money` decimal(19,2) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `discount_money` decimal(19,2) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `tax_money` decimal(19,2) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `state` varchar(10) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `memo` varchar(250) DEFAULT NULL COMMENT '备注',
+  `commission_money` decimal(19,2) DEFAULT NULL COMMENT '提成金额',
+  `policy_fid` varchar(32) DEFAULT NULL COMMENT '促销单号',
+  `basic_cost_price` decimal(19,4) DEFAULT NULL COMMENT '成本单价',
+  `gross_profit` decimal(19,2) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `company_id` int(11) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `store_id` bigint(20) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `order_state` varchar(10) DEFAULT NULL COMMENT '主单状态',
+  `has_kit` tinyint(4) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `source` varchar(50) DEFAULT NULL COMMENT '来源',
+  `supplier_id` bigint(20) DEFAULT NULL COMMENT '供应商id',
+  `cost_money` decimal(19,2) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `shift_id` bigint(20) DEFAULT NULL COMMENT '班次id columnar=1',
+  `no_tax_money` decimal(19,2) DEFAULT NULL COMMENT '不含税金额',
+  `share_discount` decimal(16,2) DEFAULT NULL COMMENT '分摊金额',
+  `operate_time` datetime(3) DEFAULT NULL COMMENT '操作时间',
+  `basic_unit` varchar(50) DEFAULT NULL COMMENT '基本单位',
+  `valid` tinyint(4) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `parent_detail_num` int(11) DEFAULT NULL COMMENT '上级明细序号',
+  `item_bar_code` varchar(50) DEFAULT NULL COMMENT '商品条码',
+  `item_spec` varchar(50) DEFAULT NULL COMMENT '商品规格 columnar=1',
+  `shift_sequence` int(11) DEFAULT NULL COMMENT '班次序号',
+  `promotion_discount_money` decimal(16,2) DEFAULT NULL COMMENT '促销折扣金额',
+  `manual_change_price` tinyint(4) DEFAULT NULL COMMENT '只筛选手工改价',
+  `member` tinyint(4) DEFAULT '0' COMMENT '是否会员',
+  `basic_no_tax_cost_price` decimal(19,4) DEFAULT NULL COMMENT '不含税成本价',
+  `no_tax_cost_money` decimal(19,2) DEFAULT NULL COMMENT '不含税成本金额',
+  `coupon_sale_share_discount` decimal(19,2) DEFAULT NULL COMMENT '券售价分摊金额',
+  `discount` decimal(10,2) DEFAULT NULL COMMENT '折扣率',
+  `update_time` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `sale_mode` varchar(32) DEFAULT NULL COMMENT '销售方式',
+  PRIMARY KEY (`fid`, `detail_num`, `bizday`),
+  KEY `IDX_POSORDERDETAIL_BIZDAY_STORE` (`bizday`, `store_id`) BLOCK_SIZE 16384 LOCAL,
+  KEY `IDX_POSORDERDETAIL_ITEM_ITEM_BIZDAY` (`item_id`, `bizday`) BLOCK_SIZE 16384 LOCAL,
+  KEY `IDX_POSORDERDETAIL_STORE_BIZDAY` (`store_id`, `bizday`) BLOCK_SIZE 16384 LOCAL
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range columns(bizday)
+(partition `p202210` values less than ('20221101'),
+partition `p_20270131` values less than ('2027-01-31 00:00:00'));
+
+CREATE TABLE `pos_order` (
+  `fid` varchar(32) NOT NULL COMMENT '单据号',
+  `storehouse_id` bigint(20) NOT NULL COMMENT '仓库id',
+  `company_id` int(11) NOT NULL COMMENT '公司id',
+  `store_id` bigint(20) DEFAULT NULL COMMENT 'COLUMNAR=1',
+  `shift_id` bigint(20) NOT NULL COMMENT '班次id',
+  `bizday` varchar(20) NOT NULL COMMENT '营业日',
+  `operate_time` datetime(3) NOT NULL COMMENT 'COLUMNAR=1',
+  `operator` varchar(50) DEFAULT NULL COMMENT '收银员',
+  `card_print_num` varchar(25) DEFAULT NULL COMMENT '卡号',
+  `customer_name` varchar(50) DEFAULT NULL COMMENT '会员名称',
+  `discount_money` decimal(19,2) DEFAULT NULL COMMENT '折扣总额',
+  `commission_money` decimal(19,2) DEFAULT NULL COMMENT '提成金额',
+  `total_money` decimal(19,2) DEFAULT NULL COMMENT '单据总额',
+  `money` decimal(19,2) DEFAULT NULL COMMENT '实付金额',
+  `round_money` decimal(19,2) DEFAULT NULL COMMENT '四舍五入',
+  `machine` varchar(225) DEFAULT NULL COMMENT '终端地址',
+  `valid` tinyint(4) DEFAULT NULL COMMENT '是否有效',
+  `memo` varchar(250) DEFAULT NULL COMMENT '备注',
+  `point` int(11) DEFAULT NULL COMMENT '积分',
+  `gross_profit` decimal(19,2) DEFAULT NULL COMMENT '毛利',
+  `mgr_discount_money` decimal(19,2) DEFAULT NULL COMMENT '经理折扣',
+  `coupon_money` decimal(19,2) DEFAULT NULL COMMENT '券实际抵用金额',
+  `card_id` bigint(20) DEFAULT NULL COMMENT '卡id',
+  `card_type_id` bigint(20) DEFAULT NULL COMMENT '卡类型id',
+  `freight` decimal(19,2) DEFAULT NULL COMMENT '运费',
+  `source` varchar(50) DEFAULT NULL COMMENT '来源',
+  `customer_phone` varchar(20) DEFAULT NULL COMMENT '手机号',
+  `promotion_discount_money` decimal(19,2) DEFAULT NULL COMMENT '促销折扣',
+  `item_count` int(11) DEFAULT NULL COMMENT '商品数',
+  `stocked` tinyint(4) DEFAULT NULL COMMENT '是否扣减库存',
+  `tax_money` decimal(19,2) DEFAULT NULL COMMENT '税额',
+  `cost_money` decimal(19,2) DEFAULT NULL COMMENT '成本金额',
+  `no_tax_money` decimal(19,2) DEFAULT NULL COMMENT '不含税金额',
+  `member_discount` decimal(16,2) DEFAULT NULL COMMENT '会员折扣',
+  `present_discount` decimal(16,2) DEFAULT NULL COMMENT '赠送折扣',
+  `serial_number` varchar(32) DEFAULT NULL COMMENT '流水号',
+  `create_time` datetime(3) DEFAULT NULL COMMENT '创建时间',
+  `payment_types` varchar(250) DEFAULT NULL COMMENT '支付方式',
+  `synch_time` datetime(3) DEFAULT NULL COMMENT '上传时间',
+  `card_type_name` varchar(50) DEFAULT NULL COMMENT '卡类型名称',
+  `shift_sequence` int(11) DEFAULT NULL COMMENT '班次序号',
+  `client_id` bigint(20) DEFAULT NULL COMMENT '批发客户id',
+  `red_serial_number` varchar(32) DEFAULT NULL COMMENT '退单关联流水号',
+  `invoice_id` bigint(20) DEFAULT NULL COMMENT '发票id',
+  `ama_order` tinyint(4) DEFAULT '1' COMMENT '是否乐檬订单(0否 1是)',
+  `coupon_sale_money` decimal(19,2) DEFAULT NULL COMMENT '券销售金额',
+  `ama_coupon_share_discount` decimal(19,2) DEFAULT NULL COMMENT '乐檬券售价分摊金额',
+  `no_tax_cost_money` decimal(16,2) DEFAULT NULL COMMENT '不含税成本金额',
+  `coupon_income` decimal(16,2) DEFAULT NULL COMMENT '券收入',
+  `share_discount` decimal(16,2) DEFAULT NULL COMMENT '分摊金额',
+  `update_time` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `basic_quantity` decimal(16,4) DEFAULT NULL COMMENT '商品数量',
+  `print_count` int(11) DEFAULT NULL COMMENT '打印次数',
+  `external_no` varchar(100) DEFAULT NULL COMMENT '外部流水号',
+  `sale_modes` varchar(255) DEFAULT NULL COMMENT '销售方式',
+  PRIMARY KEY (`fid`, `bizday`),
+  UNIQUE KEY `idx_unique_serialnumber` (`serial_number`, `bizday`) BLOCK_SIZE 16384 LOCAL,
+  KEY `IDX_POSORDER_STORE_TIME` (`store_id`, `operate_time`) BLOCK_SIZE 16384 LOCAL,
+  KEY `IDX_POSORDER_STORE_BIZDAY` (`store_id`, `bizday`) BLOCK_SIZE 16384 LOCAL,
+  KEY `idx_ob_op1` (`store_id`, `bizday`, `payment_types`) BLOCK_SIZE 16384 LOCAL
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range columns(bizday)
+(partition `p202210` values less than ('20221101'),
+partition `p_20260101` values less than ('2026-01-01 00:00:00'));
+
+explain basic select /*+ parallel(4) leading(posorder0_ view1) pq_distribute(view1 hash hash) px_join_filter(@"SEL$683C2FCF" "VIEW1"@"SEL$1" "posorder0_"@"SEL$1" "posorderde1_"@"SEL$2") */ count(posorder0_.fid) as col_0_0_, sum(posorder0_.total_money) as col_1_0_, sum(posorder0_.money) as col_2_0_, sum(posorder0_.round_money) as col_3_0_, sum(posorder0_.mgr_discount_money) as col_4_0_, sum(posorder0_.coupon_money) as col_5_0_, sum(posorder0_.discount_money) as col_6_0_, sum(posorder0_.tax_money) as col_7_0_, sum(posorder0_.no_tax_money) as col_8_0_, sum(posorder0_.money+posorder0_.coupon_money) as col_9_0_ from pos_order posorder0_ where (posorder0_.store_id in (475400001071)) and posorder0_.company_id=66666 and (posorder0_.bizday between '20230318' and '20250314') and (exists (select posorderde1_.item_id from pos_order_detail posorderde1_ where posorderde1_.fid=posorder0_.fid and (posorderde1_.store_id in (475400001071)) and (posorder0_.bizday between '20230318' and '20250314') and (posorderde1_.sale_mode is null or posorderde1_.sale_mode='DIRECT'))) and (posorder0_.client_id in (6666600000032) or posorder0_.client_id is null);
+
+drop table pos_order_detail;
+drop table pos_order;
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+create table t1 (c1 bigint, c2 bigint, c3 bigint);
+create table t2 (c1 int, c2 int, c3 bigint GENERATED ALWAYS AS (c1+c2) VIRTUAL,  KEY gen_key1 (c3) LOCAL);
+insert into t1 select random(123), random(123), random(123) from table(generator(1000));
+insert into t2(c1, c2) select random(123) % 100000, random(123) % 100000 from table(generator(10000));
+EXPLAIN basic select /*+ parallel(2) leading(t1 v) px_join_filter(V T1 "t2"@"SEL$2") use_hash(v)*/ t1.c1, v.c2, v.c3 from t1, (select /*+ no_merge index(t2 gen_key1)*/ * from t2 where c2 < 10000) v where t1.c3 = v.c3;
+select /*+ parallel(2) leading(t1 v) px_join_filter(V T1 "t2"@"SEL$2") use_hash(v)*/ t1.c1, v.c2, v.c3 from t1, (select /*+ no_merge index(t2 gen_key1)*/ * from t2 where c2 < 10000) v where t1.c3 = v.c3;
+drop table t1, t2;

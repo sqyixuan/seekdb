@@ -1,0 +1,59 @@
+# owner: binifei.bnf
+# owner group: major freeze
+# checksum error on restore major freeze service
+
+ob1=OBI(cluster=1, proxy_num=0);
+
+let $multi_zone_flag = 0;
+source include/create_backup_and_restore_tenant.inc;
+
+let $restore_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_mysql_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+#STANDBY
+
+let $cur_timestamp = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(readable_scn  / 1000) > '$cur_timestamp' from __all_virtual_tenant_info where tenant_id = 1004, 1, 600;
+--enable_all_result_log
+
+####################### test checksum error on restore major freeze service #######################
+# suspend merge on restore_mysql_tenant
+ob_connect(restore_mysql_conn, ob1.z1.obs0, root@$restore_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection restore_mysql_conn;
+alter system suspend merge;
+
+# complete one major freeze on backup_mysql_tenant, and update column_checksums to produce
+# checksum_error for restore_major_freeze_service
+connection backup_mysql_conn;
+alter system major freeze;
+let $max_frozen_scn = `select max(frozen_scn) from oceanbase.__all_freeze_info`;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_mysql_tenant_id and frozen_scn = $max_frozen_scn, 0, 600;
+let $ORI_COLUMN_CHECKSUMS = `select column_checksums from oceanbase.__all_tablet_checksum where compaction_scn = $max_frozen_scn and tablet_id = 1 and ls_id = 1`;
+let $ZERO_COLUMN_CHECKSUMS = '636865636B636F6C0000160400000000';
+connection backup_sys_conn;
+eval alter system change tenant $backup_mysql_tenant;
+--disable_query_log
+eval update oceanbase.__all_tablet_checksum set column_checksums = $ZERO_COLUMN_CHECKSUMS where compaction_scn = $max_frozen_scn and tablet_id = 1 and ls_id = 1;
+--enable_query_log
+alter system change tenant sys;
+
+# resume merge on restore_mysql_tenant, and expect restore_mysql_tenant to detect checksum_error
+connection restore_mysql_conn;
+alter system resume merge;
+let $restore_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select is_error from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, YES, 600;
+ob1.check_until_timeout select info from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, CHECKSUM_ERROR, 600;
+
+# resume column_checksums, and expect restore_major_freeze_service to advance major merge progress
+connection backup_sys_conn;
+eval alter system change tenant $backup_mysql_tenant;
+--disable_query_log
+eval update oceanbase.__all_tablet_checksum set column_checksums = '$ORI_COLUMN_CHECKSUMS' where compaction_scn = $max_frozen_scn and tablet_id = 1 and ls_id = 1;
+--enable_query_log
+alter system change tenant sys;
+connection restore_mysql_conn;
+alter system clear merge error;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $restore_tenant_id, 0, 600;

@@ -1,0 +1,128 @@
+# owner: zhaoziqian.zzq
+# owner groups: rs
+# description: test dynamic partition related views
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.reboot;
+
+ob_connect(sys, ob1.z1.obs0, root@sys, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys;
+let $now = '2025-03-01 01:02:03';
+let $mock_current_timestamp = query_get_value(select unix_timestamp($now) * 1000000 as ts, ts, 1);
+eval alter system set_tp tp_name = ERRSIM_DYNAMIC_PARTITION_MOCK_TIME, error_code = $mock_current_timestamp, frequency = 1;
+
+# prepare tenant
+source include/create_unit_config.inc;
+CREATE RESOURCE POOL mysql_pool UNIT = '2c2g', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('mysql_pool'), primary_zone = 'z1', locality='F@z1' set ob_tcp_invited_nodes='%';
+
+CREATE RESOURCE POOL oracle_pool UNIT = '2c2g', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('oracle_pool'), primary_zone = 'z1', locality='F@z1' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+
+ob_connect(mysql, ob1.z1.obs0, root@mysql, ,test, , USE_MYSQL_CONNECTOR);
+connection mysql;
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+set time_zone = '+8:00';
+
+ob_connect(oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection oracle;
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+set time_zone = '+8:00';
+set NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';
+set NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF';
+set NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+
+# prepare tables
+connection mysql;
+let $two_day_ago = query_get_value(SELECT $now - INTERVAL 2 DAY AS two_day_ago, two_day_ago, 1);
+let $two_year_ago = query_get_value(SELECT YEAR($now - INTERVAL 2 YEAR) AS two_year_ago, two_year_ago, 1);
+let $two_day_ago_ts = query_get_value(SELECT CAST(UNIX_TIMESTAMP($now - INTERVAL 2 DAY) AS UNSIGNED) AS two_day_ago, two_day_ago, 1);
+--disable_query_log
+eval create table t11 (c1 date) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range columns (c1) (partition p0 values less than ('$two_day_ago'));
+eval create table t12 (c1 datetime) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range columns (c1) (partition p0 values less than ('$two_day_ago'));
+eval create table t13 (c1 timestamp) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range columns (c1) (partition p0 values less than ('$two_day_ago'));
+eval create table t14 (c1 year) dynamic_partition_policy (time_unit = 'year', precreate_time = '3year', expire_time = '1year') partition by range columns (c1) (partition p0 values less than ($two_year_ago));
+eval create table t15 (c1 bigint) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day', bigint_precision = 's') partition by range columns (c1) (partition p0 values less than ($two_day_ago_ts));
+--enable_query_log
+
+connection oracle;
+--disable_query_log
+eval create table t11 (c1 date) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range (c1) (partition p0 values less than ('$two_day_ago'));
+eval create table t12 (c1 timestamp) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range (c1) (partition p0 values less than ('$two_day_ago'));
+eval create table t13 (c1 timestamp with local time zone) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day') partition by range (c1) (partition p0 values less than (timestamp '$two_day_ago +8:00'));
+eval create table t14 (c1 number) dynamic_partition_policy (time_unit = 'day', precreate_time = '3day', expire_time = '1day', bigint_precision = 's') partition by range (c1) (partition p0 values less than ($two_day_ago_ts));
+--enable_query_log
+
+# case 1: DBA_OB_DYNAMIC_PARTITION_TABLES in mysql mode
+connection mysql;
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+
+# case 2: CDB_OB_DYNAMIC_PARTITION_TABLES in mysql mode
+connection mysql;
+--error 1146
+SELECT * FROM oceanbase.CDB_OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 3: V$OB_DYNAMIC_PARTITION_TABLES in mysql mode
+connection mysql;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 4: DBA_OB_DYNAMIC_PARTITION_TABLES in oracle mode
+connection oracle;
+SELECT * FROM SYS.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+
+# case 5: CDB_OB_DYNAMIC_PARTITION_TABLES in oracle mode
+connection oracle;
+--error 942
+SELECT * FROM SYS.CDB_OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 6: V$OB_DYNAMIC_PARTITION_TABLES in oracle mode
+connection oracle;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM SYS.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 7: DBA_OB_DYNAMIC_PARTITION_TABLES in sys mode
+connection sys;
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+
+# case 8: CDB_OB_DYNAMIC_PARTITION_TABLES in sys mode
+connection sys;
+SELECT * FROM oceanbase.CDB_OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 9: V$OB_DYNAMIC_PARTITION_TABLES in sys mode
+connection sys;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+# case 10: alter dynamic_partition_policy
+connection mysql;
+alter table t15 set dynamic_partition_policy (enable = false, precreate_time = '1month', expire_time = '1year');
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+
+eval create table t16 (c1 datetime) dynamic_partition_policy (time_unit = 'week', precreate_time = '3month', expire_time = '2year', time_zone = '+7:00') partition by range columns (c1) (partition p0 values less than ('$two_day_ago'));
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+
+# case 11: do not show tables in recyclebin;
+connection mysql;
+set recyclebin = on;
+drop table t11;
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+connection oracle;
+set recyclebin = on;
+drop table t11;
+SELECT * FROM SYS.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM SYS.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+connection sys;
+SELECT * FROM oceanbase.CDB_OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+connection mysql;
+drop database test;
+SELECT * FROM oceanbase.DBA_OB_DYNAMIC_PARTITION_TABLES ORDER BY table_id;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+
+connection sys;
+SELECT * FROM oceanbase.CDB_OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;
+SELECT tenant_id, database_name, table_name, table_id, max_high_bound_val, enable, time_unit, precreate_time, expire_time, time_zone, bigint_precision FROM oceanbase.V$OB_DYNAMIC_PARTITION_TABLES ORDER BY tenant_id, table_id;

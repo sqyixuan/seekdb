@@ -1,0 +1,50 @@
+connection tentsql_conn;
+--disable_all_result_log
+use testsql;
+CREATE TABLE ordr (c1 NUMBER, c2 VARCHAR(50), CONSTRAINT PK_c1_c2 PRIMARY KEY(c1, c2));
+ALTER TABLE ordr  ADD cafter  INT;
+ALTER TABLE ordr  ADD cfirst  INT FIRST;
+INSERT INTO ordr (c1, c2) VALUES (1, 'Order_1');
+INSERT INTO ordr (c1, c2) VALUES (2, 'Order_2');
+INSERT INTO ordr (c1, c2) VALUES (3, 'Order_3');
+INSERT INTO ordr (c1, c2) VALUES (4, 'Order_4');
+INSERT INTO ordr (c1, c2) VALUES (5, 'Order_5');
+INSERT INTO ordr (c1, c2) VALUES (6, 'Order_6');
+INSERT INTO ordr (c1, c2) VALUES (7, 'Order_7');
+INSERT INTO ordr (c1, c2) VALUES (8, 'Order_8');
+INSERT INTO ordr (c1, c2) VALUES (9, 'Order_9');
+INSERT INTO ordr (c1, c2) VALUES (10, 'Order_10');
+ALTER TABLE ordr  ADD cafter1  INT after c2;
+ALTER TABLE ordr  ADD cbefer  INT before c2;
+ALTER TABLE ordr ADD id INT;
+ALTER TABLE ordr ADD c3 DECIMAL(15, 1);
+ALTER TABLE ordr ADD COLUMN full_name VARCHAR(255) AS (CONCAT(c1, ' ', c2)) STORED;
+ALTER TABLE ordr  MODIFY cafter1 DECIMAL(15, 2);
+ALTER TABLE ordr  DROP COLUMN full_name;
+ALTER TABLE ordr ADD COLUMN full_name VARCHAR(255) AS (CONCAT(c1, ' ', c2)) STORED;
+
+#online ddl
+CREATE TABLE tableddl (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100), salary DECIMAL(10, 2), hire_date DATE, is_active BOOLEAN);
+INSERT INTO tableddl  (name, salary, hire_date, is_active) VALUES ('Alice', 5000.75, '2023-01-15', TRUE), ('Bob', 6000.00, '2022-08-20', FALSE), ('Charlie', 7200.50, '2021-05-10', TRUE), ('David', 4800.00, '2020-11-25', FALSE );
+ALTER TABLE tableddl ADD birth_date DATE;
+ALTER TABLE tableddl ADD COLUMN full_name VARCHAR(255) AS (CONCAT(name, ' ', hire_date)) VIRTUAL;
+UPDATE tableddl SET birth_date = '1900-01-01' WHERE birth_date IS NULL;
+ALTER TABLE tableddl MODIFY birth_date DATE NOT NULL;
+ALTER TABLE tableddl ALTER COLUMN is_active SET DEFAULT '0';
+ALTER TABLE tableddl ALTER COLUMN is_active DROP DEFAULT;
+ALTER TABLE tableddl AUTO_INCREMENT = 1000;
+INSERT INTO tableddl  (name, salary, hire_date, is_active,birth_date)  VALUES ('tony', 5090.75, '2023-01-15', TRUE,'2000-01-15');
+ALTER TABLE tableddl CHANGE COLUMN birth_date date_of_birth DATE;
+ALTER TABLE tableddl MODIFY COLUMN salary DECIMAL(15, 2);
+ALTER TABLE tableddl add  temp_column int;
+ALTER TABLE tableddl MODIFY COLUMN salary DECIMAL(15, 1),ADD department VARCHAR(100),DROP COLUMN temp_column;
+CREATE INDEX idx_last_name ON tableddl (name);
+DROP INDEX idx_last_name ON tableddl;
+RENAME TABLE tableddl TO staff;
+ALTER TABLE staff ROW_FORMAT = DYNAMIC;
+ALTER TABLE staff COMPRESSION = 'zstd_1.0';
+OPTIMIZE TABLE staff;
+RENAME TABLE staff TO tableddl;
+select * from tableddl;
+select *  from ordr;
+--enable_all_result_log

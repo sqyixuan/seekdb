@@ -1,0 +1,122 @@
+##############################
+# owner: rongxuan.lc
+# owner group: proxy
+#功能点：
+# 多zone情况下，合并过程中obs相关操作
+#
+#用例场景：
+#1、发起合并,部分partition leader切换
+#2、发起合并,rs处于无主状态
+#3、发起合并,stop/delete zone
+#4、发起合并,部分parition无主
+#
+###############################
+
+ob1=OBI(cluster=3:3:3,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.source include/merge.inc;
+# 并发合并zone的数量，设置成统一合并
+
+ob1.create_client;
+ob1.prepare;
+ob1.start_check;
+
+# 创建3个table
+let $tablenum = 3;
+source sql/init_table.sql;
+
+###########
+#case1: 发起合并，部分partition切主
+############
+--disable_query_log
+--disable_result_log
+source sql/big_table_3.sql;
+--enable_query_log
+--enable_result_log
+
+ob1.mysql alter system major freeze;
+
+let $fw = deploy_get_value(ob1.get_follower obtest:test:obtest1);
+$fw.switch_partition obtest:test:obtest1;
+
+let $fw = deploy_get_value(ob1.get_follower obtest:test:big_table_3);
+$fw.switch_partition obtest:test:big_table_3;
+
+ob1.check_version 2;
+
+select count(*) from big_table_3;
+#########
+#case2: 发起合并，rs处于无主状态
+############
+#这种测试方法不对，其他内部表都在里面，重新选主要1分多钟
+#source sql/big_table_3.sql;
+#
+#ob1.mysql alter system major freeze;
+#
+#ob1.z1.obs0.block_net ob1.z2.obs0;
+#ob1.z1.obs0.block_net ob1.z3.obs0;
+#ob1.z2.obs0.block_net ob1.z3.obs0;
+#sleep 20;
+#
+#ob1.z1.obs0.clean_net ob1.z2.obs0;
+#ob1.z1.obs0.clean_net ob1.z3.obs0;
+#ob1.z2.obs0.clean_net ob1.z3.obs0;
+#sleep 10;
+#ob1.check_version 3;
+#select count(*) from big_table_3;
+
+###########
+#case3: 发起合并，stop/delete zone
+###############
+--disable_query_log
+--disable_result_log
+source sql/big_table_3.sql;
+--enable_query_log
+--enable_result_log
+
+ob1.mysql alter system major freeze;
+
+# major freeze 后会让各个 partition 写一条日志，sleep 一下确保日志同步完成
+sleep 5;
+
+ob1.mysql alter system stop zone 'z2';
+sleep 60;
+
+ob1.z1.check_version 3;
+ob1.z3.check_version 3;
+
+ob1.mysql alter system major freeze;
+
+
+sleep 30;
+ob1.check_version 4;
+
+ob1.mysql alter system major freeze;
+
+
+ob1.mysql alter system start zone 'z2';
+sleep 30;
+
+ob1.check_version 5;
+
+############
+#case4: 发起合并，部分obs无主
+###############
+
+let $f1 = deploy_get_value(ob1.get_follower obtest:test:big_table_3,1);
+let $f2 = deploy_get_value(ob1.get_follower obtest:test:big_table_3,2);
+
+ob1.mysql alter system major freeze;
+
+$f1.stop;
+$f2.stop;
+# for merge
+sleep 10;
+
+$f1.nstart;
+$f2.nstart;
+
+sleep 30;
+
+ob1.check_version 6;

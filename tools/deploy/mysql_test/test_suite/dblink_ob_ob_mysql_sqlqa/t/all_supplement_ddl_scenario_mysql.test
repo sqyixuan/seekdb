@@ -1,0 +1,249 @@
+#owner: dachuan.sdc
+#owner group: sql2
+#description: dblink:ob-omysql连接oracle，select远端表
+#tags: dml
+#author:wb-sl672505
+
+connection default;
+--error 0,4112
+purge recyclebin;
+
+--echo #新建本地用户
+connect(sys_ora,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection sys_ora;
+--error 0,1396
+drop user lcq1 ;
+create user 'lcq1' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq1'@'%' WITH GRANT OPTION;
+
+--error 0,1396
+drop user lcq2 ;
+create user 'lcq2' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq2'@'%' WITH GRANT OPTION;
+
+--error 0,1396
+drop user lcq3 ;
+create user 'lcq3' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq3'@'%' WITH GRANT OPTION;
+
+connect (conn_lcq_1,$OBMYSQL_MS0,lcq1,lcq,test,$OBMYSQL_PORT);
+connect (conn_lcq_2,$OBMYSQL_MS0,lcq2,lcq,test,$OBMYSQL_PORT);
+connect (conn_lcq_3,$OBMYSQL_MS0,lcq3,lcq,test,$OBMYSQL_PORT);
+
+--echo #新建远端dblink租户、用户
+let $char_charset = 'UTF8';
+
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/create_tenant_by_charset.inc
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/conn_tenant.inc
+disconnect conn_charset_test_user;
+
+connect(sys_ora1,$OBMYSQL_MS0,root@tenant_charset_test,,test,$OBMYSQL_PORT);
+connection sys_ora1;
+
+--error 0,1396
+drop user lcq1 ;
+create user 'lcq1' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq1'@'%' WITH GRANT OPTION;
+
+--error 0,1396
+drop user lcq2 ;
+create user 'lcq2' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq2'@'%' WITH GRANT OPTION;
+
+--error 0,1396
+drop user lcq3 ;
+create user 'lcq3' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq3'@'%' WITH GRANT OPTION;
+
+connect (conn_lcq_11,$OBMYSQL_MS0,lcq1@tenant_charset_test,lcq,test,$OBMYSQL_PORT);
+connect (conn_lcq_21,$OBMYSQL_MS0,lcq2@tenant_charset_test,lcq,test,$OBMYSQL_PORT);
+
+connection conn_lcq_11;
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/ob_mysql_prepare_tableall.inc
+
+connection conn_lcq_21;
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/ob_mysql_prepare_tableall.inc
+
+connection conn_lcq_3;
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/ob_mysql_prepare_tableall.inc
+
+connection conn_lcq_3;
+set autocommit = on;
+###本地新建dblink
+--disable_query_log
+--error 0, 2024
+drop database link if exists my_link1;
+eval create database link if not exists my_link1 connect to lcq1@tenant_charset_test database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 0, 2024
+drop database link if exists my_link2;
+eval create database link if not exists my_link2 connect to lcq2@tenant_charset_test database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--enable_query_log
+set autocommit = on;
+set ob_query_timeout=99900000000;
+set ob_trx_timeout = 1000000000;  
+SET NAMES UTF8;
+
+--echo #mysql_dblink_read-09 创建语法验证,mysql_dblink_read-09-01,mysql_dblink_read-09-02,mysql_dblink_read-09-04
+###CREATE [SHARED][PUBLIC] database link link_name
+###[CONNECT TO [user][current_user] IDENTIFIED BY password]
+###[AUTHENTICATED BY user IDENTIFIED BY password]
+###[USING 'connect_string']
+
+###drop database link if exists my_link1;
+###eval create database link if not exists my_link1 connect to lcq1@tenant_charset_test database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 1064
+CREATE database link if not exists sales.us.americas.acme_auto.com
+CONNECT TO 'yyl_dblink'@dblink_tnt1 database test identified by 123 tiger host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 1064
+CREATE database link sales.us.americas.acme_auto.com
+CONNECT TO yyl_dblink@oracle identified by 123 OCI host '100.88.109.130:1521/ORCL';
+
+--echo ###利用dblink执行ddl
+select * from bmsql_oorder@my_link1 order by 1;
+--disable_warnings
+DROP TABLE IF EXISTS bmsql_oorder;
+--enable_warnings
+create table bmsql_oorder as select * from bmsql_oorder@my_link1;
+
+--disable_warnings
+--error 5095
+drop table bmsql_oorder@my_link1;
+--enable_warnings
+
+delimiter //;
+drop PROCEDURE if exists p_execute_ddl;
+CREATE PROCEDURE p_execute_ddl(IN p_ddl VARCHAR(1000))
+BEGIN
+SET @stmt = p_ddl;
+PREPARE stmt FROM @stmt;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+END //
+delimiter ;//
+
+select * from bmsql_oorder;
+call p_execute_ddl('drop table bmsql_oorder');
+call p_execute_ddl('SELECT * FROM bmsql_oorder@my_link1');
+--error 5095
+call p_execute_ddl('drop table bmsql_oorder@my_link1');
+--error 1064
+call p_execute_ddl@my_link1('drop table bmsql_oorder');
+--error 1064
+call p_execute_ddl@my_link1('drop table bmsql_oorder@my_link1');
+
+SELECT * FROM bmsql_oorder@my_link1 order by 1;
+--enable_result_log
+
+--echo #mysql_dblink_read-09-03 OB侧/ORACLE侧用户权限验证
+--echo #mysql_dblink_read-09-03 AB任一无权限+均无权限，创建失败，NG
+
+connection sys_ora;
+--error 0,1396
+drop user lcq4 ;
+create user 'lcq4' identified by 'lcq';
+GRANT all privileges ON *.* TO 'lcq4'@'%' WITH GRANT OPTION;
+REVOKE all privileges ON *.* FROM 'lcq4'@'%';
+
+connection conn_lcq_3;
+set autocommit = on;
+
+--disable_query_log
+--error 0, 2024
+drop database link if exists my_link33;
+eval create database link if not exists my_link33 connect to lcq4 database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 0, 2024
+drop database link if exists my_link44;
+eval create database link if not exists my_link44 connect to lcq4@tenant_charset_test database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 1044
+SELECT 1 FROM EMP@my_link33;
+--error 1045
+SELECT 1 FROM EMP@my_link44;
+
+--enable_query_log
+--echo #dblink本身的创建名称，规则，参考
+
+--disable_query_log
+--error 1064
+eval create database link if not exists ?????????????▲???÷↑↓◆◇⊙■□△▽?─│??♂♀?????????▼???≈←→??????????○??◎●???????????⊙??  connect to lcq1 database test identified by 'lcq' host '$OBMYSQL_MS0:$OBMYSQL_PORT';
+
+--error 0,5836
+drop database link 中华人民共和国;
+eval create database link if not exists 中华人民共和国 connect to lcq1 database test identified by 'lcq'  host '100.88.109.130:1521/ORCL';
+--error 0,5836
+drop database link 哎哀唉埃挨锿;
+eval create database link if not exists 哎哀唉埃挨锿 connect to lcq1 database test identified by 'lcq'  host '100.88.109.130:1521/ORCL';
+--error 0,5836
+drop database link い合わせ文を書くことはでき;
+eval create database link if not exists い合わせ文を書くことはでき  connect to lcq1 database test identified by 'lcq'  host '100.88.109.130:1521/ORCL';
+--enable_query_log
+
+--disable_query_log
+--error 0,5836
+drop database link “”;
+--error 1064
+create database link if not exists “”  connect to 'yyl_dblink'@dblink_tnt2 database test identified by 123 host '11.160.211.179:46008';
+--error 0,5836
+drop database link my_link111;
+--error 1064
+create database link if not exists my_link111 connect to 'yyl_dblink'@dblink_tnt1 database test identified by 123 host '11.160.211.179:46008';
+--error 0,5836
+drop database link my_link122;
+--error 1064
+create database link if not exists my_link122 connect to 'yyl_dblink'@dblink_tnt2 database test identified by 123 host '11.160.211.179:46008';
+
+--error 0,5836
+drop database link 中华人民共和国;
+create database link if not exists 中华人民共和国  connect to lcq1 database test identified by 'lcq'  host '100.88.109.130:1521/ORCL';
+--error 0,5836
+drop database link “”;
+create database link “” connect to lcq1 database test identified by 'lcq'  host '100.88.109.130:1521/ORCL';
+
+--error 2013
+select * from gbktable@“”;
+--error 2013
+select * from gbktable@中华人民共和国;
+--error 2013
+select * from gbktable@哎哀唉埃挨锿;
+--error 2013
+select * from gbktable@い合わせ文を書くことはでき;
+--enable_query_log
+
+
+--disable_warnings
+DROP TABLE IF EXISTS testbak;
+--enable_warnings
+
+--error 1060
+CREATE TABLE testbak AS WITH 
+tmp1 AS (SELECT * FROM tmp_hash@my_link1 m left JOIN tmp_hash n ON n.a=m.a),
+tmp2 AS (SELECT * FROM (SELECT * FROM temp_fee@my_link1 m,temp_qwe@my_link1 n) t)
+SELECT * FROM tmp1,tmp2;
+
+CREATE TABLE testbak AS WITH 
+tmp1 AS (SELECT m.a ma,n.b nb FROM tmp_hash@my_link1 m JOIN tmp_hash n ON n.b=m.b),
+tmp2 AS (SELECT * FROM (SELECT m.MONTH_ID mm,n.PROV_ID nn FROM temp_fee@my_link1 m,temp_qwe@my_link1 n) t)
+SELECT ma,nb,mm,nn FROM tmp1,tmp2;
+select * from testbak;
+
+CREATE OR REPLACE VIEW viewbak AS SELECT * FROM tmp_hash@my_link1 s, temp_fee@my_link1 c;
+
+WITH a AS (SELECT * FROM tmp_hash@my_link1),
+ b AS (SELECT * FROM temp_fee@my_link1),
+  c AS (SELECT * FROM temp_qwe@my_link1),
+   d AS (SELECT * FROM testbak),
+    e AS (SELECT * FROM viewbak)
+	SELECT * from a,b,c,d,e;
+	
+select * from tmp_hash@my_link1,temp_fee@my_link1,temp_qwe@my_link1,testbak,viewbak order by 1,2,3;
+
+--echo #清理环境
+--source mysql_test/test_suite/dblink_ob_ob_mysql_sqlqa/include/drop_tenant.inc
+--error 0,4112
+purge recyclebin;
+sleep 5;

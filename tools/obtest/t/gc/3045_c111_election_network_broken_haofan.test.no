@@ -1,0 +1,114 @@
+##############################
+# owner: debin.jdb
+# group: CLOG
+#
+# 测试功能点：election对于单向网络隔离场景的处理.
+# 场景：5个zone，z1,z2在primary region中，其他3个zone在其他region;
+# case 1: 让z3,z4,z5->z1单向隔离(z1能发出消息，但无法收到多数派的回复)，lease过期后，
+#         z1发现自己与多数派网络异常，不会广播自己的优先级，从而次优先级的z2会当选.
+# case 2: 让z3,z4,z5->z2单向隔离，z2 lease过期后，发现自己与多数派网络异常，故不会发起无主选举，最终z1会当选.
+#
+
+ob1=OBI(cluster=1:1:1:1:1,proxy_num=0,init_unit_cpu=0,locality=HZ:HZ:SH:SH:SH);
+
+ob1.reboot;
+
+ob1.mysql alter system set max_stale_time_for_weak_consistency = '1h';
+ob1.mysql alter system set enable_monotonic_weak_read = 1;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+# 关闭election_blacklist功能，避免影响选举优先级
+ob1.mysql alter system set election_blacklist_interval = '0s';
+# 日志限流
+# ob1.mysql alter system set syslog_io_bandwidth_limit = '1024MB';
+
+# waiting for the servers to start service
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time <= 0 and status = 'active', 0, 120;
+
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z1;z2;', resource_pool_list('rp1') set ob_tcp_invited_nodes='%';
+
+ob_connect(sys_conn_z1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn_z1;
+--disable_query_log
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+let $z4_ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_port = deploy_get_value(ob1.z4.obs0.port);
+let $z5_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $z5_port = deploy_get_value(ob1.z5.obs0.port);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where is_in_blacklist = 1, 0, 30;
+
+ob_connect(tt1_conn_z1, ob1.z1.obs0, root@tt1, , test, USE_MYSQL_CONNECTOR);
+connection tt1_conn_z1;
+create table t1 (k int primary key,v int);
+
+connection sys_conn_z1;
+let $tid = `select table_id from __all_virtual_table where tenant_id=1002 and table_name='t1'`;
+
+ob_connect(tt1_conn_z3, ob1.z3.obs0, root@tt1, , oceanbase, USE_MYSQL_CONNECTOR);
+
+connection tt1_conn_z3;
+eval select count(*) from __all_tenant_meta_table where role = 1 and svr_ip = "$z1_ip" and svr_port = "$z1_port";
+
+# 阻塞z3,z4,z5 -> z1的网络，这样z3,z4,z5都能收到z1,z2广播的优先级，会给z1投票，由于网络隔离z1收不到投票；
+# 故z1，z2都无法当选，预期会持续无主.
+ob1.z3.obs0.block_net ob1.z1.obs0;
+ob1.z4.obs0.block_net ob1.z1.obs0;
+ob1.z5.obs0.block_net ob1.z1.obs0;
+
+# wait leader lease expire
+sleep 30;
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z1_ip' and svr_port = '$z1_port' and dst_ip = '$z3_ip' and dst_port = '$z3_port' and is_in_blacklist = 1, 1, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z1_ip' and svr_port = '$z1_port' and dst_ip = '$z4_ip' and dst_port = '$z4_port' and is_in_blacklist = 1, 1, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z1_ip' and svr_port = '$z1_port' and dst_ip = '$z5_ip' and dst_port = '$z5_port' and is_in_blacklist = 1, 1, 60;
+
+sleep 15;
+
+# 恢复z1网络
+ob1.z3.obs0.clean_net ob1.z1.obs0;
+ob1.z4.obs0.clean_net ob1.z1.obs0;
+ob1.z5.obs0.clean_net ob1.z1.obs0;
+
+sleep 15;
+
+# 预期z2已经当选为主
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and svr_ip = '$z2_ip' and svr_port = '$z2_port', 1, 60;
+
+# 阻塞z3,z4,z5->z2方向的网络,构造无主
+ob1.z3.obs0.block_net ob1.z2.obs0;
+ob1.z4.obs0.block_net ob1.z2.obs0;
+ob1.z5.obs0.block_net ob1.z2.obs0;
+
+# wait leader lease expire
+sleep 30;
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z3_ip' and svr_port = '$z3_port' and dst_ip = '$z2_ip' and dst_port = '$z2_port' and is_in_blacklist = 1, 0, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z3_ip' and svr_port = '$z3_port' and dst_ip = '$z4_ip' and dst_port = '$z4_port' and is_in_blacklist = 1, 0, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_blacklist where svr_ip = '$z3_ip' and svr_port = '$z3_port' and dst_ip = '$z5_ip' and dst_port = '$z5_port' and is_in_blacklist = 1, 0, 60;
+
+sleep 15;
+
+# 恢复网络
+ob1.z3.obs0.clean_net ob1.z2.obs0;
+ob1.z4.obs0.clean_net ob1.z2.obs0;
+ob1.z5.obs0.clean_net ob1.z2.obs0;
+
+sleep 15;
+
+# 预期主恢复为z1
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where role = 1 and svr_ip = '$z1_ip' and svr_port = '$z1_port', 1, 60;

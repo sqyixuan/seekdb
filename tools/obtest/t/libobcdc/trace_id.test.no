@@ -1,0 +1,409 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点：测试trace_id正确性
+##
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+# 清理环境
+--disable_warnings
+drop database if exists oblog_db;
+
+create database oblog_db;
+use oblog_db;
+
+# 启动liboblog
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建表，设置primary zone，通过控制primary_zone，控制哪些分区在哪台机器上
+#
+# leader分布：
+#     t1、t2 ==> z1
+#     t3、t4 ==> z2
+#
+# t1: leader在z1
+#create table t1 (pk int primary key, c1 varchar(100)) primary_zone="z1;z2;z3" partition by hash(pk) partitions 100;
+create table t1 (pk int primary key, c1 varchar(100)) partition by hash(pk) partitions 100;
+ob1.oblog.next;
+
+# t2: leader在z1
+#create table t2 (pk int primary key, c1 varchar(100)) primary_zone="z1;z2;z3";
+create table t2 (pk int primary key, c1 varchar(100));
+ob1.oblog.next;
+
+# t3: leader在z2
+#create table t3 (pk int primary key, c1 varchar(100)) primary_zone="z2;z1;z3" partition by hash(pk) partitions 10;
+create table t3 (pk int primary key, c1 varchar(100)) partition by hash(pk) partitions 10;
+ob1.oblog.next;
+
+# t4: leader在z2
+#create table t4 (pk int primary key, c1 varchar(100)) primary_zone="z2;z1;z3";
+create table t4 (pk int primary key, c1 varchar(100));
+ob1.oblog.next;
+
+####################### ac=1 単分区事务
+set autocommit=1;
+
+let $val=1;
+# 1. 没有trace_id
+eval replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+# 2. 有行首注释，没有trace_id
+eval /**/ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* rpc_id=abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace=abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* traceid=abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id=  abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id=,  abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id=*  abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id =abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id, =abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /* trace_id_ =abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+eval /*\ttrace_id =abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+# 3. 有行首注释，有trace_id，验证各种长度
+eval /* trace_id=1 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* trace_id=12 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* trace_id=12345678901234567890 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+# 64字节长度
+eval /* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+# 65字节长度
+eval /* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+# 120字节长度
+eval /* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+# 4. 有trace_id，各种位置和大小写
+eval /* TRACE_id=a */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* trace_ID=ab */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* TrAcE_Id=abc */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* tRaCe_iD=abcd */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* rpc_id=x,TRACE_id=abcde */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* trace_ID=abcdef,rpc_id=d */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* x=y,e=f,m=n,TrAcE_Id=abcdefg */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+eval /* x=y tRaCe_iD=abcdefgh abcdefg */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+# 5. 有trace_id，key=value value中包含trace_id
+eval /* rpc_id=xyztrace_id=trace_id=trace_id=rpc_id=xyz */ replace into t1 values ($val, $val);
+ob1.oblog.next;
+inc $val;
+
+####################### 单语句多分区事务
+/* trace_id=single_stmt_multi_part_for_t1 */ update t1 set c1=c1+1;
+ob1.oblog.next;
+
+####################### multi-statement
+begin;
+/* trace_id=multi_stmt_for_all */ select * from t1 order by pk; replace into t1 values (100,100);
+commit;
+ob1.oblog.next;
+
+####################### 多分区事务
+# 1. 每条语句的trace_id一致
+BEGIN;
+/* trace_id=dist_trans_all_same */ replace into t1 values (1, 1);
+/* trace_id=dist_trans_all_same */ replace into t2 values (1, 1);
+/* trace_id=dist_trans_all_same */ replace into t3 values (1, 1);
+/* trace_id=dist_trans_all_same */ replace into t4 values (1, 1);
+/* trace_id=dist_trans_all_same */ COMMIT;
+ob1.oblog.next;
+
+# 2. trace_id不一致
+BEGIN;
+/* trace_id=dist_trans_not_same */ replace into t1 values (2, 2);
+/* trace_id=0x123 */ replace into t2 values (2, 2);
+/* trace_id=0xabcefg */ replace into t3 values (2, 2);
+/* trace_id=0xxfy */ replace into t4 values (2, 2);
+/* trace_id= */ COMMIT;
+ob1.oblog.next;
+
+BEGIN;
+# 无trace_id
+/* trace_id= */ replace into t1 values (3, 3);
+/* trace_id=123 */ replace into t2 values (3, 3);
+/* trace_id=0xabcefg */ replace into t3 values (3, 3);
+/* trace_id=0xxfy */ replace into t4 values (3, 3);
+/* trace_id= */ COMMIT;
+ob1.oblog.next;
+
+BEGIN;
+# 无trace_id
+replace into t1 values (4, 4);
+/* trace_id=mnz */ replace into t2 values (4, 4);
+/* trace_id=0xabcefg */ replace into t3 values (4, 4);
+/* trace_id=0xxfy */ replace into t4 values (4, 4);
+/* trace_id= */ COMMIT;
+ob1.oblog.next;
+
+# 3. 多分区，包含只读分区事务
+BEGIN;
+/* trace_id=dist_trans_not_same_with_read_only_part */ select * from t1 order by pk;
+/* trace_id=dist_trans_not_same_with_read_only_part */ replace into t2 values (5, 5);
+/* trace_id=dist_trans_not_same_with_read_only_part */ select * from t3 order by pk;
+/* trace_id=dist_trans_not_same_with_read_only_part */ replace into t4 values (5, 5);
+COMMIT;
+ob1.oblog.next;
+
+# 4. 多分区，包含无分区的语句，预期取第一个分区的trace_id
+BEGIN;
+/* trace_id=ZXY */ select 1 from dual;
+/* trace_id=ZXYZ */ select 2 from dual;
+/* trace_id=dist_trans_not_same_with_non_part_stmt */ select * from t1 order by pk;
+/* trace_id=dist_trans_not_same_with_non_part_stmt */ select * from t2 order by pk;
+/* trace_id=dist_trans_not_same_with_non_part_stmt */ select * from t3 order by pk;
+/* trace_id=dist_trans_not_same_with_non_part_stmt */ replace into t4 values (6, 6);
+COMMIT;
+ob1.oblog.next;
+
+# 5. 同一行更新多次
+BEGIN;
+/* trace_id=single_row_update */ select * from t1 where pk < 5 order by pk;
+/* trace_id=single_row_update */ delete from t1 where pk < 5;
+/* trace_id=single_row_update */ replace into t1 values (1,1),(2,2),(3,3),(4,4);
+/* trace_id=single_row_update */ update t1 set c1 = c1 + 1;
+COMMIT;
+ob1.oblog.next;
+
+####################### 远程执行计划
+# 验证session和事务消息trace_id序列化能力
+#
+# z3不包含任何分区的leader，选取z3 server执行
+let $ip=deploy_get_value(ob1.z3.obs0.ip);
+let $port=deploy_get_value(ob1.z3.obs0.mysql_port);
+#connect (oblog_conn_sys,$ip,root@sys,,oceanbase,$port);
+#use test;
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+use oblog_db;
+
+# ac=1，remote执行
+# 在remote机器上开启事务，本机只负责解析SQL，由session负责序列化trace_id，传到remote机器
+set autocommit=1;
+/* trace_id=remote_exe_ac_1 */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=1，remote执行, trace_id边界值: 无trace_id
+/* trace_id= */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=1，remote执行, trace_id边界值: 1字节
+/* trace_id=1 */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=1，remote执行, trace_id边界值: 64字节
+/* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=1，remote执行, trace_id边界值: 65字节
+/* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=1，remote执行, trace_id边界值: 120字节
+/* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ replace into t1 values (1, 1);
+ob1.oblog.next;
+
+# ac=0，remote执行
+# 在本机开启事务，事务层发到remote机器执行，由事务层负责序列化trace_id，并传到remote机器
+set autocommit=0;
+/* trace_id=remote_exe_ac_0 */ select * from t1 order by pk;
+/* trace_id=remote_exe_ac_0 */ select * from t2 order by pk;
+/* trace_id=remote_exe_ac_0 */  select * from t3 order by pk;
+/* trace_id=remote_exe_ac_0 */ replace into t4 values (2, 2);
+COMMIT;
+ob1.oblog.next;
+
+# ac=0，验证trace_id边界值：无trace_id
+set autocommit=0;
+/* trace_id= */ replace into t1 values (2, 2);
+/* trace_id= */ select * from t2 order by pk;
+/* trace_id= */ select * from t3 order by pk;
+/* trace_id= */ select * from t4 order by pk;
+COMMIT;
+ob1.oblog.next;
+
+# ac=0，验证trace_id边界值：1字节
+set autocommit=0;
+/* trace_id=1 */ select * from t1 order by pk;
+/* trace_id=1 */ replace into t2 values (2, 2);
+/* trace_id=1 */ select * from t3 order by pk;
+/* trace_id=1 */ select * from t4 order by pk;
+COMMIT;
+ob1.oblog.next;
+
+# ac=0，验证trace_id边界值：64字节
+set autocommit=0;
+/* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ select * from t1 order by pk;
+/* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ select * from t2 order by pk;
+/* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ replace into t3 values (2, 2);;
+/* trace_id=1234567890123456789012345678901234567890123456789012345678901234 */ select * from t4 order by pk;
+COMMIT;
+ob1.oblog.next;
+
+# ac=0，验证trace_id边界值：65字节
+set autocommit=0;
+/* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ select * from t1 order by pk;
+/* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ select * from t2 order by pk;
+/* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ select * from t3 order by pk;
+/* trace_id=12345678901234567890123456789012345678901234567890123456789012345 */ replace into t4 values (2, 2);
+COMMIT;
+ob1.oblog.next;
+
+# ac=0，验证trace_id边界值：120字节
+set autocommit=0;
+/* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ replace into t1 values (2, 2);
+/* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ select * from t2 order by pk;
+/* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ select * from t3 order by pk;
+/* trace_id=123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 */ select * from t4 order by pk;
+COMMIT;
+ob1.oblog.next;
+
+# ac=0, remote执行，本地执行不相关语句，不应该影响trace_id
+set autocommit=0;
+select 1+1 from dual;
+/* trace_id=remote_exe_ac_0 */ replace into t1 values (3, 3);
+/* trace_id=remote_exe_ac_0 */ replace into t2 values (3, 3);
+/* trace_id=remote_exe_ac_0 */ replace into t3 values (3, 3);
+/* trace_id=remote_exe_ac_0 */ replace into t4 values (3, 3);
+COMMIT;
+ob1.oblog.next;
+
+# ac=0, remote执行，更新同一行
+BEGIN;
+/* trace_id=single_row_update */ select * from t3 where pk < 5 order by pk;
+/* trace_id=single_row_update */ delete from t3 where pk < 5;
+/* trace_id=single_row_update */ replace into t3 values (1,1),(2,2),(3,3),(4,4);
+/* trace_id=single_row_update */ update t3 set c1 = c1 + 1;
+COMMIT;
+ob1.oblog.next;
+
+####################### DISTRIBUTE执行计划
+# 一条语句更新多个分区
+set autocommit=1;
+/* trace_id=distribute_exe_ac_1 */ select * from t1 order by pk;
+
+set autocommit=1;
+/* trace_id=distribute_exe_ac_1 */ update t1 set c1=100 where c1 < 5;
+ob1.oblog.next;
+
+set autocommit=0;
+/* trace_id=distribute_exe_ac_0 */ select * from t1 order by pk;
+/* trace_id=distribute_exe_ac_0 */ delete from t1 where c1 < 5;
+/* trace_id=distribute_exe_ac_0 */ update t1 set c1=200 where c1 < 10;
+/* trace_id=distribute_exe_ac_0 */ replace into t2 values (100, 100);
+commit;
+ob1.oblog.next;
+
+# 第一条语句不设置trace_id
+set autocommit=0;
+select * from t1 order by pk;
+/* trace_id=distribute_exe_ac_0_test */ delete from t1 where c1 < 5;
+/* trace_id=distribute_exe_ac_0_test */ update t1 set c1=200 where c1 < 10;
+/* trace_id=distribute_exe_ac_0_test */ replace into t2 values (100, 100);
+commit;
+ob1.oblog.next;
+
+BEGIN;
+/* trace_id=1 */ replace into t1 values (1, 2);
+COMMIT;
+ob1.oblog.next;
+# 第一条语句rollback, 有trace_id
+#
+BEGIN;
+--error 1062
+/* trace_id=1234567 */ insert into t1 values(1, 2);
+/* trace_id=1 */ replace into t2 values (2, 2);
+/* trace_id=1 */ replace into t2 values (3, 2);
+/* trace_id=1 */ replace into t2 values (4, 2);
+COMMIT;
+ob1.oblog.next;
+
+BEGIN;
+/* trace_id=1 */ replace into t1 values (1, 2);
+COMMIT;
+ob1.oblog.next;
+# 第一条语句rollback, 无trace_id
+#
+BEGIN;
+--error 1062
+/* trace_id= */ insert into t1 values(1, 2);
+/* trace_id=1 */ replace into t2 values (2, 2);
+/* trace_id=1 */ replace into t2 values (3, 2);
+/* trace_id=1 */ replace into t2 values (4, 2);
+COMMIT;
+ob1.oblog.next;
+
+
+ob1.oblog.stop;

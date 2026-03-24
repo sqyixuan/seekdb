@@ -1,0 +1,62 @@
+# owner: yanyuan.cxf cxf262476@antgroup.com
+# owner group: transaction
+# description: 测试index异常状况下restore point的创建 
+# 
+--disable_query_log
+ob1=OBI(cluster=1,init_unit_cpu=0);
+ob1.z1.obs0.set extra_config=devname=eth0;
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_OB_CONNECTOR);
+connection sys_conn;
+
+eval  CREATE RESOURCE UNIT unit MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool UNIT = 'unit', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant RESOURCE_POOL_LIST = ('pool'), primary_zone='z1', locality = 'F@z1' set ob_tcp_invited_nodes='%';
+
+eval  CREATE RESOURCE POOL pool_oracle UNIT = 'unit', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant_oracle RESOURCE_POOL_LIST = ('pool_oracle'), primary_zone='z1', locality = 'F@z1' set ob_tcp_invited_nodes='%', , ob_compatibility_mode='oracle';
+
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@tenant_oracle, , SYS, , USE_OB_CONNECTOR);
+# ****************************** oracle ***********************************
+connection conn_oracle;
+# 1. create table
+create table t(id int primary key, k int)
+partition by range(id)
+(partition p0 values less than(10), partition p1 values less than(100), partition p2 values less than(1000));
+
+# 2. create index
+create index idx_t_g on t(k) global;
+
+# 3. drop partition
+alter table t drop partition p0;
+
+# 4. create restore point
+insert into t values(1,1);
+sleep 1;
+create restore point p1;
+select name from v$restore_point;
+# P1
+
+# 5. minor freeze
+connection sys_conn;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't', table_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id=$__table_id__ and table_type=0 and is_active=0, 0, 120;
+
+let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_reserved_table_mgr where table_id = $__table_id__, c, 1);
+if ($minor_count != 0)
+{
+  --echo "create restore point success."
+}
+

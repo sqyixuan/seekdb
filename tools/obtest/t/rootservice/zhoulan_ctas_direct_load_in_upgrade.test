@@ -1,0 +1,79 @@
+##
+# owner      : zg410411
+# owner group: rs
+# description: 测试从4.3.0.1升级到master分支，验证备库回放逻辑
+##
+# 1. 创建集群
+ob1=OBI(cluster=1:1:1,version=4_3_3_0,oblog_version=current,proxy_num=0);
+ob1.proxy0.set extra_config=syslog_level=debug;
+
+ob1.reboot;
+sleep 15;
+
+# 2. 创建租户
+ob1.mysql_p create resource unit box1 max_cpu 2,memory_size 5368709120;
+ob1.mysql_p create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql_p create tenant mysql resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+sleep 5;
+ob_connect(conn_primary_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_primary_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_primary_sys;
+let $primary_mysql_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='mysql', tenant_id, 1);
+connection conn_primary_mysql;
+create user rep_user IDENTIFIED BY 'rep_user';
+grant select on oceanbase.* TO rep_user;
+create table t1(id int);
+insert into t1 values(1);
+
+# 3. 升级前测试CTAS
+connection conn_primary_mysql;
+create table t2 as select * from t1;
+drop table t2;
+create /*+ PARALLEL(4) append */ table t2 as select * from t1;
+drop table t2;
+create /*+ parallel(4) direct(true, 0) */ table t2 (column1 serial primary key) as select * from t1;
+
+# 4. 升级租户
+# 4.1.执行升级SQL
+ob1.upgrade_check_before;
+ob1.mysql_p alter system begin upgrade;
+ob1.mysql_p alter system begin rolling upgrade;
+
+# 4.2 升级z2
+connection conn_primary_sys;
+ob1.z2.force_stop;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql_p alter system set enable_ddl = true;
+ob1.mysql_p alter system end upgrade;
+sleep 30;
+
+# 4.3 混部期间新版本observer测试CTAS
+ob_connect(conn_primary_mysql_z2, ob1.z2.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_primary_mysql_z2;
+drop table t2;
+create table t2 as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';
+drop table t2;
+create /*+ PARALLEL(4) append */ table t2 as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';
+drop table t2;
+create /*+ parallel(2) direct(true, 0) */ table t2 (id int, index my_index (id)) as select * from t1;
+drop table t2;
+create /*+ parallel(4) direct(true, 0) */ table t2 (column1 serial primary key) as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';
+
+# 4.4 混部期间旧版本observer测试CTAS
+connection conn_primary_mysql;
+drop table t2;
+create table t2 as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';
+drop table t2;
+create /*+ PARALLEL(4) append */ table t2 as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';
+drop table t2;
+create /*+ parallel(4) direct(true, 0) */ table t2 (column1 serial primary key) as select * from t1;
+ob1.mysql_p select count(*) from oceanbase.__all_server_event_history where module = 'direct_load' and value2 like '__ctas%';

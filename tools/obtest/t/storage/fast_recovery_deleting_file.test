@@ -1,0 +1,50 @@
+# owner: jiahua.cjh
+# owner group: storage
+# description: test fast recovery a deleting file
+#
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=1, init_unit_num=1);
+
+ob1.reboot;
+
+ob1.mysql alter resource pool obtestpool unit_num 1;
+ob1.mysql alter system set migrate_concurrency = 0;
+ob1.mysql alter system set server_permanent_offline_time = 20;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+let $sys_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $sys_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(mysql_conn, $ip, root@obtest,,test, $port);
+connect(sys_conn, $sys_ip, root@sys,,oceanbase, $sys_port);
+
+connection mysql_conn;
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+--disable_warnings
+drop table if exists fr_deleting_file;
+--enable_warnings
+
+# create a table and then delete it
+create table fr_deleting_file(a int primary key);
+eval replace into fr_deleting_file values(2);
+select * from fr_deleting_file;
+
+# drop replica on ob1.z3.obs1, make data file empty
+connection sys_conn;
+let $table_id =  query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like 'fr_deleting_file', table_id, 1);
+let $svr_ip2 = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where table_id = $table_id and zone='z3', svr_ip, 1);
+let $svr_port2 = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where table_id = $table_id and zone='z3', svr_port, 1);
+eval alter system drop replica partition_id='0%0@$table_id' server='$svr_ip2:$svr_port2';
+
+#1. 正常快速恢复流程，z3 obs宕机
+let $stop_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where svr_ip = "$svr_ip2" and svr_port = "$svr_port2", addr, 1);
+let $stop_obs = deploy_get_value(ob1.get_obs_by_addr $stop_addr);
+$stop_obs.force_stop;
+
+sleep 30;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip2:$svr_port2%' and event = 'finish_recovery', 1, 180000000;

@@ -1,0 +1,60 @@
+# owner: rongxuan.lc
+# description: 本case是为了类型转换的时候，如果出现多个备选项，优先选择同为 paxos的；
+#issue/12840858?stat=1.5.0&toPage=1&versionId=1043693
+#[类型转换] R{1},F{1}@z3转换为 L{1}@z3时候，当前优先转换了R-L 存在问题
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0, locality=hz:hz:sh);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 1;
+ob1.mysql alter system set server_data_copy_out_concurrency = 1;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+####case1 : R{2},F{1} ==>L  ======>146里面该语法修改被禁止;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R{1}@z3,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+ob1.mysql alter tenant tenant_1 set locality ='F@z1,F@z2,L@z3,R{2}@z3';
+
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%locality%F@z1,F@z2,L@z3,R{2}@z3%' and job_status = 'SUCCESS', 1, 240;
+let $count = deploy_get_value(ob1.select select min(c) a from (select count(*)c from __all_virtual_meta_table where tenant_id != 1 group by table_id,partition_id) s, a, 1);
+if ($count==5)
+{
+  echo "succes";
+}
+ob1.mysql drop tenant tenant_1 force;
+ob1.mysql drop resource pool pool_1;
+
+####case2: r{all},F{1}==>L
+let $case_index = 2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R{all_server}@z3,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_2,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+ob1.mysql alter tenant tenant_2 set locality ='F@z1,F@z2,L@z3,R{all_server}@z3';
+
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%tenant tenant_2 set locality%F@z1,F@z2,L@z3%' and job_status = 'SUCCESS', 1, 240;
+let $count = deploy_get_value(ob1.select select min(c) a from (select count(*)c from __all_virtual_meta_table where tenant_id != 1 group by table_id,partition_id) s, a, 1);
+if ($count==5)
+{
+  echo "succes";
+}
+

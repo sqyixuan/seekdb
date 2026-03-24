@@ -1,0 +1,152 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: bin.lb
+# owner group: SQL3
+# description:
+#
+####TITLE:测试带索引表的default value的情况
+--disable_query_log
+--source mysql_test/include/index_quick_major.inc
+--real_sleep 2 
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+--enable_query_log
+
+#数据初始化
+create table t1(c1 int primary key default 1 not null,
+	c2 varchar(20) default 'aaa',
+	c3 int default 1 not null,
+	c4 timestamp default '2013-12-02 11:56:00.0');
+create index i1 on t1(c2) storing(c3,c4);
+####CASE:每日合并前写入静态数据
+insert into t1(c1) values(1);
+replace into t1(c1) values(2);
+set @@session.ob_enable_index_direct_select = 1;
+--source mysql_test/include/majorfreeze.inc
+--disable_query_log
+--disable_query_log
+--enable_query_log
+--source mysql_test/include/check_all_idx_ok.inc
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $idx = query_get_value(select a.table_name from oceanbase.__all_virtual_table as a inner join (select * from oceanbase.__all_virtual_table where table_name='t1') b on a.data_table_id=b.table_id, table_name, 1);
+disconnect obsys;
+connection default;
+
+select * from t1;
+--disable_query_log
+#eval select * from $idx;
+--enable_query_log
+
+####CASE:修改索引列的default值,成功；
+alter table t1 alter c2 set default 'aa';
+####CASE:修改索引表的冗余列的default值，失败
+
+####CASE:新增default 列，查看静态数据和动态数据
+insert into t1(c1) values(3);
+replace into t1(c1) values(4);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+alter table t1 add c5 timestamp default '2013-12-02' not null;
+sleep 1;
+
+insert into t1(c1) values(5);
+replace into t1(c1) values(6);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+#发起每日合并，可以同时校验cs静态数据和ups动态数据
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+####CASE:修改default列，查看静态数据和动态数据
+insert into t1(c1) values(7);
+replace into t1(c1) values(8);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+alter table t1 alter c3 set default 2;
+
+sleep 3;
+insert into t1(c1) values(9);
+replace into t1(c1) values(10);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+#每日合并
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+####CASE:删除not null列c3的default值,(1)允许修改已有静态数据，不指定c3 (2)新增数据行不指定c3，不允许,(3)不允许update该列为null
+insert into t1(c1) values(11);
+replace into t1(c1) values(12);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+--error 1048
+update t1 set c3=NULL where c1=11;
+--error 1048
+update t1 set c3=null where c1=12;
+
+#update 不存在的行，语法上允许
+update t1 set c3=null where c1=13;
+
+alter table t1 alter c3 drop default;
+
+sleep 3;
+replace into t1(c1,c2,c3) values(11,'a',1);
+replace into t1(c1,c2,c3) values(12,'a',1);
+
+--error 1364
+insert into t1(c1,c2) values(13,'a');
+
+--error 1364
+replace into t1(c1,c2) values(14,'a');
+
+--error 1048
+update t1 set c3=NULL where c1=11;
+--error 1048 
+update t1 set c3=null where c1=12;
+
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+#每日合并
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+####CASE:删除c3列的not null属性
+insert into t1(c1,c3) values(13,1);
+replace into t1(c1,c3) values(14,1);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+alter table t1 modify column c3 int;
+sleep 1;
+insert into t1(c1) values(15);
+replace into t1(c1) values(16);
+select * from t1;
+--disable_query_log
+eval select * from $idx;
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings

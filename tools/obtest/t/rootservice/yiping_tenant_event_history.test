@@ -1,0 +1,189 @@
+# CASE_OWNER:
+#    @shouju.zyp
+# CASE_DESC:
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant  = backup_mysql_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter resource unit sys_unit_config memory_size='4G';
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '4G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+# 创建主租户
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = "RANDOM" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+
+# 设置归档源
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+# 准备一些数据
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t1(a, b) values(1, 1);
+create table t2(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t2(a, b) values(1, 1);
+
+# 打开归档
+ob1.mysql alter system archivelog;
+# 检查归档状态
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+# 执行数据备份
+ob1.mysql alter system backup database;
+# 检查备份状态
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+let $restore_path = $log_backup_dest,$data_backup_dest;
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_mysql_tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = $restore_checkpoint2;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+--disable_all_result_log
+# 在目标集群上执行RESTORE命令，使用租户的备份和归档，创建并恢复出备租户
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool_2&primary_zone=z1';
+--enable_all_result_log
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 12, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+# 更改备租户恢复终点
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant UNTIL UNLIMITED;
+
+connection backup_sys_conn;
+use oceanbase;
+#################################################################################################
+#################################################################################################
+#########################   租户角色转换有关    ####################################################
+#################################################################################################
+#################################################################################################
+
+#################################################################################################
+#########################   主租户 switchover 成备租户   ##########################################
+#################################################################################################
+--echo ### 主租户 switchover 成备租户
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+
+#####事件一 SWITCHOVER_TO_STANDBY_START
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY START' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY START' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+
+#####事件二 SWITCHOVER_TO_STANDBY_END
+eval SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY END' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY END' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY END' AND NAME3 = 'SWITCHOVER_SCN';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY END' AND NAME4 = 'COST_DETAIL' AND VALUE4 LIKE "%WAIT_LOG_END%CHANGE_ACCESS_MODE%OTHERS%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'SWITCHOVER TO STANDBY END' AND NAME5 = 'ALL_LS' AND VALUE5='NORMAL: 1, 1001, 1002, 1003';
+
+#################################################################################################
+#########################   备租户 switchover 成主租户   ##########################################
+#################################################################################################
+--echo ### 备租户 switchover 成主租户
+ob1.mysql alter system set_tp tp_name = ERRSIM_GET_LS_SYNC_SCN_ERROR, error_code = 4012, frequency = 1;
+--error 4179
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $restore_mysql_tenant;
+ob1.mysql alter system set_tp tp_name = ERRSIM_GET_LS_SYNC_SCN_ERROR, error_code = 4012, frequency = 0;
+
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $restore_mysql_tenant;
+dddd
+#####事件一 SWITCHOVER_TO_PRIMARY_START
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY START' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT restore_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY START' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+
+#####事件二 WAIT_LOG_SYNC
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'WAIT LOG SYNC' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='IS_SYS_LS_SYNCED' AND VALUE1='YES' AND NAME2='IS_ALL_LS_SYNCED' AND VALUE2='YES' AND NAME3='NON_SYNC_INFO' AND VALUE3 LIKE '%NON_SYNC_LS_CNT:%TOP_5:%';
+SELECT count(*) >= 1 FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'WAIT LOG SYNC' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='IS_SYS_LS_SYNCED' AND VALUE1='YES' AND NAME2='IS_ALL_LS_SYNCED' AND VALUE2='NO' AND NAME3='NON_SYNC_INFO' AND VALUE3 LIKE '%TOP_5:%ls_id%cur_sync_scn%cur_restore_source_next_scn%';
+
+#####事件三 SWITCHOVER_TO_PRIMARY_END
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT restore_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND NAME3 = 'SWITCHOVER_SCN';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND NAME4 = 'COST_DETAIL' AND VALUE4 LIKE "%WAIT_LOG_SYNC%WAIT_BALANCE_TASK%FLASHBACK_LOG%CHANGE_ACCESS_MODE%OTHERS%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND NAME5 = 'ALL_LS' AND VALUE5='NORMAL: 1, 1001, 1002, 1003';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1004 AND EVENT = 'SWITCHOVER TO PRIMARY END' AND MODULE = 'TENANT ROLE CHANGE' AND RET_CODE = '-4179';
+#################################################################################################
+#########################   备租户 failover 成主租户   ############################################
+#################################################################################################
+--echo ### 备租户 failover 成主租户
+ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT $backup_mysql_tenant;
+
+#####事件一 FAILOVER_TO_STANDBY_START
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY START' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM ACTIVATE STANDBY TENANT backup_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY START' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+
+#####事件二 FAILOVER_TO_STANDBY_END
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY END' AND MODULE = 'TENANT ROLE CHANGE' AND NAME1='STMT_STR' AND VALUE1 = 'ALTER SYSTEM ACTIVATE STANDBY TENANT backup_mysql_tenant';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY END' AND NAME2 = 'TENANT_INFO' AND VALUE2 LIKE "%tenant_id%tenant_role%switchover_epoch%sync_scn%replayable_scn%readable_scn%recovery_until_scn%log_mode%max_ls_id%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY END' AND NAME3 = 'FAILOVER_SCN';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY END' AND NAME4 = 'COST_DETAIL' AND VALUE4 LIKE "%WAIT_BALANCE_TASK%FLASHBACK_LOG%CHANGE_ACCESS_MODE%OTHERS%";
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'FAILOVER TO PRIMARY END' AND NAME5 = 'ALL_LS' AND VALUE5='NORMAL: 1, 1001, 1002, 1003';
+
+#################################################################################################
+#################################################################################################
+#########################   SERVICR NAME COMMAND 有关    #########################################
+#################################################################################################
+#################################################################################################
+
+#################################################################################################
+#########################   CREATE SERVICE    ###################################################
+#################################################################################################
+--echo ### CREATE SERVICE
+ob1.mysql ALTER SYSTEM CREATE SERVICE test_service tenant = $backup_mysql_tenant;
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'CREATE SERVICE' AND NAME1 = 'SERVICE_NAME_STRING' AND VALUE1 = 'test_service' AND NAME2 = 'CREATED_SERVICE_NAME';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'BROADCAST SERVICE NAME' AND NAME1="EPOCH" AND NAME2= 'TARGET_SERVICE_NAME_ID' AND NAME3 = 'SERVICE_NAME_LIST' AND NAME4 = 'SERVICE_NAME_COMMAND_TYPE' AND VALUE4 = "CREATE SERVICE" AND NAME5='TARGET_SERVERS_LIST' AND NAME6='SUCCESS_SERVERS_LIST';
+#################################################################################################
+#########################   STOP SERVICE    #####################################################
+#################################################################################################
+ob1.mysql alter system set_tp tp_name = ERRSIM_MOCK_SERVICE_NAME, error_code = 4018, frequency = 1;
+sleep 3;
+ob_connect(mysql_ob_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+ob1.check_until_timeout select count(*) from __all_virtual_processlist where service_name="test_service" and tenant_id=1002, 1, 3;
+
+--echo ### STOP SERVICE
+ob1.mysql ALTER SYSTEM STOP SERVICE test_service tenant = $backup_mysql_tenant;
+ob1.check_until_timeout SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'STOP SERVICE' AND NAME1 = 'SERVICE_NAME_BEFORE' AND NAME2 = 'SERVICE_NAME_AFTER', 1, 5;
+ob1.check_until_timeout SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'BROADCAST SERVICE NAME' AND NAME1="EPOCH" AND NAME2= 'TARGET_SERVICE_NAME_ID' AND NAME3 = 'SERVICE_NAME_LIST' AND NAME4 = 'SERVICE_NAME_COMMAND_TYPE' AND VALUE4 = "STOP SERVICE" AND NAME5='TARGET_SERVERS_LIST' AND NAME6='SUCCESS_SERVERS_LIST', 1, 5;
+ob1.check_until_timeout SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE tenant_id=1002 AND EVENT ='KILL CONNECTIONS OF SERVICE NAME' AND VALUE2 = 1 AND VALUE3 != '', 1 ,3;
+
+ob1.mysql alter system set_tp tp_name = ERRSIM_MOCK_SERVICE_NAME, error_code = 1044, frequency = 0;
+#################################################################################################
+#########################   START SERVICE    #####################################################
+#################################################################################################
+connection backup_sys_conn;
+--echo ### START SERVICE
+ob1.mysql ALTER SYSTEM START SERVICE test_service tenant = $backup_mysql_tenant;
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'START SERVICE' AND NAME1 = 'SERVICE_NAME_BEFORE' AND NAME2 = 'SERVICE_NAME_AFTER';
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'BROADCAST SERVICE NAME' AND NAME1="EPOCH" AND NAME2= 'TARGET_SERVICE_NAME_ID' AND NAME3 = 'SERVICE_NAME_LIST' AND NAME4 = 'SERVICE_NAME_COMMAND_TYPE' AND VALUE4 = "START SERVICE" AND NAME5='TARGET_SERVERS_LIST' AND NAME6='SUCCESS_SERVERS_LIST';
+#################################################################################################
+#########################   DELETE SERVICE    #####################################################
+#################################################################################################
+--echo ### DELETE SERVICE
+ob1.mysql ALTER SYSTEM STOP SERVICE test_service tenant = $backup_mysql_tenant;
+ob1.mysql ALTER SYSTEM DELETE SERVICE test_service tenant = $backup_mysql_tenant;
+
+SELECT count(*) FROM CDB_OB_TENANT_EVENT_HISTORY WHERE TENANT_ID = 1002 AND EVENT = 'DELETE SERVICE' AND NAME1 = 'DELETED_SERVICE_NAME';

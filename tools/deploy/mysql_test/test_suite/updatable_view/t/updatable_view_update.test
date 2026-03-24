@@ -1,0 +1,353 @@
+# owner: bin.lb
+# owner group: sql3
+# tags: optimizer
+# description: updatable view
+#
+
+--result_format 4
+--disable_abort_on_error
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists a;
+drop table if exists b;
+drop table if exists c;
+drop view if exists v1;
+drop view if exists v2;
+drop view if exists v3;
+drop view if exists v;
+drop view if exists vv;
+drop view if exists vvv;
+--enable_warnings
+
+create table t1 (c1 int primary key, c2 int, c3 int);
+create table t2 (c1 int primary key, c2 int, c3 int);
+insert into t1 (c1, c2, c3) values (1, 1, 1);
+insert into t2 (c1, c2, c3) values (1, 1, 1);
+create view v1 as select * from t1;
+create view v2 as select t1.c1 c1, t1.c2 c2, t1.c3 c3, t2.c1 c4, t2.c2 c5, t2.c3 c6 from t1, t2 where t1.c1 = t2.c1;
+
+create table a (a1 int primary key, a2 int, a3 int);
+create table b (b1 int primary key, b2 int, b3 int);
+create table c (c1 int primary key, c2 int, c3 int);
+
+explain update v1 set c3 = 4;
+update v1 set c3 = 4;
+select * from t1;
+
+explain update v2 set c2 = 3 where c4 = 1;
+update v2 set c2 = 3 where c4 = 1;
+select * from v2;
+
+update t2, v1 set t2.c2 = 3 where t2.c1 = v1.c1;
+select * from t2;
+
+create table t3 (c1 int primary key, c2 int auto_increment, c3 timestamp(6) null DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), c4 int);
+create view v3 as select * from t3;
+
+insert into v3 (c1, c4) values (1, 1);
+select c1, c2, c4 from v3;
+let $old = query_get_value(select c3 from v3, c3, 1);
+
+update v3 set c4 = 2;
+select c1, c2, c4 from v3;
+let $new = query_get_value(select c3 from v3, c3, 1);
+
+--disable_query_log
+eval select '$old' = '$new' as time_equal;
+--enable_query_log
+
+### error code
+# column not updatable
+create view v as select a1, a2 + 1 x from a;
+create view vv as select a1, x y from v;
+--error 1348
+update vv set y = 1;
+--error 1348
+update vv set a1 = 1, y = 1;
+drop view v;
+drop view vv;
+
+# multiupdate
+create view v as select * from a, b where a1 = b1;
+create view vv as select * from v;
+--error 1393
+update vv set a1 = 1, b1 = 1;
+drop view v;
+drop view vv;
+
+# delete join view 
+create view v as select * from a, b where a1 = b1;
+create view vv as select * from v;
+--error 1395
+delete from vv;
+drop view v;
+drop view vv;
+
+# select 1
+create view v as select 1 a;
+create view vv as select * from v;
+
+--error 1288
+delete from vv;
+--error 1288
+update vv set a = 1;
+--error 1471
+insert into vv set a = 1;
+--error 1471
+insert into v (a) values (1) on duplicate key update a = 1;
+
+drop view v;
+drop view vv;
+
+# aggregate
+create view v as select a1, a2, a3, count(*) from a;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+create view v as select a1, a2, a3, count(*) from a group by 1, 2, 3;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+create view v as select a1, a2, a3 from a having count(*) > 2;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+
+# distinct
+create view v as select distinct a1, a2, a3 from a;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+
+# set
+
+create view v as select * from a union select * from b;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+drop view v;
+create view v as select * from a union all select * from b;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+
+# limit
+create view v as select * from a limit 2;
+--error 1288
+update v set a2 = 1;
+--error 1288
+delete from v;
+--error 1471
+insert into v (a1, a2, a3) values (1, 1, 1);
+
+drop view v;
+
+# subquery in select item
+## dependent subquery
+create view v as select a1, a2, a3,  1 < (select 1 from dual where 3 > b2) x from a, b where a1 = b1;
+--error 1288
+update v set a2 = 1;
+drop view v;
+## nondependent subquery is OK
+create view v as select a1, a2, a3,  1 < (select a1 from a limit 1) x from a;
+update v set a2 = 1;
+drop view v;
+
+
+# subquery in where condition
+create view v as select a.* from a, b where a1 = b1 and a2 > (select max(a3) from a);
+--error 1288
+update v set a2 = 1;
+drop view v;
+create view v as select a.* from a where  a2 > (select max(b3) from b where b2 > a2);
+update v set a2 = 1;
+drop view v;
+create view v as select a.* from a, b where a1 = b1 and a2 > (select max(b3) from b);
+update v set a2 = 1;
+drop view v;
+create view v as select * from a;
+create view vv as select * from a;
+create view vvv as select v.* from v, b where a1 = b1 and a2 > (select max(a3) from vv);
+--error 1288
+update vvv set a2 = 1;
+drop view vvv;
+drop view vv;
+drop view v;
+
+# inner join
+create view v as select a.* from a inner join b on a1 = b1 left join c on b2 = c2;
+--error 1288
+update v set a2 = 1;
+drop view v;
+create view v as select b.* from b left join c on b1 = c1;
+create view vv as select a.* from a, v where a1 = b1;
+update vv set a2 = 1;
+drop view v;
+drop view vv;
+create view v as select a.* from a, b;
+update v set a2 = 1;
+drop view v;
+create view v as select a.* from a, (select * from b)x where a2 = b2;
+update v set a2 = 2;
+drop view v;
+
+# generated column and multi-table update
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop view if exists v1;
+drop view if exists v2;
+drop view if exists vv1;
+drop view if exists vv2;
+--enable_warnings
+create table t1(c1 int, c2 int, c3 int, c4 int generated always as (c1+c2));
+create table t2(c1 int, c2 int, c3 int, c4 int generated always as (c1+c2));
+create view v1 as select a.c1,a.c2,a.c3,a.c4 from t1 a;
+create view v2(vc1,vc2,vc3,vc4) as select c1,c2,c3,c4 from t2;
+create view vv1(vvc1,vvc2) as select a.c1,a.c2 from v1 a;
+create view vv2 as select vc1,vc2,vc3,vc4 from v2;
+insert into t1(c1,c2,c3) values(1,2,3);
+insert into t2(c1,c2,c3) values(0,0,0);
+update t1,vv2 set t1.c1=10,vv2.vc1 = 1;
+select * from t1;
+select * from t2;
+update vv1 a,v2 b set a.vvc2=20,b.vc2 = 1;
+select * from t1;
+select * from t2;
+--error 3105
+update v1 set c4 = 1;
+--error 3105
+update v2 set vc4 = 1;
+--error 3105
+update vv2 set vc4 = 1;
+drop table t1;
+drop table t2;
+drop view v1;
+drop view v2;
+drop view vv1;
+drop view vv2;
+
+--disable_warnings
+drop table if exists t;
+drop view if exists v3;
+drop view if exists vv3;
+--enable_warnings
+
+##partition table, with index
+--explain_protocol 1
+--disable_query_log
+--disable_result_log
+create table t(c1 int, c2 int, c3 int) partition by hash(c1);
+create view v1 as select a.c1,a.c2,a.c3 from t a;
+create view v2(vc1,vc2,vc3) as select c1,c2,c3 from t;
+create view v3 as select c1,c2,c3 from t;
+create view vv1(vvc1,vvc2) as select a.c1,a.c2 from v1 a;
+create view vv2 as select vc1,vc2,vc3 from v2;
+create view vv3 as select c3 from v3;
+create index t_idx on t(c1) global;
+create index t_idx1 on t(c1) partition by hash(c1);
+create index t_idx2 on t(c1) global;
+create index t_idx3 on t(c1) global partition by hash(c1);
+insert into t values(1, 1, 1);
+select * from t;
+--enable_query_log
+--enable_result_log
+
+update v1 set c1 = c1 + 1;
+update /*+ no_rewrite */ v1 set c1 = c1 + 1;
+update v2 set vc2 = vc2 + 1;
+update /*+ no_rewrite */ v2 set vc2 = vc2 + 1;
+update v3 set c3 = c3 + 1;
+update /*+ no_rewrite */ v3 set c3 = c3 + 1;
+update vv1 set vvc1 = vvc1 * 2;
+update /*+ no_rewrite */ vv1 set vvc1 = vvc1 * 2;
+update vv2 set vc2 = vc2 * 2;
+update /*+ no_rewrite */ vv2 set vc2 = vc2 * 2;
+update vv3 set c3 = c3 * 2;
+update /*+ no_rewrite */ vv3 set c3 = c3 * 2;
+select * from t;
+
+--disable_query_log
+--disable_result_log
+
+drop table t;
+drop view v1;
+drop view v2;
+drop view v3;
+drop view vv1;
+drop view vv2;
+drop view vv3;
+
+
+##no partition table, with index
+create table t(c1 int, c2 int, c3 int);
+create view v1 as select a.c1,a.c2,a.c3 from t a;
+create view v2(vc1,vc2,vc3) as select c1,c2,c3 from t;
+create view v3 as select c1,c2,c3 from t;
+create view vv1(vvc1,vvc2) as select a.c1,a.c2 from v1 a;
+create view vv2 as select vc1,vc2,vc3 from v2;
+create view vv3 as select c3 from v3;
+create index t_idx on t(c1);
+create index t_idx1 on t(c1) partition by hash(c1);
+create index t_idx2 on t(c1) global;
+create index t_idx3 on t(c1) global partition by hash(c1);
+insert into t values(1, 1, 1);
+select * from t;
+--enable_query_log
+--enable_result_log
+
+update v1 set c1 = c1 + 1;
+update /*+ no_rewrite */ v1 set c1 = c1 + 1;
+update v2 set vc2 = vc2 + 1;
+update /*+ no_rewrite */ v2 set vc2 = vc2 + 1;
+update v3 set c3 = c3 + 1;
+update /*+ no_rewrite */ v3 set c3 = c3 + 1;
+update vv1 set vvc1 = vvc1 * 2;
+update /*+ no_rewrite */ vv1 set vvc1 = vvc1 * 2;
+update vv2 set vc2 = vc2 * 2;
+update /*+ no_rewrite */ vv2 set vc2 = vc2 * 2;
+update vv3 set c3 = c3 * 2;
+update /*+ no_rewrite */ vv3 set c3 = c3 * 2;
+select * from t;
+
+--disable_query_log
+--disable_result_log
+
+drop table t;
+drop view v1;
+drop view v2;
+drop view v3;
+drop view vv1;
+drop view vv2;
+drop view vv3;

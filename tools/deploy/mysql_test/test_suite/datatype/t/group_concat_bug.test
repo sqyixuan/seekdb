@@ -1,0 +1,74 @@
+# owner: dachuan.sdc
+# owner group: SQL1
+# tags: optimizer, datatype
+# description: 验证 bug#16528381, GROUP_CONCAT此前未设置varchar长度导致错误
+# mysql的结果为text，ob master分支目前(2018-8-9)未支持大字段, 所以结果类型暂时设置为varchar(65536)
+# GROUP_CONCAT()的结果长度受系统变量group_concat_max_len影响
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+drop database if exists group_concat_bug_db;
+--enable_warnings
+create database group_concat_bug_db;
+use group_concat_bug_db;
+create table nn1(c1 int, c2 int, c3 varchar(10));
+create table nn2(d1 int, d2 int, d3 varchar(10));
+create table t1(a varchar(100), b bigint);
+
+delimiter //;
+
+create procedure insert_p_nn1nn2() 
+begin
+  declare i int;
+    insert into nn1 values(null, null, null);
+    insert into nn2 values(null, null, null);
+    set i = 0;
+    while i < 100 do
+      insert into nn1 values(mod(i, 7), mod(i, 6), concat('hello1', mod(i, 3)));
+      insert into nn2 values(mod(i, 5), mod(i, 3), concat('hello1', mod(i, 2)));
+      set i = i + 1;
+    end while;
+end 
+//
+
+delimiter ;//
+
+call insert_p_nn1nn2();
+
+## set @@session.ob_enable_transformation = 0;
+# trace result set and plan both
+--result_format 4
+
+--echo #Q1 最简重现
+#Q1.1 
+explain 
+(SELECT GROUP_CONCAT(a) AS a FROM t1 WHERE a = 'a') 
+UNION 
+(SELECT GROUP_CONCAT(b) AS a FROM t1 WHERE a = 'b');
+
+#Q1.2
+--sorted_result
+(select group_concat(c3) as a from nn1) union (select group_concat(d3) as b from nn2);
+
+--echo #Q2 最原始出错的脚本
+create TABLE t1_copy
+ (select group_concat(a) as a FROM t1 where a = 'a') union (select group_concat(b) as a FROM t1 where a = 'b');
+
+--echo #Q3 稍微复杂一些的例子
+create table nn_3 as (select group_concat(c3) as a from nn1) union (select group_concat(d3) as b from nn2);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table nn_3;
+select * from nn_3 order by 1;
+
+#Q3.2 同上
+create table nn_4 as 
+(select group_concat(concat(x.c3, y.c3)) as a from nn1 x, nn1 y) union (select group_concat(d3) as b from nn2);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table nn_4;
+select * from nn_4 order by 1;
+
+drop database group_concat_bug_db;
+

@@ -1,0 +1,136 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX OBLOG_FETCHER
+
+#include "ob_log_part_trans_resolver_factory.h"
+
+#include "storage/tx/ob_trans_define.h"    // MAX_ELR_TRANS_INTERVAL
+
+
+using namespace oceanbase::common;
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+
+ObLogPartTransResolverFactory::ObLogPartTransResolverFactory() :
+    inited_(false),
+    task_pool_(NULL),
+    log_entry_task_pool_(NULL),
+    dispatcher_(NULL),
+    cluster_id_filter_(NULL),
+    allocator_(),
+    task_map_()
+{}
+
+ObLogPartTransResolverFactory::~ObLogPartTransResolverFactory()
+{
+  destroy();
+}
+
+int ObLogPartTransResolverFactory::init(TaskPool &task_pool,
+    IObLogEntryTaskPool &log_entry_task_pool,
+    IObLogFetcherDispatcher &dispatcher,
+    IObLogClusterIDFilter &cluster_id_filter)
+{
+  int ret = OB_SUCCESS;
+  const int64_t obj_size = sizeof(ObCDCPartTransResolver);
+
+  if (OB_UNLIKELY(inited_)) {
+    LOG_ERROR("init twice");
+    ret = OB_INIT_TWICE;
+  } else if (OB_FAIL(allocator_.init(obj_size, ObModIds::OB_LOG_PART_TRANS_RESOLVER,
+      OB_SERVER_TENANT_ID, DEFAULT_BLOCK_SIZE))) {
+    LOG_ERROR("init allocator fail", KR(ret), K(obj_size));
+  } else if (OB_FAIL(task_map_.init(ObModIds::OB_LOG_PART_TRANS_RESOLVER))) {
+    LOG_ERROR("init task map fail", KR(ret));
+  } else {
+    task_pool_ = &task_pool;
+    log_entry_task_pool_ = &log_entry_task_pool;
+    dispatcher_ = &dispatcher;
+    cluster_id_filter_ = &cluster_id_filter;
+    inited_ = true;
+  }
+  return ret;
+}
+
+void ObLogPartTransResolverFactory::destroy()
+{
+  inited_ = false;
+  task_pool_ = NULL;
+  log_entry_task_pool_ = NULL;
+  dispatcher_ = NULL;
+  cluster_id_filter_ = NULL;
+  (void)allocator_.destroy();
+  (void)task_map_.destroy();
+}
+
+int ObLogPartTransResolverFactory::alloc(const char *tls_id_str,
+    IObCDCPartTransResolver *&ptr)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(task_pool_) || OB_ISNULL(dispatcher_) || OB_ISNULL(cluster_id_filter_)) {
+    LOG_ERROR("not init", K(task_pool_), K(dispatcher_), K(cluster_id_filter_));
+    ret = OB_NOT_INIT;
+  } else {
+    void *obj = allocator_.alloc();
+
+    if (OB_ISNULL(obj)) {
+      LOG_ERROR("allocate memory for ObCDCPartTransResolver fail", K(obj));
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      ptr = new(obj) ObCDCPartTransResolver(tls_id_str, *task_pool_, task_map_, *dispatcher_, *cluster_id_filter_);
+    }
+  }
+
+  return ret;
+}
+
+void ObLogPartTransResolverFactory::free(IObCDCPartTransResolver *ptr)
+{
+  if (OB_LIKELY(inited_) && OB_NOT_NULL(ptr)) {
+    ObCDCPartTransResolver *resolver = dynamic_cast<ObCDCPartTransResolver *>(ptr);
+    ptr->~IObCDCPartTransResolver();
+
+    allocator_.free(resolver);
+    ptr = NULL;
+    resolver = NULL;
+  }
+}
+
+bool ObLogPartTransResolverFactory::TransInfoClearerByCheckpoint::operator()(const PartTransID &key,
+    TransCommitInfo &trans_commit_info)
+{
+  const int64_t log_ts = trans_commit_info.log_ts_;
+  const palf::LSN &log_lsn = trans_commit_info.log_lsn_;
+  bool need_purge = (log_ts < (checkpoint_ - transaction::MAX_ELR_TRANS_INTERVAL));
+
+  if (need_purge) {
+		purge_count_++;
+    ObCStringHelper helper;
+    _LOG_DEBUG("[STAT] [TRANS_COMMIT_INFO] [PURGE] PART_TRANS_ID=%s CHECKPOINT=%ld/%ld(%ld) DELTA=%ld/%ld",
+        helper.convert(key), log_ts, checkpoint_, log_lsn.val_,
+        checkpoint_ - log_ts, transaction::MAX_ELR_TRANS_INTERVAL);
+  }
+
+  return need_purge;
+}
+
+}
+}

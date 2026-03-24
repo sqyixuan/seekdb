@@ -1,0 +1,78 @@
+# CASE_OWNER:
+# msy164651
+# CASE_DESC:
+# 验证拉日志齐步走和系统日志流死锁的问题，需要控制系统日志流大于3s不写日志，并且让这条日志是需要参考系统日志流的日志
+
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0,asvr_num=1);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+sleep 3;
+
+let $arb_extra_conf = "ob_startup_mode=arbitration,cpu_count=1,memory_limit=1G,__easy_memory_limit=256M";
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+# 获取仲裁server的ip、port
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 5;
+
+--echo =================================================
+--echo               create tenant
+--echo =================================================
+
+# create new tenant mysql
+ob_connect(conn1, ob1.z1.obs0,root@sys,,oceanbase,,USE_OB_CONNECTOR);
+connection conn1;
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2", PRIMARY_ZONE = "z1, z2", enable_arbitration_service = true SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql", tenant_id, 1);
+ob_connect(conn2, ob1.z1.obs0,root@mysql,,oceanbase,,USE_OB_CONNECTOR);
+connection conn2;
+create user mytest identified by "test";
+GRANT SELECT on oceanbase.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on oceanbase.GV$OB_UNITS to mytest;
+GRANT SELECT on oceanbase.DBA_OB_TENANTS to mytest;
+GRANT SELECT on oceanbase.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on oceanbase.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on oceanbase.DBA_OB_LS to mytest;
+GRANT SELECT on oceanbase.DBA_OB_LS_HISTORY to mytest;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@mysql PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_2');
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_mysql', 1, 100;
+ob1.mysql alter system set ls_gc_delay_time = '1h' tenant = all;
+
+ob1.mysql set ob_global_debug_sync = 'AFTER_LOCK_LS_AND_BEFORE_CHANGE_LS_FLAG wait_for signal';
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where tenant_id = $tenant_id and status = 'INIT', 1, 100;
+sleep 3;
+ob1.z2.obs0.force_stop;
+#等待降级成功
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list != '' and tenant_id = $tenant_id, 3, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time = 0, 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1, 1, 100;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+
+ob1.z2.obs0.start;
+ob1.ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $tenant_id, 0, 100;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $tenant_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_mysql', 1, 100;
+

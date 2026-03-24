@@ -1,0 +1,112 @@
+#rs
+#msy164651
+#测试点：备库重复建租户
+#case 1: 建partition之后，下线一台机器，然后等待租户创建成功，删除租户
+#case 2: 控制在持久化member_list成功之后，永久下线一台机器，然后创建租户可以成功，有一部分副本的member_list没有填充，上线另一台机器，然后会把永久下线机器上的unit迁移回来，然后member_list修改
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=2:2:2, proxy_num = 0, leaderob=ob1);
+ob1.force_stop;
+ob2.force_stop;
+ob1.reboot;
+ob2.reboot;
+ob1.mysql set @@global.ob_query_timeout = 30000000;
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+#检查备库同步完成
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster, 2, 20;
+ob2.mysql alter system set balancer_idle_time = '10s';
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set data_copy_concurrency = 60;
+ob2.mysql alter system set resource_hard_limit=900;
+ob2.mysql alter system set resource_soft_limit=200;
+#确认备库收到了同步过来的心跳，可以执行ddl
+sleep 10;
+ob2.mysql alter tenant sys set locality = 'F@z1, F@z2';
+let $job_id = deploy_get_value(ob2.select select job_id from __all_rootservice_job where job_type='ALTER_TENANT_LOCALITY', job_id, 1);
+ob2.check_until_timeout select count(*) from __all_rootservice_job where job_id = $job_id and job_status ='SUCCESS', 1, 100;
+let $z3_addr = deploy_get_value(ob2.z3.obs0.get_addr); 
+let $z3_ob1_addr = deploy_get_value(ob2.z3.obs1.get_addr); 
+
+#case 1
+#控制备库在创建租户的时候持久化member list之前报错，实际上partition已经创建完成
+connection conn2;
+alter system set_tp tp_no = 81, error_code = 4013, frequency = 1;
+#在主库上创建一个租户
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+#备库开始同步
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+#备库同步建租户失败,但是partition已经创建成功
+ob2.check_until_timeout select count(*) >= 9 from oceanbase.__all_root_table where tenant_id = $tenant_id, 1, 10;
+ob2.mysql_p select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id;
+#放开报错，让partition创建同步成功
+connection conn2;
+alter system set_tp tp_no = 81, error_code = 4013, frequency = 0;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob1.mysql drop tenant tt force;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob2.z3.obs0.force_stop;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 5, 30;
+
+#case 2
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+#备库会重新创建resource pool，新的resource pool的unit num = 1, unit 创建在obs1上
+ob1.mysql CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+#备库开始同步
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1', tenant_id, 1);
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where tenant_id = $tenant_id, 1, 30;
+let $table_id = deploy_get_value(ob2.select select table_id from oceanbase.__all_partition_member_list, table_id, 1);
+ob2.z3.obs1.force_stop;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 4, 30;
+#让obs1永久下线
+ob2.mysql alter system set server_permanent_offline_time='60s';
+ob2.mysql alter system set replica_safe_remove_time='60s';
+#已经持久化member_list，不会重新创建partition，也不会修改member_list
+ob2.z3.obs0.start;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 5, 100;
+ob2.mysql_p select count(*) from oceanbase.__all_root_table where tenant_id = $tenant_id and concat(svr_ip,":",svr_port) = '$z3_addr';
+ob2.mysql_p select count(*) from oceanbase.__all_partition_member_list where member_list like "%$z3_addr%";
+
+#备库不会创建新的partition了，打开错误注入后，租户可以创建成功
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id, 1, 30;
+
+#T成员
+ob2.check_until_timeout select count(*) from oceanbase.__all_root_table where table_id = $table_id and member_list like "%$z3_ob1_addr%", 0,70;
+#unit 可以迁移，然后补副本
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_root_table where table_id = $table_id and member_list like "%$z3_addr%", 1, 600;
+
+ob1.mysql drop tenant tt1 force;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob2.z3.obs1.start;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 6, 100;
+
+#case 3 使用旧模式
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+#备库会重新创建resource pool，新的resource pool的unit num = 1, unit 创建在obs1上
+ob1.mysql CREATE TENANT tt2 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+#备库开始同步
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt2', tenant_id, 1);
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where tenant_id = $tenant_id, 1, 30;
+ob2.mysql update oceanbase.__all_partition_member_list set b_member_list_arg = '';
+#备库不会创建新的partition了，打开错误注入后，租户可以创建成功
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tenant_id, 1, 30;
+
+#切换
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 300;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;

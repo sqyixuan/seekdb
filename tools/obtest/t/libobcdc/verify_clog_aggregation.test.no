@@ -1,0 +1,136 @@
+#
+# owner: bohou.ws
+# owner group: liboblog
+# description:
+# 测试点：
+#   验证能否liboblog 能否适配clog 聚合日志功能(租户级别配置)
+#   触发命令： alter system set _clog-aggregation_buffer_amount=4(227分支该值范围0-128，默认0)
+# 本case验证方法：
+#  1. 触发普通表的clog日志聚合功能
+#  2. 测试变成分区表/增减分区/分区分裂等功能
+#  3. 测试验证单机单表单分区，单机单表多分区，单机多表，多机分布式事务
+#
+
+ob1=OBI(cluster=1:1:1);
+ob1.reboot;
+ob1.create_client;
+sleep 5;
+
+
+# 在sys租户下 create tenant
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 连接sys租户
+connection oblog_conn_sys;
+
+create resource unit oblog_box max_cpu=2, memory_size='10G';
+create resource pool oblog_pool unit = 'oblog_box', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+
+sleep 2;
+
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+# 触发clog 日志聚合模式，并准备相应库表环境
+#alter system set _clog_aggregation_buffer_amount=4;
+
+# 配置测试read miss log (test_mode_on=1 test_mode_ignore_redo_count=1)
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 log_level=DEBUG test_mode_on=1 test_mode_ignore_redo_count=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create database oblog_db;
+ob1.oblog.next;
+use oblog_db;
+
+# 准备多表环境
+create table t1(pk int, a int, b int, primary key (pk)) partition by range(pk) (partition p1 values less than (5), partition p2 values less than (10), partition p3 values less than (100), partition p4 values less than (maxvalue));
+ob1.oblog.next;
+create table t2(pk int, a int, primary key (pk)) partition by hash (pk) partitions 10;
+ob1.oblog.next;
+create table t3(pk int, a int, primary key (pk)) partition by hash (pk) partitions 5;
+ob1.oblog.next;
+
+insert into t1 values (0, 0, 0);
+ob1.oblog.next;
+# 测试常规情况下的各种数据修改场景（单机单表单分区）
+begin;
+insert into t1 values (1, 1, 5);
+insert into t1 values (4, 4, 5);
+insert into t1 values (51, 51, 5);
+update t1 set a = 1, b = 3 where pk = 1;
+commit;
+ob1.oblog.next;
+
+update t1 set a = 2, b = 4 where pk = 4;
+ob1.oblog.next;
+
+# 单机多表多分区事务
+begin;
+update t1 set a = 99 where pk = 51;
+insert into t2 values (1, 6);
+commit;
+ob1.oblog.next;
+
+# 分布式事务
+begin;
+update t1 set a = 1999 where pk = 4;
+update t2 set a = 99 where pk = 1;
+insert into t3 values (1, 1);
+commit;
+ob1.oblog.next;
+
+# 回拉历史数据
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+begin;
+update t1 set a = 11 where pk = 1;
+update t3 set a = 11 where pk = 1;
+commit;
+sleep 1;
+begin;
+update t1 set a = 12 where pk = 1;
+update t3 set a = 12 where pk = 1;
+commit;
+sleep 1;
+begin;
+update t1 set a = 13 where pk = 1;
+update t3 set a = 13 where pk = 1;
+commit;
+ob1.oblog.next;
+ob1.oblog.next;
+ob1.oblog.next;
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+ob1.oblog.next_dml;
+ob1.oblog.next_dml;
+
+# 增删分区
+alter table t1 drop partition p3, p4;
+ob1.oblog.next;
+insert into t1 values (9, 9, 9);
+ob1.oblog.next;
+source include/liboblog/check_mysql_split_partition_ok.inc;
+alter table t1 add partition (partition p5 values less than (1000), partition p6 values less than (maxvalue));
+ob1.oblog.next;
+source include/liboblog/check_mysql_split_partition_ok.inc;
+insert into t1 values (1001, 1001, 1001);
+ob1.oblog.next;
+
+truncate table t1;
+ob1.oblog.next;
+
+drop table t1, t2, t3;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+drop database if exists oblog_db;
+
+ob1.oblog.check_log "is_aggre_log=true";

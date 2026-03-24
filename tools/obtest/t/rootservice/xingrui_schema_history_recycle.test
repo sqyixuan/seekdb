@@ -1,0 +1,520 @@
+# CASE_OWNER:
+#    @xingrui.cwh
+# CASE_DESC:
+#    Basic case for schema history recycle.
+#    The following types of schema history are allowed to be recycled:
+#    1. table (and related schema such as: column、partition、column、constraint、foreign key)
+#    2. tablegroup
+#    3. database
+#    4. user
+#    5. synonym
+#    6. outline
+#    7. plan_baseline(abandoned in 4.0)
+#    8. tablespace
+#    9. profile
+#    10. trigger
+#    11. sequence(oracle)
+#    12. system variable
+
+ob1=OBI(cluster=1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+--disable_query_log
+ob1.mysql alter system set schema_history_recycle_interval = "0s";
+ob1.mysql alter system set schema_history_expire_time = '1m';
+
+let $rs = ob1.z1.obs0;
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+
+connection conn_sys;
+set @@session.ob_query_timeout = 100000000;
+source include/create_unit_config.inc;
+--disable_query_log
+
+CREATE RESOURCE POOL pool_1 UNIT = '2c2g', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1', locality='F@z1' set ob_tcp_invited_nodes='%', recyclebin = OFF;
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name="mysql", tenant_id, 1);
+
+CREATE RESOURCE POOL pool_2 UNIT = '2c2g', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone = 'z1', locality='F@z1' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle', recyclebin = OFF;
+let $oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name="oracle", tenant_id, 1);
+
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connect (conn_mysql,$rs_ip,root@mysql,,test,$rs_mysql_port);
+
+# case 1: table related
+connection conn_mysql;
+# case 1.1 drop table
+create table table_to_drop(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+drop table table_to_drop;
+# case 1.2 alter table
+create table table_to_modify(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table table_to_modify_and_drop(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+let $idx = 1;
+while ($idx < 20)
+{
+  eval alter table table_to_modify set comment = "$idx";
+  eval alter table table_to_modify_and_drop set comment = "$idx";
+  inc $idx;
+}
+drop table table_to_modify_and_drop;
+
+# case 2: column related (only recycle)
+connection conn_mysql;
+# case 2.1: drop column
+create table table_modify_column(c1 int primary key, column_to_drop int, column_to_modify varchar(20)) partition by hash(c1) partitions 10;
+create table table_modify_column_and_drop(c1 int primary key, column_to_drop int, column_to_modify varchar(20)) partition by hash(c1) partitions 10;
+alter table table_modify_column drop column column_to_drop;
+# case 2.2: modify column
+let $idx = 21;
+while ($idx < 40)
+{
+  eval alter table table_modify_column modify column column_to_modify varchar($idx);
+  eval alter table table_modify_column_and_drop modify column column_to_modify varchar($idx);
+  inc $idx;
+}
+drop table table_modify_column_and_drop;
+
+# case 3: partition related (only recycle)
+connection conn_mysql;
+create table table_partitioned_by_range (c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (500), partition p1 values less than (10000));
+create table table_partitioned_by_range_hash (c1 int , c2 int, c3 int, primary key(c1, c2)) partition by range(c1) subpartition by hash(c2) subpartitions 2 (partition p0 values less than (500), partition p1 values less than (10000));
+create table table_partitioned_by_range_and_drop (c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (500), partition p1 values less than (10000));
+create table table_partitioned_by_range_hash_and_drop (c1 int , c2 int, c3 int, primary key(c1, c2)) partition by range(c1) subpartition by hash(c2) subpartitions 2 (partition p0 values less than (500), partition p1 values less than (10000));
+let $idx = 2;
+while ($idx < 20)
+{
+  inc $idx;
+  eval alter table table_partitioned_by_range add partition (partition p$idx values less than (20000));
+  eval alter table table_partitioned_by_range drop partition p$idx;
+  eval alter table table_partitioned_by_range_hash add partition (partition p$idx values less than (20000));
+  eval alter table table_partitioned_by_range_hash drop partition p$idx;
+
+  eval alter table table_partitioned_by_range_and_drop add partition (partition p$idx values less than (20000));
+  eval alter table table_partitioned_by_range_and_drop drop partition p$idx;
+  eval alter table table_partitioned_by_range_hash_and_drop add partition (partition p$idx values less than (20000));
+  eval alter table table_partitioned_by_range_hash_and_drop drop partition p$idx;
+}
+drop table table_partitioned_by_range_and_drop;
+drop table table_partitioned_by_range_hash_and_drop;
+
+# case 4: constraint (only recycle)
+connection conn_oracle;
+create table table_with_constraint (c1 int primary key, c2 int);
+alter table table_with_constraint add constraint constraint_1 check(c2 > c1);
+alter table table_with_constraint drop constraint constraint_1;
+
+create table table_with_constraint_and_drop (c1 int primary key, c2 int);
+alter table table_with_constraint_and_drop add constraint constraint_1 check(c2 > c1);
+drop table table_with_constraint_and_drop;
+
+# case 5: foreign key (only recycle)
+connection conn_mysql;
+create table t1(c1 int primary key, c2 int, c3 varchar(20), index idx(c2));
+create table table_with_foreign_key (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1) on update CASCADE on delete CASCADE);
+alter table table_with_foreign_key drop foreign key fk1;
+
+create table table_with_foreign_key_and_drop (c1 int primary key, c2 int, constraint fk1 foreign key (c2) references t1(c1) on update CASCADE on delete CASCADE);
+drop table table_with_foreign_key_and_drop;
+
+# case 6: tablegroup
+connection conn_mysql;
+# case 6.1: drop tablegroup
+create tablegroup tg_to_drop;
+drop tablegroup tg_to_drop;
+# case 6.2: drop tablegroup partition (only recycle)
+create tablegroup tg_partitioned_by_range;
+create tablegroup tg_partitioned_by_range_hash;
+create tablegroup tg_partitioned_by_range_and_drop;
+create tablegroup tg_partitioned_by_range_hash_and_drop;
+# TODO: 4.0 add/drop partition in tablegroup is not supported yet
+#let $idx = 2;
+#while ($idx < 20)
+#{
+#  inc $idx;
+#  eval alter tablegroup tg_partitioned_by_range add partition (partition p$idx values less than (20000));
+#  eval alter tablegroup tg_partitioned_by_range drop partition p$idx;
+#  eval alter tablegroup tg_partitioned_by_range_hash add partition (partition p$idx values less than (20000));
+#  eval alter tablegroup tg_partitioned_by_range_hash drop partition p$idx;
+#
+#  eval alter tablegroup tg_partitioned_by_range_and_drop add partition (partition p$idx values less than (20000));
+#  eval alter tablegroup tg_partitioned_by_range_and_drop drop partition p$idx;
+#  eval alter tablegroup tg_partitioned_by_range_hash_and_drop add partition (partition p$idx values less than (20000));
+#  eval alter tablegroup tg_partitioned_by_range_hash_and_drop drop partition p$idx;
+#}
+drop tablegroup tg_partitioned_by_range_and_drop;
+drop tablegroup tg_partitioned_by_range_hash_and_drop;
+
+# case 7: database related
+connection conn_mysql;
+# case 7.1: drop database
+create database db_to_drop;
+drop database db_to_drop;
+create database db_to_modify;
+# case 7.2: alter database
+let $idx = 1;
+while ($idx < 20)
+{
+  eval alter database db_to_modify read only;
+  eval alter database db_to_modify read write;
+  inc $idx;
+}
+
+# case 8: user related
+connection conn_mysql;
+# case 8.1: drop user
+create user user_to_drop;
+drop user user_to_drop;
+# case 8.2: rename user
+create user user_to_rename_1;
+let $idx = 1;
+while ($idx < 20)
+{
+  let $pre_idx = $idx;
+  inc $idx;
+  eval rename user user_to_rename_$pre_idx to user_to_rename_$idx;
+}
+
+# case 9: synonym
+connection conn_oracle;
+create or replace synonym tb_synonym for table_with_constraint;
+let $synonym_id = deploy_get_value(ob1.select select synonym_id from oceanbase.__all_virtual_synonym where tenant_id = $oracle_tenant_id and synonym_name = 'tb_synonym', synonym_id, 1);
+drop synonym tb_synonym;
+
+# case 10: outline
+connection conn_mysql;
+# drop outline
+create outline ol1 on select 1;
+drop outline ol1;
+# alter outline
+create or replace outline ol2 on select /*+max_concurrent(1)*/ c2,c1  from table_to_modify where c1 > 3 and c2 = 1;
+let $idx = 1;
+while ($idx < 20)
+{
+  inc $idx;
+  eval alter outline ol2 add select /*+max_concurrent(2)*/ c2,c1  from table_to_modify where c1 > ? and c2 = $idx;
+}
+
+# case 11: plan_baseline(abandoned in 4.0)
+
+# case 12: tablespace
+connection conn_mysql;
+# drop tablespace
+create tablespace tbs_to_drop;
+drop tablespace tbs_to_drop;
+# alter tablespace
+alter system set tde_method = 'internal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_parameter_info where tenant_id = $mysql_tenant_id and name = "tde_method" and value != "internal", 0, 10;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_master_key_version_info where max_active_version = 0 and tenant_id = $mysql_tenant_id, 0, 15;
+create tablespace tbs_to_modify;
+let $idx = 1;
+while ($idx < 20)
+{
+  eval alter tablespace tbs_to_modify encryption = "Y";
+  eval alter tablespace tbs_to_modify encryption = "N";
+  inc $idx;
+}
+
+# case 13: profile
+connection conn_oracle;
+# drop profile
+create profile profile_to_drop limit failed_login_attempts 3 password_lock_time 1;
+drop profile profile_to_drop;
+# alter profile
+create profile profile_to_modify limit failed_login_attempts 3 password_lock_time 1;
+let $idx = 1;
+while ($idx < 20)
+{
+  eval alter profile profile_to_modify limit failed_login_attempts $idx password_lock_time 100;
+  inc $idx;
+}
+
+# case 14: trigger
+connection conn_oracle;
+create table tb_oracle_1(pk int, a int, b int, primary key (a, b));
+create table tb_oracle_2(pk int, a int, b int, primary key (a, b));
+create or replace trigger trg_1 before insert on tb_oracle_1 for each row begin insert into tb_oracle_2 values (:new.pk, :new.a, :new.b); end;
+create or replace trigger trg_2 before insert on tb_oracle_1 for each row begin insert into tb_oracle_2 values (:new.pk, :new.a, :new.b); end;
+# drop trigger
+drop trigger trg_1;
+# alter trigger
+let $idx = 1;
+while ($idx < 20)
+{
+  eval create or replace trigger trg_2 before insert on tb_oracle_1 for each row begin insert into tb_oracle_2 values ($idx, :new.a, :new.b); end;
+  inc $idx;
+}
+
+# case 15: sequence
+connection conn_oracle;
+# drop sequence
+create sequence s1 start with 2 increment by 1 cache 3;
+drop sequence s1;
+# alter sequence
+create sequence s2 start with 2 increment by 10 cache 3;
+let $idx = 1;
+while ($idx < 20)
+{
+  eval alter sequence s2 increment by $idx;
+  inc $idx;
+}
+
+# case 16: system variable
+connection conn_mysql;
+let $idx = 10000000;
+while ($idx < 10000020)
+{
+  eval set @@global.ob_query_timeout = $idx;
+  inc $idx;
+}
+set @@global.ob_trx_timeout = 10000001;
+
+# case 17: tenant object priviledge
+connection conn_oracle;
+create user user_for_obj_priv identified by user_for_obj_priv;
+create table tb_for_obj_priv_0(c1 int primary key);
+create table tb_for_obj_priv_1(c1 int primary key);
+create table tb_for_obj_priv_2(c1 int primary key);
+create table tb_for_obj_priv_3(c1 int primary key);
+
+let $obj_priv_uid = deploy_get_value(ob1.select select user_id from oceanbase.__all_virtual_user where tenant_id = $oracle_tenant_id and user_name = 'USER_FOR_OBJ_PRIV', user_id, 1);
+let $obj_priv_dbid = deploy_get_value(ob1.select select database_id from oceanbase.__all_virtual_database where tenant_id = $oracle_tenant_id and database_name = 'USER_FOR_OBJ_PRIV', database_id, 1);
+let $obj_priv_tid_0 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $oracle_tenant_id and table_name = 'TB_FOR_OBJ_PRIV_0', table_id, 1);
+let $obj_priv_tid_1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $oracle_tenant_id and table_name = 'TB_FOR_OBJ_PRIV_1', table_id, 1);
+let $obj_priv_tid_2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $oracle_tenant_id and table_name = 'TB_FOR_OBJ_PRIV_2', table_id, 1);
+let $obj_priv_tid_3 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $oracle_tenant_id and table_name = 'TB_FOR_OBJ_PRIV_3', table_id, 1);
+
+# case 17.1: grant & revoke obj priv
+grant select on sys.tb_for_obj_priv_0 to user_for_obj_priv;
+revoke select on sys.tb_for_obj_priv_0 from user_for_obj_priv;
+ob1.mysql_p select is_deleted from oceanbase.__all_virtual_objauth_history where tenant_id = $oracle_tenant_id and obj_id = $obj_priv_tid_0 order by schema_version desc;
+
+# case 17.2: grant obj priv with multi history
+let $idx = 0;
+grant select on sys.tb_for_obj_priv_1 to user_for_obj_priv;
+--disable_query_log
+while ($idx <= 5)
+{
+revoke select on sys.tb_for_obj_priv_1 from user_for_obj_priv;
+grant select on sys.tb_for_obj_priv_1 to user_for_obj_priv;
+inc $idx;
+}
+--enable_query_log
+ob1.mysql_p select is_deleted from oceanbase.__all_virtual_objauth_history where tenant_id = $oracle_tenant_id and obj_id = $obj_priv_tid_1 order by schema_version desc;
+
+# case 17.3: grant obj priv on table to drop
+grant select on sys.tb_for_obj_priv_2 to user_for_obj_priv;
+drop table sys.tb_for_obj_priv_2 purge;
+ob1.mysql_p select is_deleted from oceanbase.__all_virtual_objauth_history where tenant_id = $oracle_tenant_id and obj_id = $obj_priv_tid_2 order by schema_version desc;
+
+# case 17.4: grant obj priv on table to truncate
+set @@session.recyclebin = on;
+set @@session.ob_enable_truncate_flashback = on;
+
+grant select on sys.tb_for_obj_priv_3 to user_for_obj_priv;
+truncate table sys.tb_for_obj_priv_3;
+let $obj_priv_tid_3_new = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'TB_FOR_OBJ_PRIV_3', table_id, 1);
+
+# case 17.5: grant column priv on table
+connection conn_mysql;
+create user column_priv_user;
+let $col_priv_uid = deploy_get_value(ob1.select select user_id from oceanbase.__all_virtual_user where tenant_id = $mysql_tenant_id and user_name = 'COLUMN_PRIV_USER', user_id, 1);
+create table column_priv_table(c1 int, c2 int);
+grant select(c1) on column_priv_table to column_priv_user;
+revoke select(c1) on column_priv_table from column_priv_user;
+
+grant select(c2) on column_priv_table to column_priv_user;
+--disable_query_log
+let $idx = 1;
+while ($idx < 50)
+{
+  let $pre_idx = $idx;
+  inc $idx;
+  grant insert(c2) on column_priv_table to column_priv_user;
+  revoke insert(c2) on column_priv_table from column_priv_user;
+}
+--enable_query_log
+drop table column_priv_table;
+
+#let $object_name = deploy_get_value(ob1.select select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $oracle_tenant_id and original_name = "TB_FOR_OBJ_PRIV_3", object_name, 1);
+#
+#--disable_query_log
+#eval purge table $object_name;
+#--enable_query_log
+connection conn_oracle;
+drop table sys.tb_for_obj_priv_3 purge;
+
+ob1.mysql_p select is_deleted from oceanbase.__all_virtual_objauth_history where tenant_id = $oracle_tenant_id and obj_id = $obj_priv_tid_3 order by schema_version desc;
+ob1.mysql_p select is_deleted from oceanbase.__all_virtual_objauth_history where tenant_id = $oracle_tenant_id and obj_id = $obj_priv_tid_3_new order by schema_version desc;
+
+# case 18 column group
+connection conn_mysql;
+let $t_cg_tenant = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+create table t_cg(c1 int, c2 int) with column group(all columns, each column);
+alter table t_cg add index idx1(c1) with column group(all columns, each column);
+let $t_cg_id1 = query_get_value(select table_id  from oceanbase.__all_virtual_table where table_name = 't_cg' and tenant_id = $t_cg_tenant, table_id, 1);
+let $t_cg_idx1 = query_get_value(select table_id  from oceanbase.__all_virtual_table where data_table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_cg') and tenant_id = $t_cg_tenant, table_id, 1);
+drop table t_cg;
+
+create table t_cg_2(c1 int, c2 int);
+let $t_cg_id_2_0 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't_cg_2' and tenant_id = $t_cg_tenant, table_id, 1);
+alter table t_cg_2 add column group(all columns, each column);
+let $t_cg_id_2_1 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't_cg_2' and tenant_id = $t_cg_tenant, table_id, 1);
+
+create table t_cg_3(c1 int, c2 int) with column group(all columns, each column);
+let $t_cg_id_3_0 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't_cg_3' and tenant_id = $t_cg_tenant, table_id, 1);
+alter table t_cg_3 drop column group(all columns, each column);
+let $t_cg_id_3_1 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't_cg_3' and tenant_id = $t_cg_tenant, table_id, 1);
+
+# case 19: ccl
+connection conn_mysql;
+# drop ccl
+create concurrent_limiting_rule global_emergency_ccl_rule
+ON test.`t1`
+TO `%`@`%`
+for select
+filter by keyword(`t1`, `id=123`)
+with max_concurrency = 100;
+drop concurrent_limiting_rule global_emergency_ccl_rule;
+
+# before merge, result should be 2
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ccl_rule_history, 2, 60;
+# case 22 sensitive rule
+connection conn_mysql;
+let $t_sens_1_tenant = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+create table t_sens_1(a int, b int, c int);
+create sensitive rule recycle_r1 on t_sens_1(b) using encryption;
+connection conn_sys;
+let $r1_sens_rule_id = query_get_value(select sensitive_rule_id from oceanbase.__all_virtual_sensitive_rule where tenant_id = $t_cg_tenant and sensitive_rule_name = 'RECYCLE_R1', sensitive_rule_id, 1);
+let $r1_sens_table_id = query_get_value(select table_id from oceanbase.__all_virtual_sensitive_column where tenant_id = $t_cg_tenant and sensitive_rule_id = $r1_sens_rule_id, table_id, 1);
+let $r1_sens_col_id = query_get_value(select column_id from oceanbase.__all_virtual_sensitive_column where tenant_id = $t_cg_tenant and sensitive_rule_id = $r1_sens_rule_id, column_id, 1);
+connection conn_mysql;
+drop sensitive rule recycle_r1;
+drop table t_sens_1;
+
+# case 22 ai model
+connection conn_mysql;
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('my_ai_model_1', '{"type": "dense_embedding", "model_name": "text-embedding-v1" }');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('my_ai_model_1');  
+# before merge, result should be 2
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ai_model_history, 2, 60;
+
+set @@session.recyclebin = off;
+set @@session.ob_enable_truncate_flashback = off;
+
+# wait merge finished
+ob1.mysql alter system set schema_history_recycle_interval = "10s";
+ob1.mysql alter system set merger_check_interval='10s' tenant sys;
+ob1.mysql alter system set merger_check_interval='10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval='10s' tenant all_meta;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all_meta;
+let $idx = 0;
+while ($idx <= 3)
+{
+  ob1.mysql alter system major freeze tenant=sys;
+  ob1.mysql alter system major freeze tenant=all_user;
+  ob1.mysql alter system major freeze tenant=all_meta;
+  ob1.check_until_timeout select count(*) from __all_virtual_merge_info where frozen_scn != global_broadcast_scn or global_broadcast_scn != last_merged_scn, 0, 120;
+  inc $idx;
+}
+--enable_query_log
+
+#######################################################
+# check result
+#######################################################
+
+# case 4: only has pk constranit
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = "TABLE_WITH_CONSTRAINT", table_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_constraint_history where tenant_id = $oracle_tenant_id and table_id = $table_id, 1, 60;
+
+# case 5: foreign key
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_foreign_key_history where tenant_id = $oracle_tenant_id and child_table_id = $table_id, 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_foreign_key_column_history, 0, 60;
+
+# case 7: database
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database_history where (tenant_id & 0x1) = 0 and database_id & 0xffffffffff > 500001 and database_id not in ($obj_priv_dbid), 1, 60;
+
+# case 8: user
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_user_history where (tenant_id & 0x1) = 0 and user_id & 0xffffffffff > 500000 and user_id not in ($obj_priv_uid, $col_priv_uid), 1, 60;
+
+# case 9: synonym
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_synonym_history where tenant_id = $oracle_tenant_id and synonym_id = $synonym_id, 0, 60;
+
+# case 10: outline
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_outline_history, 1, 60;
+
+# case 11: plan_baseline(abandoned in 4.0)
+
+# case 12: tablespace
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_tablespace_history, 1, 60;
+
+# case 13: profile
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_profile_history where (tenant_id & 0x1) = 0 and profile_id & 0xffffffffff > 500000, 1, 60;
+
+# case 14: trigger
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_trigger_history, 1, 60;
+
+# case 15: sequence_object
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sequence_object_history, 1, 60;
+
+# case 16: system variable
+connection conn_sys;
+select tenant_id, name,count(*) from oceanbase.__all_virtual_sys_variable_history where (tenant_id & 0x1) = 0 group by tenant_id, name having count(*) > 1;
+
+# case 17: tenant obj priv
+# will only remain 1 record from 17.2
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_objauth_history where (tenant_id & 0x1) = 0 and obj_id > 500000, 1, 60;
+
+# case 18:
+connection conn_sys;
+--disable_query_log
+eval select count(*) from __all_virtual_column_group_history where tenant_id = $t_cg_tenant and (table_id = $t_cg_id1 or table_id = $t_cg_idx1);
+eval select count(*) from __all_virtual_column_group_mapping_history where tenant_id = $t_cg_tenant and (table_id = $t_cg_id1 or table_id = $t_cg_idx1);
+
+eval select count(*) from __all_virtual_column_group_history where tenant_id = $t_cg_tenant and (table_id = $t_cg_id_2_0 or table_id = $t_cg_id_3_0);
+eval select count(*) from __all_virtual_column_group_mapping_history where tenant_id = $t_cg_tenant and (table_id = $t_cg_id_2_0 or table_id = $t_cg_id_3_0);
+
+eval select count(*) from __all_virtual_column_group_history where tenant_id = $t_cg_tenant and table_id = $t_cg_id_2_1;
+eval select count(*) from __all_virtual_column_group_mapping_history where tenant_id = $t_cg_tenant and table_id = $t_cg_id_2_1;
+
+eval select count(*) from __all_virtual_column_group_history where tenant_id = $t_cg_tenant and table_id = $t_cg_id_3_1;
+eval select count(*) from __all_virtual_column_group_mapping_history where tenant_id = $t_cg_tenant and table_id = $t_cg_id_3_1;
+--enable_query_log
+
+# case 18: column priv
+# will only remain 1 record from 17.5
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_column_privilege_history, 1, 60;
+
+# case 22: ai model
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ai_model_history, 0, 60;
+
+# table related
+connection conn_sys;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_table_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_column_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_part_info_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_sub_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+select a.*, b.table_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_def_sub_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_table as b on a.tenant_id = b.tenant_id and a.table_id = b.table_id;
+
+# tablegroup related
+connection conn_sys;
+select a.*, b.tablegroup_name from (select tenant_id, tablegroup_id, count(*) as history_cnt from oceanbase.__all_virtual_tablegroup_history where (tenant_id & 0x1) = 0 and tablegroup_id & 0xffffffffff > 500000 group by tenant_id, tablegroup_id) as a join __all_virtual_tablegroup as b on a.tenant_id = b.tenant_id and a.tablegroup_id = b.tablegroup_id;
+select a.tenant_id, a.table_id as tablegroup_id, a.history_cnt, b.tablegroup_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_part_info_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_tablegroup as b on a.tenant_id = b.tenant_id and a.table_id = b.tablegroup_id;
+select a.tenant_id, a.table_id as tablegroup_id, a.history_cnt, b.tablegroup_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_sub_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_tablegroup as b on a.tenant_id = b.tenant_id and a.table_id = b.tablegroup_id;
+select a.tenant_id, a.table_id as tablegroup_id, a.history_cnt, b.tablegroup_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_tablegroup as b on a.tenant_id = b.tenant_id and a.table_id = b.tablegroup_id;
+select a.tenant_id, a.table_id as tablegroup_id, a.history_cnt, b.tablegroup_name from (select tenant_id, table_id, count(*) as history_cnt from oceanbase.__all_virtual_def_sub_part_history where (tenant_id & 0x1) = 0 and table_id & 0xffffffffff > 500000 group by tenant_id, table_id) as a join __all_virtual_tablegroup as b on a.tenant_id = b.tenant_id and a.table_id = b.tablegroup_id;
+
+# case 19: after merge ccl_rule_history result should be 0
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ccl_rule_history, 0, 60;
+# case 22
+connection conn_sys;
+eval select count(*) from __all_virtual_sensitive_rule_history where tenant_id = $t_sens_1_tenant and sensitive_rule_id = $r1_sens_rule_id;
+eval select count(*) from __all_virtual_sensitive_column_history where tenant_id = $t_sens_1_tenant and sensitive_rule_id = $r1_sens_rule_id and table_id = $r1_sens_table_id and column_id = $r1_sens_col_id;

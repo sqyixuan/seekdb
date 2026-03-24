@@ -1,0 +1,170 @@
+--disable_abort_on_error
+
+--disable_warnings
+drop table if exists t;
+--enable_warnings
+
+alter system set min_drop_cache_wait_time='1s' server_type=chunkserver;
+alter system set each_tablet_sync_meta=False server_type=chunkserver;
+alter system set check_tablet_available_interval='3s' server_type=chunkserver;
+alter system set index_builder_thread_num='10' server_type=chunkserver;
+alter system set check_async_task_interval='3s' server_type=rootserver;
+# alter system set index_sort_mem_limit='1G' server_type=chunkserver;
+
+--real_sleep 10
+# table_id 3003
+create table t (k1 int, k2 int, v1 int, v2 int, v3 int, v4 int, v5 int, s1 varchar, s2 varchar, s3 varchar, s4 varchar, s5 varchar, s6 varchar, primary key (k1, k2));
+# table_id 3006
+create index i1 on t (v1, v2) storing (v3, v4);
+# table_id 3009
+create index i2 on t (v3);
+# table_id 3012
+create index i3 on t (s1, s2, s3);
+# table_id 3015
+create index i4 on t (v4, v3);
+# table_id 3018
+create index i5 on t (v5, k2);
+# index table rowkey and data table rowkey is the same. table_id 3007. 
+create index i6 on t (k1) storing (s5, s6);
+
+exec $LOCAL_DIR/tools/ups_admin -a $MASTER_UPS_IP -p $MASTER_UPS_PORT -t major_freeze;
+--real_sleep 80
+
+# data table get
+--disable_result_log
+explain select s4 from t where (k1, k2) in ((1, 1));
+--enable_result_log
+--disable_result_log
+explain select s4 from t where k1 = 1 and k2 = 1;
+--enable_result_log
+
+# data table scan
+--disable_result_log
+explain select s4 from t where k1 = 1;
+--enable_result_log
+
+# index table get
+--disable_result_log
+explain select s4 from t where v1 = 1 and v2 = 1;
+--enable_result_log
+
+# data table get and index table get all avaliable use data table get
+--disable_result_log
+explain select s4 from t where k1 = 1 and k2 = 1 and v1 = 1 and v2 = 1 and v3 = 1;
+--enable_result_log
+
+# data table scan and index table get all avaliable use data table scan
+--disable_result_log
+explain select s4 from t where k1 = 1 and v1 = 1 and v2 = 1 and v3 = 1;
+--enable_result_log
+
+# index table get and index scan, use index table get. (i2)
+--disable_result_log
+explain select s4 from t where v3 = 1 and v5 = 1;
+--enable_result_log
+
+# index table scan, use larger scan prefix one (i1 scan prefix = 1, i3 scan prefix = 2, use i3).
+--disable_result_log
+explain select s4 from t where v1 = 1 and s1 = 'a' and s2 = 'a';
+--enable_result_log
+
+# index table scan, same scan prefix, use shorter index. (i1)
+--disable_result_log
+explain select s4 from t where v1 = 1 and s1 = 'a';
+--enable_result_log
+
+# index table scan, same scan prefix, same index length, use order by eliminated one. (i1)
+--disable_result_log
+explain select s4 from t where v1 = 1 and v4 = 1 order by v1;
+--enable_result_log
+
+# index table scan, same scan prefix, same index length, use bigger table_id index. (i4)
+--disable_result_log
+explain select s4 from t where v1 = 1 and v4 = 1;
+--enable_result_log
+
+# index table scan, but i1 cover all query columns. (i1)
+--disable_result_log
+explain select count(*) from t where v1 = 1 and v4 = 1;
+--enable_result_log
+--disable_result_log
+explain select v1 as c from t where v1 = 1;
+--enable_result_log
+
+# data table get and index table get && index table cover all query columns, use index table. (i1)
+--disable_result_log
+explain select v3 from t where k1 = 1 and k2 = 1 and v1 = 1 and v2 = 1;
+--enable_result_log
+
+# full table scan && index cover all columns, use index. (i1)
+--disable_result_log
+explain select k1, sum(v2 + a.k2) from t as a where v1 + a.v2 > v3 group by a.v2;
+--enable_result_log
+
+# full table scan && index cover all columns, use order by eliminated one. (i2)
+--disable_result_log
+explain select k1,k2 from t order by v3;
+--enable_result_log
+
+# full table scan && index cover all columns, use smaller index: i2 or i5, choose bigger table_id index. (i5)
+--disable_result_log
+explain select count(*) from t;
+--enable_result_log
+
+
+# eliminate order by test
+--disable_result_log
+explain select s4 from t order by k1;
+--enable_result_log
+--disable_result_log
+explain select s4 from t where k1 = 1 and k2 = 1 order by v4;
+--enable_result_log
+--disable_result_log
+explain select k1,k2 as c,s4 from t order by 1,c;
+--enable_result_log
+--disable_result_log
+explain select s4 from t order by 'a', k1,TRUE, k2, FALSE limit 10;
+--enable_result_log
+--disable_result_log
+explain select s4 from t where v1 = 1 and v2 = 1 order by v1, v2, k1;
+--enable_result_log
+
+# order by can't be eliminated
+--disable_result_log
+explain select s4 from t order by k1 desc;
+--enable_result_log
+--disable_result_log
+explain select s4 from t where (k1, k2) in ((1,1), (2,2)) order by k1;
+--enable_result_log
+--disable_result_log
+explain select k1,s4,count(*) from t order by k1;
+--enable_result_log
+--disable_result_log
+explain select k1,k2,s4 from t group by k1, k2 order by k1,k2;
+--enable_result_log
+--disable_result_log
+explain select k1,k2,s4 from t having count(k1) > 0 order by k1;
+--enable_result_log
+
+# group sort eliminate
+--disable_result_log
+explain select k1 as c, count(s4) from t where k1 = 1 group by 'a', k1, c;
+--enable_result_log
+--disable_result_log
+explain select v1, count(s4) from t where v1 = 1 group by v1;
+--enable_result_log
+--disable_result_log
+explain select k1, count(*) from t group by v3 having count(*) > 0;
+--enable_result_log
+
+# respect index hint.
+--disable_result_log
+explain select /*+ index(t primary) */ s4 from t where v1 = 1 and v2 = 1;
+--enable_result_log
+--disable_result_log
+explain select /*+ index(t primary) */ s4 from t where v1 = 1;
+--enable_result_log
+--disable_result_log
+explain select /*+ index(t i1) */ s4 from t where v1 = 1 and s1 = 'a' and s2 = 'a';
+--enable_result_log
+

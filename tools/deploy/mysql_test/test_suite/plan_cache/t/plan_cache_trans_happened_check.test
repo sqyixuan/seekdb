@@ -1,0 +1,84 @@
+#owner: xiaoyi.xy
+#owner group: sql1
+#tags: optimizer
+
+
+--result_format 4
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+alter system set large_query_threshold = '1s';
+alter system set enable_auto_leader_switch=false;
+alter system set resource_hard_limit = 500;
+
+alter system flush plan cache global;
+--sleep 3
+connection default;
+
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+create database xy_db;
+use xy_db;
+
+--disable_warnings
+drop table if exists trans_happened_table;
+--enable_warnings
+
+create table trans_happened_table(c1 int primary key, c2 int, c3 int, index idx_c3(c3), index inx_c2(c2));
+
+connection conn_admin;
+
+let $case1_tbl_id_1 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'trans_happened_table', table_id, 1);
+let $case1_tbl_part1_main_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $case1_tbl_id_1 and role = 1 and partition_id = 0, svr_ip, 1);
+let $case1_tbl_part1_main_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $case1_tbl_id_1 and role = 1 and partition_id = 0, svr_port, 1);
+let $case1_tbl_part1_backup_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $case1_tbl_id_1 and role = 2 and partition_id = 0, svr_ip, 1);
+let $case1_tbl_part1_backup_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $case1_tbl_id_1 and role = 2 and partition_id = 0, svr_port, 1);
+
+connection default;
+insert into trans_happened_table values(1,1,1), (2,2,2),(3,1,1),(4,1,1);
+
+--echo
+--echo =============================== same transform happened route===============================
+--enable_query_log
+select * from trans_happened_table where c2 = 3 or c3 = 3;
+select * from trans_happened_table where c2 = 3 or c3 = 3;
+explain select * from trans_happened_table where c2 = 3 or c3 = 3;
+--echo
+--echo // expect hit_count = 1
+--disable_warnings
+select type,hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from trans_happened_table where c2 = ? or c3 = ?';
+--enable_warnings
+
+connection conn_admin;
+--disable_result_log
+--disable_query_log
+--echo
+--echo // alter system switch replica part1 to backup server
+eval alter system switch replica leader partition_id = '0%2@$case1_tbl_id_1' server='$case1_tbl_part1_backup_ip:$case1_tbl_part1_backup_port';
+--sleep 10
+--enable_result_log
+--enable_query_log
+
+--echo
+--echo =============================== diff transform happened route===============================
+--enable_query_log
+connection default;
+--enable_query_log
+--echo
+select * from trans_happened_table where c2 = 1 or c3 = 1;
+explain select * from trans_happened_table where c2 = 1 or c3 = 1;
+--echo // expect type = 1, hit_count = 1,type = 2, hit_count = 0,
+--disable_warnings
+select type,hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from trans_happened_table where c2 = ? or c3 = ?';
+--enable_warnings
+
+--echo ****************************** cleanup ******************************
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+# using admin acount
+connection conn_admin;
+
+alter system set large_query_threshold = '100ms';
+alter system set enable_auto_leader_switch = true;

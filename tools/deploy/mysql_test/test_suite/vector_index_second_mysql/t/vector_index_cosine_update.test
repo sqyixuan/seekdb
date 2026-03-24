@@ -1,0 +1,130 @@
+# owner: yangjiali.yjl
+# owner group: shenzhen
+# description: vector index cosine update
+# tags: vector index
+# author: dangertao.det
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+alter system ob_vector_memory_limit_percentage=30;
+select sleep(5);
+
+--echo
+--echo
+--echo "=========================================== partition update ==========================================="
+--disable_warnings
+drop table if exists t;
+--enable_warnings
+create table t(c1 int, c2 vector(3), c3 vector(4), primary key(c1), vector index idx1(c2) with (distance=cosine, type=hnsw)) partition by range(c1) (partition p0 values less than (100),partition p1 values less than (1000),partition p2 values less than (10000),partition p5 values less than (1000000));
+--source mysql_test/test_suite/vector_index_second_mysql/include/insert_common_data_1.inc
+
+--error 1064 # You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'approx limit 10' at line 1
+update /*+parallel(5)*/ t partition(p0) set c2='[1,1,1]' where c1 < 10 order by cosine_distance(c2, '[-970769, -13483.01, 254267]') approx limit 10;
+update /*+parallel(5)*/ t partition(p0) set c2='[1,1,1]' where c1 < 10 order by cosine_distance(c2, '[-970769, -13483.01, 254267]') limit 10;
+select c1,c2 from t partition(p0,p1) where c1<10 order by cosine_distance(c2, '[-970769, -13483.01, 254267]') approx limit 5;
+select c1,c2 from t partition(p0,p1) where c1<10 order by cosine_distance(c2, '[-970769, -13483.01, 254267]') limit 5;
+--error 1062 # Duplicate entry '2' for key 'PRIMARY'
+update t set c1=2, c2='[2,2,2]' where c1=1 or c1=3;
+update ignore t set c1=2,c2='[2,2,2]' where c1=1 or c1=3;
+select c1,c2 from t partition(p0,p1) where c1<10 order by cosine_distance(c2, '[2,2,2]') approx limit 5;
+
+
+--echo
+--echo
+--echo "=========================================== view update ==========================================="
+--disable_warnings
+drop table if exists t;
+drop view if exists v;
+drop materialized view if exists mv;
+--enable_warnings
+create table t(c1 int, c2 vector(3), c3 vector(4), primary key(c1), vector index idx1(c2) with (distance=cosine, type=hnsw)) partition by range(c1) (partition p0 values less than (100),partition p1 values less than (1000),partition p2 values less than (10000),partition p3 values less than (100000),partition p4 values less than (1000000));
+--source mysql_test/test_suite/vector_index_second_mysql/include/insert_common_data_1.inc
+
+create view v (a1,a2) as select c1,c2 from t partition(p0,p1) where c1<=105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 20;
+update t set c2='[1,1,1]',c3='[1,1,1,1]' where c1%2=0 order by cosine_distance(c2, '[-970769, -13483.01, 254267]') limit 5;
+select c1,c2 from t where c3='[1,1,1,1]' order by cosine_distance(c2, '[1,1,1]') limit 5;
+select c1,c2 from t where c3='[1,1,1,1]' order by cosine_distance(c2, '[1,1,1]') approx limit 5;
+select a1,a2 from v where a2='[1,1,1]' order by cosine_distance(a2, '[1,1,1]') approx limit 5;
+create or replace view v (a1,a2,a3) as select c1,c2,c3 from t partition(p0,p1) where c1<=105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 100;
+--error 1288 # The target table v of the UPDATE is not updatable
+update v set a2='[2,2,2]',a3='[2,2,2,2]' where a1<10 order by cosine_distance(c2, '[1,1,1]') limit 5;
+#--error 1235 # non-user table in materialized view is not supported
+#create materialized view mv (b1,b2,primary key(b1)) partition by range(b1) (partition p0 values less than (100), partition p1 values less than (1000), partition p2 values less than (maxvalue)) with column group(each column) refresh complete on demand as select a1,a2 from v order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 100;
+create materialized view mv (b1,b2,primary key(b1)) partition by range(b1) (partition p0 values less than (100), partition p1 values less than (1000), partition p2 values less than (maxvalue)) with column group(each column) refresh complete on demand as select c1,c2 from t partition(p0,p1) where c1<=105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 100;
+--error 1235 # create vector index on view table is not supported
+create vector index idx2 on mv(b2) with (distance=cosine, type=hnsw);
+--echo expected same count
+select * from mv order by cosine_distance(b2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from v order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t where c1<105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 3;
+--source mysql_test/test_suite/vector_index_second_mysql/include/insert_common_data_2.inc
+
+select * from mv order by cosine_distance(b2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from v order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t where c1<105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 3;
+
+call dbms_mview.refresh('mv', 'C', 5);
+--echo expected same count
+select * from mv order by cosine_distance(b2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from v order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t where c1<105 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from mv left join v on 1=1 order by cosine_distance(b2, '[0.179629, 430819, -65217.32]') approx limit 3;
+
+--echo
+--echo
+--echo "=========================================== update join ==========================================="
+--disable_warnings
+drop table if exists t;
+drop table if exists t1;
+--enable_warnings
+create table t(c1 int, c2 vector(3), c3 vector(4), primary key(c1), vector index idx1(c2) with (distance=cosine, type=hnsw)) partition by range(c1) (partition p0 values less than (100),partition p1 values less than (1000),partition p2 values less than (10000),partition p3 values less than (100000),partition p4 values less than (1000000));
+--source mysql_test/test_suite/vector_index_second_mysql/include/insert_common_data_1.inc
+
+create table t1(a1 int, a2 vector(3),primary key(a1));
+insert into t1(a1,a2) values(1, null);
+insert into t1(a1,a2) values(2, null);
+insert into t1(a1,a2) values(3, null);
+insert into t1(a1,a2) values(4, null);
+insert into t1(a1,a2) values(5, null);
+insert into t1(a1,a2) values(6, null);
+insert into t1(a1,a2) values(7, null);
+insert into t1(a1,a2) values(8, null);
+insert into t1(a1,a2) values(9, null);
+insert into t1(a1,a2) values(10, null);
+select c1,c2 from t where c1<8 order by cosine_distance(c2, '[0.179629, 430819, -65217.32]') approx limit 4;
+--error 5868 # Incorrect usage of UPDATE and ORDER BY
+update t1 join t on t.c1=t1.a1 set t1.a2=t.c2 where t.c1 < (select c1 from t order by cosine_distance(t.c2, '[0.179629, 430819, -65217.32]') approx limit 1) order by cosine_distance(t.c2, '[0.179629, 430819, -65217.32]') limit 4;
+update t1 join t on t.c1=t1.a1 set t1.a2=t.c2 where t.c1 < (select c1 from t order by cosine_distance(t.c2, '[0.179629, 430819, -65217.32]') approx limit 1);
+create vector index idx2 on t1(a2) with(distance=cosine,type=hnsw);
+select * from t1;
+select * from t1 order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') limit 3;
+select * from t1 order by cosine_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t1 order by l2_distance(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t1 order by inner_product(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+select * from t1 order by negative_inner_product(a2, '[0.179629, 430819, -65217.32]') approx limit 3;
+
+--echo
+--echo
+--echo "=========================================== insert table with foreign key ==========================================="
+--disable_warnings
+drop table if exists t;
+drop table if exists t1;
+--enable_warnings
+create table t(c1 int, c2 vector(3), c3 vector(4), primary key(c1), vector index idx1(c2) with (distance=cosine, type=hnsw)) partition by range(c1) (partition p0 values less than (100),partition p1 values less than (1000),partition p2 values less than (10000),partition p3 values less than (100000),partition p4 values less than (1000000));
+--source mysql_test/test_suite/vector_index_second_mysql/include/insert_common_data_1.inc
+
+create table t1(a1 int default -1, a2 vector(3), foreign key (a1) references t(c1) on update restrict on delete cascade);
+insert into t1 select c1,c2 from t order by cosine_distance(c2, '[397583, 541347, -65783.73]') approx limit 10;
+select * from t1;
+--error 1451 # Cannot delete or update a parent row: a foreign key constraint fails
+update t set c2='[1,1,1]',c1=c1+10 order by cosine_distance(c2, '[397583, 541347, -65783.73]') limit 10;
+select * from t1;
+select t1.a1,t.c2 from t join t1 on t1.a1=t.c1 order by cosine_distance(t.c2, '[397583, 541347, -65783.73]') approx limit 3;
+delete from t where c1=10002 or c1=109;
+select * from t1;
+--disable_warnings
+drop table t1;
+drop table t;
+--enable_warnings

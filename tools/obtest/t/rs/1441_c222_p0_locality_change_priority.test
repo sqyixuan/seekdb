@@ -1,0 +1,49 @@
+# owner: rongxuan.lc
+# description: 本case是为了[类型转换]大租户的locality变更，没有按照预期优先走类型转换，而是优先走了补副本逻辑
+# issue/12825604?stat=1.5.2&toPage=1&versionId=1043693
+#前置条件：
+#租户本来的  locality='F{1}@z1, F{1}@z2, F{1}@z3'
+#租户unit=2
+#进行如下操作：
+#alter tenant obstress0 locality='F{1}@z1, F{1}@z2, R{1}@z3'
+ob1=OBI(cluster=2:2:2,  proxy_num=0, ct_num = 0, locality=hz:hz:sh);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =30;
+ob1.mysql alter system set server_data_copy_out_concurrency = 30;
+ob1.mysql alter system set data_copy_concurrency = 100;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,R@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 set locality%F@z1,F@z2,R@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 set locality%F@z1,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,L@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 set locality%F@z1,F@z2,L@z3%' and job_status = 'SUCCESS', 1, 240;
+let $count = deploy_get_value(ob1.select select count(*) c from __all_rootservice_event_history where event like '%add_r%', c, 1);
+if ($count == 0)
+{
+  echo "success";
+}

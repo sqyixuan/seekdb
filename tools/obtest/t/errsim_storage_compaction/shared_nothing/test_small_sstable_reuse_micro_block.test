@@ -1,0 +1,226 @@
+# owner: fengjingkun.fjk
+# owner group: storage
+# description: test co merge reuse micro block when old major is small sstable
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+ob1.mysql alter system set_tp tp_name = "EN_NO_NEED_MERGE_MICRO_BLK", error_code = 4677, frequency = 1;
+
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (obsys,$ip,root@sys,,oceanbase,$port);
+connection obsys;
+
+###############################################################
+# create tenant
+###############################################################
+CREATE RESOURCE UNIT test_unit MAX_CPU=5, memory_size='10G';
+CREATE RESOURCE POOL test_pool UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+--disable_all_result_log
+CREATE TENANT test01 RESOURCE_POOL_LIST=('test_pool'), primary_zone='z1', locality='F@z1,F@z2' SET VARIABLES ob_compatibility_mode='mysql', secure_file_priv = '/',ob_tcp_invited_nodes='%';
+--enable_all_result_log
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='test01', tenant_id, 1);
+
+
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all;
+ob1.mysql alter system set ob_compaction_schedule_interval = '5s' tenant all;
+alter system set merger_check_interval = '10s' tenant all;
+sleep 2;
+
+
+###############################################################
+# create table
+###############################################################
+connect (conn_test,$ip,root@test01,,test,$port);
+connection conn_test;
+
+create table t1 (c1 bigint primary key, c2 bigint, c3 bigint, c4 bigint) with column group (all columns, each column);
+let $tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 't1', tablet_id, 1);
+
+insert into t1 values(1,1,1,1);
+insert into t1 values(2,2,2,2);
+insert into t1 values(3,3,3,3);
+insert into t1 values(4,4,4,4);
+insert into t1 values(8,8,8,8);
+insert into t1 values(9,9,9,9);
+insert into t1 values(10,10,10,10);
+
+create table t2 (c1 bigint primary key, c2 bigint, c3 bigint, c4 bigint);
+let $tablet_id_row=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 't2', tablet_id, 1);
+
+insert into t2 values(1,1,1,1);
+insert into t2 values(2,2,2,2);
+insert into t2 values(3,3,3,3);
+insert into t2 values(4,4,4,4);
+insert into t2 values(8,8,8,8);
+insert into t2 values(9,9,9,9);
+insert into t2 values(10,10,10,10);
+
+###############################################################
+# 1st major merge, should generate small sstable
+###############################################################
+connection obsys;
+ob1.mysql alter system major freeze tenant 'test01';
+sleep 20;
+ob1.check_until_timeout select (GLOBAL_BROADCAST_SCN > LAST_SCN) as cnt from oceanbase.cdb_ob_major_compaction where tenant_id = $tenant_id, 0, 1200;
+
+# column store table
+let $nested_offset=deploy_get_value(ob1.select select nested_offset from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and tablet_id = $tablet_id and table_type = 17 order by end_log_scn desc, nested_offset, 1);
+let $nested_size=deploy_get_value(ob1.select select nested_size from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and tablet_id = $tablet_id and table_type = 17 order by end_log_scn desc, nested_size, 1);
+
+if ($nested_offset == 0) {
+  --echo unexpected nested offset for small sstable
+}
+if ($nested_size == 2097152) {
+  --echo unexpected nested size for small sstable
+}
+
+let $new_micro_block_cnt_1st = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+
+# row store table
+let $nested_offset_row=deploy_get_value(ob1.select select nested_offset from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and tablet_id = $tablet_id_row and table_type = 10 order by end_log_scn desc, nested_offset, 1);
+let $nested_size_row=deploy_get_value(ob1.select select nested_size from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and tablet_id = $tablet_id_row and table_type = 10 order by end_log_scn desc, nested_size, 1);
+
+if ($nested_offset_row == 0) {
+  --echo unexpected nested offset for small sstable
+}
+if ($nested_size_row == 2097152) {
+  --echo unexpected nested size for small sstable
+}
+
+let $new_micro_block_cnt_row_1st = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+
+###################################################################
+# 2nd major merge, small sstable should reuse all micro block
+###################################################################
+connection obsys;
+ob1.mysql alter system major freeze tenant 'test01';
+sleep 20;
+ob1.check_until_timeout select (GLOBAL_BROADCAST_SCN > LAST_SCN) as cnt from oceanbase.cdb_ob_major_compaction where tenant_id = $tenant_id, 0, 1200;
+
+# column store table
+let $reuse_micro_block_2nd = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($reuse_micro_block_2nd != $new_micro_block_cnt_1st)
+{
+  --echo should reuse all micro block
+}
+
+# row store table
+let $reuse_micro_block_row_2nd = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($reuse_micro_block_row_2nd != $new_micro_block_cnt_row_1st)
+{
+  --echo should reuse all micro block
+}
+
+###############################################################
+# 3rd major merge, small sstable should rewrite micro block
+###############################################################
+connection conn_test;
+insert into t1 values(5,5,5,5);
+insert into t1 values(6,6,6,6);
+insert into t1 values(7,7,7,7);
+
+insert into t2 values(5,5,5,5);
+insert into t2 values(6,6,6,6);
+insert into t2 values(7,7,7,7);
+
+connection obsys;
+ob1.mysql alter system major freeze tenant 'test01';
+sleep 20;
+ob1.check_until_timeout select (GLOBAL_BROADCAST_SCN > LAST_SCN) as cnt from oceanbase.cdb_ob_major_compaction where tenant_id = $tenant_id, 0, 1200;
+
+let $reuse_micro_block_3rd = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($reuse_micro_block_3rd != 0)
+{
+  --echo should rewrite all micro block
+}
+let $new_micro_block_cnt_3rd = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_3rd == 0)
+{
+  --echo should write new micro block
+}
+
+
+# row store table
+let $reuse_micro_block_row_3rd = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($reuse_micro_block_row_3rd != 0)
+{
+  --echo should rewrite all micro block
+}
+let $new_micro_block_cnt_row_3rd = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_row_3rd == 0)
+{
+  --echo should write new micro block
+}
+
+
+#######################################################################################
+# 4th major merge, small sstable should reuse micro block and write one micro block
+#######################################################################################
+connection conn_test;
+insert into t1 values(20,20,20,20);
+insert into t1 values(21,21,21,21);
+insert into t1 values(22,22,22,22);
+
+insert into t2 values(20,20,20,20);
+insert into t2 values(21,21,21,21);
+insert into t2 values(22,22,22,22);
+
+connection obsys;
+ob1.mysql alter system major freeze tenant 'test01';
+sleep 20;
+ob1.check_until_timeout select (GLOBAL_BROADCAST_SCN > LAST_SCN) as cnt from oceanbase.cdb_ob_major_compaction where tenant_id = $tenant_id, 0, 1200;
+
+
+# column store table
+let $reuse_micro_block_4th = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_3rd != $reuse_micro_block_4th)
+{
+  --echo should reuse all micro block and write one new micro block
+}
+
+let $new_micro_block_cnt_4th = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_4th == 0)
+{
+  --echo should write new micro block
+}
+
+
+# row store table
+let $reuse_micro_block_row_4th = deploy_get_value(ob1.select select multiplexed_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, multiplexed_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_row_3rd != $reuse_micro_block_row_4th)
+{
+  --echo should reuse all micro block and write one new micro block
+}
+
+let $new_micro_block_cnt_row_4th = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_row_4th == 0)
+{
+  --echo should write new micro block
+}
+
+
+#######################################################################################
+# 5th major merge, small sstable should reuse micro block and write one micro block
+#######################################################################################
+connection obsys;
+ob1.mysql alter system major freeze tenant 'test01';
+sleep 20;
+ob1.check_until_timeout select (GLOBAL_BROADCAST_SCN > LAST_SCN) as cnt from oceanbase.cdb_ob_major_compaction where tenant_id = $tenant_id, 0, 1200;
+
+let $new_micro_block_cnt_5th = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_5th != 0)
+{
+  --echo should write new micro block
+}
+
+let $new_micro_block_cnt_row_5th = deploy_get_value(ob1.select select new_micro_count_in_new_macro from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id_row and type = 'MAJOR_MERGE' order by compaction_scn desc, new_micro_count_in_new_macro, 1);
+if ($new_micro_block_cnt_row_5th != 0)
+{
+  --echo should write new micro block
+}

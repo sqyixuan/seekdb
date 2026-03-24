@@ -1,0 +1,151 @@
+#author:yanli.msy
+#description:测试balance task的黑名单功能
+#
+#case1：增加副本的黑名单功能
+#case2：减少副本的黑名单功能
+#case3：副本转换的黑名单功能
+#case4：副本迁移
+#case5：副本重建
+#case6：paxos成员变更
+#case7：qurnum变更，暂且不测试
+#MIGRATE_REPLICA = 0,
+#ADD_REPLICA =1,
+#REBUILD_REPLICA=2,
+#TYPE_TRANSFORM=3,
+#MEMBER_CHANGE=4,
+#REMOVE_NON_PAXOS_REPLICA=5,
+#RESTORE_REPLICA=6,
+#MODIFY_QUORUM=7,
+
+ob1=OBI(cluster=3:3:3, proxy_num=0, ct_num = 0);
+ob1.reboot;
+sleep 10;
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 1;
+ob1.mysql alter system set server_data_copy_in_concurrency = 1;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set balance_blacklist_failure_threshold = 1;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set balance_blacklist_retry_interval='1m';
+
+ob1.mysql CREATE RESOURCE POOL sys_pool_2 UNIT = 'sys_unit_config', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt resource_pool_list=('sys_pool_2'), locality = 'F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 10;
+
+
+ob1.create_client tenant=tt,user=root,passwd=,database=test;
+create tablegroup tg1 locality ='F@z1,F@z2,F,R@z3' partition by range (partition p0 values less than (10),partition p1 values less than (20));
+create table t1 (c1 int,c2 int ,primary key(c1)) tablegroup = 'tg1' locality ='F@z1,F@z2,F,R@z3' partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20));
+create table t2 (c1 int,c2 int ,primary key(c1)) tablegroup = 'tg1' locality ='F@z1,F@z2,F,R@z3' partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20));
+
+create table t3 (c1 int ,c2 int ,primary key (c1)) partition by hash(c1) partitions 15;
+create table t4 (c1 int ,c2 int ,primary key (c1)) locality ='F@z1,F@z2,F,R@z3'  partition by hash(c1) partitions 15;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+let $tenant_id = deploy_get_value(ob1.select  select tenant_id from oceanbase.__all_tenant where tenant_name='tt',tenant_id,1);
+let $t1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t1',table_id,1);
+let $t2_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t2',table_id,1);
+let $t3_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t3',table_id,1);
+let $t4_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t4',table_id,1);
+
+#case1 add replica 
+ob1.mysql alter system remove balance task;
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+let $rs = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port)  as ipport from __all_server where with_rootserver = 1 limit 1 ,ipport,1 );
+let $ors = deploy_get_value(ob1.get_obs_by_addr $rs);
+ob1.create_client tenant=tt,user=root,passwd=,database=test;
+alter table t4 set locality ='f@z1,f,r@z2,f,r@z3';
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 1;
+ob1.check_until_timeout select count(*) >= 1 from __all_virtual_meta_table where fail_list like '%,1,1,%' and tenant_id = $tenant_id and table_id = $t4_id ,1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TABLE_LOCALITY" and job_status="INPROGRESS",job_id,1);
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 0;
+sleep 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,300;
+let $fail_list_1_1 = deploy_get_value(ob1.select select fail_list from __all_virtual_meta_table where fail_list like'%,1,1,%' and tenant_id = $tenant_id and table_id = $t4_id limit 1 ,fail_list,1 );
+#case 2 remove replica 
+ob1.mysql alter system remove balance task;
+ob1.create_client tenant=tt,user=root,passwd=,database=test;
+alter table t4 set locality ='f@z1,f@z2,f,r@z3';
+
+let $ors = deploy_get_value(ob1.get_obs_by_addr $rs);
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 1;
+#本次失败，清理之前的失败和新添加的失败是在一条sql语句中的
+ob1.check_until_timeout select count(*) >= 1 from __all_virtual_meta_table where fail_list like'%,5,1,%' and tenant_id = $tenant_id and table_id = $t4_id ,1,90;
+let $fail_list_1 = deploy_get_value(ob1.select select fail_list from __all_virtual_meta_table where fail_list like'%,5,1,%' and tenant_id = $tenant_id and table_id = $t4_id limit 1 ,fail_list,1 );
+if ($fail_list_1 != $fail_list_1_1)
+{
+echo "success";
+}
+ob1.mysql_p select count(*)  from __all_virtual_meta_table where fail_list like'%;%'and tenant_id = $tenant_id and table_id = $t4_id;
+ob1.mysql alter system remove balance task ;
+sleep 10;
+ob1.mysql_p select count(*)  from __all_virtual_meta_table where fail_list like'%;%'and tenant_id = $tenant_id and table_id = $t4_id;
+ob1.mysql alter system remove balance task ;
+sleep 10;
+#在60s内不会生成新的task
+let $fail_list_2 = deploy_get_value(ob1.select select fail_list from __all_virtual_meta_table where fail_list like'%,5,1,%' and tenant_id = $tenant_id and table_id = $t4_id limit 1 ,fail_list,1 );
+if ($fail_list_2 == $fail_list_1) 
+{
+echo "success";
+}
+ob1.mysql_p select count(*)  from __all_virtual_meta_table where fail_list like'%;%'and tenant_id = $tenant_id and table_id = $t4_id;
+ob1.mysql alter system remove balance task ;
+sleep 10;
+ob1.mysql_p select count(*)  from __all_virtual_meta_table where fail_list like'%;%'and tenant_id = $tenant_id and table_id = $t4_id;
+ob1.mysql alter system remove balance task ;
+ob1.check_until_timeout select count(*) >= 1 from __all_virtual_meta_table where fail_list !='' and tenant_id = $tenant_id and table_id = $t4_id ,1,30;
+let $fail_list_2 = deploy_get_value(ob1.select select fail_list from __all_virtual_meta_table where fail_list like'%,5,1,%' and tenant_id = $tenant_id and table_id = $t4_id limit 1 ,fail_list,1 );
+
+if ($fail_list_2 != $fail_list_1)
+{
+echo "success";
+}
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TABLE_LOCALITY" and job_status="INPROGRESS",job_id,1);
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 0;
+sleep 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,300;
+
+#case 3 transform replica type
+ob1.mysql alter system remove balance task zone='z1','z2','z3' ;
+ob1.mysql alter tenant tt set locality = 'l@z1,f@z2,F@z3';
+#$ors.hang_in_net rpc;
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 1;
+ob1.check_until_timeout select count(*) >= 1 from __all_virtual_meta_table where fail_list like'%,3,1,%' and tenant_id = $tenant_id and table_id = $t3_id or table_id = $t2_id and zone ='z1',1,30;
+sleep 60;
+ob1.check_until_timeout select count(*) >= 1 from __all_virtual_meta_table where fail_list like'%,3,1,%' and tenant_id = $tenant_id and table_id = $t3_id or table_id = $t2_id ,1,30;
+#$ors.clean_hang_in_net rpc;
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 0;
+sleep 60;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_id=$job_id and job_status="SUCCESS" ,1,300;
+
+
+#case 4 replica migrate
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id=$tenant_id and zone='z3', unit_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone='z3' except select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id= $tenant_id and zone='z3', addr, 1);
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where unit_id = $unit_id and tenant_id =$tenant_id, c, 1);
+ob1.mysql alter system migrate unit $unit_id destination='$dest';
+$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 1;
+ob1.check_until_timeout select count(*) >=1 from __all_virtual_meta_table where fail_list like'%,0,1,%' and tenant_id = $tenant_id and table_id = $t1_id or table_id = $t2_id and zone = 'z3' ,1,30;
+#$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 0;
+#let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="INPROGRESS",job_id,1);
+#ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="SUCCESS" ,1,700;
+
+#ob1.mysql alter system remove balance task tenant='tt' zone='z3','z1','z2' ;
+
+#case5 rebuild replica
+#create table tr (c1 int ,c2 int)  locality = 'l@z1,f@z2,f,r@z3' partition by hash(c1) partitions 10;
+#let $tr_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='tr',table_id,1);
+#ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+#alter system change tenant tt;
+#eval update oceanbase.__all_tenant_meta_table set rebuild = 1 where table_id = $tr_id and partition_id = 0 and zone = 'z3' and replica_type = 16;
+#$ors.mysql alter system set_tp tp_no = 53, error_code = 4013, frequency = 1;
+#ob1.check_until_timeout select count(*) >=1 from __all_virtual_meta_table where fail_list like'%,2,1,%' and table_id = $tr_id ,1,30;
+#sleep 60;
+#ob1.check_until_timeout select count(*)>=1 from __all_virtual_meta_table where fail_list like'%,2,1,%' and table_id = $tr_id ,1,30;
+
+
+

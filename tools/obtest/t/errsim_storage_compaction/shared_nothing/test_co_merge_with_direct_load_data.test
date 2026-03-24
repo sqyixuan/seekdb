@@ -1,0 +1,92 @@
+# owner: fengjingkun.fjk
+# owner group: storage
+# description: test co merge whether can reuse micro block with direct load data
+
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set syslog_level='storage.*:trace';
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+
+########################################## CREATE TENANT ##########################################
+connect (obsys,$ip,root@sys,,oceanbase,$port);
+connection obsys;
+
+CREATE RESOURCE UNIT test_unit MAX_CPU=5, memory_size='10G';
+CREATE RESOURCE POOL test_pool UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+--disable_all_result_log
+CREATE TENANT test01 RESOURCE_POOL_LIST=('test_pool'), primary_zone='z1', locality='F@z1,F@z2' SET VARIABLES ob_compatibility_mode='mysql', secure_file_priv = '/',ob_tcp_invited_nodes='%';
+--enable_all_result_log
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='test01', tenant_id, 1);
+sleep 2;
+
+
+############################################ COPY DATA ############################################
+connect (conn_tt_ob,$ip,root@test01,,oceanbase,$port);
+connection conn_tt_ob;
+
+let $OBSERVER_DIR=deploy_get_value(ob1.z1.obs0.workdir);
+let $HOST_IP=query_get_value(select host_ip() as host_ip, host_ip, 1);
+let $DATA_FOLDER_NAME = mysqltest_data_direct_load_inc;
+
+--disable_query_log
+let $SCP_CMD = ssh $HOST_IP 'mkdir -p "$OBSERVER_DIR/$DATA_FOLDER_NAME"' && scp -r include/compaction/direct_load_data/* $HOST_IP:"$OBSERVER_DIR/$DATA_FOLDER_NAME";
+exec $SCP_CMD;
+--enable_query_log
+
+
+############################################ LOAD DATA ############################################
+connect (conn_tt_test,$ip,root@test01,,test,$port);
+connection conn_tt_test;
+
+--disable_warnings
+--disable_query_log
+drop table if exists lineitem;
+--enable_query_log
+--enable_warnings
+
+create table lineitem(
+    l_orderkey           bigint NOT NULL ,
+    l_partkey            bigint NOT NULL ,
+    l_suppkey            bigint NOT NULL ,
+    l_linenumber         bigint NOT NULL ,
+    l_quantity           bigint NOT NULL ,
+    l_extendedprice      decimal(10,2) NOT NULL ,
+    l_discount           decimal(10,2) NOT NULL ,
+    l_tax                decimal(10,2) NOT NULL ,
+    l_returnflag         char(1) ,
+    l_linestatus         char(1) ,
+    l_shipdate           date ,
+    l_commitdate         date ,
+    l_receiptdate        date ,
+    l_shipinstruct       char(25) ,
+    l_shipmode           char(10) ,
+    l_comment            varchar(44),
+    primary key(L_ORDERKEY, L_LINENUMBER)
+) with column group(all columns, each column);
+
+set @@ob_query_timeout = 1000000*60*60*10, @@ob_trx_timeout=1000000*60*60*10;
+
+--disable_query_log
+eval load data /*+ direct(true,0) parallel(2) load_batch_size(100) */ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/lineitem-100k.tbl" into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+--enable_query_log
+
+select count(*) from lineitem;
+
+
+########################################### MAJOR MERGE ###########################################
+connection obsys;
+alter system set_tp tp_name = "EN_CO_MERGE_REUSE_MICRO", error_code = 4023, frequency = 1;
+alter system major freeze tenant test01;
+sleep 5;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 800;
+
+let $compaction_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 'lineitem', table_id, 1);
+let $tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and table_id = $table_id, tablet_id, 1);
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and tablet_id = $tablet_id and compaction_scn = $compaction_scn and multiplexed_micro_count_in_new_macro > 0, 1, 20;

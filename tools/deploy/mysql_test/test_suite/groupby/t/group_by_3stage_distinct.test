@@ -1,0 +1,464 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: peihan.dph
+# owner group: sql4
+# tags: optimizer,sql2
+# description: group by three stage aggregation
+
+
+connect (syscon, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+alter system set_tp tp_no = 365, error_code = 1, frequency = 1;
+sleep 3;
+
+connection default;
+
+#
+## Initialise
+--disable_warnings
+--error 0, 942, 1051
+drop table t1;
+--enable_warnings
+
+create table t1(c0 int, c1 int,c2 int,c3 int) partition by hash(c0) partitions 16;
+insert into t1 values(0,1,1,1);
+insert into t1 values(1,1,2,1);
+insert into t1 values(2,1,0,2);
+insert into t1 values(3,0,1,0);
+insert into t1 values(4,3,2,1);
+insert into t1 values(5,3,0,1);
+--disable_query_log
+--let $count = 1
+while($count <= 994)
+{
+  --let $stmt=insert into t1(c0, c1, c2, c3) values ($count, -1, -1, -1)
+  eval $stmt;
+  inc $count;
+}
+--enable_query_log
+
+commit;
+
+--echo "test merge-aggregate for three stage aggregation"
+alter system set _sqlexec_disable_hash_based_distagg_tiv=true;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+
+--echo "test hash-aggregate for three stage aggregation"
+
+alter system set _sqlexec_disable_hash_based_distagg_tiv=false;
+alter system flush plan cache global;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+connection syscon;
+alter system set_tp tp_no = 254, error_code = 2147483647, frequency = 1;
+sleep 3;
+connection default;
+
+
+
+
+--echo "test merge-aggregate for three stage aggregation"
+alter system set _sqlexec_disable_hash_based_distagg_tiv=true;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+
+--echo "test hash-aggregate for three stage aggregation"
+
+alter system set _sqlexec_disable_hash_based_distagg_tiv=false;
+alter system flush plan cache global;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+
+alter system set _rowsets_enabled = false;
+alter system flush plan cache;
+
+--echo "test merge-aggregate for three stage aggregation"
+alter system set _sqlexec_disable_hash_based_distagg_tiv=true;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+
+--echo "test hash-aggregate for three stage aggregation"
+
+alter system set _sqlexec_disable_hash_based_distagg_tiv=false;
+alter system flush plan cache global;
+sleep 2;
+
+analyze table t1 update histogram on c1, c2, c3 with 1 buckets;
+
+explain select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1;
+## test distinct aggregation
+select /*+ parallel(2) */ c1, sum(distinct c2),count(distinct c3) from t1 group by c1 order by 1,2,3;
+
+## test distinct aggregation
+explain select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1;
+select /*+ parallel(2) */ c1, avg(distinct c2) from t1 group by c1 order by 1,2;
+
+##test mix distinct and non-distinct aggregate function
+explain select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1;
+select /*+ parallel(3) */ c1, avg(c2), count(distinct c2),sum(distinct c2),avg(distinct c2) from t1 group by c1 order by 1,2,3,4,5;
+
+explain basic select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(2) */ c1, sum(distinct c1),count(c3) from t1 group by c1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+select /*+ parallel(3) */ c1, count(c3),sum(distinct c1) from t1 group by c1 order by 1,2,3;
+
+## test no group by with distinct aggregation function
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+select /*+ parallel(3) */ count(c3),sum(distinct c1) from t1 order by 1,2;
+
+## test no group by column in mysql
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,case when c2 is not null then 1 else 0 end c2,count(c3),sum(distinct c1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end c1,count(c3),sum(distinct c1+1),min(c2) from t1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct c1),max(c2) from t1 group by c1+1 order by 1,2,3;
+
+## it is not stable, so we add min or max
+explain basic select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+select /*+ parallel(3) */ c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3;
+
+explain basic select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+select /*+ parallel(3) */ case when c1 is not null then 1 else 0 end as c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 order by 1,2,3;
+
+##test const
+explain basic select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+select /*+ parallel(3) */ sum(distinct 1) from t1 group by c1+1;
+
+
+## test multi arguments
+explain basic select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+select /*+ parallel(3) */ count(distinct c1,1),c1,count(c3),sum(distinct 1),min(c2),count(distinct 1) from t1 group by c1+1 order by 1,2,3,4;
+
+
+alter system set _rowsets_enabled = true;
+alter system flush plan cache;
+sleep 2;
+drop table t1;
+--disable_warnings
+--error 0, 942, 1051
+drop table t2;
+--enable_warnings
+
+create table t1 (c1 int);
+insert into t1 values(1);
+insert into t1 values(2);
+insert into t1 values(3);
+insert into t1 values(4);
+insert into t1 values(5);
+insert into t1 values(6);
+
+insert into t1 select * from t1;
+
+create table t2 as select * from t1;
+
+
+select /*+parallel(2)*/ * from ((select count(t1.c1), count(distinct t1.c1) from t1) B1 , (select count(t2.c1), count(distinct t2.c1) from t2) B2);
+
+select count(distinct null) FROM t1 ;
+
+drop table t1;
+drop table t2;
+
+connection syscon;
+alter system set_tp tp_no = 365, error_code = 0, frequency = 1;
+alter system set_tp tp_no = 254, error_code = 0, frequency = 1;

@@ -1,0 +1,122 @@
+#owner: zuojiao.hzj
+#owner group: sql1
+#description:
+--result_format 4
+
+--disable_warnings
+connect (my_obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+drop tenant if exists dump_tenant force;
+drop resource pool if exists dump_pool;
+drop resource unit if exists dump_unit;
+CREATE RESOURCE UNIT dump_unit max_cpu 1, memory_size '2G';
+let $zone_name=query_get_value(select zone from oceanbase.__all_zone where zone != '' limit 1, zone, 1);
+eval CREATE RESOURCE POOL dump_pool unit='dump_unit', unit_num=1, zone_list=('$zone_name');
+eval CREATE TENANT IF NOT EXISTS dump_tenant charset='utf8mb4', primary_zone='$zone_name', resource_pool_list=('dump_pool') set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--disable_warnings
+
+alter system set enable_sql_operator_dump = False;
+let $__tenant_name__ = 'dump_tenant';
+--source mysql_test/include/get_tenant_server.inc
+connection default;
+connect(conn_normal,$TE_SERVER_IP,root@dump_tenant,,test,$TE_SERVER_PORT);
+
+set @@ob_query_timeout=20000000;
+set global ob_sql_work_area_percentage = 5;
+create table t1(a int, b varchar(1025));
+
+--disable_query_log
+let $cnt=0;
+while ($cnt < 100)
+{
+  eval insert into t1 values(1, repeat('a', 1024));
+  inc $cnt;
+}
+let $cnt=0;
+while ($cnt < 100)
+{
+  eval insert into t1 values(2, repeat('a', 1024));
+  inc $cnt;
+}
+--enable_query_log
+call dbms_stats.gather_table_stats('TEST', 'T1', method_opt=>'for all columns size auto', estimate_percent=>100);
+
+create table t2 as select a.a, a.b from t1 a, t1 b where a.a = b.a;
+call dbms_stats.gather_table_stats('TEST', 'T2', method_opt=>'for all columns size auto', estimate_percent=>100);
+select count(1) from t2 where a = 1;
+select count(1) from t2 where a = 2;
+
+let $sql1 = select a, b, c from (select a, b, sum(a) over(partition by a) as c from t2) where c > 20000;
+let $sql2 = select a, b, c from (select a, b, sum(a) over(partition by a) as c from t2) where c = 10000 limit 1;
+let $sql3 = select a, b, c from (select a, b, sum(a) over(partition by a) as c from t2) where c = 10000 limit 1;
+
+
+# close dump
+connect(conn_sys,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+# reconnect(make percentate valid)
+let $__tenant_name__ = 'dump_tenant';
+--source mysql_test/include/get_tenant_server.inc
+connect(conn_normal2,$TE_SERVER_IP,root@dump_tenant,,test,$TE_SERVER_PORT);
+
+set @@ob_query_timeout=100000000;
+eval $sql1;
+eval $sql2;
+eval $sql3;
+
+
+# open dump
+connect(conn_sys2,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+alter system set enable_sql_operator_dump = True;
+
+# reconnect
+let $__tenant_name__ = 'dump_tenant';
+--source mysql_test/include/get_tenant_server.inc
+connect(conn_normal3,$TE_SERVER_IP,root@dump_tenant,,test,$TE_SERVER_PORT);
+show variables like 'ob_sql_work_area_percentage';
+set @@ob_query_timeout=3000000000;
+set @@ob_trx_timeout=3000000000;
+eval $sql1;
+eval $sql2;
+eval $sql3;
+
+
+--disable_warnings
+drop table if exists rd_t1;
+drop table if exists rd_t2;
+--enable_warnings
+
+
+# test range dist window function
+create table rd_t1 (c1 int, c2 int, c3 int, c4 varchar(1025));
+--disable_query_log
+let $i = 1;
+while ($i <= 10)
+{
+  let $j = 1;
+  while ($j <= 100)
+  {
+    eval insert into rd_t1 (c1, c2, c3, c4) values ($i, $i, $j, repeat('a', 1024));
+    inc $j;
+  }
+  inc $i;
+}
+--enable_query_log
+call dbms_stats.gather_table_stats('TEST', 'rd_t1', method_opt=>'for all columns size auto', estimate_percent=>100);
+
+create table rd_t2 as select a.c1, a.c2, a.c3, a.c4 from rd_t1 a, rd_t1 b where a.c1 = b.c1;
+call dbms_stats.gather_table_stats('TEST', 'rd_t2', method_opt=>'for all columns size auto', estimate_percent=>100);
+#select /*+ parallel(3) PQ_DISTRIBUTE_WINDOW(LIST) */ c1, c2, c3, c4, avg(c3) over (partition by c1 order by c2) c5 from rd_t2 order by c1, c2, c3, c5;
+select distinct(c1), c2, c3, c4, c5 from (select /*+ parallel(3) PQ_DISTRIBUTE_WINDOW(LIST) */ c1, c2, c3, c4, avg(c3) over (partition by c1 order by c2) c5 from rd_t2) where c3 = 20 order by c1;
+
+
+# clean up
+connect(conn_sys3,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+alter system set enable_sql_operator_dump = TRUE;
+set global ob_sql_work_area_percentage = 5;
+
+disconnect my_obsys;
+--disable_warnings
+drop tenant dump_tenant force;
+drop resource pool dump_pool;
+drop resource unit dump_unit;
+--disable_warnings

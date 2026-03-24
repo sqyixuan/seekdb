@@ -1,0 +1,188 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证location_cache在不同region情况下的更新情况
+#              2.增、删、改F副本:
+#                不管是哪个region的副本，均能看到成员列表的变更
+#              
+#              
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2:2:2, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:sh:sh:sz);
+
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+ob1.mysql alter system set partition_table_check_interval = "1m";
+ob1.mysql alter system set server_permanent_offline_time = "20s";
+
+# 创建新租户
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1','z2','z3','z4','z5');
+
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_sys_z1,$z1_obs0_ip,admin@sys,admin,oceanbase,$z1_obs0_mysql_port);
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_mysql_port = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_sys_z3,$z3_obs0_ip,admin@sys,admin,oceanbase,$z3_obs0_mysql_port);
+
+###########################
+# case 2: 全功能型副本相关操作
+###########################
+## case 2.1:删除F副本
+###########################
+--echo case 2.1: remove F replica
+## 初始化租户
+ob1.mysql CREATE TENANT tenant_4 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z3;z4;z1,z2;z5',locality='F{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1}@z5' set ob_tcp_invited_nodes='%';
+connect (conn_tenant_4_z1,$z1_obs0_ip,root@tenant_4,,test,$z1_obs0_mysql_port);
+connection conn_tenant_4_z1;
+use test;
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 2;
+insert into t1(c1, c2) values(1,1);
+insert into t1(c1, c2) values(2,2);
+--disable_result_log
+select * from test.t1 where c1 = 1;
+select * from test.t1 where c1 = 2;
+--enable_result_log
+## 变更前检查
+connection conn_sys_z1;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 添加z5的只读副本，z1,z3无感知
+ob1.mysql alter tenant tenant_4 set locality = 'F{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1},R{1}@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+### 变更后检查
+#connection conn_sys_z1;
+#eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+#connection conn_sys_z3;
+#eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 删除F副本, z1,z3都能感知paxos成员发生变更及之前z5的变化
+ob1.mysql alter tenant tenant_4 set locality = 'F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1},R{1}@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+## 变更后检查
+connection conn_sys_z1;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_4" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 还原
+ob1.mysql drop tenant tenant_4 force;
+###########################
+## case 2.2:添加F副本
+###########################
+--echo case 2.2: add F replica
+## 初始化租户
+ob1.mysql CREATE TENANT tenant_5 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z3;z4;z2;z5',locality='F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1}@z5' set ob_tcp_invited_nodes='%';
+connect (conn_tenant_5_z1,$z1_obs0_ip,root@tenant_5,,test,$z1_obs0_mysql_port);
+connection conn_tenant_5_z1;
+use test;
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 2;
+insert into t1(c1, c2) values(1,1);
+insert into t1(c1, c2) values(2,2);
+--disable_result_log
+select * from test.t1 where c1 = 1;
+select * from test.t1 where c1 = 2;
+--enable_result_log
+## 变更前检查
+connection conn_sys_z1;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 添加z5的只读副本，z1,z3无感知
+ob1.mysql alter tenant tenant_5 set locality = 'F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1},R{1}@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+### 变更后检查
+#connection conn_sys_z1;
+#eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+#connection conn_sys_z3;
+#eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 添加F副本, z1,z3都能感知paxos成员发生变更及之前z5的变化
+ob1.mysql alter tenant tenant_5 set locality = 'F{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1},R{1}@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+## 变更后检查
+connection conn_sys_z1;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as f_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_5" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 还原
+ob1.mysql drop tenant tenant_5 force;
+###########################
+## case 2.3:迁移F副本
+###########################
+--echo case 2.3: move F replica
+## 初始化租户
+ob1.mysql CREATE TENANT tenant_6 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z3;z4;z1,z2;z5',locality='F{1},R{1}@z1,F{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1}@z5' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant_6", tenant_id, 1);
+connect (conn_tenant_6_z1,$z1_obs0_ip,root@tenant_6,,test,$z1_obs0_mysql_port);
+connection conn_tenant_6_z1;
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 2;
+let $t1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = "$tenant_id" and table_name = "t1", table_id, 1);
+let $src_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$t1_id" and partition_id = 0 and replica_type = 0 and zone = 'z2', addr, 1);
+let $before_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", inner_port) as addr from oceanbase.__all_server where concat(svr_ip, ":", svr_port) = "$src_addr", addr, 1);
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = 'z2' and concat(svr_ip, ":", svr_port) not in (select concat(svr_ip, ":", svr_port) from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$t1_id" and partition_id = 0 and zone = 'z2'), addr, 1);
+let $after_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", inner_port) as addr from oceanbase.__all_server where concat(svr_ip, ":", svr_port) = "$dest_addr", addr, 1);
+## 变更前检查
+connection conn_sys_z1;
+eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+## 添加z5的只读副本，z1,z3无感知
+ob1.mysql alter tenant tenant_6 set locality = 'F{1},R{1}@z1,F{1}@z2,F{1},R{1}@z3,F{1},R{1}@z4,F{1},R{1}@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+### 变更后检查
+#connection conn_sys_z1;
+#eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+#eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+#connection conn_sys_z3;
+#eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+#eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+#eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+# 迁移F副本, z1,z3都能感知paxos成员发生变更及之前z5的变化
+ob1.mysql alter system move replica partition_id = "0%0@$t1_id" source = "$src_addr" destination = "$dest_addr";
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$t1_id" and partition_id = 0 and replica_type = 0 and concat(svr_ip, ":", svr_port) = "$src_addr", 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where tenant_id = "$tenant_id" and table_id = "$t1_id" and partition_id = 0 and replica_type = 0 and concat(svr_ip, ":", svr_port) = "$dest_addr", 1, 10;
+## 变更后检查
+connection conn_sys_z1;
+eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as z2_f_count_before_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$before_addr" and spare1 = 0;
+eval select count(*) as z2_f_count_after_migrate from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and concat(svr_ip, ":", sql_port) = "$after_addr" and spare1 = 0;
+eval select count(*) as r_count from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_6" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;

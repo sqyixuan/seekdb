@@ -1,0 +1,88 @@
+
+#owner: xiaoyi.xy
+#owner group: sql1
+##
+## Test Name: alter_system_flush
+## Scope: test feature of flush cache
+## Date: 2016-07-21
+
+--disable_info
+--disable_metadata
+--disable_abort_on_error
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+--disable_query_log
+--error 0,5157
+drop tenant xy_tenant_1 force;
+
+alter system set resource_hard_limit = 500;
+
+eval create resource unit if not exists xy_box_1 max_cpu 5, memory_size 1500000000;
+let $zone_name=query_get_value(select zone from oceanbase.__all_zone where zone != '' limit 1, zone, 1);
+let $obs_num = query_get_value(select count(1) as cnt from oceanbase.__all_server group by zone asc limit 1,cnt, 1);
+eval create resource pool if not exists xy_pool_1 unit = 'xy_box_1', unit_num = $obs_num;
+eval create tenant if not exists xy_tenant_1 primary_zone='$zone_name', resource_pool_list('xy_pool_1') set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+
+#禁止自动切主
+alter system set enable_auto_leader_switch = false;
+--sleep 3
+let $obs_count= query_get_value(select count(1) as cnt from oceanbase.__all_server, cnt, 1);
+--echo  has $obs_count ob server
+
+#获取rs所在server地址, 任意机器都可以
+let $root_svr_ip = query_get_value(select svr_ip from oceanbase.__all_server where with_rootserver = 1, svr_ip, 1);
+let $root_svr_port = query_get_value(select inner_port from oceanbase.__all_server where with_rootserver = 1, inner_port, 1);
+
+#普通租户连接
+connect(conn_nt_1, $root_svr_ip, root@xy_tenant_1,, test, $root_svr_port);
+--sleep 3
+create table t1(c1 int, c2 int);
+
+#系统租户连接
+connect(conn_sys_1, $root_svr_ip, admin@sys, admin, oceanbase, $root_svr_port);
+--sleep 3
+#获取t1表所在的leader server 和follow server
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'xy_tenant_1', tenant_id, 1);
+let $table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't1' and tenant_id = $tenant_id, table_id, 1);
+let $follow_ip = query_get_value(select svr_ip from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 2, svr_ip, 1);
+let $follow_port = query_get_value(select svr_port from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 2, svr_port, 1);
+let $leader_ip = query_get_value(select svr_ip from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1, svr_ip, 1);
+let $leader_port = query_get_value(select sql_port from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1, sql_port, 1);
+
+#连接到leader server上, 并查询
+connect(conn_nt_2, $leader_ip, root@xy_tenant_1,, test, $leader_port);
+--sleep 1
+#local plan
+select * from t1;
+#local plan
+select * from t1;
+--echo //expected 1,1
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from t1';
+
+#切主
+connection conn_sys_1;
+--sleep 1
+--disable_query_log
+eval alter system switch replica leader partition_id = '0%1@$table_id' server='$follow_ip:$follow_port';
+--enable_query_log
+--sleep 10
+
+#此时为非主server, 查询为remote plan, 会直接先给local plan, 然后会重试并获得remote plan
+connection conn_nt_2;
+--sleep 1
+ #remote plan 此时会重试
+select * from t1;
+#remote plan 此时不会重试，直接查询location cache或去plan type
+select * from t1;
+--echo //expected 1,1; 1,2
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from t1';
+
+connection conn_sys_1;
+--echo
+drop tenant xy_tenant_1 force;
+drop resource pool xy_pool_1;
+drop resource unit xy_box_1;

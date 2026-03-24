@@ -1,0 +1,33 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 通过不指定zone的方式添加server时，由于zone信息依赖后续心跳更新，若在心跳更新之前，
+#              任何一台机器刷缓存刷出来这台新server，会因为zone信息为空导致查询失败，导致缓存更新失败。
+#              新server加入集群时若处于宕机状态，则这个问题会放大，影响到集群其他机器刷缓存。
+#              
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0,ct_num=0,locality=hz:hz:sh);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_permanent_offline_time = "25s";
+sleep 5;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+# reboot之后delete server，保证该server上有zone信息，能通过心跳更新zone
+ob1.mysql alter system delete server "$z3_obs1_ip:$z3_obs1_port";
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = "$z3_obs1_ip" and svr_port = "$z3_obs1_port", 0, 600;
+# z3一台机器宕机
+ob1.z3.obs1.stop;
+#ob1.z3.obs1.force_stop;
+# 该机器通过不指定zone的方式重新加入集群，此时由于机器是宕机的，无法通过心跳更新zone信息
+ob1.mysql alter system add server "$z3_obs1_ip:$z3_obs1_port";
+#ob1.mysql alter system add server "$z3_obs1_ip:$z3_obs1_port" zone "z3";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where zone = '', 1, 10;
+# 此时更新zone信息
+ob1.mysql alter system modify zone 'z1' idc 'hz';
+# 别的机器刷缓存此时不受宕机的机器影响，仍能正常刷出缓存
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_clog_stat where zone = 'z1' and idc != 'hz', 0, 30;

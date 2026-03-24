@@ -1,0 +1,73 @@
+# owner: lixia.yq
+# owner group: storage
+# description: 本case是为了测试基础的truncate + 历史查询
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists t_range_int;
+drop table if exists t_range_datetime;
+--enable_warnings
+
+#
+# create table t_range_int
+#
+alter system set _ob_enable_truncate_partition_preserve_global_index = true;
+create table t_range_int(c1 int, c2 int, primary key(c1, c2)) partition by range(c2)
+  (partition p0 values less than (100),
+   partition p1 values less than (200),
+   partition p2 values less than (300),
+   partition p3 values less than (400),
+   partition p4 values less than (MAXVALUE));
+create index idx1 on t_range_int(c2) global partition by hash(c2) partitions 2;
+create unique index idx2 on t_range_int(c1) global partition by hash(c1) partitions 3;
+
+connection conn1;
+insert into t_range_int values(1, 2), (100, 101), (200, 201), (300, 301), (400, 401);
+
+connection conn2;
+SET @@session.tx_isolation='serializable';
+
+let $__timeout_def__ = 600 * 1000 * 1000;
+eval set SESSION ob_query_timeout = $__timeout_def__;
+eval set SESSION ob_trx_timeout = $__timeout_def__;
+eval set SESSION ob_trx_idle_timeout = $__timeout_def__;
+
+begin;
+select /*+index(t_range_int idx1)*/* from t_range_int order by c1,c2 asc;
+
+connection conn1;
+# only remain (1, 1)
+alter table t_range_int truncate partition p1, p2, p4;
+--echo ###print part info after truncate t_range_int###
+
+connection conn1;
+--echo ###query from conn1###
+select/*+index(t_range_int idx1)*/* from t_range_int order by c1,c2 asc;
+
+connection conn2;
+--echo ###query from conn2###
+--error 4138
+select/*+index(t_range_int idx1)*/* from t_range_int order by c1,c2 asc;
+
+connection conn1;
+alter table t_range_int truncate partition p0,p1,p2,p3,p4;
+
+connection conn1;
+--echo ###query from conn1###
+select/*+index(t_range_int idx1)*/* from t_range_int order by c1,c2 asc;
+
+connection conn2;
+--echo ###query from conn2###
+--error 4138
+select/*+index(t_range_int idx1)*/ * from t_range_int order by c1,c2 asc;
+
+connection conn1;
+drop table t_range_int;

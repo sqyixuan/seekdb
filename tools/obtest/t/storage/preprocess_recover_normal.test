@@ -1,0 +1,95 @@
+# owner: yunshan.tys
+# owner group: storage
+# description: this case is used for preprocess machine
+#
+
+ob1=OBI(cluster=1:1:4,proxy_num=0,init_unit_cpu=1, init_unit_num=1);
+
+ob1.reboot;
+
+ob1.mysql alter resource pool obtestpool unit_num 1;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+let $sys_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $sys_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(mysql_conn, $ip, root@obtest,,test, $port);
+connect(sys_conn, $sys_ip, root@sys,,oceanbase, $sys_port);
+
+connection mysql_conn;
+
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+--disable_warnings
+drop table if exists tt;
+--enable_warnings
+
+create table tt(a int primary key);
+
+let $cnt = 1;
+
+while ($cnt <= 100) 
+{
+  eval insert into tt values($cnt);
+  inc $cnt;
+}
+
+select count(*) from tt;
+
+connection sys_conn;
+
+ob1.mysql alter system set migrate_concurrency = 0;
+
+ob1.mysql alter system set server_permanent_offline_time = 40;
+
+let $table_id = query_get_value(select * from __all_virtual_table where table_name='tt', table_id, 1);
+
+let $svr_ip2 = deploy_get_value(ob1.z3.obs1.ip);
+let $svr_port2 = deploy_get_value(ob1.z3.obs1.port);
+
+let $svr_ip3 = deploy_get_value(ob1.z3.obs2.ip);
+let $svr_port3 = deploy_get_value(ob1.z3.obs2.port);
+
+let $svr_ip4 = deploy_get_value(ob1.z3.obs3.ip);
+let $svr_port4 = deploy_get_value(ob1.z3.obs3.port);
+#1. 正常快速恢复流程，observer宕机
+#ob1.mysql alter system major freeze;
+
+#sleep 120;
+
+#ob1.check_version 2;
+
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where is_in_sync = 0 and is_offline = 0, 0, 6000;
+
+let $part_cnt = deploy_get_value(ob1.select select count(*) count from __all_virtual_meta_table where zone = "z1", count, 1);
+
+ob1.z3.obs1.force_stop;
+
+ob1.check_until_timeout select status from oceanbase.__all_server where svr_ip = "$svr_ip2" and svr_port = "$svr_port2", inactive, 6000;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip2:$svr_port2%' and value3 = '0', 1, 60000000;
+
+ob1.z3.obs2.force_stop;
+
+ob1.check_until_timeout select status from oceanbase.__all_server where svr_ip = "$svr_ip3" and svr_port = "$svr_port3", inactive, 6000;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip3:$svr_port3%' and value3 = '1', 1, 60000000;
+
+ob1.z3.obs3.force_stop;
+
+ob1.check_until_timeout select status from oceanbase.__all_server where svr_ip = "$svr_ip4" and svr_port = "$svr_port4", inactive, 6000;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip4:$svr_port4%' and event = 'finish_recovery', 1, 60000000;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip2:$svr_port2%' and event = 'finish_recovery', 1, 60000000;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$svr_ip3:$svr_port3%' and event = 'finish_recovery', 1, 60000000;
+
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z1", $part_cnt, 60000000;
+
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z2", $part_cnt, 60000000;
+
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z3", $part_cnt, 60000000;

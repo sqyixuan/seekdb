@@ -1,0 +1,162 @@
+#owner: lly378788
+#tags: format_outline
+##
+## Test Name: format outline basic
+## 
+## Date: 2024-02-18
+##
+
+--disable_info
+--disable_metadata
+
+let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+
+set ob_trx_timeout=1000000000;
+select effective_tenant();
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--sleep 5
+connection default;
+
+# --echo
+let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+--disable_warnings
+drop database if exists format_db;
+--enable_warnings
+create database format_db;
+use format_db;
+
+create table t1(c1 int primary key, c2 int, c3 int);
+create index idx_t1 on t1(c2);
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+
+set autocommit = 0;
+sleep 1;
+
+##basic CREATE format outline with format sql text
+
+CREATE FORMAT OUTLINE FOL_1 ON select /*+index(t1 idx_t1)*/c1,c2 from t1 where c1 in (1);
+
+select c1,c2 from t1 where c1 in (2,1);
+select c1,c2 from t1 where c1 in (2,1);
+connection obsys;
+select sql_id,format_sql_id from oceanbase.gv$ob_sql_audit where query_sql like "select c1,c2 from t1 where c1 in (2,1)" limit 1;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1,c2 from t1 where c1 in (?,?)" and b.name = "FOL_1" order by hit_count;
+
+connection default;
+select c1,c2 from t1 where c1 in (1,2,3,4,5,6,7,8);
+select c1,c2 from t1 where c1 in (1,2,3,4,5,6,7,8);
+connection obsys;
+select sql_id,format_sql_id from oceanbase.gv$ob_sql_audit where query_sql like "select c1,c2 from t1 where c1 in (1,2,3,4,5,6,7,8)" limit 1;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1,c2 from t1 where c1 in (?,?,?,?,?,?,?,?)" and b.name = "FOL_1" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FOL_1;
+
+# 老计划被淘汰，outline_id = -1
+select c1,c2 from t1 where c1 in (1,2);
+select c1,c2 from t1 where c1 in (1,2);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a where a.statement = "select c1,c2 from t1 where c1 in (?,?)" order by hit_count;
+
+alter system flush plan cache global;
+
+
+##basic CREATE format outline with format sql id
+connection default;
+CREATE FORMAT OUTLINE FOL_2 ON "3408EA92FECBD773DC70FAA31E7533DC" USING HINT /*+index(t1 idx_t1)*/;
+
+select c1,c2 from t1 where c1 in (1,2,3,4);
+select c1,c2 from t1 where c1 in (1,2,3,4);
+connection obsys;
+eval select a.hit_count,a.outline_id != -1,a.outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1,c2 from t1 where c1 in (?,?,?,?)" and b.name = "FOL_2" order by hit_count;
+
+connection default;
+select c1,c2 from t1 where c1 in (-1);
+select c1,c2 from t1 where c1 in (-1);
+connection obsys;
+eval select a.hit_count,a.outline_id != -1,a.outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1,c2 from t1 where c1 in (?)" and b.name = "FOL_2" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FOL_2;
+
+select c1,c2 from t1 where c1 in (1);
+select c1,c2 from t1 where c1 in (1);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a where a.statement = "select c1,c2 from t1 where c1 in (?)" order by hit_count;
+connection default;
+alter system flush plan cache global;
+
+##basic create OR REPLACE format outline
+
+select * from (select c2,c1 from t1 where c1 in (1,2,3,4));
+CREATE FORMAT OUTLINE FOL_3 ON select * from (select /*+no_merge index(t1 idx_t1)*/c2,c1 from t1 where c1 in (1));
+
+select * from (select c2,c1 from t1 where c1 in (1,2,3,4));
+select * from (select c2,c1 from t1 where c1 in (1,2,3,4));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select * from (select c2,c1 from t1 where c1 in (?,?,?,?))" and b.name = "FOL_3" order by hit_count;
+connection default;
+CREATE OR REPLACE FORMAT OUTLINE FOL_3 ON select * from (select /*+merge index(t1 idx_t1)*/c2,c1 from t1 where c1 in (1));
+
+# 老计划被淘汰，新outline data生效
+select * from (select c2,c1 from t1 where c1 in (1,2,3,4));
+select * from (select c2,c1 from t1 where c1 in (1,2,3,4));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select * from (select c2,c1 from t1 where c1 in (?,?,?,?))" and b.name = "FOL_3" order by hit_count;
+
+connection default;
+DROP FORMAT OUTLINE FOL_3;
+alter system flush plan cache global;
+
+
+##basic ALTER format outline add concurrent hint
+CREATE FORMAT OUTLINE FOL_4 on select /*+index(t1 idx_t1)*/c3 from t1 where (c1,c2) in ((1,2),(2,2));
+select c3 from t1 where (c1,c2) in ((1,2),(2,2),(3,2),(4,2));
+select c3 from t1 where (c1,c2) in ((1,2),(2,2),(3,2),(4,2));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c3 from t1 where (c1,c2) in ((?,?),(?,?),(?,?),(?,?))" and b.name = "FOL_4" order by hit_count;
+connection default;
+--error 5267
+ALTER FORMAT OUTLINE FOL_4 ADD select /*+max_concurrent(0)*/c3 from t1 where (c1,c2) in ((1,2),(2,2));
+--error 5267
+ALTER FORMAT OUTLINE FOL_4 ADD select /*+max_concurrent(0)*/c3 from t1 where (c1,c2) in ((3,2),(4,2));
+--error 0
+select c3 from t1 where (c1,c2) in ((1,2),(2,2));
+--error 0
+select c3 from t1 where (c1,c2) in ((3,2),(4,2));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c3 from t1 where (c1,c2) in ((?,?),(?,?))" and b.name = "FOL_4" order by hit_count;
+connection default;
+select c3 from t1 where (c1,c2) in ((11,3),(12,3));
+select c3 from t1 where (c1,c2) in ((13,3),(14,3));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c3 from t1 where (c1,c2) in ((?,?),(?,?))" and b.name = "FOL_4" order by hit_count;
+connection default;
+alter system flush plan cache global;
+
+
+##basic ALTER format outline add two hints
+--error 0
+CREATE OR REPLACE FORMAT OUTLINE FOL_4 on select c3 from t1 where (c1,c2) in ((1,2),(2,2));
+--error 5267
+ALTER FORMAT OUTLINE FOL_4 ADD select /*+index(t1 idx_t1) max_concurrent(0)*/c3 from t1 where (c1,c2) in ((1,2));
+--error 0
+select c3 from t1 where (c1,c2) in ((1,2));
+
+
+##basic CREATE format outline with both hints
+--error 5267
+CREATE OR REPLACE FORMAT OUTLINE FOL_4 on select /*+index(t1 idx_t1) max_concurrent(0)*/c3 from t1 where (c1,c2) in ((1,2));
+--error 0
+select c3 from t1 where (c1,c2) in ((1,2));
+--error 0
+select c3 
+from t1 
+where (c1,c2) 
+in ( 
+    (1,2));
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c3 from t1 where (c1,c2) in ((?,?))" and b.name = "FOL_4" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FOL_4;
+alter system flush plan cache global;

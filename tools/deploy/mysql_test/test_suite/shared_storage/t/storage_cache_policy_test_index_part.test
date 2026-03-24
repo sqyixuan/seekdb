@@ -1,0 +1,146 @@
+--disable_query_log
+# owner: baonian.wcx
+# owner group: cloud storage
+# desc: test index-related sql statements
+connect (ob_mysql,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+let $index_name = basic_sc_part_idx1;
+
+--echo "==============verify table (global policy) and local index=========="
+let $table_name = basic_sc_index;
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+eval create table $table_name (col1 int, col2 int) storage_cache_policy = (global = 'hot') ;
+eval create index $index_name on $table_name (col1) local;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = '$table_name', table_id, 1);
+let $tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_table where table_name like '%$index_name%' and data_table_id = $table_id, tablet_id, 1);
+let $count = 0;
+while ($count == 0)
+{
+  let $count = query_get_value(select count(*) as count from oceanbase.__all_virtual_tablet_local_cache where tablet_id = $tablet_id and storage_cache_policy = "HOT" , count, 1);
+  sleep 1;
+}
+let $count = 0;
+while ($count == 0)
+{
+  let $count = query_get_value(select count(*) as count from oceanbase.__all_virtual_storage_cache_task where tablet_id = $tablet_id and status = "FINISHED" , count, 1);
+  sleep 1;
+}
+
+--echo "==============verify partition with table (global policy) and local index=========="
+let $table_name = basic_sc_part;
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+eval create table $table_name (
+order_id int,
+order_date date,
+amount decimal(10,2),
+primary key (order_id, order_date)
+) 
+partition by range columns(order_date) (
+partition p2023 values less than ('2024-01-01'),
+partition p2024 values less than ('2025-01-01'),
+partition p2025 values less than ('2026-01-01'),
+partition p2026 values less than ('2027-01-01'),
+partition p_max values less than (MAXVALUE)
+);
+
+let $part_name = p2023;
+let $is_subpart = 0;
+eval alter table $table_name alter partition $part_name storage_cache_policy='hot';
+eval create index $index_name on $table_name (order_date) local;
+--source mysql_test/include/storage_cache_check_index.inc
+
+--echo "==============verify subpartition with table (global policy) and local index=========="
+let $table_name = basic_sc_sub_part;
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+eval create table $table_name (col1 int, col2 int)
+partition by range(col1)
+subpartition by list(col2)
+(partition p0 values less than(100)
+(subpartition sp0 values in (1, 2, 3),
+subpartition sp1 values in (4, 5, 6)
+),
+partition p1 values less than(200)
+(subpartition sp2 values in (1, 2, 3),
+subpartition sp3 values in (4, 5, 6),
+subpartition sp4 values in (7, 8, 9)
+)
+);
+let $part_name = sp0;
+let $is_subpart = 1;
+eval alter table $table_name alter subpartition $part_name storage_cache_policy='hot';
+eval create index $index_name on $table_name (col1) local;
+--source mysql_test/include/storage_cache_check_index.inc
+
+--echo "==============verify partition with table (time policy) and local index=========="
+let $table_name = test_date_partition;
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+let $date_prev3 = `SELECT CURDATE() - INTERVAL 3 DAY`;
+let $date_prev2 = `SELECT CURDATE() - INTERVAL 2 DAY`;
+let $date_prev1 = `SELECT CURDATE() - INTERVAL 1 DAY`;
+let $date_current = `SELECT CURDATE()`;
+let $date_next1 = `SELECT CURDATE() + INTERVAL 1 DAY`;
+
+let $hot_retention = 1;
+
+# DATE type with DAY retention
+eval CREATE TABLE $table_name (
+  id INT,
+  event_date DATE NOT NULL,
+  data VARCHAR(100))
+STORAGE_CACHE_POLICY (
+  BOUNDARY_COLUMN = event_date,
+  HOT_RETENTION = $hot_retention DAY
+)
+PARTITION BY RANGE COLUMNS(event_date) (
+  PARTITION p_prev3 VALUES LESS THAN ("$date_prev3"), # auto
+  PARTITION p_prev2 VALUES LESS THAN ("$date_prev2"), # auto
+  PARTITION p_prev1 VALUES LESS THAN ("$date_prev1"), # auto
+  PARTITION p_current VALUES LESS THAN ("$date_current"), # hot
+  PARTITION p_next1 VALUES LESS THAN ("$date_next1"), # hot
+  PARTITION p_max VALUES LESS THAN MAXVALUE # hot
+);
+let $part_name = p_current;
+let $is_subpart = 0;
+eval create index $index_name on $table_name (event_date) local;
+--source mysql_test/include/storage_cache_check_index.inc
+
+--echo "==============verify subpartition with table (time policy) and local index=========="
+let $table_name = test_date_subpartition;
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+let $hot_retention = 1;
+
+eval CREATE TABLE $table_name (
+  id INT,
+  event_date DATE NOT NULL,
+  data VARCHAR(100),
+  region INT DEFAULT 1
+)
+STORAGE_CACHE_POLICY (
+  BOUNDARY_COLUMN = event_date,
+  HOT_RETENTION = $hot_retention DAY
+)
+PARTITION BY LIST(region)
+SUBPARTITION BY RANGE COLUMNS(event_date) (
+  PARTITION p_region VALUES IN (1) (
+    SUBPARTITION p_prev3 VALUES LESS THAN ("$date_prev3"), # auto
+    SUBPARTITION p_prev2 VALUES LESS THAN ("$date_prev2"), # auto
+    SUBPARTITION p_prev1 VALUES LESS THAN ("$date_prev1"), # auto
+    SUBPARTITION p_current VALUES LESS THAN ("$date_current"), # hot
+    SUBPARTITION p_next1 VALUES LESS THAN ("$date_next1"), # hot
+    SUBPARTITION p_max VALUES LESS THAN MAXVALUE # hot
+  )
+);
+let $part_name = p_current;
+let $is_subpart = 1;
+eval create index $index_name on $table_name (event_date) local;
+--source mysql_test/include/storage_cache_check_index.inc

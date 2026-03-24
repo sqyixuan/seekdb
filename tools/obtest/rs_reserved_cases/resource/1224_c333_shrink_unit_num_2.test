@@ -1,0 +1,78 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: 测试unit缩容与locality的关系
+ob1=OBI(cluster=3:3:3,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = "true";
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+ob1.mysql CREATE RESOURCE UNIT unit1 max_cpu 1, max_memory '1G', max_iops 100000,max_disk_size '10G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='1G', MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL tt_pool UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+# 将unit_num的值扩展到3
+ob1.mysql alter resource pool tt_pool unit_num = 3;
+ob1.mysql CREATE TENANT tt resource_pool_list=('tt_pool'), locality = "F,R{2}@z1,F,R{2}@z2,F,R{2}@z3" set ob_tcp_invited_nodes='%';
+sleep 3;
+
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+# 创建若干用户表
+connection tt_conn;
+create table t1(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t2(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t3(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+
+connection sys_conn;
+# 缩容的unit num不足以承担locality那么多的副本，不允许执行
+--error 4179
+eval alter resource pool tt_pool unit_num = 1;
+# 缩容的unit num不足以承担locality那么多的副本，不允许执行
+--error 4179
+eval alter resource pool tt_pool unit_num = 2;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job  ,0,3;
+
+# alter locality,在每个zone上减一个只读副本
+eval alter tenant tt locality = "F,R@z1,F,R@z2,F,R@z3";
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != "", 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+# 回滚unit num压缩操作，操作前的unit num值为3
+eval alter resource pool tt_pool unit_num = 2;
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = "DELETING", 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+# alter locality,在每个zone上减一个只读副本
+eval alter tenant tt locality = "F@z1,F@z2,F@z3";
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != "", 0, 360;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 60;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+# 回滚unit num压缩操作，操作前的unit num值为2
+eval alter resource pool tt_pool unit_num = 1;
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = "DELETING", 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+# 最后再来一次扩容操作
+eval alter resource pool tt_pool unit_num = 3;
+ ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id>$job_id ,0,3;
+# alter locality,在每个zone上加一个只读副本
+eval alter tenant tt locality = "F,R@z1,F,R@z2,F,R@z3";
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != "", 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+
+
+
+
+
+

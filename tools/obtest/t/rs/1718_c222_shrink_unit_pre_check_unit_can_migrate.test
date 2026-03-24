@@ -1,0 +1,149 @@
+#owner:zhengshi
+#owner group: rs
+#功能:shrink unit前先检查unit是否能迁移。
+
+ob1=OBI(cluster=3:3:3, proxy_num = 0, init_unit_cpu = 0);
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql CREATE RESOURCE UNIT unit1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+
+#获得ip、port用于连接
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'unit1', unit_num = 3, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT t1 resource_pool_list = ('pool1'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes = '%';
+
+#case1:没有granted给任何租户时的缩容和扩容
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+# 将unit_num的值扩展到3
+ob1.mysql alter resource pool pool_1 unit_num = 3;
+# 将unit_num的值缩容到1
+ob1.mysql alter resource pool pool_1 unit_num = 1;
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+# 将unit_num的值扩展到3
+ob1.mysql alter resource pool pool_2 unit_num = 3;
+# 将unit_num的值缩容到1
+ob1.mysql alter resource pool pool_2 unit_num = 1;
+
+#case2:granted给租户
+#成功缩容
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = "unit1", UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt resource_pool_list=('pool_3'), locality = "F,R{ALL_SERVER}@z1,F,R{ALL_SERVER}@z2,F,R{ALL_SERVER}@z3" set ob_tcp_invited_nodes='%';
+
+connection sys_conn;
+eval alter resource pool pool_3 unit_num = 2;
+let $job_id = deploy_get_value(ob1.select select max(job_id) as job_id  from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = 'DELETING', 3, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id <= $job_id and job_status="SUCCESS" ,1,360;
+
+#成功缩容
+ob1.mysql CREATE RESOURCE POOL pool_4 UNIT = "unit1", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tt1 resource_pool_list=('pool_4'), locality = "F@z1,F@z2" set ob_tcp_invited_nodes='%';
+ob1.mysql_p select unit_id from oceanbase.__all_unit where resource_pool_id = (select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = (select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1'));
+
+connection sys_conn;
+--error 4179
+eval alter resource pool pool_4 unit_num = 1;
+#let $job_id = deploy_get_value(ob1.select select max(job_id) as job_id  from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+
+#ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = 'DELETING', 2, 360;
+#ob1.mysql_p select unit_id from oceanbase.__all_unit where resource_pool_id = (select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = (select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1'));
+#ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id <= $job_id and job_status="SUCCESS" ,2,360;
+
+
+
+#不允许缩容
+ob1.mysql CREATE RESOURCE POOL pool_4_1 UNIT = "unit1", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tt1_1 resource_pool_list=('pool_4_1'), locality = "F,R{ALL_SERVER}@z1,F,R{ALL_SERVER}@z2" set ob_tcp_invited_nodes='%';
+ob1.mysql_p select unit_id from oceanbase.__all_unit where resource_pool_id = (select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = (select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1_1'));
+
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1_1', tenant_id, 1);
+let $res_pool = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $res_pool and zone = 'z1' order by unit_id desc, unit_id, 1);
+let $unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $res_pool and zone = 'z2' order by unit_id asc, unit_id, 1);
+--error 4179
+eval alter resource pool pool_4_1 unit_num = 1 delete unit = ($unit_id1,$unit_id2);
+ob1.mysql_p select unit_id from oceanbase.__all_unit where resource_pool_id = (select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = (select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1_1'));
+
+#case3.0:为绑定tenant的unit迁移
+ob1.mysql CREATE RESOURCE POOL pool5 UNIT = 'unit1', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+let $p_1 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool5', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $p_1 and zone='z1', unit_id, 1);
+let $u1_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit where unit_id = $unit_id, ipport, 1);
+let $another_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$u1_server', ipport, 1);
+
+connection sys_conn;
+eval alter system migrate unit $unit_id destination '$another_server';
+
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_type = 'MIGRATE_UNIT' and job_status="SUCCESS" ,1,360;
+
+#case3.1:未绑定tenant
+ob1.mysql CREATE RESOURCE POOL pool5_1 UNIT = 'unit1', unit_num = 1, zone_list = ('z1');
+let $p_1 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool5_1', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $p_1 and zone='z1', unit_id, 1);
+let $u1_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit where unit_id = $unit_id, ipport, 1);
+let $another_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$u1_server', ipport, 1);
+
+connection sys_conn;
+eval alter system migrate unit $unit_id destination '$another_server';
+
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_type = 'MIGRATE_UNIT' and job_status="SUCCESS" ,2,360;
+
+
+#case4:migrate unit fail
+
+ob1.mysql CREATE RESOURCE POOL pool_6 UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tt3 resource_pool_list=('pool_6'), locality = "F@z1,F@z2" set ob_tcp_invited_nodes='%';
+let $t3 = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt3', tenant_id, 1);
+
+let $unit_id1=deploy_get_value(ob1.select select unit_id from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$t3, unit_id, 1);
+
+
+let $u2_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$t3, ipport, 1);
+let $another_server1=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$u2_server', ipport, 1);
+
+
+connection sys_conn;
+--error 4179
+eval alter system migrate unit $unit_id1 destination '$another_server1';
+
+
+
+
+
+#case5:migrate unit success
+ob1.mysql CREATE RESOURCE POOL pool_7 UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt2 resource_pool_list=('pool_7'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+let $t2 = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt2', tenant_id, 1);
+
+let $unit_id=deploy_get_value(ob1.select select unit_id from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$t2, unit_id, 1);
+
+
+let $u1_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$t2, ipport, 1);
+let $another_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$u1_server', ipport, 1);
+
+
+connection sys_conn;
+eval alter system migrate unit $unit_id destination '$another_server';
+
+let $job_id = deploy_get_value(ob1.select select max(job_id) as job_id  from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="INPROGRESS",job_id,1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,480;
+
+
+

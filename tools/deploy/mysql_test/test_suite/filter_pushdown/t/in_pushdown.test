@@ -1,0 +1,119 @@
+# owner: houhaojun.hhj
+# tags: storage
+# descriptioin: filter in pushdown to storage layer
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+sleep 1;
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+--enable_query_log
+create table t1(c1 int primary key, c2 smallint, c3 int unsigned, c4 date, c5 char(20), c6 varchar(20), c7 varchar(20)) row_format = compressed block_size = 2048;
+--disable_query_log
+
+--let $count = 1
+while($count < 101)
+{
+  --let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,-32768,(100000000+$count),'1993-01-01',"abcd", concat("number", $count), "zzzz");
+  eval $stmt;
+  inc $count;
+}
+while($count < 201)
+{
+  --let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,-32768,(100000000+$count),'1994-01-01',"abcd", concat("number", $count), "aaaa");
+  eval $stmt;
+  inc $count;
+}
+while($count < 301)
+{
+  --let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,-32768,(100000000+$count),'1995-01-01',"abcd", concat("number", $count), "bbbb");
+  eval $stmt;
+  inc $count;
+}
+while($count < 311)
+{
+  --let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,$count,(100000000+$count),'1996-01-01',"abcd", "NULL", "yyyy");
+  eval $stmt;
+  inc $count;
+}
+--let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,32767,(100000000+$count),NULL,"abcd", concat("number", $count), "yyyy");
+eval $stmt;
+inc $count;
+
+--let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,32767,(100000000+$count),'1997-01-01',"efgh", concat("number", $count), "yyyy");
+eval $stmt;
+inc $count;
+
+--let $stmt=insert into t1(c1, c2, c3, c4, c5, c6, c7) values ($count,0,(100000000+$count),'1998-01-01',"xyz", concat("number", $count), "yyyy");
+eval $stmt;
+inc $count;
+
+# test out row lob
+--enable_query_log
+create table t2(c1 text, c2 mediumtext, c3 longtext) row_format = compressed block_size = 2048;
+--disable_query_log
+
+insert into t2 values('a', 'b', 'c');
+insert into t2 values('aa', 'bb', 'cc');
+insert into t2 values("", NULL, NULL);
+insert into t2 values(NULL, "", NULL);
+insert into t2 values(NULL, NULL, "");
+insert into t2 values(repeat('a', 10000), repeat('b', 1000000), repeat('c', 10000000));
+insert into t2 values(NULL, NULL, NULL);
+
+# test in row lob
+--enable_query_log
+create table t3(c1 text) row_format = compressed block_size = 2048 with column group (all columns, each column);
+--disable_query_log
+
+--let $count = 1
+while ($count <= 300)
+{
+  --let $stmt=insert into t3 values(concat("number", $count));
+  eval $stmt;
+  inc $count;
+}
+
+--enable_query_log
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+--result_format 4
+
+select * from t1 where c2 in (-32768, 32767, 0);
+select * from t1 where c2 in (7777, 6666, 5555, 4444, 1111, 0, 333, 222, 111, 11, 7, 777, 32767, 99, 999, 9999, 0);
+select * from t1 where c3 in (100000077, 100000177, 100000277, 100000307, 100000311);
+select * from t1 where c3 in (100000310, 100000308, 100000288, 100000188, 100000088);
+select * from t1 where c4 in ('1994-01-01', '1996-01-01', '1997-01-01');
+select * from t1 where c4 in ('2000-01-01', '2001-01-01');
+select * from t1 where c5 in ('efgh', 'xyz');
+select * from t1 where c5 in ('aaa', 'abc', 'xyz', 'qqq', 'ccc', 'ddd', 'efgh');
+select * from t1 where c6 in ('number7', 'xyz', 'number77');
+select * from t1 where c6 in ('number277', 'number7', 'aaa', 'number77', 'ccc', 'number177', 'xyzxyzxyzxyzxzyxzyxzyxzyxz', 'asdfasdfasdfasdfasdfasdf', 'number111', 'number222', 'number88', 'number188', 'number222');
+select * from t1 where c7 in ('yyyy', 'xxxx');
+select * from t1 where c7 in ('uuuu', 'bbbb', '4444', 'wwww', 'aaaa', 'jjjj', 'kkkk', '0000', '2222', 'rrrr', 'pppp', 'vvvv');
+select * from t1 where c7 in ('yyyy', 'yyyy', 'yyyy', 'yyyy');
+select * from t1 where c7 in (null, null);
+
+select * from t2 where c1 in ('a', 'aa');
+select count(*) from t2 where c1 in ('a', 'aa', repeat('a', 10000), repeat('a', 10000));
+select count(*) from t2 where c2 in ('b', 'bb', repeat('b', 1000000), repeat('b', 1000000));
+select count(*) from t2 where c3 in ('c', 'cc', repeat('c', 10000000), repeat('c', 10000000));
+
+select /*+use_column_table(t3)*/ * from t3 where c1 in ('number7', 'number77', 'number777');
+
+drop table t1;
+drop table t2;
+drop table t3;
+
+--disable_query_log
+set global ob_sql_work_area_percentage=5;
+set @@recyclebin = on;
+--enable_query_log

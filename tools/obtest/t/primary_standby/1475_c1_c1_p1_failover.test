@@ -1,0 +1,116 @@
+# owner: rongxuan.lc
+# description: 本case是为了启动主备集群，测试连接启动主备集群，测试连接
+
+#####
+# 1. 数据完全同步的情况下，主库宕机，备库switchover;
+# 2. 备库schema不同步的情况下，主库宕机，备库switchover后，看不到新的表；正常提供服务；
+# 3. 备库schema同步的情况下，新建表分区还没有拷贝到备库；
+# 4. 备库schema同步的情况下，新拷贝分区日志落后导致备机读落后，丢失一部分数据；
+#####
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1:1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_3 RESOURCE_POOL_LIST = ('pool_3'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+sleep 3;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+let $tablenum=2;
+source sql/init_table.sql;
+create table t(c1 int primary key, c2 int);
+insert into t values (1,2),(3,4),(5,6);
+select * from t;
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set debug_sync_timeout = '1000s';
+
+let $partition_cnt = deploy_get_value(ob1.select select count(*)*2 c from __all_virtual_meta_table where tenant_id = 1001, c, 1);
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001, $partition_cnt, 120;
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 500;
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't', table_id, 1);
+ob_connect(tt2_conn, ob2.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+select /*+ read_consistency(weak)*/* from t;
+# 1. 数据完全同步的情况下，主库宕机，备库switchover;
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+let $cluster_name = deploy_get_value(ob1.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+let $cluster_id = deploy_get_value(ob2.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+--disable_query_log
+ob1.mysql alter system disable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob2.check_until_timeout select cluster_status from oceanbase.__all_virtual_cluster, DISABLED, 10;
+ob1.force_stop;
+ob_connect(sys2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+set ob_query_timeout = 100000000;
+ob2.mysql_p select count(*) from oceanbase.__all_cluster where rs_list like "Type%PRIMARY%" and cluster_id = $cluster_id;
+#阻止备库合并
+ob2.mysql set ob_global_debug_sync = 'BEFORE_DAILY_MERGE_RUN wait_for signal';
+ob2.mysql select *  from oceanbase.__all_cluster ;
+set ob_query_timeout = 600000000;
+alter system set _mini_merge_concurrency = 16;
+alter system set _ob_minor_merge_schedule_interval = '3s';
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+alter system set _mini_merge_concurrency = 3;
+alter system set _ob_minor_merge_schedule_interval = '20s';
+#主库只在__all_cluster表里只有自己是主库
+ob2.mysql_p select count(*) from oceanbase.__all_cluster where rs_list like "Type%PRIMARY%" and cluster_id != $cluster_id;
+ob2.mysql select *  from oceanbase.__all_cluster ;
+--disable_query_log
+--disable_result_log
+ob_connect(tt2_conn, ob2.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+select /*+ read_consistency(weak)*/* from t;
+select * from t;
+--enable_result_log
+--enable_query_log
+insert into t values(6, 7);
+let $cur_scn = deploy_get_value(ob2.select select min(user_table_scn) as current_scn from oceanbase.__all_failover_info, current_scn, 1);
+#主库重新接入
+#ob1.z1.obs0.nstart -m physical_flashback -f $cur_scn;
+#sleep 120;
+ob1.z1.obs0.nstart -m disabled_cluster;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active', 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 1, 100;
+ob1.mysql_p select cluster_status, cluster_role from oceanbase.__all_virtual_cluster;
+ob1.mysql alter system convert to physical standby;
+let $cluster_id = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+let $cluster_name = deploy_get_value(ob1.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+--disable_query_log
+connection sys2_conn;
+--error 4179
+eval alter system enable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+ob2.mysql_p select  count(*) from oceanbase.__all_acquired_snapshot where snapshot_type = 2;
+ob2.mysql set ob_global_debug_sync = 'now signal signal';
+ob2.check_until_timeout select count(*) from oceanbase.__all_acquired_snapshot where snapshot_type = 2, 0, 300;
+ob2.mysql alter system enable cluster synchronization '$cluster_name' cluster_id = $cluster_id;
+#ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;

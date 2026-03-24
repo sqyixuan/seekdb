@@ -1,0 +1,1527 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner:yibo.tyf
+#owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop database if exists opt_pwj;
+--enable_warnings
+create database opt_pwj;
+use opt_pwj;
+
+set global ob_plan_cache_percentage = 50;
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush plan cache global;
+connection default;
+
+--result_format 4
+
+##
+## I. 一级分区
+##
+##
+## I.1 range分区
+##
+create table t_range1 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create table t_range2 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (150),
+  partition p2 values less than (200),
+  partition p3 values less than (300)
+);
+create table t_range3 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+alter table t_range3 drop partition p2;
+alter table t_range3 add partition (partition p3 values less than (300));
+
+create table t_range4 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+--disable_result_log
+insert into t_range1 values (1,1,1),(5,5,5),(51,51,51),(55,55,55),
+                            (101,101,101),(105,105,105),(151,151,151),(155,155,155),
+                            (201,201,201),(205,205,205),(251,251,251),(255,255,255);
+insert into t_range2 values (2,2,2),(5,5,5),(52,52,52),(55,55,55),
+                            (102,102,102),(105,105,105),(152,152,152),(155,155,155),
+                            (202,202,202),(205,205,205),(252,252,252),(255,255,255);
+insert into t_range3 values (3,3,3),(5,5,5),(53,53,53),(55,55,55),
+                            (103,103,103),(105,105,105),(153,153,153),(155,155,155),
+                            (203,203,203),(205,205,205),(253,253,253),(255,255,255);
+insert into t_range4 values (4,4,4),(5,5,5),(54,54,54),(55,55,55),
+                            (104,104,104),(105,105,105),(154,154,154),(155,155,155),
+                            (204,204,204),(205,205,205),(254,254,254),(255,255,255);
+--disable_query_log
+select count(*) from t_range1;
+select count(*) from t_range2;
+select count(*) from t_range3;
+select count(*) from t_range4;
+--enable_query_log
+--enable_result_log
+##
+## I.1.1 join
+##
+## logical partition not equal, no pwj
+EXPLAIN select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1;
+select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1;
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1 and t1.c1 > 150 order by t1.c1;
+select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1 and t1.c1 > 150 order by t1.c1;
+select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1 and t1.c1 > 151 order by t1.c1;
+select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1 and t1.c1 > 160 order by t1.c1;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range1 t1, t_range2 t2 where t1.c1 = t2.c1 and t1.c1 > ? order by t1.c1';
+
+## t_range3 has partition management, logical partition equal, pwj
+EXPLAIN select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 order by t1.c1;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 order by t1.c1;
+
+## t_ragne4 has partition reorganize, logical partition equal, pwj
+EXPLAIN select * from t_range2 t1, t_range4 t2 where t1.c1 = t2.c1;
+select * from t_range2 t1, t_range4 t2 where t1.c1 = t2.c1;
+
+##
+## I.1.2 union/intersect/except
+##
+## logical partition not equal, no pwj
+EXPLAIN select * from t_range1 union select * from t_range2;
+select * from t_range1 union select * from t_range2;
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN select * from t_range1 t1 where t1.c1 > 100 union select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 100 union select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 150 union select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 151 union select * from t_range2 t2 where t2.c1 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range1 t1 where t1.c1 > ? union select * from t_range2 t2 where t2.c1 > ?';
+
+## t_range3 has partition management, logical partition equal, pwj
+EXPLAIN select * from t_range1 t1 intersect select * from t_range3 t2;
+select * from t_range1 t1 intersect select * from t_range3 t2;
+
+## t_ragne4 has partition reorganize, logical partition equal, pwj
+EXPLAIN select * from t_range2 t1 except select * from  t_range4 t2;
+select * from t_range2 t1 except select * from  t_range4 t2;
+
+##
+## I.1.3 union all
+##
+## partition number not equal, no pwj
+EXPLAIN select * from t_range1 union all select * from t_range2;
+select * from t_range1 union all select * from t_range2;
+
+## after partition pruning, partition number equal, pwj
+EXPLAIN select * from t_range1 t1 where t1.c1 > 100 union all select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 100 union all select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 150 union all select * from t_range2 t2 where t2.c1 > 150;
+select * from t_range1 t1 where t1.c1 > 151 union all select * from t_range2 t2 where t2.c1 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range1 t1 where t1.c1 > ? union all select * from t_range2 t2 where t2.c1 > ?';
+
+## t_range3 has partition management, partition number equal, pwj
+EXPLAIN select * from t_range1 t1 union all select * from t_range3 t2;
+select * from t_range1 t1 union all select * from t_range3 t2;
+
+## t_ragne4 has partition reorganize, partition number equal, pwj
+EXPLAIN select * from t_range2 t1 union all select * from  t_range4 t2;
+select * from t_range2 t1 union all select * from  t_range4 t2;
+
+##
+## I.1.4 insert
+##
+create table t_insert1 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (150),
+  partition p2 values less than (200),
+  partition p3 values less than (300)
+);
+set autocommit=0;
+
+## logical partition not equal, no pwj
+EXPLAIN insert into t_insert1 select * from t_range1;
+insert into t_insert1 select * from t_range1;
+select * from t_insert1;
+rollback;
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN insert into t_insert1 select * from t_range1 t1 where t1.c1 > 150;
+insert into t_insert1 select * from t_range1 t1 where t1.c1 > 150;
+select * from t_insert1;
+rollback;
+insert into t_insert1 select * from t_range1 t1 where t1.c1 > 152;
+select * from t_insert1;
+rollback;
+insert into t_insert1 select * from t_range1 t1 where t1.c1 > 160;
+select * from t_insert1;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'insert into t_insert1 select * from t_range1 t1 where t1.c1 > ?';
+
+## t_range3 has partition management, after partition pruning, partition number equal, pwj
+EXPLAIN insert into t_insert1 select * from t_range3 t1 where t1.c1 > 150;
+insert into t_insert1 select * from t_range3 t1 where t1.c1 > 150;
+select * from t_insert1;
+rollback;
+
+## t_ragne4 has partition reorganize, partition number equal, pwj
+EXPLAIN insert into t_insert1 select * from t_range4;
+insert into t_insert1 select * from t_range4;
+select * from t_insert1;
+rollback;
+
+set autocommit=1;
+
+##
+## I.1.5 join, union/intersect/except, union all, insert混合
+##
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union (t3,t4) is not pwj
+EXPLAIN select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1
+union
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1
+union
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1;
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) intersect (t3,t4) is pwj
+EXPLAIN select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 100
+intersect
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 100
+intersect
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 150
+intersect
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 151
+intersect
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 155;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > ?
+intersect
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > ?';
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union all (t3,t4) is weak pwj
+EXPLAIN select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 100
+union all
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 100
+union all
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 150
+union all
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 150;
+select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > 151
+union all
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > 155;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range1 t1, t_range3 t2 where t1.c1 = t2.c1 and t1.c1 > ?
+union all
+select * from t_range2 t3, t_range4 t4 where t3.c1 = t4.c1 and t3.c1 > ?';
+
+## t1 union all t2 is weak pwj
+## t3 union all t4 is weak pwj
+## (t1,t2) join (t3,t4) is not pwj
+EXPLAIN select * from 
+(select * from t_range1 t1 union all select * from t_range3 t2) v1,
+(select * from t_range2 t3 union all select * from t_range4 t4) v2
+where v1.c1 = v2.c1;
+--sorted_result
+select * from 
+(select * from t_range1 t1 union all select * from t_range3 t2) v1,
+(select * from t_range2 t3 union all select * from t_range4 t4) v2
+where v1.c1 = v2.c1;
+
+set autocommit=0;
+
+## t1 join t2 is not pwj
+## t1 join t3 is pwj
+## insert into t_insert1 is not pwj
+#EXPLAIN insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3
+#where t1.c1 = t2.c1 and t2.c1 = t3.c1;
+#insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3
+#where t1.c1 = t2.c1 and t2.c1 = t3.c1;
+#select * from t_insert1;
+#rollback;
+
+## t1 join t2 is pwj
+## t1 join t3 is pwj
+## insert into t_insert1 is pwj
+#EXPLAIN insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c1 > 150;
+#insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c1 > 150;
+#select * from t_insert1;
+#rollback;
+#insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c1 > 151;
+#select * from t_insert1;
+#rollback;
+#insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c1 > 160;
+#select * from t_insert1;
+#rollback;
+### hit_count should be 2
+#select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+#where statement = 'insert into t_insert1
+#select t1.* from t_range1 t1, t_range2 t2, t_range3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c1 > ?';
+
+set autocommit=1;
+
+## 
+## I.2 list partition
+##
+create table t_list1 (c1 int primary key, c2 int, c3 int) partition by list(c1)
+(
+  partition p0 values in (1,2,3,4,5),
+  partition p1 values in (6,7,8,9,10),
+  partition p2 values in (11,12,13,14,15)
+);
+create table t_list2 (c1 int primary key, c2 int, c3 int) partition by list(c1)
+(
+  partition p0 values in (6,7,8,9,10),
+  partition p1 values in (1,2,3,4,5),
+  partition p2 values in (11,12,13,14,15)
+);
+create table t_list3 (c1 int primary key, c2 int, c3 int) partition by list(c1)
+(
+  partition p0 values in (11,12,13,14,15),
+  partition p1 values in (1,2,3,4,5),
+  partition p2 values in (6,7,8,9,10)
+);
+create table t_list4 (c1 int primary key, c2 int, c3 int) partition by list(c1)
+(
+  partition p0 values in (1,2,3,4,5),
+  partition p1 values in (6,7,8,9,10),
+  partition p2 values in (11,12,13,14,15)
+);
+alter table t_list4 drop partition p2;
+alter table t_list4 add partition (partition p3 values in (11,12,13,14,15));
+--disable_result_log
+insert into t_list1 values (1,1,1),(5,5,5),(6,6,6),(10,10,10),(11,11,11),(15,15,15);
+insert into t_list2 values (2,2,2),(5,5,5),(7,7,7),(10,10,10),(12,12,12),(15,15,15);
+insert into t_list3 values (3,3,3),(5,5,5),(8,8,8),(10,10,10),(13,13,13),(15,15,15);
+insert into t_list4 values (4,4,4),(5,5,5),(9,9,9),(10,10,10),(14,14,14),(15,15,15);
+--disable_query_log
+select count(*) from t_list1;
+select count(*) from t_list2;
+select count(*) from t_list3;
+select count(*) from t_list4;
+--enable_query_log
+--enable_result_log
+##
+## I.2.1 join
+##
+## logical partition equal, pwj
+EXPLAIN select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1;
+select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1;
+select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1;
+EXPLAIN select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1;
+select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1;
+EXPLAIN select * from t_list2 t1, t_list3 t2 where t1.c1 = t2.c1;
+select * from t_list2 t1, t_list3 t2 where t1.c1 = t2.c1;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1';
+
+## t_list4 has partition management, logical partition equal, pwj
+EXPLAIN select * from t_list1 t1, t_list4 t2 where t1.c1 = t2.c1;
+select * from t_list1 t1, t_list4 t2 where t1.c1 = t2.c1;
+
+##
+## I.2.2 union/intersect/except
+##
+## logical partition equal, pwj
+EXPLAIN select * from t_list1 t1 union select * from t_list2 t2;
+select * from t_list1 t1 union select * from t_list2 t2;
+select * from t_list1 t1 union select * from t_list2 t2;
+EXPLAIN select * from t_list1 t1 intersect select * from t_list3 t2;
+select * from t_list1 t1 intersect select * from t_list3 t2;
+EXPLAIN select * from t_list2 t1 except select * from t_list3 t2;
+select * from t_list2 t1 except select * from t_list3 t2;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_list1 t1 union select * from t_list2 t2';
+
+## t_list4 has partition management, logical partition equal, pwj
+EXPLAIN select * from t_list1 t1 union select * from t_list4 t2;
+select * from t_list1 t1 union select * from t_list4 t2;
+
+##
+## I.2.3 union all
+##
+## partition number equal, pwj
+EXPLAIN select * from t_list1 t1 union all select * from t_list2 t2;
+select * from t_list1 t1 union all select * from t_list2 t2;
+select * from t_list1 t1 union all select * from t_list2 t2;
+EXPLAIN select * from t_list1 t1 union all select * from t_list3 t2;
+select * from t_list1 t1 union all select * from t_list3 t2;
+EXPLAIN select * from t_list2 t1 union all select * from t_list3 t2;
+select * from t_list2 t1 union all select * from t_list3 t2;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_list1 t1 union all select * from t_list2 t2';
+
+## t_list4 has partition management, partition number equal, pwj
+EXPLAIN select * from t_list1 t1 union all select * from t_list4 t2;
+select * from t_list1 t1 union all select * from t_list4 t2;
+
+##
+## I.2.4 insert
+##
+create table t_insert2 (c1 int primary key, c2 int, c3 int) partition by list(c1)
+(
+  partition p0 values in (1,2,3,4,5),
+  partition p1 values in (6,7,8,9,10),
+  partition p2 values in (11,12,13,14,15)
+);
+select count(*) from t_insert2;
+set autocommit=0;
+
+## logical partition equal, pwj
+EXPLAIN insert into t_insert2 select * from t_list1;
+insert into t_insert2 select * from t_list1;
+select * from t_insert2;
+rollback;
+insert into t_insert2 select * from t_list1;
+select * from t_insert2;
+rollback;
+EXPLAIN insert into t_insert2 select * from t_list2;
+insert into t_insert2 select * from t_list2;
+select * from t_insert2;
+rollback;
+EXPLAIN insert into t_insert2 select * from t_list3;
+insert into t_insert2 select * from t_list3;
+select * from t_insert2;
+rollback;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'insert into t_insert2 select * from t_list1';
+
+## t_list4 has partition management, logical partition equal, pwj
+EXPLAIN insert into t_insert2 select * from t_list4;
+insert into t_insert2 select * from t_list4;
+select * from t_insert2;
+rollback;
+
+set autocommit=1;
+
+##
+## I.2.5 join, union/intersect/except, union all, insert混合
+##
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union (t3,t4) is pwj
+EXPLAIN select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1
+union
+select * from t_list3 t3, t_list4 t4 where t3.c1 = t4.c1;
+select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1
+union
+select * from t_list3 t3, t_list4 t4 where t3.c1 = t4.c1;
+select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1
+union
+select * from t_list3 t3, t_list4 t4 where t3.c1 = t4.c1;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_list1 t1, t_list2 t2 where t1.c1 = t2.c1
+union
+select * from t_list3 t3, t_list4 t4 where t3.c1 = t4.c1';
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union all (t3,t4) is weak pwj
+EXPLAIN select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1
+union all
+select * from t_list2 t3, t_list4 t4 where t3.c1 = t4.c1;
+select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1
+union all
+select * from t_list2 t3, t_list4 t4 where t3.c1 = t4.c1;
+select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1
+union all
+select * from t_list2 t3, t_list4 t4 where t3.c1 = t4.c1;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_list1 t1, t_list3 t2 where t1.c1 = t2.c1
+union all
+select * from t_list2 t3, t_list4 t4 where t3.c1 = t4.c1';
+
+## t1 union all t2 is weak pwj
+## t3 union all t4 is weak pwj
+## (t1,t2) join (t3,t4) is not pwj
+EXPLAIN select * from 
+(select * from t_list1 t1 union all select * from t_list2 t2) v1,
+(select * from t_list3 t3 union all select * from t_list4 t4) v2
+where v1.c1 = v2.c1;
+--sorted_result
+select * from 
+(select * from t_list1 t1 union all select * from t_list2 t2) v1,
+(select * from t_list3 t3 union all select * from t_list4 t4) v2
+where v1.c1 = v2.c1;
+
+set autocommit=0;
+
+## t1 join t2 is pwj
+## t1 join t3 is pwj
+## insert into t_insert2 is pwj
+EXPLAIN insert into t_insert2
+select t1.* from t_list1 t1, t_list2 t2, t_list3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1;
+insert into t_insert2
+select t1.* from t_list1 t1, t_list2 t2, t_list3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1;
+select * from t_insert2;
+rollback;
+insert into t_insert2
+select t1.* from t_list1 t1, t_list2 t2, t_list3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1;
+select * from t_insert2;
+rollback;
+## hit_count should be 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert2
+select t1.* from t_list1 t1, t_list2 t2, t_list3 t3 where t1.c1 = t2.c1 and t2.c1 = t3.c1';
+
+set autocommit=1;
+
+
+##
+## II. 二级分区
+##
+##
+## II.1 模板化二级分区
+##
+create table t_hash_range1 (c1 int, c2 int, c3 int, primary key (c1,c2)) 
+partition by hash(c1) 
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (200),
+  subpartition rp2 values less than (300)
+) partitions 10;
+create table t_hash_range2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (200),
+  subpartition rp2 values less than (300)
+) partitions 10;
+create table t_hash_range3 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (150),
+  subpartition rp2 values less than (200),
+  subpartition rp3 values less than (300)
+) partitions 10;
+create table t_hash_list1 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (11,12,13,14,15)
+) partitions 10;
+create table t_hash_list2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (6,7,8,9,10),
+  subpartition lp1 values in (1,2,3,4,5),
+  subpartition lp2 values in (11,12,13,14,15)
+) partitions 10;
+create table t_hash_list3 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (11,12,13,14,15),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (1,2,3,4,5)
+) partitions 10;
+create table t_range_list1 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by range(c1)
+subpartition by list(c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (11,12,13,14,15)
+)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create table t_range_list2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by range(c1)
+subpartition by list(c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (11,12,13,14,15),
+  subpartition lp2 values in (6,7,8,9,10)
+)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (150),
+  partition p2 values less than (200),
+  partition p3 values less than (300)
+);
+--disable_result_log
+insert into t_hash_range1 values (1,1,1),(5,5,5),(51,51,51),(55,55,55),
+                                 (101,101,101),(105,105,105),(151,151,151),(155,155,155),
+                                 (201,201,201),(205,205,205),(251,251,251),(255,255,255);
+insert into t_hash_range2 values (2,2,2),(5,5,5),(52,52,52),(55,55,55),
+                                 (102,102,102),(105,105,105),(152,152,152),(155,155,155),
+                                 (202,202,202),(205,205,205),(252,252,252),(255,255,255);
+insert into t_hash_range3 values (3,3,3),(5,5,5),(53,53,53),(55,55,55),
+                                 (103,103,103),(105,105,105),(153,153,153),(155,155,155),
+                                 (203,203,203),(205,205,205),(253,253,253),(255,255,255);
+insert into t_hash_list1 values (1,1,1),(5,5,5),(6,6,6),(10,10,10),(11,11,11),(15,15,15);
+insert into t_hash_list2 values (2,2,2),(5,5,5),(7,7,7),(10,10,10),(12,12,12),(15,15,15);
+insert into t_hash_list3 values (3,3,3),(5,5,5),(8,8,8),(10,10,10),(13,13,13),(15,15,15);
+insert into t_range_list1 values (1,1,1),(5,5,5),(51,6,6),(55,10,10),
+                                 (101,1,1),(105,5,5),(151,6,6),(155,10,10),
+                                 (201,1,1),(205,5,5),(251,6,6),(255,10,10);
+insert into t_range_list2 values (2,2,2),(5,5,5),(52,7,7),(55,10,10),
+                                 (102,2,2),(105,5,5),(152,7,7),(155,10,10),
+                                 (202,2,2),(205,5,5),(252,7,7),(255,10,10);
+--disable_query_log
+select count(*) from t_hash_range1;
+select count(*) from t_hash_range2;
+select count(*) from t_hash_range3;
+select count(*) from t_hash_list1;
+select count(*) from t_hash_list2;
+select count(*) from t_hash_list3;
+select count(*) from t_range_list1;
+select count(*) from t_range_list2;
+--enable_query_log
+--enable_result_log
+
+##
+## II.1.1 分区裁剪后有多个一级分区，二级分区
+##
+##
+## II.1.1.1 join
+##
+## logical partition not equal, no pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+--sorted_result
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+
+## logical partition equal, pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2';
+
+EXPLAIN select * from t_hash_list1 t1, t_hash_list3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_list1 t1, t_hash_list3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_list1 t1, t_hash_list3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+select * from t_hash_list1 t1, t_hash_list3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_list1 t1, t_hash_list3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2';
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 150 order by t1.c1,t1.c2;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 150 order by t1.c1,t1.c2;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 151 order by t1.c1,t1.c2;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 160 order by t1.c1,t1.c2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > ? order by t1.c1,t1.c2';
+
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c1 > 150;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c1 > 150;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c1 > 151;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c1 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c1 > ?';
+
+##
+## II.1.1.2 union/intersect/except
+##
+## logical partition not equal, no pwj
+EXPLAIN select * from t_hash_range1 t1 union select * from t_hash_range3 t2;
+select * from t_hash_range1 t1 union select * from t_hash_range3 t2;
+
+## logical partition equal, pwj
+EXPLAIN select * from t_hash_range1 t1 intersect select * from t_hash_range2 t2;
+select * from t_hash_range1 t1 intersect select * from t_hash_range2 t2;
+select * from t_hash_range1 t1 intersect select * from t_hash_range2 t2;
+select * from t_hash_range1 t1 intersect select * from t_hash_range2 t2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1 intersect select * from t_hash_range2 t2';
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 > 100 except select * from t_hash_range3 t2 where t2.c2 > 150;
+select * from t_hash_range1 t1 where t1.c2 > 100 except select * from t_hash_range3 t2 where t2.c2 > 150;
+select * from t_hash_range1 t1 where t1.c2 > 150 except select * from t_hash_range3 t2 where t2.c2 > 150;
+select * from t_hash_range1 t1 where t1.c2 > 151 except select * from t_hash_range3 t2 where t2.c2 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1 where t1.c2 > ? except select * from t_hash_range3 t2 where t2.c2 > ?';
+
+##
+## II.1.1.3 union all
+##
+## partition number not equal, no pwj
+EXPLAIN select * from t_range_list1 t1 union all select * from t_range_list2 t2;
+select * from t_range_list1 t1 union all select * from t_range_list2 t2;
+
+## partition number equal, pwj
+EXPLAIN select * from t_hash_list1 t1 union all select * from t_hash_list3 t2;
+select * from t_hash_list1 t1 union all select * from t_hash_list3 t2;
+select * from t_hash_list1 t1 union all select * from t_hash_list3 t2;
+select * from t_hash_list1 t1 union all select * from t_hash_list3 t2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_list1 t1 union all select * from t_hash_list3 t2';
+
+## after partition pruning, partition number equal, pwj
+EXPLAIN select * from t_range_list1 t1 where t1.c1 > 100 union all select * from t_range_list2 t2 where t2.c1 > 150;
+select * from t_range_list1 t1 where t1.c1 > 100 union all select * from t_range_list2 t2 where t2.c1 > 150;
+select * from t_range_list1 t1 where t1.c1 > 150 union all select * from t_range_list2 t2 where t2.c1 > 150;
+select * from t_range_list1 t1 where t1.c1 > 151 union all select * from t_range_list2 t2 where t2.c1 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1 where t1.c1 > ? union all select * from t_range_list2 t2 where t2.c1 > ?';
+
+##
+## II.1.1.4 insert
+##
+create table t_insert3 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (150),
+  subpartition rp2 values less than (200),
+  subpartition rp3 values less than (300)
+) partitions 10;
+select count(*) from t_insert3;
+set autocommit=0;
+
+## logical partition not equal, no pwj
+EXPLAIN insert into t_insert3 select * from t_hash_range1;
+insert into t_insert3 select * from t_hash_range1;
+select * from t_insert3;
+rollback;
+
+## logical partition equal, pwj
+EXPLAIN insert into t_insert3 select * from t_hash_range3;
+insert into t_insert3 select * from t_hash_range3;
+select * from t_insert3;
+rollback;
+
+## after partition pruning, logical partition equal, pwj
+EXPLAIN insert into t_insert3 select * from t_hash_range2 t1 where t1.c2 > 150;
+insert into t_insert3 select * from t_hash_range2 t1 where t1.c2 > 150;
+select * from t_insert3;
+rollback;
+insert into t_insert3 select * from t_hash_range2 t1 where t1.c2 > 151;
+select * from t_insert3;
+rollback;
+insert into t_insert3 select * from t_hash_range2 t1 where t1.c2 > 160;
+select * from t_insert3;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'insert into t_insert3 select * from t_hash_range2 t1 where t1.c2 > ?';
+
+set autocommit=1;
+
+##
+## II.1.1.5 join, union/intersect/except, union all, insert混合
+##
+## t1 join t2 is pwj
+## (t1,t2) union t3 is not pwj
+EXPLAIN select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2
+union
+select * from t_hash_range3 t3;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2
+union
+select * from t_hash_range3 t3;
+
+## t1 join t2 is pwj
+## (t1,t2) intersect t3 is pwj
+EXPLAIN select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 100
+intersect
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 100
+intersect
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 150
+intersect
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 151
+intersect
+select * from t_hash_range3 t3 where t3.c2 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > ?
+intersect
+select * from t_hash_range3 t3 where t3.c2 > ?';
+
+## t1 join t2 is pwj
+## (t1,t2) union all t3 is weak pwj
+EXPLAIN select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 100
+union all
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 100
+union all
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 150
+union all
+select * from t_hash_range3 t3 where t3.c2 > 150;
+select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > 151
+union all
+select * from t_hash_range3 t3 where t3.c2 > 160;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select t1.* from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t1.c2 > ?
+union all
+select * from t_hash_range3 t3 where t3.c2 > ?';
+
+set autocommit=0;
+
+## t1 join t2 is pwj
+## t1 join t3 is not pwj
+## insert into t_insert3 is pwj
+EXPLAIN insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2;
+insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2;
+select * from t_insert3;
+rollback;
+
+## t1 join t2 is pwj
+## t1 join t3 is pwj
+## insert into t_insert3 is pwj
+EXPLAIN insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2 and t1.c2 > 150;
+insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2 and t1.c2 > 150;
+select * from t_insert3;
+rollback;
+insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2 and t1.c2 > 151;
+select * from t_insert3;
+rollback;
+insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2 and t1.c2 > 160;
+select * from t_insert3;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert3
+select t1.* from t_hash_range1 t1, t_hash_range2 t2, t_hash_range3 t3
+where t1.c1 = t2.c1 and t1.c2 = t2.c2 and t2.c1 = t3.c1 and t2.c2 = t3.c2 and t1.c2 > ?';
+
+set autocommit=1;
+
+
+##
+## II.1.2 分区裁剪后只有一个一级分区
+##
+##
+## II.1.2.1 join
+##
+## same first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 5 and t2.c1 = 5;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 5 and t2.c1 = 5;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 105 and t2.c1 = 205;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 201 and t2.c1 = 202;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = ? and t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 100 and t2.c1 < 90;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 100 and t2.c1 < 90;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 60 and t2.c1 < 70;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 50 and t2.c1 < 20;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < ? and t2.c1 < ?';
+
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 > 200 and t2.c1 > 200;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 > 200 and t2.c1 > 200;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 > 201 and t2.c1 > 210;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 > 240 and t2.c1 > 245;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 > ? and t2.c1 > ?';
+
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199 and t2.c1 between 150 and 199;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199 and t2.c1 between 150 and 199;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 150 and 199 and t2.c1 between 153 and 199;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 150 and 180 and t2.c1 between 150 and 170;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between ? and ? and t2.c1 between ? and ?';
+
+## different first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 1 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 1 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 51 and t2.c1 = 6;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 155 and t2.c1 = 10;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = ? and t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 90 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 90 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 60 and t2.c1 = 5;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 30 and t2.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < ? and t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 200 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 200 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 220 and t2.c1 = 5;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 240 and t2.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > ? and t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 1 and 80 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 1 and 80 and t2.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 180 and t2.c1 = 5;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 200 and 280 and t2.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between ? and ? and t2.c1 = ?';
+
+##
+## II.1.2.2 union/intersect/except
+##
+## same first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN select * from t_range_list1 t1 where t1.c1 = 5 union select * from t_range_list2 t2 where t2.c1 = 5;
+select * from t_range_list1 t1 where t1.c1 = 5 union select * from t_range_list2 t2 where t2.c1 = 5;
+select * from t_range_list1 t1 where t1.c1 = 105 union select * from t_range_list2 t2 where t2.c1 = 105;
+select * from t_range_list1 t1 where t1.c1 = 201 union select * from t_range_list2 t2 where t2.c1 = 202;
+## hit_count should be 1,0. Because first two sql has equal constraint for const number
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1 where t1.c1 = ? union select * from t_range_list2 t2 where t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1 where t1.c1 < 100 intersect select * from t_range_list2 t2 where t2.c1 < 90;
+select * from t_range_list1 t1 where t1.c1 < 100 intersect select * from t_range_list2 t2 where t2.c1 < 90;
+select * from t_range_list1 t1 where t1.c1 < 60 intersect select * from t_range_list2 t2 where t2.c1 < 70;
+select * from t_range_list1 t1 where t1.c1 < 50 intersect select * from t_range_list2 t2 where t2.c1 < 20;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1 where t1.c1 < ? intersect select * from t_range_list2 t2 where t2.c1 < ?';
+
+EXPLAIN select * from t_range_list1 t1 where t1.c1 between 100 and 198 except select * from t_range_list2 t2 where t2.c1 between 150 and 199;
+select * from t_range_list1 t1 where t1.c1 between 100 and 198 except select * from t_range_list2 t2 where t2.c1 between 150 and 199;
+select * from t_range_list1 t1 where t1.c1 between 150 and 198 except select * from t_range_list2 t2 where t2.c1 between 153 and 199;
+select * from t_range_list1 t1 where t1.c1 between 151 and 180 except select * from t_range_list2 t2 where t2.c1 between 150 and 170;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1 where t1.c1 between ? and ? except select * from t_range_list2 t2 where t2.c1 between ? and ?';
+
+##
+## II.1.2.3 union all
+##
+## different first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN select * from t_range_list1 t1 where t1.c1 = 1 union all select * from t_hash_list1 t2 where t2.c1 = 1;
+select * from t_range_list1 t1 where t1.c1 = 1 union all select * from t_hash_list1 t2 where t2.c1 = 1;
+select * from t_range_list1 t1 where t1.c1 = 51 union all select * from t_hash_list1 t2 where t2.c1 = 6;
+select * from t_range_list1 t1 where t1.c1 = 155 union all select * from t_hash_list1 t2 where t2.c1 = 10;
+## hit_count should be 0,1. Because first sql has equal constraint for const number
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1 where t1.c1 = ? union all select * from t_hash_list1 t2 where t2.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1 where t1.c1 > 200 union all select * from t_hash_list1 t2 where t2.c1 = 1;
+select * from t_range_list1 t1 where t1.c1 > 200 union all select * from t_hash_list1 t2 where t2.c1 = 1;
+select * from t_range_list1 t1 where t1.c1 > 220 union all select * from t_hash_list1 t2 where t2.c1 = 5;
+select * from t_range_list1 t1 where t1.c1 > 240 union all select * from t_hash_list1 t2 where t2.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1 where t1.c1 > ? union all select * from t_hash_list1 t2 where t2.c1 = ?';
+
+##
+## II.1.2.4 insert
+##
+create table t_insert4 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (11,12,13,14,15)
+) partitions 10;
+select count(*) from t_insert4;
+set autocommit=0;
+
+## same first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN insert into t_insert4 select * from t_hash_list1 t1 where t1.c1 = 1;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c1 = 1;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c1 = 6;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c1 = 10;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4 select * from t_hash_list1 t1 where t1.c1 = ?';
+
+## different first partition type, only one partition left after partition pruning,
+## subpartition logical equal, pwj
+EXPLAIN insert into t_insert4 select * from t_range_list1 t1 where t1.c1 = 5;
+insert into t_insert4 select * from t_range_list1 t1 where t1.c1 = 5;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_range_list1 t1 where t1.c1 = 105;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_range_list1 t1 where t1.c1 = 201;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4 select * from t_range_list1 t1 where t1.c1 = ?';
+
+set autocommit=1;
+
+##
+## II.1.2.5 join, union/intersect/except, union all, insert混合
+##
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union (t3,t4) is pwj
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 5 and t2.c1 = 5
+union
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 = 1 and t4.c1 = 1;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 5 and t2.c1 = 5
+union
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 = 1 and t4.c1 = 1;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 105 and t2.c1 = 205
+union
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 = 51 and t4.c1 = 6;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = 201 and t2.c1 = 202
+union
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 = 155 and t4.c1 = 10;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 = ? and t2.c1 = ?
+union
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 = ? and t4.c1 = ?';
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) intersect (t3,t4) is pwj
+EXPLAIN select /*+no_pred_deduce*/ * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 100 and t2.c1 < 90
+intersect
+select /*+no_pred_deduce*/ * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 > 200 and t4.c1 = 1;
+select /*+no_pred_deduce*/ * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 100 and t2.c1 < 90
+intersect
+select /*+no_pred_deduce*/ * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 > 200 and t4.c1 = 1;
+select /*+no_pred_deduce*/ * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 60 and t2.c1 < 70
+intersect
+select /*+no_pred_deduce*/ * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 > 220 and t4.c1 = 5;
+select /*+no_pred_deduce*/ * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < 50 and t2.c1 < 20
+intersect
+select /*+no_pred_deduce*/ * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 > 240 and t4.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select /*+no_pred_deduce*/ * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 < ? and t2.c1 < ?
+intersect
+select /*+no_pred_deduce*/ * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 > ? and t4.c1 = ?';
+
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union all (t3,t4) is weak pwj
+EXPLAIN select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199 and t2.c1 between 150 and 199
+union all
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 between 1 and 80 and t4.c1 = 1;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199 and t2.c1 between 150 and 199
+union all
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 between 1 and 80 and t4.c1 = 1;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 150 and 199 and t2.c1 between 153 and 199
+union all
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 between 100 and 180 and t4.c1 = 5;
+select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between 150 and 180 and t2.c1 between 150 and 170
+union all
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 between 200 and 280 and t4.c1 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_range_list1 t1, t_range_list2 t2 where t1.c2 = t2.c2 and t1.c1 between ? and ? and t2.c1 between ? and ?
+union all
+select * from t_range_list1 t3, t_hash_list1 t4 where t3.c2 = t4.c2 and t3.c1 between ? and ? and t4.c1 = ?';
+
+set autocommit=0;
+
+## t1 join t2 is pwj
+## t1 join t3 is pwj
+## insert into t_insert4 is pwj
+EXPLAIN insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 1 and t2.c1 = 1 and t3.c1 < 80;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 1 and t2.c1 = 1 and t3.c1 < 80;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 6 and t2.c1 = 6 and t3.c1 < 80;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 10 and t2.c1 = 10 and t3.c1 < 80;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = ? and t2.c1 = ? and t3.c1 < ?';
+
+EXPLAIN insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 1 and t2.c1 = 1 and t3.c1 > 200;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 1 and t2.c1 = 1 and t3.c1 > 200;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 6 and t2.c1 = 6 and t3.c1 > 220;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = 10 and t2.c1 = 10 and t3.c1 > 240;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_range_list1 t3
+where t1.c2 = t2.c2 and t2.c2 = t3.c2 and t1.c1 = ? and t2.c1 = ? and t3.c1 > ?';
+
+set autocommit=1;
+
+##
+## II.1.3 分区裁剪后只有一个二级分区
+##
+##
+## II.1.3.1 join
+##
+## same subpartition type, only one subpartition left after partition pruning,
+## partition logical equal, pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 5 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 5 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 105 and t2.c2 = 105;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 201 and t2.c2 = 203;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = ? and t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 < 90;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 < 90;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 70 and t2.c2 < 60;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 50 and t2.c2 < 30;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < ? and t2.c2 < ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 > 200;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 > 200;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 > 220 and t2.c2 > 210;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 > 240 and t2.c2 > 230;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 > ? and t2.c2 > ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 between 100 and 199 and t2.c2 between 150 and 199;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 between 100 and 199 and t2.c2 between 150 and 199;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 between 150 and 199 and t2.c2 between 153 and 199;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 between 150 and 180 and t2.c2 between 150 and 170;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 between ? and ? and t2.c2 between ? and ?';
+
+## different subpartition type, only one subpartition left after partition pruning,
+## first partition logical equal, pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 1 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 1 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 51 and t2.c2 = 6;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 155 and t2.c2 = 10;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = ? and t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 < 60 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 < 30 and t2.c2 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 < ? and t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 220 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 240 and t2.c2 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > ? and t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 between 1 and 80 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 between 1 and 80 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 between 100 and 180 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 between 200 and 280 and t2.c2 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 between ? and ? and t2.c2 = ?';
+
+##
+## II.1.3.2 union/intersect/except
+##
+## same subpartition type, only one subpartition left after partition pruning,
+## partition logical equal, pwj
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 = 5 union select * from t_hash_range3 t2 where t2.c2 = 5;
+select * from t_hash_range1 t1 where t1.c2 = 5 union select * from t_hash_range3 t2 where t2.c2 = 5;
+select * from t_hash_range1 t1 where t1.c2 = 105 union select * from t_hash_range3 t2 where t2.c2 = 105;
+select * from t_hash_range1 t1 where t1.c2 = 201 union select * from t_hash_range3 t2 where t2.c2 = 202;
+## hit_count should be 1,0. Because first two sql has equal constraint for const number
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1 where t1.c2 = ? union select * from t_hash_range3 t2 where t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 < 100 intersect select * from t_hash_range3 t2 where t2.c2 < 90;
+select * from t_hash_range1 t1 where t1.c2 < 100 intersect select * from t_hash_range3 t2 where t2.c2 < 90;
+select * from t_hash_range1 t1 where t1.c2 < 60 intersect select * from t_hash_range3 t2 where t2.c2 < 70;
+select * from t_hash_range1 t1 where t1.c2 < 50 intersect select * from t_hash_range3 t2 where t2.c2 < 20;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1 where t1.c2 < ? intersect select * from t_hash_range3 t2 where t2.c2 < ?';
+
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 between 100 and 198 except select * from t_hash_range3 t2 where t2.c2 between 150 and 199;
+select * from t_hash_range1 t1 where t1.c2 between 100 and 198 except select * from t_hash_range3 t2 where t2.c2 between 150 and 199;
+select * from t_hash_range1 t1 where t1.c2 between 150 and 198 except select * from t_hash_range3 t2 where t2.c2 between 153 and 199;
+select * from t_hash_range1 t1 where t1.c2 between 151 and 180 except select * from t_hash_range3 t2 where t2.c2 between 150 and 170;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1 where t1.c2 between ? and ? except select * from t_hash_range3 t2 where t2.c2 between ? and ?';
+
+##
+## II.1.3.3 union all
+##
+## different subpartition type, only one subpartition left after partition pruning,
+## first partition logical equal, pwj
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 = 1 union all select * from t_hash_list1 t2 where t2.c2 = 1;
+select * from t_hash_range1 t1 where t1.c2 = 1 union all select * from t_hash_list1 t2 where t2.c2 = 1;
+select * from t_hash_range1 t1 where t1.c2 = 51 union all select * from t_hash_list1 t2 where t2.c2 = 6;
+select * from t_hash_range1 t1 where t1.c2 = 155 union all select * from t_hash_list1 t2 where t2.c2 = 10;
+## hit_count should be 0,1. Because first sql has equal constraint for const number
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1 where t1.c2 = ? union all select * from t_hash_list1 t2 where t2.c2 = ?';
+
+EXPLAIN select * from t_hash_range1 t1 where t1.c2 > 200 union all select * from t_hash_list1 t2 where t2.c2 = 1;
+select * from t_hash_range1 t1 where t1.c2 > 200 union all select * from t_hash_list1 t2 where t2.c2 = 1;
+select * from t_hash_range1 t1 where t1.c2 > 220 union all select * from t_hash_list1 t2 where t2.c2 = 5;
+select * from t_hash_range1 t1 where t1.c2 > 240 union all select * from t_hash_list1 t2 where t2.c2 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1 where t1.c2 > ? union all select * from t_hash_list1 t2 where t2.c2 = ?';
+
+##
+## II.1.3.4 insert
+##
+set autocommit=0;
+
+## same subpartition type, only one subpartition left after partition pruning,
+## partition logical equal, pwj
+EXPLAIN insert into t_insert4 select * from t_hash_list1 t1 where t1.c2 = 1;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c2 = 1;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c2 = 6;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_list1 t1 where t1.c2 = 10;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4 select * from t_hash_list1 t1 where t1.c2 = ?';
+
+## different subpartition type, only one subpartition left after partition pruning,
+## first partition logical equal, pwj
+EXPLAIN insert into t_insert4 select * from t_hash_range1 t1 where t1.c2 = 1;
+insert into t_insert4 select * from t_hash_range1 t1 where t1.c2 = 1;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_range1 t1 where t1.c2 = 5;
+select * from t_insert4;
+rollback;
+insert into t_insert4 select * from t_hash_range1 t1 where t1.c2 = 10;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4 select * from t_hash_range1 t1 where t1.c2 = ?';
+
+set autocommit=1;
+
+##
+## II.1.3.5 join, union/intersect/except, union all, insert混合
+##
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union (t3,t4) is pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 5 and t2.c2 = 5
+union
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 1 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 5 and t2.c2 = 5
+union
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 1 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 105 and t2.c2 = 105
+union
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 51 and t2.c2 = 6;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = 201 and t2.c2 = 203
+union
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = 155 and t2.c2 = 10;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 = ? and t2.c2 = ?
+union
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 = ? and t2.c2 = ?';
+
+
+## t1 join t2 is pwj
+## t3 join t4 is pwj
+## (t1,t2) union all (t3,t4) is pwj
+EXPLAIN select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 < 90
+union all
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 90 and t2.c2 < 90
+union all
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 200 and t2.c2 = 1;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 70 and t2.c2 < 60
+union all
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 220 and t2.c2 = 5;
+select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < 50 and t2.c2 < 30
+union all
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > 240 and t2.c2 = 6;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'select * from t_hash_range1 t1, t_hash_range3 t2 where t1.c1 = t2.c1 and t1.c2 < ? and t2.c2 < ?
+union all
+select * from t_hash_range1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c2 > ? and t2.c2 = ?';
+
+set autocommit=0;
+
+## t1 join t2 is pwj
+## t1 join t3 is pwj
+## insert into t_insert4 is pwj
+EXPLAIN insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 1 and t2.c2 = 1 and t3.c2 < 80;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 1 and t2.c2 = 1 and t3.c2 < 80;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 6 and t2.c2 = 6 and t3.c2 < 80;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 10 and t2.c2 = 10 and t3.c2 < 60;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = ? and t2.c2 = ? and t3.c2 < ?';
+
+EXPLAIN insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 1 and t2.c2 = 1 and t3.c2 > 200;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 1 and t2.c2 = 1 and t3.c2 > 200;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 6 and t2.c2 = 6 and t3.c2 > 220;
+select * from t_insert4;
+rollback;
+insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = 10 and t2.c2 = 10 and t3.c2 > 240;
+select * from t_insert4;
+rollback;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT
+where statement = 'insert into t_insert4
+select t1.* from t_hash_list1 t1, t_hash_list2 t2, t_hash_range1 t3
+where t1.c1 = t2.c1 and t2.c1 = t3.c1 and t1.c2 = ? and t2.c2 = ? and t3.c2 > ?';
+
+set autocommit=1;
+
+
+##
+## II.2 非模板化二级分区
+##
+
+
+##
+## II.2.1 分区裁剪后有多个一级分区，二级分区
+##
+##
+## II.2.1.1 join
+##
+
+
+##
+## II.2.1.2 union/intersect/except
+##
+
+
+##
+## II.2.1.3 union all
+##
+
+
+##
+## II.2.1.4 insert
+##
+
+
+##
+## II.2.1.5 join, union/intersect/except, union all, insert混合
+##
+
+
+
+##
+## II.2.2 分区裁剪后只有一个一级分区
+##
+##
+## II.2.2.1 join
+##
+
+
+##
+## II.2.2.2 union/intersect/except
+##
+
+
+##
+## II.2.2.3 union all
+##
+
+
+##
+## II.2.2.4 insert
+##
+
+
+##
+## II.2.2.5 join, union/intersect/except, union all, insert混合
+##
+
+
+##
+## II.2.3 分区裁剪后只有一个二级分区
+##
+##
+## II.2.3.1 join
+##
+
+
+##
+## II.2.3.2 union/intersect/except
+##
+
+
+##
+## II.2.3.3 union all
+##
+
+
+##
+## II.2.3.4 insert
+##
+
+
+##
+## II.2.3.5 join, union/intersect/except, union all, insert混合
+##
+
+
+
+#drop database opt_pwj;
+
+set global ob_plan_cache_percentage = 5;

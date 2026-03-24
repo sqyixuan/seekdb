@@ -1,0 +1,118 @@
+# owner: yangyi.yyy
+# owner group: physical_backup
+# Testing Case: change backup dest attribute oracle and mysql
+
+--echo ===============================================================
+--echo ==================      boostrap           ====================
+--echo ===============================================================
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+--echo ===============================================================
+--echo ==================      oracle tenant      ====================
+--echo ===============================================================
+
+let $backup_oracle_tenant    = backup_oracle_tenant;
+let $oracle_log_backup_dest  = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $oracle_data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+let $is_assume_role = deploy_get_value(ob1.is_assume_role);
+let $backup_restore_mode = deploy_get_value(ob1.get_backup_restore_mode $backup_oracle_tenant);
+#if device type is file or access mode is assume role, return empty 
+let $oracle_backup_dest_ak_and_sk = deploy_get_value(ob1.get_backup_dest_access_id_and_access_key $backup_oracle_tenant);
+
+
+ob1.create_tenant CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool_0'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$oracle_log_backup_dest';
+eval alter system set data_backup_dest='$oracle_data_backup_dest';
+--enable_all_result_log
+
+--disable_all_result_log
+#if device type is nfs or access mode is assume role, return error code OB_NOT_SUPPORTED (-4007)
+#if device type is object storage, return error code OB_OBJECT_STORAGE_PERMISSION_DENIED (-9116)
+--error 600   
+eval alter system change external_storage_dest path = '$oracle_data_backup_dest' set access_info = 'access_id=AAA&access_key=BBB' attribute = 'max_iops=1000&max_bandwidth=1000mb';
+eval alter system change external_storage_dest path = '$oracle_data_backup_dest' set access_info = '$oracle_backup_dest_ak_and_sk' attribute = 'max_iops=1000&max_bandwidth=1000mb';
+#change external storage dest using same content twice
+eval alter system change external_storage_dest path = '$oracle_data_backup_dest' set access_info = '$oracle_backup_dest_ak_and_sk' attribute = 'max_iops=1000&max_bandwidth=1000mb';
+eval alter system change external_storage_dest path = '$oracle_data_backup_dest' set attribute = 'max_iops=2000&max_bandwidth=2000kb';
+eval alter system change external_storage_dest path = '$oracle_data_backup_dest' set access_info = '$oracle_backup_dest_ak_and_sk';
+
+--enable_all_result_log
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where event = 'change_external_storage_dest', 5, 10;
+
+--echo ===============================================================
+--echo ==================      mysql tenant       ====================
+--echo ===============================================================
+
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $mysql_log_backup_dest  = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $mysql_data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+let $mysql_backup_dest_ak_and_sk = deploy_get_value(ob1.get_backup_dest_access_id_and_access_key $backup_mysql_tenant);
+
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+connection backup_sys_conn;
+ob1.create_tenant CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool_1'), primary_zone = "z1" set ob_tcp_invited_nodes='%';
+connect(backup_mysql_conn, $backup_ip,root@$backup_mysql_tenant,,oceanbase, $backup_port);
+connection backup_mysql_conn;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$mysql_log_backup_dest';
+eval alter system set data_backup_dest='$mysql_data_backup_dest';
+--enable_all_result_log
+
+--disable_all_result_log
+if ($is_assume_role)
+{
+    #if access mode is assume role, return error code OB_NOT_SUPPORTED for setting access_info(-4007)    
+    --error 1235     
+    eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = 'access_id=CCC&access_key=DDD' attribute = 'max_iops=1000&max_bandwidth=1000kb';
+}
+if (1 == $backup_restore_mode) 
+{ 
+    #if device type is nfs, return error code OB_NOT_SUPPORTED for setting access_info(-4007)
+    --error 1235     
+    eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = 'access_id=CCC&access_key=DDD' attribute = 'max_iops=1000&max_bandwidth=1000kb';
+}
+if (!$is_assume_role)
+{
+    if (1 != $backup_restore_mode)
+    {
+        let $access_info_with_equal_mark = $mysql_backup_dest_ak_and_sk==;
+        --error 9116
+        eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = '$access_info_with_equal_mark' attribute = 'max_iops=1000&max_bandwidth=1000mb';        
+    }
+}
+eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = '$mysql_backup_dest_ak_and_sk' attribute = 'max_iops=1000&max_bandwidth=1000mb';        
+#change external storage dest using same content twice
+eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = '$mysql_backup_dest_ak_and_sk' attribute = 'max_iops=1000&max_bandwidth=1000mb';
+eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set attribute = 'max_iops=2000&max_bandwidth=2000kb';
+eval alter system change external_storage_dest path = '$mysql_data_backup_dest' set access_info = '$mysql_backup_dest_ak_and_sk';
+--enable_all_result_log
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where event = 'change_external_storage_dest', 10, 10;

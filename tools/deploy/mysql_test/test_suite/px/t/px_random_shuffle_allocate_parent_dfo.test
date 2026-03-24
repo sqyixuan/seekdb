@@ -1,0 +1,62 @@
+
+#owner: zhl413386
+#owner group: SQL2
+#tag:px, optimizer
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+let $saved_primary_zone=`select primary_zone from oceanbase.__all_tenant where tenant_name = 'sys'`;
+alter tenant sys set primary_zone = 'RANDOM';
+sleep 2;
+
+connection default;
+create database if not exists random_shuffle_db;
+use random_shuffle_db;
+
+create table if not exists t1_local(c1 int);
+CREATE TABLE if not exists px_random_shuffle_t1 (
+  c1 INT,
+  c2 INT
+) PARTITION BY hash(c1) PARTITIONS 2;
+
+insert into t1_local select random() % 100 from table(generator(1000));
+insert into px_random_shuffle_t1 select uniform(1, 1024, random(1)), uniform(1, 1024, random(2)) from table(generator(1000));
+
+--result_format 4
+# different partition of the table, make sure DFO include NLJ would be scheduled into different server ip
+explain basic select /*+parallel(4) leading(b_p1 (b_p0 a)) use_nl(a) use_das(a) pq_distribute(a random all)*/sql_calc_found_rows * from t1_local a, px_random_shuffle_t1 PARTITION(p0) b_p0, px_random_shuffle_t1 partition(p1) b_p1 where a.c1 = b_p1.c1 and b_p0.c1 = b_p1.c1 limit 0;
+--disable_result_log
+select /*+parallel(4) leading(b_p1 (b_p0 a)) use_nl(a) use_das(a) pq_distribute(a random all)*/sql_calc_found_rows * from t1_local a, px_random_shuffle_t1 PARTITION(p0) b_p0, px_random_shuffle_t1 partition(p1) b_p1 where a.c1 = b_p1.c1 and b_p0.c1 = b_p1.c1 limit 0;
+
+# expect the left child DFO's data should random shuffle to all server this sql relate, px_random_shuffle_t1' partition(p0) and partition(p1) are in differernt machine
+# so expect result here is 2, but maybe partitions are in single machine, then result would be 1, both are right
+--disable_query_log
+--enable_result_log
+let $last_trace_id = query_get_value(`select last_trace_id() as trace_id`, trace_id, 1);
+eval select count(distinct svr_ip) from oceanbase.gv\$sql_plan_monitor where trace_id = '$last_trace_id' and plan_operation = 'PHY_NESTED_LOOP_JOIN';
+
+#Below plan should *not* show up!!!
+#TEMP1's server should be marked to be shuffled if it's px random shuffle, so it can not partition wise with b_p0
+#|16|└─PX COORDINATOR                         |            |
+#|17|  └─EXCHANGE OUT DISTR                   |:EX20002    |
+#|18|    └─UNION ALL                          |            |
+#|19|      ├─TEMP TABLE ACCESS                |VIEW1(TEMP1)|
+#|22|      │─TEMP TABLE ACCESS                |VIEW2(TEMP1)|
+#|23|      └─PX PARTITION ITERATOR            |            |
+#|26|          └─TABLE FULL SCAN              |b_p0        |
+#===========================================================
+explain basic
+select /*+parallel(4) leading(b_p1 (b_p0 a)) use_nl(a) use_das(a) pq_distribute(a random all)*/ a.c1 from t1_local a, px_random_shuffle_t1 PARTITION(p0) b_p0, px_random_shuffle_t1 partition(p1) b_p1 where a.c1 = b_p1.c1 and b_p0.c1 = b_p1.c1
+union all
+select /*+parallel(4) leading(b_p1 (b_p0 a)) use_nl(a) use_das(a) pq_distribute(a random all)*/ a.c1 from t1_local a, px_random_shuffle_t1 PARTITION(p0) b_p0, px_random_shuffle_t1 partition(p1) b_p1 where a.c1 = b_p1.c1 and b_p0.c1 = b_p1.c1
+union all
+select /*+ PARALLEL(4) */ b_p0.c1 from px_random_shuffle_t1 PARTITION(p0) b_p0;
+
+--disable_warnings
+drop table t1_local;
+drop table px_random_shuffle_t1;
+drop database if exists random_shuffle_db;
+
+connection obsys;
+eval alter tenant sys set primary_zone = "$saved_primary_zone";

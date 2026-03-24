@@ -1,0 +1,82 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    acc_dr_task改动相关，避免两个迁移任务把其他如locality对齐等任务饿死
+#    并行迁移时，如果一个副本在迁移，后续该日志流需要补副本，但是由于与迁移任务互斥，迟迟无法得到执行
+#    此时如果又有一个其他副本需要迁移，由于并行迁移，则该任务能够执行成功
+#    这种情况下有可能会饿死补副本的任务
+#    acc_dr_task保持与32x版本一致，如果有任务需要生成并且可以生成，但是任务冲突无法add到队列中，此时也增大acc_dr_task，使得后续场景不再检测任务。
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance = false;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+let $unit_id_z1 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z1', unit_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.DBA_OB_SERVERS where zone = 'z1' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z1' and unit_id >= 1001), svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.DBA_OB_SERVERS where zone = 'z1' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z1' and unit_id >= 1001), svr_port, 1);
+let $dest_server_z1 = $ip:$port;
+
+let $unit_id_z2 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z2', unit_id, 1);
+let $ip2 = deploy_get_value(ob1.select select svr_ip from oceanbase.DBA_OB_SERVERS where zone = 'z2' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z2' and unit_id >= 1001), svr_ip, 1);
+let $port2 = deploy_get_value(ob1.select select svr_port from oceanbase.DBA_OB_SERVERS where zone = 'z2' and CONCAT(svr_ip, ':', svr_port) not in (select CONCAT(svr_ip, ':', svr_port) from oceanbase.DBA_OB_UNITS where zone = 'z2' and unit_id >= 1001), svr_port, 1);
+let $dest_server_z2 = $ip2:$port2;
+
+--disable_query_log
+
+# 允许租户并行迁移
+alter system set replica_parallel_migration_mode = 'on' tenant = 'mysql_tenant';
+
+# 暂时只生成任务不调度任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+# 1. 迁移zone1的unit，生成迁移任务，卡住
+eval ALTER SYSTEM MIGRATE UNIT $unit_id_z1 DESTINATION "$dest_server_z1";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = 1002 and ls_id = 1001, 1, 30;
+sleep 3;
+
+
+# 2. locality变更需要生成补副本任务，卡住
+ALTER TENANT mysql_tenant locality="FULL{1}@z1, FULL{1}@z2, FULL{1}@z3";
+sleep 30;
+# 没有补副本任务记录
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = 1002 and ls_id = 1001, 1, 30;
+ob1.check_until_timeout select count(*) from DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = 1002 and value2 = 1001 and EVENT = 'start_add_ls_replica', 0, 20;
+
+# 3. 迁移zone2的unit，卡住
+eval ALTER SYSTEM MIGRATE UNIT $unit_id_z2 DESTINATION "$dest_server_z2";
+sleep 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = 1002 and ls_id = 1001, 1, 30;
+
+# 4. 放开迁移任务 先生成补服本任务，再生成下一个迁移任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+# 检测到补副本任务生成了
+ob1.check_until_timeout select count(*) from DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = 1002 and value2 = 1001 and EVENT = 'start_add_ls_replica', 1, 60;
+# 检测到migrate副本任务生成了
+ob1.check_until_timeout select count(*) from DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = 1002 and value2 = 1001 and EVENT = 'start_migrate_ls_replica', 2, 60;
+
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = 1002 and ls_id = 1001, 0, 60;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE tenant_id = 1002 and ls_id = 1001, 3, 60;
+
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE tenant_id = 1002 and ls_id = 1001 and TASK_TYPE = 'ADD REPLICA' and CREATE_TIME < (select CREATE_TIME from cdb_ob_ls_replica_task_history where tenant_id = 1002 and ls_id = 1001 and TARGET_REPLICA_SVR_PORT = $port2 and TARGET_REPLICA_SVR_IP = '$ip2' and TASK_TYPE = 'MIGRATE REPLICA'), 1, 10;
+
+select tenant_id, task_type, priority, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment, is_manual from cdb_ob_ls_replica_task_history where tenant_id = 1002 and ls_id = 1001 order by start_time;

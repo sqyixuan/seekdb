@@ -1,0 +1,130 @@
+# owner:yanyuan.cxf
+# owner group: TRANSACTION
+#
+# flashback
+#
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=0, proxy_num=0, ct_num = 0, locality=hz:hz:hz);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), primary_zone 'z2', locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root,,test,USE_OB_CONNECTOR);
+ob_connect(tt_conn, ob1.z2.obs0, SYS@tenant_1, ,SYS, , USE_OB_CONNECTOR);
+ob_connect(tt_conn_follower, ob1.z1.obs0, SYS@tenant_1, ,SYS, , USE_OB_CONNECTOR);
+
+connection tt_conn;
+
+sleep 10;
+
+create table t(c1 int primary key, c2 int);
+
+let $t_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = "$tenant_id" and table_name = "t", table_id, 1);
+
+insert into t values(1,1);
+insert into t values(2,2);
+insert into t values(3,3);
+insert into t values(4,4);
+insert into t values(5,5);
+insert into t values(6,6);
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+let $point1 = deploy_get_value(ob1.select select max(frozen_snapshot) as x from oceanbase.__all_virtual_freeze_info, x, 1);
+
+insert into t values(11,11);
+insert into t values(12,12);
+insert into t values(13,13);
+
+sleep 1;
+
+alter system set undo_retention = 900;
+
+let $round = 0;
+let $count = 0;
+let $pkey = 100;
+
+while($round < 5)
+{
+  let $point2 = deploy_get_value(ob1.select select now() as x, x, 1);
+
+  let $count = 0;
+  while($count < 100)
+  {
+    eval insert into t values($pkey, $pkey);
+    inc $count;
+    inc $pkey;
+  }
+  inc $round;
+
+  ob1.mysql alter system minor freeze tenant = sys;
+  ob1.mysql alter system minor freeze tenant = all_user;
+  ob1.mysql alter system minor freeze tenant = all_meta;
+
+  sleep 2;
+  --disable_query_log
+  eval flashback table t to timestamp to_timestamp('$point2','yyyy-mm-dd hh24:mi:ss');
+  --enable_query_log
+  sleep 10;
+
+  select * from t;
+}
+
+let $count = 0;
+while($count < 100)
+{
+  eval insert into t values($pkey, $pkey);
+  inc $count;
+  inc $pkey;
+}
+
+--disable_query_log
+eval flashback table t to scn $point1;
+--enable_query_log
+
+sleep 2;
+
+select * from t;
+
+ob1.z2.obs0.force_stop;
+
+sleep 5;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id=$t_id and zone != 'z2' and role=1, 1, 30;
+
+connection tt_conn_follower;
+
+select * from t;
+
+ob1.z2.obs0.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id=$t_id and zone = 'z2' and role=1, 1, 60;
+
+select * from t;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+select * from t;
+
+drop table t;

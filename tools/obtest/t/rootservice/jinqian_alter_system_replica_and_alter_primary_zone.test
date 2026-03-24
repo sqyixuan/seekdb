@@ -1,0 +1,188 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    1. LOCALITY 为 Fz1 Fz2 Rz3, 实际副本分布为 Fz1 Fz2 Fz3, 进行primary zone变更
+#    2. LOCALITY 为 Fz1 Fz2 Rz3, 实际副本分布为 2Fz1 0Fz2 2Fz3, 进行primary zone变更
+#    3. LOCALITY 为 Fz1 Fz2 Rz3, 实际副本分布为 Fz1 Fz2 Fz3 Fz4, 进行primary zone变更
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, R@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select SELECT tenant_id - 1 as meta_tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $meta_tenant_name = deploy_get_value(ob1.select SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id, tenant_name, 1);
+
+# get servers' addr in z1, z2, z3 and z4
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $z4_obs0_ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_obs0_port = deploy_get_value(ob1.z4.obs0.port);
+let $z4_obs0 = $z4_obs0_ip:$z4_obs0_port;
+
+let $z4_obs1_ip = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_obs1_port = deploy_get_value(ob1.z4.obs1.port);
+let $z4_obs1 = $z4_obs1_ip:$z4_obs1_port;
+
+let $tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1, ls_id_tmp, 1);
+sleep 3;
+
+--disable_query_log
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||                    case 1: Fz1 Fz2 Fz3                             ||
+--echo ========================================================================
+
+# 构造Fz1 Fz2 Rz3 -> Fz1 Fz2 Fz3
+eval alter system modify replica ls=$tenant_ls_id server='$z3_obs0' replica_type = 'F' paxos_replica_num=3 tenant='mysql_tenant';
+ob1.check_until_timeout select PAXOS_REPLICA_NUMBER from oceanbase.CDB_OB_LS_LOCATIONS where ROLE = 'LEADER' and tenant_id = $tenant_id and ls_id = $tenant_ls_id, 3, 60;
+ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs0%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+# 1. 切换primary_zone: z1->z3
+alter tenant mysql_tenant primary_zone='z3';
+
+# 现象: 生成2个新日志流,leader分别在z2(切primary zone时发现z3localty为R于是忽略，z1和z3同等优先级，因此创建两个日志流)
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 5, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 2, 60;
+
+# 2. 切换primary_zone: z3->z1
+alter tenant mysql_tenant primary_zone='z1';
+
+# 现象: 日志流数量缩减，leader在z1
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 3, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 0, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z1', 3, 60;
+
+# 3. 切换primary_zone: z1->z2
+alter tenant mysql_tenant primary_zone='z2';
+
+# 现象: leader切换到z2
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 3, 60;
+
+--echo ========================================================================
+--echo ||                    case 2: 2Fz1 0Fz2 2Fz3                          ||
+--echo ========================================================================
+
+# 构造Fz1 Fz2 Fz3 -> 2Fz1 0Fz2 2Fz3
+eval alter system remove replica ls=$tenant_ls_id server='$z2_obs0' paxos_replica_num=2 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z2_obs0%', 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+eval alter system add replica ls=$tenant_ls_id server = '$z1_obs1' replica_type = 'F' paxos_replica_num = 3 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z1_obs1%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+eval alter system add replica ls=$tenant_ls_id server = '$z3_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs1%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+# 1. 切换primary_zone: z1->z2
+alter tenant mysql_tenant primary_zone='z2';
+
+# 现象: 1002日志流无变化，locality为F，但是z2没有F副本
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 3, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 2, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and LS_ID = $tenant_ls_id and role = 'LEADER' and ZONE = 'z1', 1, 60;
+
+# 2. 切换primary_zone: z2->z3
+alter tenant mysql_tenant primary_zone='z3';
+
+# 现象: 生成新日志流，leader在z1
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 5, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 2, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z1', 3, 60;
+
+# 3. 切换primary_zone: z3->z1
+alter tenant mysql_tenant primary_zone='z1';
+
+# 现象: 日志流缩减，leader在z1
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 3, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 0, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z1', 3, 60;
+
+--echo ========================================================================
+--echo ||                    case 3: Fz1 Fz2 Fz3 Fz4                         ||
+--echo ========================================================================
+
+# 构造2Fz1 0Fz2 2Fz3 -> Fz1 Fz2 Fz3 Fz4
+eval alter system remove replica ls=$tenant_ls_id server='$z1_obs1' paxos_replica_num=3 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z1_obs1%', 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id, 3, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+eval alter system remove replica ls=$tenant_ls_id server='$z3_obs1' paxos_replica_num=2 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs1%', 0, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id, 2, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+eval alter system add replica ls=$tenant_ls_id server = '$z2_obs0' replica_type = 'F' paxos_replica_num = 3 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z2_obs0%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+eval alter system add replica ls=$tenant_ls_id server = '$z4_obs0' replica_type = 'F' paxos_replica_num = 4 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z4_obs0%', 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+
+# 1. 切换primary_zone: z1->z4
+--error 1210
+alter tenant mysql_tenant primary_zone='z4';
+
+# 2. 切换primary_zone: z1->z3
+alter tenant mysql_tenant primary_zone='z3';
+
+# 现象: 新增日志流,leader在z2
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 5, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 2, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z1', 3, 60;
+
+# 3. 切换primary_zone: z3->z2
+alter tenant mysql_tenant primary_zone='z2';
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, 3, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z2', 3, 60;
+ob1.check_until_timeout select COUNT(*) from oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id and role = 'LEADER' and ZONE = 'z1', 0, 60;

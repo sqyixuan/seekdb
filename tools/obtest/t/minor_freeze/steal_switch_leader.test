@@ -1,0 +1,315 @@
+# owner: handora.qc
+# owner group: transaction
+# description: this case is use for minor freeze uncommitted transactions when switching leader
+
+--disable_query_log
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=2);
+
+ob1.z1.obs0.set extra_config=_private_buffer_size='1B';
+ob1.z2.obs0.set extra_config=_private_buffer_size='1B';
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql set GLOBAL ob_query_timeout = 100000000000;
+ob1.mysql set GLOBAL ob_trx_timeout = 100000000000;
+
+# 创建租户
+ob1.mysql create resource pool qc unit = 'sys_unit_config', unit_num =1;
+ob1.mysql create tenant mysql replica_num = 1, resource_pool_list=('qc') set ob_tcp_invited_nodes='%';
+sleep 3;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $port1=deploy_get_value(ob1.z2.obs0.port);
+let $sql_port1=deploy_get_value(ob1.z2.obs0.mysql_port);
+
+connect(conn_sys,$ip0,root@sys,,oceanbase,$sql_port0);
+connect(conn1,$ip0,root@mysql,,test,$sql_port0);
+connect(conn2,$ip1,root@mysql,,test,$sql_port1);
+
+connection conn1;
+set ob_query_timeout = 100000000000;
+set ob_trx_timeout = 100000000000;
+set ob_trx_idle_timeout = 100000000000;
+
+# 创建table和索引
+connection conn1;
+create table t1 (a int, b int, c int, d int, e int, index idx_a(a), index idx_b(b), index idx_c(c), index idx_d(d), unique key(a, b, c, d, e));
+
+# 测试分布式事务的复制表
+create table t2 (x int, y int, index idx_x(x), index idx_y(y), primary key(x, y)) partition by hash(y % 2) partitions 2;
+
+# 获取tid
+let $tid1=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+let $tid2=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t2', table_id, 1);
+
+# 转储前插入数据
+connection conn1;
+insert into t1 value(0, 0, 0, 0, 0);
+insert into t2 value(0, 0);
+
+# ===================== 1.备机转储后切主读取数据 =====================
+# 先提前分布leader位置
+ob1.z1.obs0.switch_partition mysql:test:t1:0;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+# 转储前读取数据
+connection conn1;
+insert into t1 value(1, 0, 0, 0, 0);
+begin;
+insert into t1 value(1, 0, 0, 0, 1);
+select * from t1;
+
+# 转储同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+# 切主到node B
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip1:$port1';
+sleep 5;
+# 确保切主成功
+ob1.z2.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(1, 0, 0, 0, 2);
+select * from t1;
+
+# 转储同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+sleep 3;
+
+# 切主到node A
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip0:$port0';
+sleep 5;
+# 确保切主成功
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+# 转储后读取数据
+connection conn1;
+select * from t1;
+commit;
+
+# ===================== 2.切主后读取回滚事务 =====================
+# 先提前分布leader位置
+ob1.z1.obs0.switch_partition mysql:test:t1:0;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(2, 0, 0, 0, 0);
+begin;
+insert into t1 value(2, 0, 0, 0, 1);
+
+# 转储A节点同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 10;
+
+# 切主到node B
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip1:$port1';
+sleep 5;
+# 确保切主成功
+ob1.z2.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(2, 0, 0, 0, 2);
+select * from t1;
+
+# 转储B节点同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+#回滚
+connection conn1;
+rollback;
+
+# 切主到node A
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip0:$port0';
+sleep 5;
+# 应该读取不到数据
+connection conn1;
+select * from t1;
+
+# ===================== 3.语句转储脏数据后, 因为切主导致事务回滚 =====================
+# 先提前分布leader位置
+ob1.z1.obs0.switch_partition mysql:test:t1:0;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(3, 0, 0, 0, 0);
+
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE wait_for qc execute 1000';
+
+connection conn1;
+begin;
+send insert into t1 values(3, 0, 0, 0, 1);
+
+# 转储A节点同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+# 切主到node B
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip1:$port1';
+sleep 5;
+# 确保切主成功
+ob1.z2.obs0.check_leader mysql:test:t1:0;
+
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 10000';
+
+connection conn1;
+# 事务语句未结束会回滚
+--error 6002
+reap;
+rollback;
+
+# 应该读取不到数据数据
+connection conn1;
+select * from t1;
+
+# ===================== 4.语句提交, 事务回滚 =====================
+# 先提前分布leader位置
+ob1.z1.obs0.switch_partition mysql:test:t1:0;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(4, 0, 0, 0, 0);
+
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE wait_for qc execute 1000';
+
+connection conn1;
+begin;
+# 卡住语句执行
+send insert into t1 values(4, 0, 0, 0, 1);
+
+# 转储A节点同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+# 语句继续
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 10000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 10000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+
+connection conn1;
+reap;
+
+sleep 10;
+
+# 切主到node B
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip1:$port1';
+sleep 5;
+# 确保切主成功
+ob1.z2.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+# 现在切主
+insert into t1 values(4, 0, 0, 0, 2);
+rollback;
+
+# 应该读取不到数据数据
+connection conn1;
+select * from t1;
+
+# ===================== 5.语句回滚, 事务提交 =====================
+# 先提前分布leader位置
+ob1.z1.obs0.switch_partition mysql:test:t1:0;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t1:0;
+
+connection conn1;
+insert into t1 value(5, 0, 0, 0, 0);
+
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE wait_for qc execute 1000';
+
+connection conn1;
+begin;
+# 卡住语句执行
+send insert into t1 values(5, 0, 0, 0, 1), (5, 0, 0, 0, 0);
+
+# 转储A节点同步日志
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+# 语句继续
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 1000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 1000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+
+connection conn1;
+--error 1062
+reap;
+
+# 切主到node B
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid1' server= '$ip1:$port1';
+sleep 5;
+# 确保切主成功
+ob1.z2.obs0.check_leader mysql:test:t1:0;
+
+sleep 5;
+
+connection conn1;
+# 成功写入后提交
+insert into t1 values(5, 0, 0, 0, 2);
+commit;
+
+# 应该读取到(5, 0, 0, 0, 2), 而读不到(5, 0, 0, 0, 1)
+connection conn1;
+select * from t1;
+
+# ===================== 6.分布式事务, 读测试lock_for_read =====================
+###### 等待合并 #######
+ob1.check_until_timeout select count(*) < 7 from oceanbase.__all_virtual_table_mgr where table_id = $tid1 and svr_ip = "$ip0" and svr_port = $port0 and table_type = 0 and is_active = 0, 1, 300;
+ob1.check_until_timeout select count(*) < 7 from oceanbase.__all_virtual_table_mgr where table_id = $tid2 and svr_ip = "$ip0" and svr_port = $port0 and table_type = 0 and is_active = 0, 1, 300;
+
+
+# 切主以满足分布式事务
+ob1.z1.obs0.switch_partition mysql:test:t2:0;
+ob1.z2.obs0.switch_partition mysql:test:t2:1;
+sleep 10;
+ob1.z1.obs0.check_leader mysql:test:t2:0;
+ob1.z2.obs0.check_leader mysql:test:t2:1;
+
+connection conn1;
+insert into t2 values(6, 0);
+
+# 卡住提交
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DIST_COMMIT wait_for qc execute 1000';
+
+connection conn1;
+send insert into t2 values(6, 1), (6, 2);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+# 检测memtable已经释放(因为超时切主原因, 先不测)
+# ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id = $tid2 and svr_ip = "$ip1" and svr_port = $port1 and table_type = 0 and is_active = 0, 0, 300;
+
+ob1.mysql set GLOBAL ob_query_timeout = 10000000;
+ob1.mysql set GLOBAL ob_trx_timeout = 10000000;
+
+connection conn2;
+# 此处会因为lock_for_read卡住
+--error 6004
+select * from t2;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DIST_COMMIT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 1000';
+
+# 切主partition 0到node B, partition 1到node A
+ob1.mysql alter system switch replica leader partition_id = '0%0@$tid2' server= '$ip1:$port1';
+ob1.mysql alter system switch replica leader partition_id = '1%0@$tid2' server= '$ip0:$port0';
+sleep 5;
+
+connection conn1;
+reap;
+
+ob1.z1.obs0.check_leader mysql:test:t2:1;
+ob1.z2.obs0.check_leader mysql:test:t2:0;

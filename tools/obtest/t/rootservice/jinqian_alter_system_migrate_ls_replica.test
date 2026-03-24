@@ -1,0 +1,195 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    This case is aimed to test migrate ls replica sql command
+#    We designed following cases to simulate different scenes:
+#
+#    CASE 1: basic test
+#    CASE 2: migrate error case
+#    CASE 3: migrate success case
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, R@z3, F@z4", PRIMARY_ZONE = "z4" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select SELECT tenant_id - 1 as meta_tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $meta_tenant_name = deploy_get_value(ob1.select SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id, tenant_name, 1);
+
+# get servers' addr in z1, z2, z3 and z4
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $z4_obs0_ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_obs0_port = deploy_get_value(ob1.z4.obs0.port);
+let $z4_obs0 = $z4_obs0_ip:$z4_obs0_port;
+
+let $z4_obs1_ip = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_obs1_port = deploy_get_value(ob1.z4.obs1.port);
+let $z4_obs1 = $z4_obs1_ip:$z4_obs1_port;
+
+let $z5_obs0_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $z5_obs0_port = deploy_get_value(ob1.z5.obs0.port);
+let $z5_obs0 = $z5_obs0_ip:$z5_obs0_port;
+
+let $tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1, ls_id_tmp, 1);
+let $tenant_ls_id2 = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs1_ip' AND svr_port = $z1_obs1_port AND ls_id > 1, ls_id_tmp, 1);
+
+--disable_query_log
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||              [MILESTONE] case 1: basic test                        ||
+--echo ========================================================================
+
+--echo 1.1 tenant not exist
+--error 5157
+alter system migrate replica ls=100 source='100.88.107.212:5000' destination='100.88.107.212:5000' data_source='100.88.107.212:5001' tenant='mysql_tenant_x';
+
+--echo 1.2 ls not exist
+--error 4018
+alter system migrate replica ls=100 source='100.88.107.212:5000' destination='100.88.107.212:5000' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 1.3 meta tenant can not operate normal tenant ls
+--error 4018
+eval alter system migrate replica ls=$tenant_ls_id source='100.88.107.212:5000' destination='100.88.107.212:5000' data_source='100.88.107.212:5001' tenant='$meta_tenant_name';
+
+--echo ========================================================================
+--echo ||           [MILESTONE] case 2: migrate error case                   ||
+--echo ========================================================================
+
+--echo 2.1 ls not exist
+--error 4018
+alter system migrate replica ls=100 source='100.88.107.212:5000' destination='100.88.107.212:5000' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.2 has no replica
+--error 4018
+eval alter system migrate replica ls=$tenant_ls_id source='100.88.107.212:5000' destination='100.88.107.212:5000' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.3 desti has no unit
+--error 4018
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z5_obs0' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.4 server status wrong, stop z4 obs0
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_WORKER_START, error_code = 4016, frequency = 1;
+sleep 11;
+ob1.z4.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where SVR_IP = '$z4_obs0_ip' and SVR_PORT = '$z4_obs0_port' and STATUS = 'ACTIVE', 0, 60;
+
+--disable_result_log
+--error 4179
+eval alter system migrate replica ls=$tenant_ls_id2 source='$z4_obs1' destination='$z4_obs0' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+--enable_result_log
+
+--echo 2.5 source no replica
+--error 4018
+eval alter system migrate replica ls=$tenant_ls_id source='$z5_obs0' destination='$z1_obs1' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.7 not same zone
+--error 4179
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z2_obs1' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.8 desti has replica
+--error 4017
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z1_obs0' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.9 data source not available
+--error 4179
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z1_obs1' data_source='100.88.107.212:5001' tenant='mysql_tenant';
+
+--echo 2.10 data source not available
+--error 4179
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z1_obs1' data_source='$z3_obs0' tenant='mysql_tenant';
+
+--echo ========================================================================
+--echo ||        [MILESTONE] case 3: migrate success case                    ||
+--echo ========================================================================
+
+--echo 3.1
+eval alter system migrate replica ls=$tenant_ls_id source='$z1_obs0' destination='$z1_obs1' tenant='mysql_tenant';
+sleep 3;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id, 4, 60;
+ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list NOT LIKE '%$z1_obs1%' AND member_list LIKE '%$z1_obs0%', 1, 20;
+sleep 3;
+eval select LS_ID, ROLE, PAXOS_REPLICA_NUMBER, REPLICA_TYPE from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id order by ROLE, REPLICA_TYPE, PAXOS_REPLICA_NUMBER;
+--echo expected 0
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z1_obs0_ip' and SVR_PORT = '$z1_obs0_port';
+--echo expected 1
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z1_obs1_ip' and SVR_PORT = '$z1_obs1_port';
+
+--echo 3.2
+eval alter system migrate replica ls=$tenant_ls_id source='$z3_obs0' destination='$z3_obs1' data_source='$z1_obs1' tenant='mysql_tenant';
+sleep 3;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id, 4, 60;
+ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list NOT LIKE '%$z3_obs1%' AND member_list LIKE '%$z3_obs0%', 1, 20;
+sleep 3;
+eval select LS_ID, ROLE, PAXOS_REPLICA_NUMBER, REPLICA_TYPE from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id order by ROLE, REPLICA_TYPE, PAXOS_REPLICA_NUMBER;
+--echo expected 0
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z3_obs0_ip' and SVR_PORT = '$z3_obs0_port';
+--echo expected 1
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z3_obs1_ip' and SVR_PORT = '$z3_obs1_port';
+
+--echo 3.3
+eval alter system migrate replica ls=$tenant_ls_id source='$z2_obs0' destination='$z2_obs1' data_source='$z1_obs1' tenant='mysql_tenant';
+sleep 3;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id, 4, 60;
+ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list NOT LIKE '%$z2_obs1%' AND member_list LIKE '%$z2_obs0%', 1, 20;
+sleep 3;
+eval select LS_ID, ROLE, PAXOS_REPLICA_NUMBER, REPLICA_TYPE from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id order by ROLE, REPLICA_TYPE, PAXOS_REPLICA_NUMBER;
+--echo expected 0
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z2_obs0_ip' and SVR_PORT = '$z2_obs0_port';
+--echo expected 1
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z2_obs1_ip' and SVR_PORT = '$z2_obs1_port';
+
+--echo 3.4
+eval alter system migrate replica ls=$tenant_ls_id source='$z3_obs1' destination='$z3_obs0' tenant='mysql_tenant';
+sleep 3;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id, 4, 60;
+ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list NOT LIKE '%$z3_obs0%' AND member_list LIKE '%$z3_obs1%', 1, 20;
+sleep 3;
+eval select LS_ID, ROLE, PAXOS_REPLICA_NUMBER, REPLICA_TYPE from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id order by ROLE, REPLICA_TYPE, PAXOS_REPLICA_NUMBER;
+--echo expected 1
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z3_obs0_ip' and SVR_PORT = '$z3_obs0_port';
+--echo expected 0
+eval select count(*) from __all_virtual_ls_meta_table where ls_id = $tenant_ls_id and SVR_IP = '$z3_obs1_ip' and SVR_PORT = '$z3_obs1_port';

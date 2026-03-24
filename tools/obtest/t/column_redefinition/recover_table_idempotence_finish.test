@@ -1,0 +1,182 @@
+# owner: liujixiong.ljx
+# owner group: ddl
+# Testing Case: recover restore table ddl.
+ 
+ob1=OBI(cluster=1:1:1, proxy_num=1, init_unit_cpu=2);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ 
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+ 
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ 
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(backup_sys_conn, ob1.proxy0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+use oceanbase;
+drop tenant obtest force;
+sleep 2;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ 
+CREATE RESOURCE UNIT small_unit MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+CREATE RESOURCE POOL small_pool_0 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+ 
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '4G';
+ob1.mysql alter system set enable_async_syslog = 'false';
+ 
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql',lower_case_table_names=1;
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+
+ob_connect(sys_conn_oracle, ob1.proxy0, root@$backup_oracle_tenant, ,oceanbase, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+ 
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest';
+eval alter system set data_backup_dest='$data_backup_dest';
+--enable_all_result_log
+ 
+--echo ===============================================================
+--echo ====================     create table   =======================
+--echo ===============================================================
+connection sys_conn_oracle;
+use test; 
+create table t1 (c1 int primary key,
+                 c2 char(100) not null,
+                 c3 char(50) unique,
+                 c4 int check(c4>20),
+                 c5 int,
+                 c6 set ('abc', 'cde', 'def'),
+                 c7 enum ('a', 'b', 'c'),
+                 c8 char(100) generated always as (substr(c2, 1, 20)) virtual,
+                 c9 char(100) generated always as (substr(c2, 1, 20)) stored);
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (1, 'allen ', '1234567890123', 30, 1, 'abc', 'a');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (2, 'sam ', '2234567890123', 30, 2, 'cde', 'c');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (3, 'billy ', '3234567890123', 30, 3, 'cde', 'b');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (4, 'carl', '4234567890123', 30, 4, 'cde', 'a');
+
+create table t2 (c1 int, 
+                 c2 int, 
+                 c3 int, 
+                 c4 int, 
+                 c5 int,
+                 CONSTRAINT t2_cst_pk PRIMARY KEY (c1),
+                 constraint t2_cst_chk_1 check(c1=c2),
+                 constraint t2_cst_chk_2 check(c1=c2),
+                 constraint t2_cst_unique_1 unique(c3, c1),
+                 constraint t2_cst_unique_2 unique(c4, c1),
+                 constraint t2_OBCHECK_123456 check(c2=c3),
+                 constraint t2_OBUNIQUE_123456 unique(c5, c1)) partition by hash(c1) partitions 3;
+insert into t2 values(1, 1, 1, 1, 1);
+insert into t2 values(2, 2, 2, 2, 2);
+insert into t2 values(3, 3, 3, 3, 3);
+insert into t2 values(4, 4, 4, 4, 4);
+ 
+--echo ===============================================================
+--echo ==============   backup and archive   =========================
+--echo ===============================================================
+connection backup_sys_conn;
+use oceanbase;
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) from cdb_ob_backup_jobs, 0, 600;
+let $restore_checkpoint1 = query_get_value(select min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_oracle_tenant_id, min_restore_scn, 1);
+ob1.check_until_timeout select checkpoint_scn > $restore_checkpoint1 from CDB_OB_ARCHIVELOG, 1, 600;
+ 
+--echo ===============================================================
+--echo ====================   recover table   ========================
+--echo ===============================================================
+connection sys_conn_oracle;
+create database recover_test;
+ 
+connection backup_sys_conn;
+use oceanbase;
+--echo
+--echo 1. to test retry to take effect for table t1.
+--echo a. set debug sync.
+ob1.mysql set ob_global_debug_sync = 'SWAP_ORIG_AND_HIDDEN_TABLE_BEFORE_PUBLISH_SCHEMA wait_for signal execute 10000';
+sleep 2;
+
+--echo
+--echo b. to execute recover restore table task.
+sleep 2;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+ob1.mysql alter system recover table test.t1 to tenant backup_oracle_tenant from '$restore_path' until scn = $restore_checkpoint1 with 'pool_list=small_pool_0&primary_zone=z1' remap table test.t1:recover_test.recover_restore_normal_table_t1;
+ob1.check_until_timeout select status from __all_virtual_ddl_task_status, 6, 600;
+
+--echo
+--echo c. to switch leader, and clear debug sync.
+ob1.z1.obs0.force_stop;
+sleep 5;
+select ddl_type, status from __all_virtual_ddl_task_status;
+ob1.mysql set ob_global_debug_sync = 'SWAP_ORIG_AND_HIDDEN_TABLE_BEFORE_PUBLISH_SCHEMA clear';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal';
+sleep 5;
+select ret_code from __all_virtual_ddl_error_message where ddl_type=1013 order by gmt_create;
+ob1.z1.obs0.nstart;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 600;
+sleep 30;
+
+
+--echo
+--echo 2. to test retry to fail for table t2.
+--echo a. set debug sync.
+alter tenant sys set primary_zone = 'z2';
+ob1.mysql set ob_global_debug_sync = 'COLUMN_REDEFINITION_REPLICA_BUILD wait_for signal_1 execute 10000'; 
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'SWAP_ORIG_AND_HIDDEN_TABLE_BEFORE_PUBLISH_SCHEMA wait_for signal_2 execute 10000';
+sleep 2;
+
+--echo
+--echo b. to execute recover restore table task.
+sleep 2;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+ob1.mysql alter system recover table test.t2 to tenant backup_oracle_tenant from '$restore_path' until scn = $restore_checkpoint1 with 'pool_list=small_pool_0&primary_zone=z2' remap table test.t2:recover_test.recover_restore_normal_table_t2;
+ob1.check_until_timeout select status from __all_virtual_ddl_task_status, 3, 600;
+
+--echo
+--echo c. to drop aux tenant, to fail.
+let $aux_tenant_name = query_get_value(select tenant_name from oceanbase.__all_tenant where tenant_name like '%AUX_RECOVER%', tenant_name, 1);
+--replace_regex /AUX_RECOVER\$[0-9]*/AUX_RECOVER_TENANT/g
+eval drop tenant $aux_tenant_name force;
+
+--echo
+--echo d. to clear debug sync point to the fail status.
+ob1.mysql set ob_global_debug_sync = 'COLUMN_REDEFINITION_REPLICA_BUILD clear';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_1';
+sleep 5;
+
+--echo 
+--echo e. to switch leader, and retry failed status.
+ob1.z2.obs0.force_stop;
+sleep 5;
+ob1.z2.obs0.nstart;
+sleep 30;
+SELECT STATUS FROM OCEANBASE.__ALL_VIRTUAL_DDL_TASK_STATUS;
+ob1.mysql set ob_global_debug_sync = 'SWAP_ORIG_AND_HIDDEN_TABLE_BEFORE_PUBLISH_SCHEMA clear';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_2';
+sleep 5;
+
+select ret_code from __all_virtual_ddl_error_message where ddl_type=1013 order by gmt_create;
+eval SELECT DDL_STMT_STR FROM OCEANBASE.__ALL_VIRTUAL_DDL_OPERATION WHERE tenant_id = $backup_oracle_tenant_id and (ddl_stmt_str != '' and ddl_stmt_str not like '%GRANT%' and ddl_stmt_str not like '%USER%' and ddl_stmt_str not like '%ROLE%') order by gmt_create;

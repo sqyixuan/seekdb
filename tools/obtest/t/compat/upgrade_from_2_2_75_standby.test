@@ -1,0 +1,299 @@
+# owner      : shouju.zyp
+# owner group: dev
+# description: 测试从2_2_75 升级到2_2_76分支
+##
+ob1=OBI(cluster=1:1:1,init_unit_cpu=1,init_unit_num=1,init_unit_mem=805306368,version=2_2_75,oblog_version=current);
+ob2=OBI(cluster=1:1:1,init_unit_cpu=1,init_unit_num=1,init_unit_mem=805306368,version=2_2_75,oblog_version=current,leaderob=ob1,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='10G',system_memory='5G',__min_full_resource_pool_memory='268435456',cache_wash_threshold='1G'";
+ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.z1.obs0.set extra_config=memory_chunk_cache_size=1G,$extra_conf;
+ob2.z1.obs0.set extra_config=memory_chunk_cache_size=1G,$extra_conf;
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob2.reboot;
+sleep 5;
+ob1.mysql alter RESOURCE UNIT proxyunit max_memory=805306368,min_memory=805306368;
+ob2.mysql alter RESOURCE UNIT __unit_config_1001  max_memory=805306368,min_memory=805306368;
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob2.z1.obs0.workdir);
+ob2.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+# 2. 修改配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set resource_soft_limit=200;
+ob1.mysql alter system set resource_hard_limit=200;
+ob2.mysql alter system set balancer_idle_time='10s';
+ob2.mysql alter system set merger_check_interval='10s';
+ob2.mysql alter system set resource_soft_limit=200;
+ob2.mysql alter system set resource_hard_limit=200;
+
+# 3. proxy同步集群状态的时间间隔
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+let $clusterName=deploy_get_value(ob1.app_name);
+connect (conn_proxy,$ip,root@obproxy,,test,$port);
+#set global ob_timestamp_service = 'LTS';
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+#set global ob_timestamp_service = 'LTS';
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+#set global ob_timestamp_service = 'LTS';
+
+# 4.数据准备
+# 4.1 基础数据准备,设置obtest租户的primary zone
+connection conn_obtest;
+create database db1;
+create tablegroup tg;
+create table db1.tb_normal (pk int primary key,c1 varchar(1024) default '0', c2 timestamp(6) default now(6), c3 timestamp default now(), index i1(c2), index i2(c1)) tablegroup tg;
+create table db1.tb_increment (pk int primary key auto_increment,c1 int, c2 datetime(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), index i1(c2)) tablegroup tg;
+create table db1.tb_bigtable (c1 varchar(65536),c2 varchar(65536),c3 varchar(65536),c4 varchar(65536), pk bigint primary key auto_increment) COMPRESSION = 'none' tablegroup tg;
+
+create table test.tb_table_gencol(pk1 bigint, pk2 varchar(2048),c1 varchar(65536), c2 varchar(65536),ac1 bigint auto_increment,
+ts timestamp(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),  gmt_create timestamp(6) default now(6), gmt_modified timestamp(6) default now(6),
+gen_c1 varchar(10) GENERATED ALWAYS AS (substr(c1,1,10)) virtual,
+gen_c2 varchar(10) GENERATED ALWAYS AS (substr(c2,1,10)) stored,
+primary key(pk1, pk2),index i1(ts));
+
+create table test.tablegencol(c1 bigint primary key,user_id varchar(32) NOT NULL default '' comment 'Alipay User ID', address varchar(256) NOT NULL default '' comment 'address', index(user_id,address(255)));
+
+create table test.table_hash(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+create table test.table_range(c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200), partition p2 values less than MAXVALUE);
+create table test.table_hash_range (c1 int primary key, c2 int) partition by hash(c1) subpartition by range(c1) subpartition template(SUBPARTITION c0 VALUES LESS THAN(1990), SUBPARTITION c1 VALUES LESS THAN (2000), SUBPARTITION c2 VALUES LESS THAN MAXVALUE) partitions 2;
+create table test.table_range_hash (c1 int primary key, c2 int) partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1980), PARTITION c1 VALUES LESS THAN (1990), PARTITION c2 VALUES LESS THAN (1995), PARTITION c3 VALUES LESS THAN (2000), PARTITION c4 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg_old partition by hash partitions 2;
+create table test.table_with_tg(c1 int primary key, c2 int) tablegroup tg_old partition by hash(c1) partitions 2;
+
+create table test.tb_table_fulltext (id int, body varchar(10), fulltext (body));
+show index from test.tb_table_fulltext;
+show create table test.tb_table_fulltext;
+
+--disable_query_log
+--disable_result_log
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+
+--enable_query_log
+--enable_result_log
+
+# 升级相关验证 end
+# case 1. 二级分区表__all_tenant_gc_partition_info修正
+create tablegroup pg_subpart binding = true partition by range subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN MAXVALUE);
+create table test.tb_subpart_in_pg(c1 int primary key, c2 int) tablegroup = "pg_subpart" partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg_subpart partition by range subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN MAXVALUE);
+create table test.tb_subpart_in_tg(c1 int primary key, c2 int) tablegroup = "tg_subpart" partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN MAXVALUE);
+
+# 升级相关验证 end
+
+###create oracle tenant
+ob1.mysql create resource unit box1 max_cpu 1, max_memory 805306368, max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY=805306368, MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 number, c2 date default Date '2012-01-02', c3 timestamp default Timestamp '2012-12-01 01:02:03.123456789', c4 timestamp with time zone default Timestamp '2012-12-01 01:02:03.123456789 +02:00');
+insert into t1 (pk, c1) values(1,1),(2,2);
+delete from t1 where pk=1;
+select pk, c1, to_char(c2), to_char(c3), to_char(c4) from t1;
+# bugfix: 
+create tablespace tp1;
+
+# 升级相关验证 start
+# case1. 验证trigger修正
+create table trigger_t1 (c1 int primary key, c2 int);
+create table trigger_t2 (c1_old int primary key, c1_new int);
+create table trigger_t3 (c2_old int primary key, c2_new int);
+
+insert into trigger_t1 values (1, 1);
+insert into trigger_t1 values (2, 2);
+
+create or replace trigger trigger_t1_bi_trg before update on trigger_t1 for each row begin if updating('c1') then insert into trigger_t2 values (:old.c1, :new.c1); end if; if updating('c2') then insert into trigger_t3 values (:old.c2, :new.c2); end if; end; ;
+
+update trigger_t1 set c1 = c1 * 10 where c1 = 1;
+update trigger_t1 set c2 = c2 + 10 where c2 = 2;
+
+select * from trigger_t1;
+select * from trigger_t2;
+select * from trigger_t3;
+
+# case 2. 二级分区表__all_tenant_gc_partition_info修正
+create tablegroup pg_subpart binding = true partition by range columns 1 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN (MAXVALUE));
+create table tb_subpart_in_pg(c1 int primary key, c2 int) tablegroup = "PG_SUBPART" partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN (MAXVALUE));
+
+create tablegroup tg_subpart partition by range columns 1 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN (MAXVALUE));
+create table tb_subpart_in_tg(c1 int primary key, c2 int) tablegroup = "TG_SUBPART" partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990), PARTITION c1 VALUES LESS THAN (2000), PARTITION c2 VALUES LESS THAN (MAXVALUE));
+
+# case 3. oracle模式下public库名修改验证
+create public synonym synonym_to_test_owner for t1;
+select synonym_name, owner from sys.dba_synonyms where synonym_name = 'SYNONYM_TO_TEST_OWNER';
+
+# 升级相关验证 end
+
+# 5.2 设置租户的主
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+sleep 5;
+
+# 5.3.1 第1次合并
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+ob2.check_until_timeout select value from oceanbase.__all_zone where zone= '' and name = 'last_merged_version', 2, 360;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+ob2.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+# 5.3.2 写入数据
+connection conn_obtest;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(101,'101'),(102,'102'),(103,'103'),(104,'104');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=104;
+commit;
+
+# 5.4 执行alter tenant all语句
+connection conn_sys;
+set ob_query_timeout = 60000000;
+set ob_trx_timeout = 60000000;
+optimize tenant all;
+
+ob1.mysql alter system minor freeze tenant = all;
+
+# 5.5 等待备库同步
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 1800;
+ob2.mysql alter RESOURCE UNIT __unit_config_1001  max_memory=805306368,min_memory=805306368;
+
+ob2.mysql alter system minor freeze tenant = all;
+# 6 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+ob2.upgrade_check_before;
+# 6.1 liboblog 创建租户相关
+# 放到升级检查之后，采用小内存
+source include/liboblog/compat/oblog_create_tenant.inc;
+
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_obtest_z1,$ipz1,root@obtest,,db1,$portz1);
+
+ob_connect(conn_oracle_obtest_z1,ob1.z1.obs0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+
+ob1.mysql alter system begin upgrade;
+ob2.mysql alter system begin upgrade;
+sleep 2;
+# 7.执行升级SQL
+# 7.2 执行升级脚本
+ob1.upgrade_commond_for_server pre;
+sleep 5;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 1800;
+#升级备库
+ob2.force_stop;
+sleep 10;
+ob2.upgrade;
+ob2.nstart;
+
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 300;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 300;
+sleep 30;
+ob1.mysql_p select cluster_id, cluster_role, cluster_status, protection_level, synchronization_status from oceanbase.__all_virtual_standby_status;
+ob1.mysql_p select cluster_id,cluster_role,switchover_status, switchover_info from oceanbase.__all_virtual_cluster;
+
+#升级主库
+ob1.force_stop;
+sleep 10;
+ob1.upgrade;
+ob1.nstart;
+
+##检查
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,600;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob2.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,600;
+ob2.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+#ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 1800;
+# 11. 执行升级后SQL
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system upgrade virtual schema;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 50;
+select count(*) > 0 from oceanbase.__all_virtual_tenant_partition_meta_table;
+sleep 10;
+ob1.upgrade_commond_for_server post;
+
+ob2.mysql alter system end upgrade;
+ob1.mysql alter system end upgrade;
+sleep 10;
+
+ob1.mysql alter system run job 'root_inspection';
+ob2.mysql alter system run job 'root_inspection';
+
+sleep 10;
+ob2.upgrade_check_after;
+ob1.upgrade_check_after;
+
+ob1.mysql alter system major freeze;
+sleep 60;
+ob1.check_version 3;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+# 12 验证tirgger修正
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connection conn_oracle_obtest;
+update trigger_t1 set c1 = c1 * 10 where c1 = 10;
+update trigger_t1 set c2 = c2 + 10 where c2 = 12;
+
+select * from trigger_t1;
+select * from trigger_t2;
+select * from trigger_t3;
+
+# 13 验证public库名修改是否成功
+select synonym_name, owner from sys.dba_synonyms where synonym_name = 'SYNONYM_TO_TEST_OWNER';
+
+
+# 14 ob1 switchover to ob2
+sleep 5;
+ob1.check_until_timeout_for_obs select switchover_status from oceanbase.v\$ob_cluster,TO STANDBY,600;
+ob1.z1.obs0.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout_for_obs select switchover_status from oceanbase.v\$ob_cluster,TO PRIMARY,600;
+ob2.z1.obs0.mysql alter system commit to switchover to primary;
+
+ob_connect (conn_obtest_ob2,ob1.proxy0,root@obtest#$clusterName:2,,test,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 int, c2 int);
+insert into t1 values(1,2,3),(4,5,6);
+
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;

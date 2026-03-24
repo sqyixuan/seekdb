@@ -1,0 +1,1 @@
+./deploy.py ob1.mysqltest testset=subselect_innodb,show_create,query_rowkey_range,plan_base_line,order_by,optimizer_bug_misc,like_goes_index_dilang,join_outer,innodb.innodb_mysql,innodb.innodb,idx_const_basic_one_number,idx_const_basic_one_bool,greedy_search,func_in_none,default_system_variable disable-reboot

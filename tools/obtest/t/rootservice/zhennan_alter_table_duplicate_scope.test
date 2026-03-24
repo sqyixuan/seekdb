@@ -1,0 +1,321 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test alter table duplicate_scope
+#####################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+let $extra_conf = "cpu_count=10,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='40G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--echo # create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, C@z3" set ob_tcp_invited_nodes='%';
+
+--echo # create oracle tenant
+CREATE RESOURCE POOL if not exists pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1', locality="F@z1, F@z2, C@z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+source include/check_schema_sync.inc;
+
+ob1.mysql alter system set enable_rebalance = false tenant sys;
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant all_user;
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+let $oracle_tenant_id = deploy_get_value(ob1.select select tenant_id from DBA_OB_TENANTS where tenant_name = 'oracle', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+let $oracle_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_tenant_id and ls_id =  1 and role = 'LEADER' limit 1, host, 1);
+let $oracle_leader_obs =deploy_get_value(ob1.get_obs_by_addr $oracle_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_oracle, $oracle_leader_obs, sys@oracle, , sys, , USE_OB_CONNECTOR);
+
+--echo
+--echo ########################################
+--echo ############# mysql tenant #############
+--echo ########################################
+ob1.mysql alter system set partition_balance_schedule_interval = '2h' tenant mysql;
+--echo # create noraml table
+connection conn_mysql;
+create table mys_t1(c1 int, c2 int, c3 int, c4 longtext, index(c1) local, index(c2) global);
+let $mys_t1_tid = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 'mys_t1', table_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' and duplicate_scope = 'NONE', 5, 3;
+eval select table_id, table_name, table_type, duplicate_scope from oceanbase.DBA_OB_TABLE_LOCATIONS where (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' order by table_id;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%", 0, 3;
+
+--echo ##########
+--echo # 1. verify normal table to duplicate table process
+alter table mys_t1 duplicate_scope = 'CLUSTER';
+--echo # 1.1. change schemas of priamry table and aux tables
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' and duplicate_scope = 'CLUSTER', 5, 3;
+eval select table_id, table_name, table_type, duplicate_scope from oceanbase.DBA_OB_TABLE_LOCATIONS where (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' order by table_id;
+--echo # 1.2. duplicate_ls is created in the same time
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%", 1, 3;
+let $dup_ls_id = deploy_get_value(ob1.select select ls_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%" order by ls_id limit 1, ls_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and ls_id = $dup_ls_id, 0, 3;
+--echo # 1.3. create local index before transferring duplicate table to dup ls
+create index local_idx_on_mys_t1_c3 on mys_t1(c3) local;
+let $local_idx_on_mys_t1_c3_tid = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like '%local_idx_on_mys_t1_c3%' and role = 'LEADER', table_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_id = $local_idx_on_mys_t1_c3_tid and ls_id = $dup_ls_id, 0, 3;
+--echo # 1.4 generate partition balace job and tasks
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 1, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED', 1, 120;
+let $last_job_id = deploy_get_value(ob1.select select job_id from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED' order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $mysql_tenant_id and job_id = $last_job_id and status = 'COMPLETED', 4, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id = $mysql_tenant_id and status = 'COMPLETED' and balance_task_id in (select task_id from CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $mysql_tenant_id and job_id = $last_job_id and status = 'COMPLETED'), 2, 3;
+--echo # 1.5. verify tablets have been transferred from normal ls to dup_ls
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' and ls_id = $dup_ls_id, 6, 3;
+
+--echo ##########
+--echo # 2. verify duplicate_scope table to normal table process
+alter table mys_t1 duplicate_scope = 'NONE';
+--echo # 2.1. change schemas of priamry table and aux tables
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' and duplicate_scope = 'NONE', 6, 3;
+eval select table_id, table_name, table_type, duplicate_scope from oceanbase.DBA_OB_TABLE_LOCATIONS where (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and role = 'LEADER' order by table_id;
+--echo # 2.2. generate partition balace job and tasks
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 1, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED', 2, 120;
+let $last_job_id = deploy_get_value(ob1.select select job_id from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED' order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $mysql_tenant_id and job_id = $last_job_id and status = 'COMPLETED', 3, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id = $mysql_tenant_id and status = 'COMPLETED' and balance_task_id in (select task_id from CDB_OB_BALANCE_TASK_HISTORY where tenant_id = $mysql_tenant_id and job_id = $last_job_id and status = 'COMPLETED'), 1, 3;
+--echo # 2.3. verify tablets have been transferred from dup ls to normal ls
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_id = $mys_t1_tid or data_table_id = $mys_t1_tid) and ls_id = $dup_ls_id, 0, 3;
+
+--echo ##########
+--echo # 3. duplicate_scope is conflicted with tablegroup
+create tablegroup mys_tg;
+create table mys_t2(c1 int) duplicate_scope = 'CLUSTER';
+--error 1235
+alter table mys_t2 tablegroup = 'mys_tg';
+--error 1235
+alter tablegroup mys_tg add mys_t2;
+--error 1235
+alter table mys_t2 duplicate_scope = 'CLUSTER' tablegroup = 'mys_tg';
+--error 0
+alter table mys_t2 duplicate_scope = 'NONE' tablegroup = 'mys_tg';
+--error 1235
+alter table mys_t2 duplicate_scope = 'CLUSTER';
+--error 0
+alter table mys_t2 duplicate_scope = 'CLUSTER' tablegroup = '';
+
+--echo ##########
+--echo # 4. batch duplicate tables partition balance
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant mysql;
+--echo # 4.1. prepare data
+connection conn_mysql;
+create tablegroup tg_none sharding = 'NONE';
+create tablegroup tg_partition sharding = 'PARTITION';
+create tablegroup tg_adaptive sharding = 'ADAPTIVE';
+let $batch_count = 4;
+let $idx = 1;
+while ($idx <= $batch_count)
+{
+  eval create table mys_normal_part_zero_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+  eval create table mys_normal_part_one_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 2;
+  eval create table mys_normal_part_two_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+  eval create table mys_dup_part_zero_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+  eval create table mys_dup_part_one_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by hash(c1) partitions 2;
+  eval create table mys_dup_part_two_$idx(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+  inc $idx;
+}
+let $idx = 1;
+while ($idx <= $batch_count)
+{
+  eval alter table mys_normal_part_zero_$idx duplicate_scope = 'cluster';
+  eval alter table mys_normal_part_one_$idx duplicate_scope = 'cluster';
+  eval alter table mys_normal_part_two_$idx duplicate_scope = 'cluster';
+  eval alter table mys_dup_part_zero_$idx duplicate_scope = 'none';
+  eval alter table mys_dup_part_one_$idx duplicate_scope = 'none';
+  eval alter table mys_dup_part_two_$idx duplicate_scope = 'none';
+  inc $idx;
+}
+let $idx = 1;
+let $batch_count_in_tablegroup = math($batch_count / 2)
+while ($idx <= $batch_count_in_tablegroup)
+{
+  eval alter table mys_dup_part_zero_$idx tablegroup = 'tg_none';
+  eval alter table mys_dup_part_one_$idx tablegroup = 'tg_partition';
+  eval alter table mys_dup_part_two_$idx tablegroup = 'tg_adaptive';
+}
+--echo # 4.2. verify balance job
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE', 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED' and job_id > $last_job_id, 2, 120;
+let $dup_table_balance_job_id = deploy_get_value(ob1.select select job_id from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED' and job_id > $last_job_id order by job_id asc limit 1, job_id, 1);
+let $normal_table_balance_job_id = deploy_get_value(ob1.select select job_id from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED' and job_id > $last_job_id order by job_id desc limit 1, job_id, 1);
+let $last_job_id = $normal_table_balance_job_id;
+--echo # 4.3. verify distribution
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%mys_normal_%" and ls_id != $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and data_table_id in (select distinct(table_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%mys_normal_%") and ls_id != $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%mys_dup_%" and ls_id = $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and data_table_id in (select distinct(table_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%mys_dup_%") and ls_id = $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name in ("mys_dup_part_zero_1", "mys_dup_part_zero_2"), 1, 3;
+
+--echo ##########
+--echo # 5. test redundant dup ls
+ob1.mysql alter system set enable_rebalance = false tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL', 1, 3;
+--echo # 5.1. create redundant dup ls manually
+connection conn_sys;
+alter system change tenant mysql;
+let $redundant_dup_ls_id = 1999;
+--disable_query_log
+eval insert into __all_ls (ls_id, ls_group_id, status, flag, create_scn) values ($redundant_dup_ls_id, 0, 'CREATING', 'DUPLICATE', timestamp_to_scn(now()));
+--enable_query_log
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL', 2, 60;
+--echo # 5.2. no tablet will be created on redundant dup ls
+connection conn_mysql;
+create table mys_t3(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+create table mys_t4(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by hash(c1) partitions 5;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = $redundant_dup_ls_id, 0, 3;
+--echo # 5.3. shrink redundant dup ls by ls balance
+ob1.mysql alter system set enable_rebalance = true tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $mysql_tenant_id and job_type = 'LS_BALANCE' and balance_strategy = 'LS balance by shrink' and status = 'COMPLETED', 1, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL', 1, 3;
+
+--echo ##########
+--echo # 6. test reset ls_group_id to 0 for single dup ls
+ob1.mysql alter system set enable_rebalance = false tenant mysql;
+ob1.check_until_timeout select ls_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id, 0, 3;
+--echo # 6.1. change ls_group_id for dup ls manually
+let $ls_group_id = 1002;
+connection conn_sys;
+alter system change tenant mysql;
+--disable_query_log
+eval update __all_ls set ls_group_id = $ls_group_id where ls_id = $dup_ls_id;
+--enable_query_log
+alter system change tenant sys;
+ob1.check_until_timeout select ls_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id, $ls_group_id, 3;
+--echo # 6.2. ls_group_id of dup ls will be changed to 0 by ls balance
+ob1.mysql alter system set enable_rebalance = true tenant mysql;
+ob1.check_until_timeout select ls_group_id from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id, 0, 120;
+
+--echo ##########
+--echo # 7. test migrate and transform type for dup ls with ls_group_id
+ob1.mysql alter resource tenant mysql unit_num = 1;
+# make sure unit has been deleted
+ob1.check_until_timeout select count(*) from GV\$OB_UNITS where tenant_id in ($mysql_tenant_id, $mysql_tenant_id-1), 6, 240;
+ob1.mysql alter tenant mysql locality = 'F@z1,F@z2';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 120;
+ob1.mysql alter tenant mysql locality = 'F@z1,F@z2,R@z3';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 120;
+--echo # 7.1. set ls_group_id for dup ls
+ob1.mysql alter system set enable_rebalance = false tenant mysql;
+let $ls_group_id = 1002;
+ob1.check_until_timeout select ls_group_id != $ls_group_id from __all_virtual_ls_status where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id, 1, 3;
+connection conn_sys;
+alter system change tenant mysql;
+eval update __all_ls set ls_group_id = $ls_group_id where ls_id = $dup_ls_id;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id = $ls_group_id and unit_group_id != 0, 1, 5;
+alter system change tenant sys;
+--echo # 7.2. test migrate dup ls replica when migrate unit
+let $obs_z1_0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs_z1_0_port = deploy_get_value(ob1.z1.obs0.port);
+let $obs_z1_1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $obs_z1_1_port = deploy_get_value(ob1.z1.obs1.port);
+let $obs_z3_0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs_z3_0_port = deploy_get_value(ob1.z3.obs0.port);
+let $obs_z3_1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $obs_z3_1_port = deploy_get_value(ob1.z3.obs1.port);
+
+--echo # 7.2.1. migrate F replica of dup ls with ls_group_id
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) = '$obs_z1_0_ip:$obs_z1_0_port' from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and zone = 'z1' and replica_type = 'FULL', 1, 3;
+let $unit_id = deploy_get_value(ob1.select select unit_id from GV\$OB_UNITS where tenant_id = $mysql_tenant_id and zone = 'z1', unit_id, 1);
+ob1.mysql alter system migrate unit $unit_id destination '$obs_z1_1_ip:$obs_z1_1_port';
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and zone = 'z1' and concat(svr_ip,':',svr_port) = '$obs_z1_1_ip:$obs_z1_1_port' and replica_type = 'FULL', 1, 5;
+--echo # 7.6.2 migrate R replica of dup ls with ls_group_id
+ob1.check_until_timeout select concat(svr_ip,':',svr_port) = '$obs_z3_0_ip:$obs_z3_0_port' from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and zone = 'z3' and replica_type = 'READONLY', 1, 3;
+let $unit_id = deploy_get_value(ob1.select select unit_id from GV\$OB_UNITS where tenant_id = $mysql_tenant_id and zone = 'z3', unit_id, 1);
+ob1.mysql alter system migrate unit $unit_id destination '$obs_z3_1_ip:$obs_z3_1_port';
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 120;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and zone = 'z3' and concat(svr_ip,':',svr_port) = '$obs_z3_1_ip:$obs_z3_1_port' and replica_type = 'READONLY', 1, 5;
+
+# reset ls_group_id for dup ls
+ob_connect(conn_mysql1, ob1.z3.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_mysql1;
+alter system change tenant mysql;
+eval update __all_ls set ls_group_id = 0 where ls_id = $dup_ls_id;
+alter system change tenant sys;
+ob1.mysql alter system set enable_rebalance = true tenant mysql;
+
+--echo ##########
+--echo # 8. test transfer with R replica while dup ls not exists
+ob1.mysql alter tenant oracle locality = 'F@z1,F@z2';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 120;
+ob1.mysql alter tenant oracle locality = 'F@z1,F@z2,R@z3';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 120;
+ob1.mysql alter tenant oracle primary_zone = RANDOM;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $oracle_tenant_id and job_type = 'LS_BALANCE' and balance_strategy = 'LS balance by expand', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $oracle_tenant_id and job_type = 'LS_BALANCE' and balance_strategy = 'LS balance by expand', 0, 420;
+ob1.mysql alter tenant oracle primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $oracle_tenant_id and job_type = 'LS_BALANCE' and balance_strategy = 'LS balance by shrink', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $oracle_tenant_id and job_type = 'LS_BALANCE' and balance_strategy = 'LS balance by shrink', 0, 420;
+
+# only test sql syntax
+--echo
+--echo ########################################
+--echo ############ oracle tenant #############
+--echo ########################################
+--echo # create noraml table
+connection conn_oracle;
+create table ora_t1(c1 int, c2 int, c3 clob);
+create index ora_l_idx_t1 on ora_t1(c1) local;
+create index ora_g_idx_t1 on ora_t1(c2) global;
+let $ora_t1_tid = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = $oracle_tenant_id and table_name = 'ORA_T1', table_id, 1);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $oracle_tenant_id and (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' and duplicate_scope = 'NONE', 5, 3;
+eval select table_id, table_name, table_type, duplicate_scope from SYS.DBA_OB_TABLE_LOCATIONS where (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' order by table_id;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $oracle_tenant_id and flag like "%duplicate%", 0, 3;
+--echo ##########
+--echo # 1. normal table to duplicate table
+alter table ora_t1 duplicate_scope = 'CLUSTER';
+--echo # 1.1. change schemas of priamry table and aux tables
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $oracle_tenant_id and (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' and duplicate_scope = 'CLUSTER', 5, 3;
+eval select table_id, table_name, table_type, duplicate_scope from SYS.DBA_OB_TABLE_LOCATIONS where (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' order by table_id;
+--echo # 1.2. create duplicate_ls in the same time
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $oracle_tenant_id and flag like "%duplicate%", 1, 3;
+--echo ##
+--echo # 2. duplicate_scope table to normal table
+alter table ora_t1 duplicate_scope = 'NONE';
+--echo # 2.1. change schemas of priamry table and aux tables
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $oracle_tenant_id and (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' and duplicate_scope = 'NONE', 5, 3;
+eval select table_id, table_name, table_type, duplicate_scope from SYS.DBA_OB_TABLE_LOCATIONS where (table_id = $ora_t1_tid or data_table_id = $ora_t1_tid) and role = 'LEADER' order by table_id;
+--echo ##########
+--echo # 3. duplicate_scope is conflicted with tablegroup
+create tablegroup ora_tg;
+create table ora_t2(c1 int) duplicate_scope = 'CLUSTER';
+--error 600
+alter table ora_t2 tablegroup = 'ORA_TG';
+--error 600
+alter tablegroup ora_tg add ora_t2;
+--error 600
+alter table ora_t2 duplicate_scope = 'CLUSTER' tablegroup = 'ORA_TG';
+--error 0
+alter table ora_t2 duplicate_scope = 'NONE' tablegroup = 'ORA_TG';
+--error 600
+alter table ora_t2 duplicate_scope = 'CLUSTER';
+--error 0
+alter table ora_t2 duplicate_scope = 'CLUSTER' tablegroup = '';
+
+
+--echo
+--echo ########################################
+--echo ############ other tenant ##############
+--echo ########################################
+--echo # duplicate table is not allowed in sys tenant
+connection conn_sys;
+--error 1235
+create table sys_t1(c1 int) duplicate_scope = 'CLUSTER';
+create table sys_t1(c1 int) duplicate_scope = 'NONE';
+--error 1235
+alter table sys_t1 duplicate_scope = 'CLUSTER';
+# meta tenant can't create table

@@ -1,0 +1,123 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：
+# 1. big row回放逻辑验证
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+#在zone1上建立连接
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+
+#在zone1上建立连接
+let $l_ip2=deploy_get_value(ob1.z2.obs0.ip);
+let $l_port2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn2,$l_ip2,root@obtest,,test,$l_port2);
+
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z2', svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z2', svr_port, 1);
+let $host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $observer = deploy_get_value(ob1.get_obs_by_addr $host);
+
+connection conn1;
+alter system set enable_auto_leader_switch = false;
+connection conn2;
+use test;
+drop table if exists t1;
+create table t1(a longtext, b longblob, c longtext, d longtext, e longtext);
+set ob_query_timeout=100000000;
+sleep 5;
+
+#############################
+#case1 : 回放normal row ＋ big row，预期数据完整
+begin;
+insert into t1 values('2', '2', '2', '2', '2');
+--disable_query_log
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+--enable_query_log
+commit;
+sleep 5;
+
+#预期有两行数据
+#预期第二行数据是有效的
+select /*+read_consistency(weak)+*/ count(*) from t1;
+select /*+read_consistency(weak)+*/ a from t1 where a != '2';
+delete from t1;
+
+#############################
+#case2 : 只回放一条big row，预期big row数据完整
+begin;
+--disable_query_log
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+--enable_query_log
+commit;
+sleep 5;
+
+#预期有1行数据
+#预期数据是有效的
+select /*+read_consistency(weak)+*/ count(*) from t1;
+select /*+read_consistency(weak)+*/ a from t1;
+delete from t1;
+
+#############################
+#case3 : 回放2条big row，预期big row数据完整
+begin;
+--disable_query_log
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+--enable_query_log
+commit;
+sleep 10;
+
+#预期有两行数据
+#预期2行数据都是有效的
+select /*+read_consistency(weak)+*/ count(*) from t1;
+select /*+read_consistency(weak)+*/ a from t1;
+delete from t1;
+
+#############################
+#case4 : 回放部分big row ＋ normal row（不回放big row的第一行数据）
+connection conn1;
+alter system set_tp tp_no = 42, error_code = 4023, frequency = 1;
+connection conn2;
+begin;
+--disable_query_log
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+insert into t1 values('2', '2', '2', '2', '2');
+--enable_query_log
+commit;
+connection conn1;
+alter system set_tp tp_no = 42, error_code = 4023, frequency = 0;
+connection conn2;
+sleep 5;
+
+#由于错误注入，big row的第一条redo log没有回放，接下来的所有redo log都没有回放，最终备机上丢失该行
+#预期有1行数据
+select /*+read_consistency(weak)+*/ count(*) from t1;
+delete from t1;
+
+#############################
+#case5 : 回放部分big row ＋ big row
+connection conn1;
+alter system set_tp tp_no = 42, error_code = 4023, frequency = 1;
+connection conn2;
+begin;
+--disable_query_log
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+insert into t1 values(repeat('a', 10), repeat('b', 924288), repeat('c', 924288), repeat('d', 924288), repeat('e', 924288));
+--enable_query_log
+commit;
+connection conn1;
+alter system set_tp tp_no = 42, error_code = 4023, frequency = 0;
+connection conn2;
+sleep 10;
+
+#由于错误注入，big row的第一条redo log没有回放，接下来的所有redo log都没有回放，最终备机上丢失该行
+#预期有1行数据
+select /*+read_consistency(weak)+*/ count(*) from t1;
+select /*+read_consistency(weak)+*/ a from t1;
+delete from t1;

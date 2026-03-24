@@ -1,0 +1,779 @@
+# owner: lijinmao.ljm
+# owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+--disable_query_log
+drop table if exists t1, t2;
+
+create table t1 (c1 int, c2 int, c3 bigint);
+insert into /*+query_timeout(100000000)*/ t1 
+select /*+query_timeout(100000000)*/ uniform(0, 10, random(1)), uniform(0, 50, random(1)), random(1) 
+from table(generator(100000));
+
+--let $count = 0
+while($count < 10)
+{
+  --let $stmt=insert into t1(c1, c2, c3) values ($count, null, null)
+  eval $stmt;
+  --let $stmt=insert into t1(c1, c2, c3) values (null, $count, null)
+  eval $stmt;
+  --let $stmt=insert into t1(c1, c2, c3) values (null, null, $count)
+  eval $stmt;
+  --let $stmt=insert into t1(c1, c2, c3) values ($count, $count, null)
+  eval $stmt;
+  --let $stmt=insert into t1(c1, c2, c3) values ($count, null, $count)
+  eval $stmt;
+  --let $stmt=insert into t1(c1, c2, c3) values (null, $count, $count)
+  eval $stmt;
+  inc $count;
+}
+
+create table t2 (c1 int, c2 int, c3 bigint) partition by hash(c1) partitions 10;
+insert /*+query_timeout(100000000)*/ into t2 select * from t1;
+
+CALL dbms_stats.gather_table_stats('test', 't1', granularity=>'APPROX_GLOBAL AND PARTITION', method_opt=>'for all columns size 1');
+CALL dbms_stats.gather_table_stats('test', 't2', granularity=>'APPROX_GLOBAL AND PARTITION', method_opt=>'for all columns size 1');
+--enable_warnings
+--enable_query_log
+
+--result_format 4
+--explain_protocol 1
+
+--echo "==================== Test1: trans without pullup ===================="
+
+--echo 基础场景
+select /*+no_coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+
+select c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+
+--echo DISTINCT 场景
+select /*+no_coalesce_aggr*/ c1,
+       count(distinct case when c1 <= 0 then 1 else null end) as s1,
+       count(distinct case when c1 = 1 then 1 else null end) as s2,
+       count(distinct case when c1 > 1 then 1 else null end) as s3
+from t1
+group by c1;
+
+select c1,
+       count(distinct case when c1 <= 0 then 1 else null end) as s1,
+       count(distinct case when c1 = 1 then 1 else null end) as s2,
+       count(distinct case when c1 > 1 then 1 else null end) as s3
+from t1
+group by c1;
+
+--echo 基础 + DISTINCT 混合场景
+select /*+no_coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+select c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+--echo 非标场景
+select /*+no_coalesce_aggr*/ c1, c2, c3+1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+select c1, c2, c3+1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+--echo having + cond aggr
+select /*+no_coalesce_aggr*/ c1, sum(c1), sum(0) from t1 
+group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 1 then 1 else null end) > 0;
+
+select c1, sum(c1), sum(0) from t1 
+group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 1 then 1 else null end) > 0;
+
+--echo order by + cond aggr
+select /*+no_coalesce_aggr*/ c1, sum(c1), count(distinct case when c1 > 1 then 1 else null end) 
+from t1 group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 5 then 1 else null end) > 0
+order by 3,2 desc,1;
+
+select c1, sum(c1), count(distinct case when c1 > 1 then 1 else null end) 
+from t1 group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 5 then 1 else null end) > 0
+order by 3,2 desc,1;
+
+--echo select into + cond aggr
+set @v1 = 0;
+set @v2 = 0;
+set @v3 = 0;
+
+select /*+no_coalesce_aggr*/ c1, sum(c1), count(distinct case when c1 > 1 then 1 else null end) 
+into @v1, @v2, @v3
+from t1 group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 5 then 1 else null end) > 0
+order by 3,2 desc,1
+limit 1;
+
+select @v1, @v2, @v3 from dual;
+
+select c1, sum(c1), count(distinct case when c1 > 1 then 1 else null end) 
+into @v1, @v2, @v3
+from t1 group by c1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(distinct case when c1 <= 0 then 1 else null end) > 0 and
+       count(distinct case when c1 = 1 then 1 else null end) > 0 or
+       count(distinct case when c1 > 5 then 1 else null end) > 0
+order by 3,2 desc,1
+limit 1;
+
+select @v1, @v2, @v3 from dual;
+
+--echo group by 多列
+select /*+no_coalesce_aggr*/ c1, avg(c1), avg(case when c3 is null then 0 else c3 end) as s0,
+       avg(case when c2 is null then 0 else c2 end) as s1,
+       avg(case when c2 is null then 0 else c2 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1, c2
+limit 10;
+
+select c1, avg(c1), avg(case when c3 is null then 0 else c3 end) as s0,
+       avg(case when c2 is null then 0 else c2 end) as s1,
+       avg(case when c2 > 0 then c2 else 0 end) as s2,
+       count(distinct case when c1 <= 0 then 1 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1, c2
+limit 10;
+
+--echo 不可改写：表达式对执行次数或者执行次序敏感
+explain basic select c1, sum(c1), sum(0),
+       sum(case when c1 = 0 then 0 else 1/c1 end) as s1,
+       sum(case when c2 = 0 then 0 else 1/c2 end) as s2
+from t1
+group by c1;
+
+--echo 不可改写：表达式对执行次数或者执行次序敏感
+explain basic select c1, sum(c1), sum(0),
+       sum(case when @v1 := 0 then 0 else 1 end) as s1,
+       sum(case when @v2 := 0 then 0 else 1 end) as s2
+from t1
+group by c1;
+
+--echo 不可改写：表达式对执行次数或者执行次序敏感
+explain basic select c1, sum(c1), sum(0),
+       sum(case when (select count(*) from t1) = 0 then 0 else 1 end) as s1,
+       sum(case when (select 1 from dual) = 1 then 0 else 1 end) as s2
+from t1
+group by c1;
+
+--echo 不可改写：改写后聚合函数数量上升
+explain basic select c1,
+       sum(case when c1 = 0 then 0 else c1 end) as s0,
+       sum(case when c2 = 1 then 1 else c1+1 end) as s1,
+       sum(case when c2 = 2 then 2 else c1+2 end) as s2,
+       count(distinct case when c1 <= 0 then 0 else null end) as s3,
+       count(distinct case when c1 = 1 then 1 else null end) as s4,
+       count(distinct case when c1 > 1 then 2 else null end) as s5
+from t1
+group by c1;
+
+--echo "==================== Test2: trans with pullup ===================="
+--echo 基础正确性（所有支持的聚合函数）
+# min,max,sum,count, bit_and, bit_or, bit_xor, APPROX_COUNT_DISTINCT_SYNOPSIS
+select /*+no_coalesce_aggr*/ c1, min(c2), max(c2), sum(c2), count(c2), 
+       bit_and(c2), bit_or(c2), bit_xor(c2), approx_count_distinct(c2),
+       min(case when c1 is null then 0 else c2 end) as s1,
+       max(case when c1 is null then 0 else c2 end) as s2,
+       sum(case when c1 is null then 0 else c2 end) as s3,
+       count(case when c1 is null then 0 else c2 end) as s4,
+       bit_and(case when c1 is null then 0 else c2 end) as s5,
+       bit_or(case when c1 is null then 0 else c2 end) as s6,
+       bit_xor(case when c1 is null then 0 else c2 end) as s7,
+       approx_count_distinct(case when c1 is null then 0 else c2 end) as s8
+from t1;
+
+select /*+coalesce_aggr*/ c1, min(c2), max(c2), sum(c2), count(c2), 
+       bit_and(c2), bit_or(c2), bit_xor(c2), approx_count_distinct(c2),
+       min(case when c1 is null then 0 else c2 end) as s1,
+       max(case when c1 is null then 0 else c2 end) as s2,
+       sum(case when c1 is null then 0 else c2 end) as s3,
+       count(case when c1 is null then 0 else c2 end) as s4,
+       bit_and(case when c1 is null then 0 else c2 end) as s5,
+       bit_or(case when c1 is null then 0 else c2 end) as s6,
+       bit_xor(case when c1 is null then 0 else c2 end) as s7,
+       approx_count_distinct(case when c1 is null then 0 else c2 end) as s8
+from t1;
+
+--echo 复杂聚合函数表达式上拉
+select /*+no_coalesce_aggr*/ case when min(c2) > 0 then min(c2) else 0 end as s0,
+       min(case when c1 = 1 then 0 else c2 end) + 1 as s1,
+       min(case when c1 = 2 then 0 else c2 end) / 2 as s2,
+       min(case when c1 = 3 then 0 else c2 end) * 3 as s3
+from t1;
+
+select /*+coalesce_aggr*/ case when min(c2) > 0 then min(c2) else 0 end as s0,
+       min(case when c1 = 1 then 0 else c2 end) + 1 as s1,
+       min(case when c1 = 2 then 0 else c2 end) / 2 as s2,
+       min(case when c1 = 3 then 0 else c2 end) * 3 as s3
+from t1;
+
+--echo 非标 group by
+select /*+no_coalesce_aggr*/ c1, min(c2),
+       min(case when c1 = 1 then 0 else c2 end) as s1,
+       min(case when c1 = 2 then 0 else c2 end) as s2,
+       min(case when c1 = 3 then 0 else c2 end) as s3
+from t1;
+
+select /*+coalesce_aggr*/ c1, min(c2),
+       min(case when c1 = 1 then 0 else c2 end) as s1,
+       min(case when c1 = 2 then 0 else c2 end) as s2,
+       min(case when c1 = 3 then 0 else c2 end) as s3
+from t1;
+
+
+--echo 上拉 having
+select /*+no_coalesce_aggr*/ c1, sum(c1), sum(0) from t1 
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(case when c1 <= 0 then 1 else null end) > 0 and
+       count(case when c1 = 1 then 1 else null end) > 0 or
+       count(case when c1 > 1 then 1 else null end) > 0;
+
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0) from t1 
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(case when c1 <= 0 then 1 else null end) > 0 and
+       count(case when c1 = 1 then 1 else null end) > 0 or
+       count(case when c1 > 1 then 1 else null end) > 0;
+
+--echo 上拉 order by, limit
+select /*+no_coalesce_aggr*/ c1, sum(c1)
+from t1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(case when c1 <= 0 then 1 else null end) > 0 and
+       count(case when c1 = 1 then 1 else null end) > 0 or
+       count(case when c1 > 5 then 1 else null end) > 0
+order by 2 desc,1
+limit 5;
+
+select /*+coalesce_aggr*/ c1, sum(c1) 
+from t1
+having sum(case when c1 is null then 0 else c1 end) > 1 and
+       sum(case when c1 is null then 0 else c2 end) > 1 and
+       count(case when c1 <= 0 then 1 else null end) > 0 and
+       count(case when c1 = 1 then 1 else null end) > 0 or
+       count(case when c1 > 5 then 1 else null end) > 0
+order by 2 desc,1
+limit 5;
+
+--echo 上拉 window function
+select /*+no_coalesce_aggr*/ c1, ROW_NUMBER() OVER() AS row_num1
+from t1 group by c1
+having sum(case when c2 is null then 0 else c1 end) > 1 and
+       sum(case when c2 is null then 0 else c2 end) > 1 and
+       count(case when c2 <= 0 then 1 else null end) > 0 and
+       count(case when c2 = 1 then 1 else null end) > 0 or
+       count(case when c2 > 5 then 1 else null end) > 0;
+
+select /*+coalesce_aggr*/ c1, ROW_NUMBER() OVER() AS row_num1
+from t1 group by c1
+having sum(case when c2 is null then 0 else c1 end) > 1 and
+       sum(case when c2 is null then 0 else c2 end) > 1 and
+       count(case when c2 <= 0 then 1 else null end) > 0 and
+       count(case when c2 = 1 then 1 else null end) > 0 or
+       count(case when c2 > 5 then 1 else null end) > 0;
+
+--echo 正交 group by 两阶段下压
+select /*+no_coalesce_aggr*/ min(c2),
+       sum(case when c1 = 1 then 0 else c2 end) as s1,
+       sum(case when c1 >= 1 then 0 else c2 end) as s2,
+       sum(case when c1 >= 5 then 0 else c2 end) as s3
+from t2;
+
+select /*+coalesce_aggr*/ min(c2),
+       sum(case when c1 = 1 then 0 else c2 end) as s1,
+       sum(case when c1 >= 1 then 0 else c2 end) as s2,
+       sum(case when c1 >= 5 then 0 else c2 end) as s3
+from t2;
+
+--echo 不加 hint 触发
+select /*+no_coalesce_aggr*/ c1, sum(case when c2 = 0 then c3 else 0 end) s1, 
+       sum(case when c2 = 1 then c3 else 0 end) s2, 
+       sum(case when c2 = 2 then c3 else 0 end) s3, 
+       sum(case when c2 = 3 then c3 else 0 end) s4, 
+       sum(case when c2 = 4 then c3 else 0 end) s5, 
+       sum(case when c2 = 5 then c3 else 0 end) s6,
+       sum(case when c2 = 6 then c3 else 0 end) s7, 
+       sum(case when c2 = 7 then c3 else 0 end) s8, 
+       sum(case when c2 = 8 then c3 else 0 end) s9, 
+       sum(case when c2 = 9 then c3 else 0 end) s10, 
+       sum(case when c2 = 10 then c3 else 0 end) s11, 
+       sum(case when c2 = 11 then c3 else 0 end) s12,
+       sum(case when c2 = 12 then c3 else 0 end) s13, 
+       sum(case when c2 = 13 then c3 else 0 end) s14, 
+       sum(case when c2 = 14 then c3 else 0 end) s15, 
+       sum(case when c2 = 15 then c3 else 0 end) s16, 
+       sum(case when c2 = 16 then c3 else 0 end) s17, 
+       sum(case when c2 = 17 then c3 else 0 end) s18,
+       sum(case when c2 = 18 then c3 else 0 end) s19, 
+       sum(case when c2 = 19 then c3 else 0 end) s20, 
+       sum(case when c2 = 20 then c3 else 0 end) s21,
+       sum(case when c2 = 21 then c3 else 0 end) s22, 
+       sum(case when c2 = 22 then c3 else 0 end) s23, 
+       sum(case when c2 = 23 then c3 else 0 end) s24, 
+       sum(case when c2 = 24 then c3 else 0 end) s25, 
+       sum(case when c2 = 25 then c3 else 0 end) s26,
+       sum(case when c2 = 26 then c3 else 0 end) s27, 
+       sum(case when c2 = 27 then c3 else 0 end) s28, 
+       sum(case when c2 = 28 then c3 else 0 end) s29, 
+       sum(case when c2 = 29 then c3 else 0 end) s30
+from t1 group by c1;
+
+select c1, sum(case when c2 = 0 then c3 else 0 end) s1, 
+       sum(case when c2 = 1 then c3 else 0 end) s2, 
+       sum(case when c2 = 2 then c3 else 0 end) s3, 
+       sum(case when c2 = 3 then c3 else 0 end) s4, 
+       sum(case when c2 = 4 then c3 else 0 end) s5, 
+       sum(case when c2 = 5 then c3 else 0 end) s6,
+       sum(case when c2 = 6 then c3 else 0 end) s7, 
+       sum(case when c2 = 7 then c3 else 0 end) s8, 
+       sum(case when c2 = 8 then c3 else 0 end) s9, 
+       sum(case when c2 = 9 then c3 else 0 end) s10, 
+       sum(case when c2 = 10 then c3 else 0 end) s11, 
+       sum(case when c2 = 11 then c3 else 0 end) s12,
+       sum(case when c2 = 12 then c3 else 0 end) s13, 
+       sum(case when c2 = 13 then c3 else 0 end) s14, 
+       sum(case when c2 = 14 then c3 else 0 end) s15, 
+       sum(case when c2 = 15 then c3 else 0 end) s16, 
+       sum(case when c2 = 16 then c3 else 0 end) s17, 
+       sum(case when c2 = 17 then c3 else 0 end) s18,
+       sum(case when c2 = 18 then c3 else 0 end) s19, 
+       sum(case when c2 = 19 then c3 else 0 end) s20, 
+       sum(case when c2 = 20 then c3 else 0 end) s21,
+       sum(case when c2 = 21 then c3 else 0 end) s22, 
+       sum(case when c2 = 22 then c3 else 0 end) s23, 
+       sum(case when c2 = 23 then c3 else 0 end) s24, 
+       sum(case when c2 = 24 then c3 else 0 end) s25, 
+       sum(case when c2 = 25 then c3 else 0 end) s26,
+       sum(case when c2 = 26 then c3 else 0 end) s27, 
+       sum(case when c2 = 27 then c3 else 0 end) s28, 
+       sum(case when c2 = 28 then c3 else 0 end) s29, 
+       sum(case when c2 = 29 then c3 else 0 end) s30
+from t1 group by c1;
+
+--echo 不可改写：不满足前置统计阈值
+explain basic select
+min(case when c1 = 1 then 0 else c2 end) as s1,
+min(case when c1 = 2 then 0 else c2 end) as s2,
+min(case when c1 = 3 then 0 else c2 end) as s3
+from t1;
+
+--echo 不可改写：包含不可拆分的聚合函数
+explain basic select /*+coalesce_aggr*/ count(distinct c1),
+min(case when c1 = 1 then 0 else c2 end) as s1,
+min(case when c1 = 2 then 0 else c2 end) as s2,
+min(case when c1 = 3 then 0 else c2 end) as s3
+from t1;
+
+--echo 不可改写：访问非单基表
+explain basic select /*+coalesce_aggr*/ count(distinct c1),
+min(case when c1 = 1 then 0 else c2 end) as s1,
+min(case when c1 = 2 then 0 else c2 end) as s2,
+min(case when c1 = 3 then 0 else c2 end) as s3
+from (select /*+no_merge*/ c1, c2 from t1 order by c1 limit 10);
+
+
+--echo "==================== Test3: plan cache ===================="
+set ob_enable_plan_cache = 1;
+alter system flush plan cache global;
+
+select c1,
+       count(distinct case when c1 <= 0 then 1 else null end) as s1,
+       count(distinct case when c1 = 1 then 1 else null end) as s2,
+       count(distinct case when c1 > 1 then 1 else null end) as s3
+from t1
+group by c1;
+
+select c1,
+       count(distinct case when c1 <= 1 then 1 else null end) as s1,
+       count(distinct case when c1 = 2 then 1 else null end) as s2,
+       count(distinct case when c1 > 3 then 1 else null end) as s3
+from t1
+group by c1;
+
+select hit_count, sql_id, query_sql from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 
+"select c1,
+       count(distinct case when c1 <= ? then ? else ? end) as s1,
+       count(distinct case when c1 = ? then ? else ? end) as s2,
+       count(distinct case when c1 > ? then ? else ? end) as s3
+from t1
+group by c1";
+
+--echo expect generate 1 plan
+
+alter system flush plan cache global;
+
+select c1,
+       sum(distinct case when c1 <= 0 then 1 else null end) as s1,
+       sum(distinct case when c1 = 1 then 1 else null end) as s2,
+       sum(distinct case when c1 > 1 then 1 else null end) as s3
+from t1
+group by c1;
+
+select c1,
+       sum(distinct case when c1 <= 0 then 2 else null end) as s1,
+       sum(distinct case when c1 = 1 then 1 else null end) as s2,
+       sum(distinct case when c1 > 1 then 2 else null end) as s3
+from t1
+group by c1;
+
+select hit_count, sql_id, query_sql from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 
+"select c1,
+       sum(distinct case when c1 <= ? then ? else ? end) as s1,
+       sum(distinct case when c1 = ? then ? else ? end) as s2,
+       sum(distinct case when c1 > ? then ? else ? end) as s3
+from t1
+group by c1";
+--echo expect generate 2 plans
+
+--echo "==================== Test4: 测分补充测例 ===================="
+--disable_query_log
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+--echo 打开 tracepoint，关闭 coalesce aggr 的代价前置检查
+alter system set_tp tp_no = 557, error_code = 4016, frequency = 1; 
+connection default;
+--enable_query_log
+
+--echo 多个 when/then 分支，可改写
+select /*+no_coalesce_aggr*/ c1,
+       sum(case when c2 = 0 then 0 when c2 = 5 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 6 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 7 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+select c1,
+       sum(case when c2 = 0 then 0 when c2 = 10 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 11 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 12 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+--echo 聚合函数有多个参数，不可改写
+explain basic select c1, 
+       count(distinct c1, (case when c1 = 0 then c2 else null end)) as s0,
+       count(distinct c1, (case when c1 = 1 then c2 else null end)) as s1,
+       count(distinct c1, (case when c1 = 2 then c2 else null end)) as s2
+from t1
+group by c1;
+
+--echo 正交 for update，可改写
+select /*+no_coalesce_aggr*/ c1,
+       sum(case when c2 = 0 then 0 when c2 = 5 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 6 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 7 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1 for update;
+
+select c1,
+       sum(case when c2 = 0 then 0 when c2 = 5 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 6 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 7 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1 for update;
+
+--echo case when 表达式共享
+select /*+no_coalesce_aggr*/ c1, sum(c1), sum(0),
+       case when c1 is null then 0 else c1 end,
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       sum(case when c2 is null then 0 else c1 end) as s3
+from t1
+where case when c1 is null then 0 else c2 end >= 0
+and case when c2 is null then 0 else c1 end >= 0
+group by c1;
+
+select c1, sum(c1), sum(0),
+       case when c1 is null then 0 else c1 end,
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2,
+       sum(case when c2 is null then 0 else c1 end) as s3
+from t1
+where case when c1 is null then 0 else c2 end >= 0
+and case when c2 is null then 0 else c1 end >= 0
+group by c1;
+
+--echo 非改写投影项中包含 random(), 变量赋值
+set @v1 = 1;
+select /*+no_coalesce_aggr*/ c1, @v1 := @v1 + 1, @v1, random(1), 
+       sum(case when c2 = 0 then 0 when c2 = 5 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 6 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 7 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+set @v1 = 1;
+select c1, @v1 := @v1 + 1, @v1, random(1),
+       sum(case when c2 = 0 then 0 when c2 = 5 then c1 else 0 end) as s0,
+       sum(case when c2 = 1 then 1 when c2 = 6 then c1 else 0 end) as s1,
+       sum(case when c2 = 2 then 2 when c2 = 7 then c1 else 0 end) as s2,
+       count(case when c1 <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when c1 = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when c1 > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+--echo 不改写包含 random()、变量赋值、子查询等的条件聚合函数
+set @v1 = 1;
+set @v2 = 1;
+select /*+no_coalesce_aggr*/ c1,
+       sum(case when c1 = 0 then 0 when c2 = 5 then @v1 := @v1 + 1 else 0 end) as s0,
+       sum(case when c1 = 1 then 1 when c2 = 6 then @v2 := @v2 + 1 else 0 end) as s1,
+       sum(case when c1 = 2 then 2 when c2 = 7 then 1 else 0 end) as s2,
+       count(case when random(1) <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when random(1) = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when (select count(c1) from t1) > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+set @v1 = 1;
+set @v2 = 1;
+select c1,
+       sum(case when c1 = 0 then 0 when c2 = 5 then @v1 := @v1 + 1 else 0 end) as s0,
+       sum(case when c1 = 1 then 1 when c2 = 6 then @v2 := @v2 + 1 else 0 end) as s1,
+       sum(case when c1 = 2 then 2 when c2 = 7 then 1 else 0 end) as s2,
+       count(case when random(1) <= 0 then 0 when c1 <= 5 then 1 else null end) as s3,
+       count(case when random(1) = 1 or c1 = 6 then 1 else null end) as s4,
+       count(case when (select count(c1) from t1) > 1 then 1 else null end) as s5
+from t1
+group by c1;
+
+--echo 版本控制测试
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+set optimizer_features_enable = '4.2.1';
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+set optimizer_features_enable = '4.2.3';
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+set optimizer_features_enable = '4.3.0';
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+set optimizer_features_enable = '4.3.1';
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+set optimizer_features_enable = '4.3.2';
+select /*+coalesce_aggr*/ c1, sum(c1), sum(0),
+       sum(case when c1 is null then 0 else c1 end) as s1,
+       sum(case when c1 is null then 0 else c2 end) as s2
+from t1
+group by c1;
+
+--disable_query_log
+connection conn_admin;
+alter system set_tp tp_no = 557, error_code = 4016, frequency = 0; 
+connection default;
+--enable_query_log
+
+drop table t1, t2;
+
+# bug: 
+
+--disable_warnings
+--disable_query_log
+DROP TABLE /*! IF EXISTS*/ table30_hash_pk_parts_4_bigint; 
+CREATE TABLE table30_hash_pk_parts_4_bigint (
+col_bigint_key bigint,
+col_timestamp timestamp NULL DEFAULT NULL,
+col_mediumint mediumint,
+col_decimal_30_5 decimal(30,5),
+col_tinyint tinyint,
+col_smallint_key smallint,
+pk bigint,
+col_bigint bigint,
+col_decimal_30_5_key decimal(30,5),
+col_char_20 char(20),
+col_date date,
+col_varchar_10_key varchar(10),
+col_int int,
+col_decimal_20_0 decimal(20,0),
+col_varchar_10 varchar(10),
+col_date_key date,
+col_tinyint_key tinyint,
+col_int_key int,
+col_datetime datetime,
+col_datetime_key datetime,
+col_char_30 char(30),
+col_integer_key integer,
+col_timestamp_key timestamp NULL DEFAULT NULL,
+col_integer integer,
+col_smallint smallint,
+col_mediumint_key mediumint,
+col_decimal_20_0_key decimal(20,0),
+col_char_20_key char(20),
+col_char_30_key char(30),
+/*Indices*/
+key idx11(pk, col_bigint_key ),
+key idx3(pk, col_smallint_key ),
+primary key (pk) ,
+key idx15(pk, col_decimal_30_5_key ),
+key idx21(pk, col_varchar_10_key ),
+key idx23(pk, col_date_key ),
+key idx1(pk, col_tinyint_key ),
+key idx7(pk, col_int_key ),
+key idx25(pk, col_datetime_key ),
+key idx9(pk, col_integer_key ),
+key idx27(pk, col_timestamp_key ),
+key idx5(pk, col_mediumint_key ),
+key idx13(pk, col_decimal_20_0_key ),
+key idx17(pk, col_char_20_key ),
+key idx19(pk, col_char_30_key ))    PARTITION BY hash(pk) partitions 4 ;
+
+DROP TABLE /*! IF EXISTS*/ table10_bigint; 
+CREATE TABLE table10_bigint (
+col_mediumint_key mediumint,
+col_char_20_key char(20),
+col_smallint smallint,
+col_integer_key integer,
+col_datetime_key datetime,
+col_int_key int,
+col_bigint_key bigint,
+col_decimal_30_5_key decimal(30,5),
+col_varchar_10_key varchar(10),
+col_decimal_30_5 decimal(30,5),
+col_tinyint_key tinyint,
+col_mediumint mediumint,
+col_decimal_20_0_key decimal(20,0),
+col_integer integer,
+col_date_key date,
+col_tinyint tinyint,
+col_char_30_key char(30),
+col_int int,
+col_timestamp_key timestamp NULL DEFAULT NULL,
+col_timestamp timestamp NULL DEFAULT NULL,
+col_decimal_20_0 decimal(20,0),
+col_char_30 char(30),
+col_char_20 char(20),
+pk bigint,
+col_date date,
+col_bigint bigint,
+col_datetime datetime,
+col_varchar_10 varchar(10),
+col_smallint_key smallint,
+/*Indices*/
+key idx5(pk, col_mediumint_key ),
+key idx17(pk, col_char_20_key ),
+key idx9(pk, col_integer_key ),
+key idx25(pk, col_datetime_key ),
+key idx7(pk, col_int_key ),
+key idx11(pk, col_bigint_key ),
+key idx15(pk, col_decimal_30_5_key ),
+key idx21(pk, col_varchar_10_key ),
+key idx1(pk, col_tinyint_key ),
+key idx13(pk, col_decimal_20_0_key ),
+key idx23(pk, col_date_key ),
+key idx19(pk, col_char_30_key ),
+key idx27(pk, col_timestamp_key ),
+primary key (pk) ,
+key idx3(pk, col_smallint_key ))    ; 
+
+--enable_warnings
+--enable_query_log
+
+SELECT /*+coalesce_aggr*/ MIN(COL_INT_KEY),SUM(CASE WHEN COL_INT_KEY IS NULL THEN 0 ELSE COL_INT_KEY END) AS COLUMN1,AVG(CASE WHEN COL_INT_KEY IS NULL THEN 0 ELSE COL_SMALLINT_KEY END) AS COLUMN2 FROM table30_hash_pk_parts_4_bigint WHERE (COL_MEDIUMINT_KEY = 100000 OR COL_MEDIUMINT <= '') AND COL_INT_KEY = -1000 AND COL_INT_KEY IS NOT NULL GROUP BY COL_INT_KEY ORDER BY 1 ;
+
+SELECT /*+ COALESCE_AGGR*/ COL_INT_KEY +1,
+COUNT(CASE WHEN COL_INT_KEY != 
+(SELECT COUNT(*) FROM table30_hash_pk_parts_4_bigint B ORDER BY 1 DESC LIMIT 1) THEN ((SELECT COUNT(COL_SMALLINT_KEY) FROM table10_bigint B ORDER BY 1 DESC LIMIT 1)) ELSE COL_INT_KEY END) AS COLUMN1,
+SUM(CASE WHEN COL_INT_KEY IS NULL THEN 0 ELSE COL_SMALLINT_KEY END) AS COLUMN2 
+FROM table30_hash_pk_parts_4_bigint WHERE 
+(COL_INT = 2654646415131313 OR COL_INT_KEY = 40) 
+AND COL_INT_KEY = 4 
+AND COL_INT_KEY IS NOT NULL 
+GROUP BY COL_INT_KEY,COL_SMALLINT_KEY ORDER BY 1;
+
+drop table table30_hash_pk_parts_4_bigint, table10_bigint;

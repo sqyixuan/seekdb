@@ -1,0 +1,98 @@
+# owner:fengjingkun.fjk
+# owner group:storage
+# test meta major merge for ss
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+
+
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant sys;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_user;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_meta;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant sys;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_user;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_meta;
+ob1.mysql alter system set ob_compaction_schedule_interval = '5s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '5s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '5s' tenant all_meta;
+
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+create table t1(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none';
+
+### insert base data
+--disable_query_log
+let $cnt = 0;
+while($cnt < 400)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 't1', tablet_id, 1);
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id and tablet_id = $tablet_id, ls_id, 1);
+
+### launch major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+### insert inc data
+--disable_query_log
+let $inc_cnt = 1000;
+while($inc_cnt < 1100)
+{
+  eval insert into t1 values($inc_cnt, $inc_cnt, repeat('Raven', 4096), repeat('Corona', 4096));
+  inc $inc_cnt;
+}
+--enable_query_log
+
+select count(*) from t1;
+
+ob1.mysql alter system set_tp tp_no = 735, error_code = 4023, frequency = 1;
+ob1.mysql alter system minor freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and ls_id = $ls_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+sleep 10;
+
+--disable_query_log
+eval update t1 set c3 = repeat('Deciduous', 4096) where c1 <= 50;
+--enable_query_log
+
+ob1.mysql alter system set_tp tp_no = 735, error_code = 4023, frequency = 1;
+ob1.mysql alter system minor freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and ls_id = $ls_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+sleep 10;
+
+select count(*) from t1;
+
+
+### check if meta merge scheduled
+let $idx = 300;
+while ($idx > 0)
+{
+  sleep 1;
+  dec $idx;
+  let $meta_cnt = query_get_value(select count(*) as cnt from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and type = 'META_MAJOR_MERGE', cnt, 1);
+  if ($meta_cnt > 0)
+  {
+    let $idx = -5;
+  }
+}
+
+if ($idx != -5)
+{
+  --echo meta compaction failed
+}
+

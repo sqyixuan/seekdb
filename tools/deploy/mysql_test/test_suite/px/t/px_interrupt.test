@@ -1,0 +1,111 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner:dachuan.sdc
+# owner group: SQL3
+# tags: px, optimizer
+
+--disable_warnings
+drop database if exists austin;
+--enable_warnings
+create database austin;
+use austin;
+
+--echo ###  在执行阶段出错，测试中断机制是否生效。
+drop table if exists t1;
+drop table if exists t2;
+create table t1(c1 int,c2 longtext) compression = 'none' partition by hash(c1) partitions 3;
+create table t2(c1 int) partition by hash(c1) partitions 3;
+insert into t1 values(0,null);
+--source mysql_test/include/bigvarchar_64K.inc
+--disable_query_log
+--disable_result_log
+--let $loop=3000
+while  ($loop)
+{
+eval insert into t1 values(1,$a);
+eval insert into t1 values(2,$b);
+dec $loop;
+}
+--enable_result_log
+--enable_query_log
+insert into t2 values(3);
+explain basic select pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+--error 1690
+select t2.c1,t1.c1,pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+--error 1690
+select /*+ parallel(10) */ pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+drop table t1;
+drop table t2;
+
+create table t1(i int, j int, primary key (i)) partition by hash(i) partitions 3;
+insert into t1 values(1, 1);
+insert into t1 values(2, 2);
+insert into t1 values(3, 3);
+insert into t1 values(4, 4);
+insert into t1 values(5, 5);
+insert into t1 values(6, 6);
+insert into t1 values(1<<30, 1<<30);
+--sleep 1
+select * from t1;
+explain select i*j*i*j from t1;
+--error 1690
+select i*j*i*j from t1;
+--error 1690
+select /*+ parallel(4)*/ i*j*i*j from t1;
+--error 1690
+select /*+ parallel(8)*/ i*j*i*j from t1;
+--error 1690
+select /*+ parallel(16)*/ i*j*i*j from t1;
+--error 1690
+select /*+ parallel(32)*/ i*j*i*j from t1;
+
+create table t22 (c1 int, c2 int, c3 int);
+explain select /*+no_rewrite() parallel(8) leading(t3 t22) */ * from t22, (select i*j*i*j abc from t1) t3 where t3.abc = t22.c1;
+--error 1690
+select /*+no_rewrite() parallel(8) leading(t3 t22) */ * from t22, (select i*j*i*j abc from t1) t3 where t3.abc = t22.c1;
+
+create table t2(v int) partition by hash(v) partitions 4;
+insert into t2 values(3);
+insert into t2 values(4);
+insert into t2 values(5);
+insert into t2 values(6);
+insert into t2 values(7);
+--sleep 1
+
+
+explain select * from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+--error 1242
+select /*+ parallel(4)*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+--error 1242
+select /*+ parallel(8)*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+#--error 1242
+#select /*+ parallel(16)*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+#--error 1242
+#select /*+ parallel(32*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+
+--echo ###  另一个session中断掉当前执行的session，测试中断机制是否生效。
+
+connect (conn1,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+connection conn1;
+let $conn1_id=`select connection_id()`;	
+--disable_warnings
+drop database if exists test_interrupt;
+--enable_warnings
+create database test_interrupt;
+use test_interrupt;
+create table t1(v int primary key) partition by hash(v) partitions 50;
+insert into t1 values (3), (4), (5), (6), (7);
+--sleep 1
+--send select /*+ use_px parallel(4) */sleep(v) from t1;
+sleep 2;
+connect (obsys,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+connection obsys;
+
+--echo kill session
+--disable_query_log
+eval kill $conn1_id;
+--enable_query_log
+connection conn1;
+--error 5066,2013
+--reap

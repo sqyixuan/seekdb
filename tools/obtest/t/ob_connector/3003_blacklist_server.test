@@ -1,0 +1,146 @@
+##############################
+#owner: kyle.sj
+#owner group: ob_connecor
+#description: ob_connector黑名单,根据__all_server表更新状态
+###############################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=8);
+ob1.reboot;
+ob1.create_client tenant=obtest,user=admin,passwd=admin,database=test;
+ob1.set_ds_global_config serverStateRefreshInterval=1000,minKeepCongestionInterval=1000;
+
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.source include/migrate.inc;
+
+## speed up the migration
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set server_data_copy_in_concurrency=10;
+ob1.mysql alter system set server_data_copy_out_concurrency=10;
+ob1.mysql alter system set balancer_task_timeout='30s';
+
+# # 创建3个table:obtest1,obtest2,obtest3
+let $tablenum = 3;
+source sql/init_table.sql;
+
+###############################################################
+--echo 1. server 下线, kill
+let $leader = deploy_get_value(ob1.get_leader obtest:test:obtest1);
+let $ip = deploy_get_value($leader.ip);
+let $port = deploy_get_value($leader.port);
+let $join=:;
+let $addr = $ip$join$port;
+$leader.force_stop;
+
+ob1.check_until_timeout select status from __all_server where svr_ip='$ip' and svr_port='$port',inactive,20;
+
+sleep 15;
+
+$leader.check_state_in_congest INACTIVE;
+$leader.check_exsit_in_congest;
+let $stat =deploy_get_value($leader.get_congestion_info alive_congested);
+--echo $leader alive_congested state : $stat
+let $stat =deploy_get_value($leader.get_congestion_info dead_congested);
+--echo $leader dead_congested state : $stat
+
+# query by key,or not key
+
+select * from obtest1 where i1=2 and v3='2_obtest' and d6='1970-01-01 08:00:00';
+source include/get_ob_connector_last_query_addr.inc;
+if ($obs == $leader)
+{
+  --echo still query $obs.bug!
+  --exit
+}
+
+select count(*) from obtest1;
+source include/get_ob_connector_last_query_addr.inc;
+if ($obs == $leader)
+{
+  --echo still query $obs.bug!
+  --exit
+}
+
+$leader.nstart;
+
+ob1.check_until_timeout select start_service_time != 0 from __all_server where svr_ip='$ip' and svr_port='$port',1,20;
+sleep 5;
+
+$leader.check_state_in_congest ACTIVE;
+#$leader.check_not_exsit_in_congest;
+let $stat =deploy_get_value($leader.get_congestion_info alive_congested);
+--echo $leader alive_congested state : $stat
+let $stat =deploy_get_value($leader.get_congestion_info dead_congested);
+--echo $leader dead_congested state : $stat
+
+source sql/check_sys_ddl.sql;
+
+###############################################################
+--echo 2. server被delete
+
+# wait for log sync
+sleep 5;
+let $leader = deploy_get_value(ob1.get_leader obtest:test:obtest2);
+
+select * from obtest2 where i1=20 and v3='20_obtest' and d6='1970-01-01 08:00:00';
+select * from obtest2 where i1=20 and v3='20_obtest' and d6='1970-01-01 08:00:00';
+source include/get_ob_connector_last_query_addr.inc;
+let $obs1 = $obs;
+if ($obs1 != $leader)
+{
+  --echo query obs $obs1, but leader is $leader
+  --exit
+}
+
+$leader.delete;
+$leader.check_delete 120;
+sleep 3;
+
+select * from obtest2 where i1=20 and v3='20_obtest' and d6='1970-01-01 08:00:00';
+source include/get_ob_connector_last_query_addr.inc;
+let $obs2 = $obs;
+if ($obs2 == $obs1)
+{
+  --echo delete server still be query.bug!
+}
+
+$leader.check_not_exsit_in_congest;
+
+$leader.add;
+
+let $ip = deploy_get_value($leader.ip);
+let $port = deploy_get_value($leader.port);
+ob1.check_until_timeout select status from __all_server where svr_ip='$ip' and svr_port='$port',active,120;
+
+sleep 2;
+
+$leader.check_state_in_congest ACTIVE;
+$leader.check_not_exsit_in_congest;
+
+#source sql/check_sys_ddl.sql;
+
+###############################################################
+--echo 3. rs所在的observer被delete
+ob1.check_no_migrate_unit 240;
+sleep 15;
+let $leader = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table);
+$leader.delete;
+#wait for switch leader
+sleep 30;
+$leader.check_delete 720;
+
+sleep 5;
+
+$leader.check_not_exsit_in_congest;
+$leader.add;
+
+let $ip = deploy_get_value($leader.ip);
+let $port = deploy_get_value($leader.port);
+ob1.check_until_timeout select status from __all_server where svr_ip='$ip' and svr_port='$port',active,120;
+
+sleep 2;
+
+$leader.check_state_in_congest ACTIVE;
+$leader.check_not_exsit_in_congest;
+
+source sql/check_sys_ddl.sql;
+

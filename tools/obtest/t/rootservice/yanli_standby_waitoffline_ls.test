@@ -1,0 +1,161 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+# 验证waitoffline的日志流可以修改unit_group_id
+# 1. LS_ALTER可以操作
+# 2. 缩容可以完成。
+# 3. primary_zone操作不受影响
+
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='6G', log_disk_size='6G';
+
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+ob1.mysql alter system set ls_gc_delay_time = '6h' tenant = 'seed';
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant = 'oracle';
+#设置每个日志流组中都有offline的日志流
+ob1.mysql alter tenant oracle set primary_zone = 'z1,z2,z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql alter tenant oracle set primary_zone = 'z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id order by ls_id;
+#修改wait_offline的日志流组信息，可以被修改回去
+let $unit_group_id1 = deploy_get_value(ob1.select select unit_group_id from oceanbase.DBA_OB_UNITS where tenant_id = $oracle_id, unit_group_id, 1);
+let $unit_group_id2 = deploy_get_value(ob1.select select unit_group_id from oceanbase.DBA_OB_UNITS where tenant_id = $oracle_id and unit_group_id != $unit_group_id1, unit_group_id,1);
+connection sys_conn;
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id -1 as tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+eval alter system change tenant tenant_id = $meta_tenant_id;
+eval update __all_ls_status set unit_group_id = $unit_group_id2 where status = 'WAIT_OFFLINE' and unit_group_id = $unit_group_id1;
+#TODO 把预扩容CP过来后，这个数值可以改为3了
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id and unit_group_id = $unit_group_id1, 4, 30;
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id order by ls_id;
+#创建备库
+
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+ob1.mysql set ob_global_debug_sync = 'STOP_RECOVERY_LS_THREAD0 wait_for signal';
+--disable_all_result_log
+connection sys_conn;
+alter system change tenant tenant_id = 1;
+send CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'), comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+let $met_tenant_id = deploy_get_value(ob1.select select tenant_id -1 as tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = $tenant_id and refreshed_schema_version > 1, 6, 100;
+ob1.mysql alter system set _standby_max_replay_gap_time = '30s' tenant = 'standby_oracle_tenant';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+connection sys_conn;
+reap;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+#验证备库新建的日志流，不同的日志流组，应该平铺在不同的unit组中
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id order by ls_id;
+
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+#验证备库上LS_ALTER可以同步
+ob1.mysql ALTER RESOURCE TENANT standby_oracle_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where status = 'DELETING', 0, 100;
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id order by ls_id;
+
+#主库LS_ATLER
+ob1.mysql ALTER RESOURCE TENANT oracle UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+
+#TODO,主库上不会处理waitoffline的日志流
+let $unit_group_id = deploy_get_value(ob1.select select unit_group_id from oceanbase.__all_unit where status = 'DELETING', unit_group_id, 1);
+ob1.mysql_p select ls_id, ls_group_id, unit_group_id, status, primary_zone from oceanbase.__all_virtual_ls_status where unit_group_id = $unit_group_id;
+#等待GC完成后，unit才能完成缩容
+ob1.mysql alter system set ls_gc_delay_time = '0' tenant = 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where unit_group_id = $unit_group_id, 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where status = 'DELETING', 0, 100;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+#备库上所有的日志流组
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id order by ls_id;
+ob1.mysql_p select ls_id, primary_zone, ls_group_id, unit_group_id, status from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id order by ls_id;
+
+#验证备库的primary_zone修改，不受wait_offline的限制
+ob1.mysql alter tenant standby_oracle_tenant set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and primary_zone!='z2', 0, 30;
+let $server_addr= deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) as obs from oceanbase.__all_virtual_ls_meta_table where tenant_id = $oracle_id and ls_id = 1 and role = 1, obs, 1);
+#验证在修改备库拉日志的逻辑时transfer备库的同步
+let $leader_obs =deploy_get_value(ob1.get_obs_by_addr $server_addr);
+ob_connect(primary_tenant_conn, $leader_obs,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+#由于tablegroup的属性是none，预期这些内部表应该是放在一起的
+create tablegroup tg sharding = 'NONE';
+let $count = 0;
+--disable_query_log
+while ($count < 100)
+{
+eval create table two$count (a int, b char(20)) tablegroup = 'TG' partition by range (a,b) (partition p0 values less than (1, 'b'), partition p1 values less than (2, 'c'), partition p3 values less than (3, 'd'));
+inc $count;
+}
+--enable_query_log
+ob1.mysql alter system set ls_gc_delay_time = '0' tenant = 'standby_oracle_tenant';
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2, z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $oracle_id, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $oracle_id, 3, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id + 1 = $oracle_id, 3, 100;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 0, 100;
+
+connection primary_tenant_conn;
+alter tablegroup tg sharding = 'ADAPTIVE';
+#验证关掉自动均衡，分区位置不会发生变化
+ob1.mysql_p select ls_id, count(*) as c from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $oracle_id and ls_id != 1 group by ls_id order by c;
+#限制transfer不能结束
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal';
+ob1.mysql set ob_global_debug_sync = 'STOP_RECOVERY_LS_THREAD0 wait_for signal11111';
+sleep 2;
+ob1.mysql ALTER RESOURCE TENANT oracle UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $oracle_id, 1, 30;
+#应该只会有一个transfer和ALTER不能结束，备库会出现一个transfer begin和两个ls_alter
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 7, 150;
+ob1.mysql_p select operation_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_helper order by src_ls;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where tenant_id = $oracle_id, 2, 200;
+#备库这边可以结束其他两个alter
+ob1.mysql set ob_global_debug_sync = 'now signal signal11111';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 1, 100;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 0, 100;
+

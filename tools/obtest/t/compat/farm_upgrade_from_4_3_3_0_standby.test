@@ -1,0 +1,974 @@
+##
+# owner      : lisu.zxq
+# owner group: qa
+# description: 主备库升级场景覆盖
+##
+
+#1、部署集群
+ob1=OBI(cluster=1:1:1,proxy_num=1,ct_num=1,locality=SZ:SZ:SZ,version=4_3_3_0);
+ob2=OBI(cluster=1:1:1,share_proxy=ob1,ct_num=1,locality=SZ:SZ:SZ,version=4_3_3_0);
+let $starttime=deploy_get_value(ob1.sh_p date +"%Y-%m-%d %H:%M:%S");
+ob1.reboot;
+ob2.reboot;
+--disable_all_result_log
+ob1.sh sh t/compat/deploy_obguard_standby.sh upgrade_standby_4330;
+--enable_all_result_log
+sleep 60;
+let $unit1name = unit_primary;
+let $pool1name = pool_primary;
+let $tenant_primary=tenant_primary;
+let $primarypw = primarypw;
+let $tenant_standby = standby_tenant;
+let $user_name=user;
+let $userpw = userpw;
+let $standbyuser = standbyuser;
+let $standbyuserpw = standby_userpw;
+let $server_permanent_offline_time=deploy_get_value(ob1.select select distinct value from GV\$OB_PARAMETERS where name="server_permanent_offline_time",value,1);
+let $enable_rebalance=deploy_get_value(ob1.select select distinct value from GV\$OB_PARAMETERS where name="enable_rebalance",value,1);
+let $source_version = 4.3.3.0;
+let $dest_version = 4.3.5.3;
+ob_connect (pri_sys_conn,ob1.proxy0,root@sys,,oceanbase,$proxyport);
+ob_connect (stand_sys_conn,ob2.proxy0,root@sys,,oceanbase,$proxyport);
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z2.obs0.workdir);
+ob1.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z3.obs0.workdir);
+ob1.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_rpc_port = deploy_get_value(ob1.z1.obs0.port);
+
+let $work_dir=deploy_get_value(ob2.z1.obs0.workdir);
+ob2.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob2.z2.obs0.workdir);
+ob2.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob2.z3.obs0.workdir);
+ob2.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $z1_ip_ob2 = deploy_get_value(ob2.z1.obs0.ip);
+let $z1_rpc_port_ob2 = deploy_get_value(ob2.z1.obs0.port);
+
+#查询rs节点所在的zone,如果不在z1上将rs节点切到z1(保证脚本执行的正确性)
+let $not_changed = deploy_get_value(ob1.select select count(*) as not_changed from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", not_changed, 1);
+ob1.mysql alter tenant sys set primary_zone = "z1";
+--disable_query_log
+if ($not_changed == 0)
+{
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", 1, 120;
+ob1.check_until_timeout select (rs_svr_ip = "$z1_ip" and rs_svr_port = $z1_rpc_port) as passed from __all_rootservice_event_history where event = "full_rootservice" order by gmt_create desc limit 1, 1, 120;
+}
+--enable_query_log
+#切换rs节点为z1
+let $not_changed = deploy_get_value(ob2.select select count(*) as not_changed from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", not_changed, 1);
+ob2.mysql alter tenant sys set primary_zone = "z1";
+--disable_query_log
+if ($not_changed == 0)
+{
+ob2.check_until_timeout select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", 1, 120;
+ob2.check_until_timeout select (rs_svr_ip = "$z1_ip_ob2" and rs_svr_port = $z1_rpc_port_ob2) as passed from __all_rootservice_event_history where event = "full_rootservice" order by gmt_create desc limit 1, 1, 120;
+}
+--enable_query_log
+
+### 2.创建租户
+#创建主租户
+#创建unit
+connection pri_sys_conn;
+eval CREATE RESOURCE UNIT $unit1name  MEMORY_SIZE = '5G',MAX_CPU = 1, MIN_CPU = 1,LOG_DISK_SIZE = '6G',MAX_IOPS = 10000, MIN_IOPS = 10000, IOPS_WEIGHT=1;
+ob1.check_until_timeout select count(*) FROM oceanbase.DBA_OB_UNIT_CONFIGS WHERE NAME = "$unit1name", 1, 120;
+#创建资源池
+eval CREATE RESOURCE POOL $pool1name UNIT= $unit1name ,UNIT_NUM=1, ZONE_LIST=('z1','z2','z3');
+ob1.check_until_timeout select count(*) FROM DBA_OB_RESOURCE_POOLS WHERE NAME = "$pool1name",1, 120;
+#创建租户
+eval CREATE TENANT IF NOT EXISTS $tenant_primary PRIMARY_ZONE='z1',RESOURCE_POOL_LIST=("$pool1name") SET OB_TCP_INVITED_NODES='%';
+ob1.check_until_timeout select count(*) FROM DBA_OB_TENANTS WHERE TENANT_NAME = "$tenant_primary",1,120;
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$tenant_primary', tenant_id, 1);
+let $ip_list=deploy_get_value(ob1.select select group_concat(host separator ';') as ip_list from (select concat(svr_ip,':',SQL_PORT) as host  from cdb_ob_access_point where tenant_name="$tenant_primary"),ip_list,1 );
+####
+#####创建专用用户
+######创建备租户环境检测
+ob_connect (conn_mysql,ob1.proxy0,root@$tenant_primary,,,$proxyport);
+ob1.check_until_timeout  select count(*) as num from ((SELECT LS_ID FROM oceanbase.CDB_OB_LS_HISTORY WHERE TENANT_ID = $mysql_tenant_id) EXCEPT (SELECT LS_ID FROM oceanbase.CDB_OB_LS WHERE TENANT_ID = $mysql_tenant_id)),0,5;
+ob1.check_until_timeout  select count(LS_ID) as num FROM oceanbase.GV\$OB_LOG_STAT WHERE ROLE = 'LEADER' and  BEGIN_LSN=0 and TENANT_ID =$mysql_tenant_id,2,5;
+
+#创建用户
+eval create user $user_name identified by '$userpw';
+eval GRANT SELECT ON oceanbase.* TO '$user_name';
+#创建备租户
+connection stand_sys_conn;
+eval CREATE RESOURCE UNIT $unit1name MAX_CPU 1, MEMORY_SIZE = '5G';
+eval CREATE RESOURCE POOL $pool1name UNIT = '$unit1name', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+--disable_all_result_log
+eval CREATE STANDBY TENANT IF NOT EXISTS $tenant_standby LOG_RESTORE_SOURCE = "SERVICE=$ip_list USER=$user_name@$tenant_primary PASSWORD=$userpw" PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('$pool1name'),LOCALITY = 'F@z1,F@z2,F@z3';
+--enable_all_result_log
+ob_connect (tent_standby,ob2.proxy0,root@$tenant_standby,,,$proxyport);
+#获取备租户iplist
+let $standby_tenant_id = deploy_get_value(ob2.select select tenant_id from oceanbase.__all_tenant where tenant_name = '$tenant_standby', tenant_id, 1);
+let $ip_list_standby=deploy_get_value(ob2.select select group_concat(host separator ';') as ip_list from (select concat(svr_ip,':',SQL_PORT) as host  from cdb_ob_access_point where tenant_name="$tenant_standby"),ip_list,1 );
+
+ob1.mysql alter tenant $tenant_primary set variables autocommit='on';
+ob2.mysql alter tenant $tenant_standby set variables autocommit='on';
+
+##3. 修改配置项&系统变量
+#  配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s' tenant all;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all;
+
+ob2.mysql alter system set balancer_idle_time='10s';
+ob2.mysql alter system set merger_check_interval='10s' tenant all;
+ob2.mysql alter system set ob_compaction_schedule_interval='10s' tenant all;
+
+#  系统变量
+ob1.mysql set global ob_sql_audit_percentage=80;
+ob2.mysql set global ob_sql_audit_percentage=80;
+
+#  proxy配置项
+connection pri_sys_conn;
+alter proxyconfig set server_state_refresh_interval='1s';
+connection stand_sys_conn;
+alter proxyconfig set server_state_refresh_interval='1s';
+
+source t/compat/include_for_obtest/online_ddl_compat_check_prepare_standby.inc;
+
+# 4.数据准备
+connection conn_mysql;
+use test;
+create table t(c1 int, c2 int);
+create table t_part(c1 int, c2 int) partition by hash(c1) partitions 8;
+insert into t values(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t_part values(1, 1);
+insert into t_part values(2, 2);
+insert into t_part values(3, 3);
+insert into t_part values(4, 4);
+insert into t_part values(5, 5);
+insert into t_part values(6, 6);
+insert into t_part values(7, 7);
+insert into t_part values(8, 8);
+insert into t_part values(9, 9);
+insert into t_part values(10, 10);
+commit;
+
+create database test1;
+use test1;
+create table t_cg_0(c1 int, c2 int unique, c3 text);
+create table t_cg_1(c1 int, c2 int unique, c3 text);
+create table t_cg_2(c1 int, c2 int unique, c3 text);
+create table t_cg_3(c1 int, c2 int unique, c3 text);
+
+create index idx0 on t_cg_0(c1);
+create index idx1 on t_cg_1(c1);
+create index idx2 on t_cg_2(c1);
+create index idx3 on t_cg_3(c1);
+
+create database db1;
+create tablegroup tg;
+create table db1.tb_normal (pk int primary key,c1 varchar(1024) default '0', c2 timestamp(6) default now(6), c3 timestamp default now(), index i1(c2), index i2(c1)) tablegroup tg;
+create table db1.tb_increment (pk int primary key auto_increment,c1 int, c2 datetime(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), index i1(c2)) tablegroup tg;
+create table db1.tb_bigtable (c1 varchar(65536),c2 varchar(65536),c3 varchar(65536),c4 varchar(65536), pk bigint primary key auto_increment) COMPRESSION = 'none' tablegroup tg;
+
+create table db1.global_t6(a int, b int, c int, primary key(a)) partition by hash(a) partitions 2;
+create index gkey on db1.global_t6(b) global;
+insert into db1.global_t6 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+
+create table db1.global_t7(a int, b int, c int, primary key(a));
+insert into db1.global_t7 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+
+create table test.tb_table_gencol(pk1 bigint, pk2 varchar(2048),c1 varchar(65536), c2 varchar(65536),ac1 bigint auto_increment,
+ts timestamp(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),  gmt_create timestamp(6) default now(6), gmt_modified timestamp(6) default now(6),
+gen_c1 varchar(10) GENERATED ALWAYS AS (substr(c1,1,10)) virtual,
+gen_c2 varchar(10) GENERATED ALWAYS AS (substr(c2,1,10)) stored,
+primary key(pk1, pk2),index i1(ts));
+
+create table test.tablegencol(c1 bigint primary key,user_id varchar(32) NOT NULL default '' comment 'Alipay User ID', address varchar(256) NOT NULL default '' comment 'address', index(user_id,address(255)));
+create table test.table_hash(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+create table test.table_range(c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200), partition p2 values less than MAXVALUE);
+create table test.table_hash_range (c1 int primary key, c2 int) partition by hash(c1) subpartition by range(c1) subpartition template(SUBPARTITION c0 VALUES LESS THAN(1990), SUBPARTITION c1 VALUES LESS THAN (2000), SUBPARTITION c2 VALUES LESS THAN MAXVALUE) partitions 2;
+create table test.table_range_hash (c1 int primary key, c2 int) partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1980), PARTITION c1 VALUES LESS THAN (1990), PARTITION c2 VALUES LESS THAN (1995), PARTITION c3 VALUES LESS THAN (2000), PARTITION c4 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg_old;
+create table test.table_with_tg(c1 int primary key, c2 int) tablegroup tg_old;
+
+
+create table test.t_parent(c1 int, c2 int, constraint t_parent_pk primary key(c1, c2));
+create table test.t_child(c1 int, c2 int, constraint t_child_fk foreign key(c2, c1) references test.t_parent(c1, c2));
+
+create table test.t_check_1(c1 int, c2 int, constraint cst1 check(c1 = c2));
+create table test.t_check_2(c1 int, c2 int, constraint cst2 check(c2 = c1));
+
+create table test.local_var(c1 timestamp, c2_local_var date as (c1), index i1 (c2_local_var));
+insert into test.local_var(c1) values('2011-01-01 00:00:00');
+
+--disable_query_log
+--disable_result_log
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+
+--enable_query_log
+--enable_result_log
+
+#5.主库发起一次合并
+connection pri_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system major freeze tenant=all;
+let $__i__= 600;
+#发起合并后检查frozen_scn和last_scn的时间是否一样，一样表示合并完成，如果10分钟后仍然没有合并完成，找到未完成合并的租户并输出相关信息
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+#写入数据
+connection conn_mysql;;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(101,'101'),(102,'102'),(103,'103'),(104,'104');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=104;
+commit;
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use db1;
+--disable_all_result_log
+select * from tb_normal where pk=103;
+--enable_all_result_log
+
+sleep 3;
+ob2.force_stop;
+sleep 10;
+ob2.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_standby.inc;
+#检查升级前是否有未同步的日志流
+ob2.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+sleep 30;
+source t/compat/include_for_obtest/check_schema_sync_standby.inc;
+#升级备库z3
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+ob2.upgrade_check_before;
+ob2.upgrade_commond_for_server pre;
+connection stand_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+ob2.upgrade_health_checker;
+ob2.mysql alter system stop zone "z3";
+ob2.check_until_timeout select status from DBA_OB_ZONES where zone='z3',INACTIVE,20;
+ob2.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z3' and role='leader',0,20;
+ob2.z3.force_stop;
+ob2.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z3' and (start_service_time is null and status='INACTIVE'),1,60;
+ob2.z3.upgrade;
+ob2.z3.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_standby.inc;
+ob2.upgrade_health_checker z3;
+ob2.mysql alter system start zone "z3";
+ob2.check_until_timeout select count(*) from __all_server where zone="z3" and build_version not like "$dest_version%",0,120;
+
+#验证备库混布数据同步情况
+connection conn_mysql;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(105,'105'),(106,'106'),(107,'107'),(108,'108');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=104;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (201,201),(202,202);
+replace into db1.tb_increment(pk,c1) values (201,202);
+delete from db1.tb_increment where pk=202;
+commit;
+set autocommit=1;
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use db1;
+--disable_all_result_log
+select * from tb_normal where pk=105;
+--enable_all_result_log
+--disable_all_result_log
+select * from tb_increment where pk=201;
+--enable_all_result_log
+
+
+#升级备库z2
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+ob2.mysql alter system stop zone "z2";
+ob2.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob2.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader',0,20;
+ob2.z2.force_stop;
+ob2.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null and status='INACTIVE'),1,60;
+ob2.z2.upgrade;
+ob2.z2.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob2.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_standby.inc;
+ob2.upgrade_health_checker z2;
+ob2.mysql alter system start zone "z2";
+ob2.check_until_timeout select count(*) from __all_server where zone="z2" and build_version not like "$dest_version%",0,120;
+
+#验证备库混布数据同步情况
+connection conn_mysql;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(109,'109'),(110,'110'),(111,'111'),(112,'112');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=109;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (204,204),(205,205);
+replace into db1.tb_increment(pk,c1) values (205,203);
+delete from db1.tb_increment where pk=204;
+commit;
+set autocommit=1;
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use db1;
+--disable_all_result_log
+select * from tb_normal where pk=110;
+--enable_all_result_log
+--disable_all_result_log
+select * from tb_increment where pk=205;
+--enable_all_result_log
+
+#升级备库z1
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+ob2.mysql alter system stop zone "z1";
+ob2.check_until_timeout select status from DBA_OB_ZONES where zone='z1',INACTIVE,20;
+ob2.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader',0,20;
+ob2.z1.force_stop;
+ob2.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'),1,60;
+ob2.z1.upgrade;
+ob2.z1.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob2.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_standby.inc;
+ob2.upgrade_health_checker z1;
+ob2.mysql alter system start zone "z1";
+ob2.check_until_timeout select count(*) from __all_server where zone="z1" and build_version not like "$dest_version%",0,120;
+ob2.mysql alter tenant sys set primary_zone = "z1";
+ob2.upgrade_health_checker;
+ob2.upgrade_commond_for_server post;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and tenant_id=$standby_tenant_id and value!="$source_version",0,5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,5;
+#检测其他配置项是否影响dataversion
+connection stand_sys_conn;
+ALTER SYSTEM SET query_response_time_stats=true;
+ob2.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="true" and tenant_id=1,0,5;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and tenant_id=$standby_tenant_id and value!="$source_version",0,2;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,2;
+ALTER SYSTEM SET query_response_time_stats=false;
+ob2.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="false"and tenant_id=1,0,5;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and tenant_id=$standby_tenant_id and value!="$source_version",0,2;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,2;
+
+#4.1验证主旧备新场景下数据同步情况
+connection conn_mysql;
+use test;
+insert into t values(11, 11), (12,12), (13, 13), (14, 14), (15, 15), (16, 16), (17, 17), (18, 18), (19, 19), (20, 20);
+insert into t_part values(11, 11);
+insert into t_part values(12, 12);
+insert into t_part values(13, 13);
+insert into t_part values(14, 14);
+insert into t_part values(15, 15);
+insert into t_part values(16, 16);
+insert into t_part values(17, 17);
+insert into t_part values(18, 18);
+insert into t_part values(19, 19);
+insert into t_part values(20, 20);
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use test;
+select * from t where c1=13;
+select * from t_part where c1=15;
+
+#进行switchover
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $tenant_primary;
+ob2.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $tenant_standby;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and tenant_id=$standby_tenant_id and value!="$source_version",0,2;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,2;
+##创建备租户用户
+ob_connect (tent_standby,ob2.proxy0,root@$tenant_standby,,,$proxyport);
+eval create user $standbyuser identified by '$standbyuserpw';
+eval GRANT SELECT ON oceanbase.* TO $standbyuser;
+
+#设置网络恢复源
+--disable_all_result_log
+ob1.mysql ALTER SYSTEM SET LOG_RESTORE_SOURCE ='SERVICE=$ip_list_standby USER=$standbyuser@standby_tenant PASSWORD=$standbyuserpw' TENANT = $tenant_primary;
+--enable_all_result_log
+ob1.check_until_timeout SELECT SWITCHOVER_STATUS FROM DBA_OB_TENANTS WHERE TENANT_NAME= '$tenant_primary' and TENANT_ROLE="STANDBY",NORMAL,120;
+ob1.check_until_timeout SELECT count(*)  FROM oceanbase.DBA_OB_TENANTS where TENANT_NAME= '$tenant_primary' and RECOVERY_UNTIL_SCN=4611686018427387903,1,120;
+
+#检查备库同步情况
+sleep 5;
+--disable_all_result_log
+ob1.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<1 from dba_ob_tenants where tenant_name='tenant_primary',1,200;
+--enable_all_result_log
+
+#4.2主新备旧写入数据
+connection tent_standby;
+use test;
+insert into t values(21, 21), (22,12), (23, 23), (24, 24), (25, 25), (26, 26), (27, 27), (28, 28), (29, 29), (30, 30);
+insert into t_part values(21, 21);
+insert into t_part values(22, 22);
+insert into t_part values(23, 23);
+insert into t_part values(24, 24);
+insert into t_part values(25, 25);
+insert into t_part values(26, 26);
+insert into t_part values(27, 27);
+insert into t_part values(28, 28);
+insert into t_part values(29, 29);
+insert into t_part values(30, 30);
+
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob1.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='tenant_primary',1,200;
+--enable_all_result_log
+connection conn_mysql;
+use test;
+select * from t where c1=23;
+select * from t_part where c1=25;
+
+#再次switchover
+ob2.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $tenant_standby;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $tenant_primary;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and tenant_id=$standby_tenant_id and value!="$source_version",0,2;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,2;
+#设置网络恢复源
+--disable_all_result_log
+ob2.mysql ALTER SYSTEM SET LOG_RESTORE_SOURCE = "SERVICE=$ip_list USER=$user_name@$tenant_primary PASSWORD=$userpw" TENANT = $tenant_standby;
+--enable_all_result_log
+ob2.check_until_timeout SELECT SWITCHOVER_STATUS FROM DBA_OB_TENANTS WHERE TENANT_NAME= '$tenant_standby' and TENANT_ROLE="STANDBY",NORMAL,120;
+ob2.check_until_timeout SELECT count(*)  FROM oceanbase.DBA_OB_TENANTS where TENANT_NAME= '$tenant_standby' and RECOVERY_UNTIL_SCN=4611686018427387903,1,120;
+
+#升级主库
+source t/compat/include_for_obtest/check_schema_sync.inc;
+
+sleep 10;
+# 7 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+
+# 8.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+#sleep 5;;
+#8.1 升级z2
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+connection pri_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader',0,20;
+ob1.z2.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z2';
+sleep 10;
+#8.2 验证版本混部情况下SQL转发情况
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_mysql_z1,$ipz1,root@$tenant_primary,,test,$portz1);
+
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn_mysql_z2,$ipz2,root@$tenant_primary,,test,$portz2);
+
+let $ipz3=deploy_get_value(ob1.z3.obs0.ip);
+let $portz3=deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_mysql_z3,$ipz3,root@$tenant_primary,,db1,$portz3);
+#
+#8.2.1 distribute sql
+## z2(新)
+connection conn_mysql_z2;
+use test;
+--sorted_result
+select /*+ */ * from t, t_part where t.c1 = t_part.c1;
+
+## z1(旧)
+connection conn_mysql_z1;
+use test;
+--sorted_result
+select /*+ parallel(4)*/ * from t, t_part where t.c1 = t_part.c1;
+
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use test;
+--sorted_result
+select /*+ */ * from t, t_part where t.c1 = t_part.c1;
+
+#8.2.2 z2(新)->z1(旧) remote dml
+let $server1_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $server1_port = deploy_get_value(ob1.z2.obs0.port);
+ob1.mysql alter system stop server '$server1_ip:$server1_port';
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='sys'),0,60;
+connection conn_mysql_z2;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(301,'301'),(302,'302'),(303,'303'),(304,'304');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=304;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (301,301),(302,302);
+replace into db1.tb_increment(pk,c1) values (301,302);
+delete from db1.tb_increment where pk=302;
+commit;
+set autocommit=1;
+select pk,c1 from db1.tb_normal order by pk;
+select pk,c1 from db1.tb_increment order by pk limit 1;
+select a.pk,a.c1,b.c1 from db1.tb_normal a join db1.tb_increment b where a.pk=b.pk order by a.pk limit 2;
+show tables like 'tb_normal';
+show create table db1.tb_increment;
+use db1;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(10, 100, 10);
+update global_t6 set b=7 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set a=100 where b=2;
+update global_t6 set b=19 where b=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set c=100 where b>=10;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=2 or a=3;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where b>=100;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(1, 1, 1), (5, 6, 2), (4, 2, 1);
+--sleep 1
+select /*+index(global_t6 primary)*/ * from global_t6;
+delete from global_t6 where b < 7 and b >1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+replace into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4);
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+
+#验证备库数据是否同步
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby',1,200;
+--enable_all_result_log
+connection tent_standby;
+use db1;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+
+### 8.2.3 sys租户sql
+##ob1.z1.mysql_p show global variables like 'max_user_connections';
+##ob1.z1.mysql_p show variables like 'max_user_connections';
+##ob1.z1.mysql_p show create table oceanbase.__all_table;
+##ob1.z1.mysql show parameters like 'zone_merge_concurrency';
+##
+##ob1.z2.mysql_p show global variables like 'max_user_connections';
+##ob1.z2.mysql_p show variables like 'max_user_connections';
+##ob1.z2.mysql_p show create table oceanbase.__all_table;
+##ob1.z2.mysql show parameters like 'zone_merge_concurrency';
+
+# 8.2.4 转储
+ob1.mysql alter system minor freeze tenant = all;
+connection conn_mysql_z1;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(601,'601'),(602,'602'),(603,'603'),(604,'604');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=604;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (601,601),(602,602);
+replace into db1.tb_increment(pk,c1) values (601,602);
+delete from db1.tb_increment where pk=602;
+commit;
+set autocommit=1;
+
+ob1.mysql alter system start server '$server1_ip:$server1_port';
+
+source t/compat/include_for_obtest/check_schema_sync.inc;
+
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.z2.obs0.force_stop;
+let $z2_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port0 = deploy_get_value(ob1.z2.obs0.port);
+ob1.check_until_timeout select count(*) from __all_server where status = 'INACTIVE' and svr_ip = '$z2_ip0'and svr_port = $z2_port0, 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where role = 1 and member_list like '%$z2_ip0:$z2_port0%', 0, 120;
+ob1.mysql alter system set server_permanent_offline_time = '3600s';
+
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_rootservice_event_history where event like '%finish_add%' and value6 like '%ret:0%',1,120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task,0,120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where role = 1 and member_list not like '%$z2_ip0:$z2_port0%', 0, 120;
+
+let $leader_count = query_get_value(select count(1) as cnt from oceanbase.__all_virtual_ls_meta_table where role = 1, cnt, 1);
+let $zone2_ls_count = query_get_value(select count(1) as cnt from oceanbase.__all_virtual_ls_meta_table where svr_ip = '$z2_ip0' and svr_port = $z2_port0, cnt, 1);
+
+if($leader_count != $zone2_ls_count)
+{
+  --exit 
+}
+
+
+#8.3 升级z1
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+connection pri_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader',0,20;
+ob1.z1.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+sleep 2;
+
+#8.3.1 旧(z3)->新(z1)
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='sys'),0,60;
+connection conn_mysql_z3;
+set autocommit=0;
+set @@session.ob_query_timeout = 120000000;
+insert into db1.tb_normal(pk,c1) values(401,'401'),(402,'402'),(403,'403'),(404,'404');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=404;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (401,401),(402,402);
+replace into db1.tb_increment(pk,c1) values (401,402);
+delete from db1.tb_increment where pk=402;
+commit;
+set autocommit=1;
+select pk,c1 from db1.tb_normal order by pk;
+select pk,c1 from db1.tb_increment order by pk limit 1;
+select a.pk,a.c1,b.c1 from db1.tb_normal a join db1.tb_increment b where a.pk=b.pk order by a.pk limit 2;
+show tables like 'tb_normal';
+show create table db1.tb_increment;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(11, 100, 10);
+update global_t6 set b=7 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set a=100 where b=2;
+update global_t6 set b=19 where b=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set c=100 where b>=10;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=2 or a=3;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where b>=100;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(2, 1, 1), (6, 6, 2), (5, 2, 1);
+--sleep 1
+select /*+index(global_t6 primary)*/ * from global_t6;
+delete from global_t6 where b < 7 and b >1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+replace into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4);
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+
+#验证备库数据同步情况
+sleep 5;
+--disable_all_result_log
+ob2.check_until_timeout select (now()-usec_to_time(floor(sync_scn/1000)))<5 from dba_ob_tenants where tenant_name='$tenant_standby' ,1,200;
+--enable_all_result_log
+connection tent_standby;
+use db1;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+
+# 8.3.3 转储
+ob1.mysql alter system minor freeze tenant = all;
+
+connect (conn_obtest_z2,$ipz2,root@$tenant_primary,,db1,$portz2);
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(701,'701'),(702,'702'),(703,'703'),(704,'704');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=704;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (702,702),(703,703);
+replace into db1.tb_increment(pk,c1) values (702,701);
+delete from db1.tb_increment where pk=703;
+commit;
+set autocommit=1;
+
+#### sys租户
+###connection conn_mysql_z1;
+###ALTER SYSTEM SET enable_ddl=true;
+###source t/compat/include_for_obtest/online_ddl_compat_check_mix.inc;
+###connection conn_mysql_z1;
+###ALTER SYSTEM SET enable_ddl=false;
+### 
+
+source t/compat/include_for_obtest/check_schema_sync.inc;
+
+#8.3 升级z3
+--disable_all_result_log
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_notcomplete;
+--enable_all_result_log
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+connection pri_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z3';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z3',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z3' and role='leader',0,20;
+ob1.z3.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z3' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source t/compat/include_for_obtest/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z3';
+sleep 2;
+## 8.3.1 转储
+ob1.mysql alter system minor freeze tenant = all;
+connect (conn_obtest_z3,$ipz3,root@$tenant_primary,,db1,$portz3);
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(801,'801'),(802,'802'),(803,'803'),(804,'804');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=804;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (801,801),(802,802);
+replace into db1.tb_increment(pk,c1) values (801,802);
+delete from db1.tb_increment where pk=802;
+commit;
+set autocommit=1;
+
+
+
+# 9. 执行升级后SQL
+#
+connection pri_sys_conn;
+--disable_all_result_log
+ob1.z1.obs0.mysql set global ob_query_timeout = 20000000;
+--enable_all_result_log
+ob1.z1.obs0.mysql select * from mysql.proc;
+ob1.z1.obs0.mysql select * from mysql.db;
+ob1.z1.obs0.mysql select * from mysql.user;
+ob1.z2.obs0.mysql select * from mysql.proc;
+ob1.z2.obs0.mysql select * from mysql.db;
+ob1.z2.obs0.mysql select * from mysql.user;
+ob1.z3.obs0.mysql select * from mysql.proc;
+ob1.z3.obs0.mysql select * from mysql.db;
+ob1.z3.obs0.mysql select * from mysql.user;
+--disable_all_result_log
+ob1.z1.obs0.mysql set global ob_query_timeout = 10000000;
+--enable_all_result_log
+ob1.upgrade_commond_for_server post;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,5;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,5;
+#检测其他配置项是否影响dataversion
+connection stand_sys_conn;
+ALTER SYSTEM SET query_response_time_stats=true;
+ob2.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="true" and tenant_id=1,0,5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+ALTER SYSTEM SET query_response_time_stats=false;
+ob2.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="false"and tenant_id=1,0,5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+
+# 自检
+set @@session.ob_query_timeout = 600000000;
+alter system run job 'root_inspection';
+set @@session.ob_query_timeout = 10000000;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where info != 'succeed',0,180;
+##验证max_ls_id
+ob1.mysql_p select tenant_id, max_ls_id from oceanbase.__all_virtual_tenant_info order by tenant_id;
+
+#进行switchover
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $tenant_primary;
+ob2.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $tenant_standby;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+ob2.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+#设置网络恢复源
+--disable_all_result_log
+ob1.mysql ALTER SYSTEM SET LOG_RESTORE_SOURCE ='SERVICE=$ip_list_standby USER=$standbyuser@standby_tenant PASSWORD=$standbyuserpw' TENANT = $tenant_primary;
+--enable_all_result_log
+ob1.check_until_timeout SELECT SWITCHOVER_STATUS FROM DBA_OB_TENANTS WHERE TENANT_NAME= '$tenant_primary' and TENANT_ROLE="STANDBY",NORMAL,120;
+ob1.check_until_timeout SELECT count(*)  FROM oceanbase.DBA_OB_TENANTS where TENANT_NAME= '$tenant_primary' and RECOVERY_UNTIL_SCN=4611686018427387903,1,120;
+
+# 10.1 DML
+connection tent_standby;
+let $cnt=200;
+while($cnt <= 300)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval update db1.tb_normal set c1=$cnt where pk = $cnt;
+  eval update db1.tb_increment set c1 = $cnt where pk = $cnt;
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval replace into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval replace into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval replace into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_range(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+select pk1,pk2,gen_c1,gen_c2 from test.tb_table_gencol order by pk1,pk2 limit 10;
+select * from test.table_hash where c1 = 1;
+select * from test.table_range where c1 = 1;
+select * from test.table_hash_range where c1 = 1;
+select * from test.table_range_hash where c1 = 1;
+select count(*) from test.table_hash;
+
+# 10.2 DDL
+connection tent_standby;
+create table db1.t1_after(pk int primary key, c1 int);
+create table db1.t2_after(pk int primary key, c1 int);
+
+##各发起一次转储
+connection pri_sys_conn;
+alter system minor freeze tenant = all;
+connection stand_sys_conn;
+alter system minor freeze tenant = all;
+#发起合并
+connection stand_sys_conn;
+set @@session.ob_query_timeout = 60000000;
+alter system major freeze tenant=all;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+#8.failover
+ob2.force_stop;
+sleep 10;
+ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT $tenant_primary;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,2;
+##创建新的备租户
+#connection pri_sys_conn;
+#sleep 10;
+#eval CREATE RESOURCE UNIT unit2 MAX_CPU 1, MEMORY_SIZE = '3G';
+#eval CREATE RESOURCE POOL pool2 UNIT = unit2, UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+--disable_all_result_log
+#eval CREATE STANDBY TENANT IF NOT EXISTS tenant_restore LOG_RESTORE_SOURCE = "SERVICE=$ip_list USER=$user_name@$tenant_primary PASSWORD=$userpw" PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool2'),LOCALITY = 'F@z1,F@z2,F@z3';
+--enable_all_result_log
+##ddl
+#connection conn_mysql;
+#create database test_new;
+#create table test_new.t1_after(pk int primary key, c1 int);
+#create table test_new.t2_after(c1 int, c2 int) partition by hash(c1) partitions 8;
+##dml
+#let $cnt=1;
+#while($cnt <= 100)
+#{
+#  eval insert into test_new.t1_after (pk,c1) values ($cnt, $cnt);
+#  eval insert into test_new.t2_after (c1,c2) values ($cnt, $cnt);
+#  inc $cnt;
+#}
+#update test_new.t1_after set c1=55 where pk = 56;
+#delete from test_new.t1_after where pk=52;
+#update test_new.t2_after set c1=55 where c2 = 58;
+#delete from test_new.t2_after where c2=53;
+--disable_all_result_log
+ob1.sh sh test.sh "$starttime" 4_3_3_0;
+--enable_all_result_log
+--disable_all_result_log
+ob1.sh sh for_sql.sh 4_3_5_release 4.3.5.3 1 0;
+ob1.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_standby_4330 upgrade_complete;
+ob1.sh sh t/compat/delete_obguard.sh upgrade_standby_4330;
+--enable_all_result_log

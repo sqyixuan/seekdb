@@ -1,0 +1,117 @@
+##########################
+#owner :msy164651
+# 测试点：
+##########################
+
+ob1=OBI(cluster=2:2,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+
+
+set @@session.ob_query_timeout = 1000000000;
+ob1.mysql alter system set enable_rebalance = false;
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2'  set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+alter system set balancer_idle_time = '10s';
+alter system set partition_balance_schedule_interval = '0s';
+set recyclebin=off;
+let $count = 0;
+#tablegroup sharding nono
+create table t1(c1 int primary key, c2 int,c3 longtext);
+insert into t1 values(1, 1, '111111');
+create index il on t1(c2) local;
+create index il1 on t1(c2);
+create table t2(c1 int primary key, c2 int, c3 longtext) partition by hash(c1) partitions 10;
+insert into t2(c1, c2) values(1,1),(2,2),(3,3);
+create index il on t2(c2);
+
+ob1.mysql_p select distinct ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id order by ls_id;
+create tablegroup tg;
+alter tablegroup tg sharding = 'NONE';
+alter table t1 tablegroup = 'tg';
+alter table t2 tablegroup = 'tg';
+
+alter system set enable_rebalance = true;
+alter system set partition_balance_schedule_interval = '10s';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 200;
+ob1.mysql_p select task_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+
+ob1.mysql_p select distinct tablet_id, ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id order by tablet_id;
+
+
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 2, 100;
+sleep 3;
+ob1.mysql_p select task_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+
+ob1.mysql_p select distinct ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id order by ls_id;
+
+##case 2
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+alter system set partition_balance_schedule_interval = '0s';
+
+--error 4179
+alter tablegroup tg sharding = 'PARTITION';
+drop table t1;
+alter tablegroup tg sharding = 'PARTITION';
+create table t3(c1 int primary key, c2 int, c3 longtext) tablegroup = 'tg' partition by hash(c1) partitions 10;
+insert into t3 values(1,1,'xcv');
+create table t4(c1 int primary key, c2 int, c3 longtext)  partition by hash(c1) partitions 10;
+insert into t4 values(1,1,'xcv');
+create table t33(c1 int, c2 int, c3 int) tablegroup = 'tg' partition by hash(c1) subpartition by hash(c2) subpartitions 10 partitions 10;
+
+ob1.mysql alter resource tenant mysql unit_num = 2;
+connection conn_mysql;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 3, 200;
+ob1.mysql_p select task_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+
+ob1.mysql_p select distinct ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id order by ls_id;
+
+#验证tablegroup的聚合
+let $count = 0;
+while ($count < 10) 
+{
+ob1.mysql_p select a.ls_id = b.ls_id, a.partition_name, a.ls_id, b.ls_id from (select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 't2' and partition_name = 'p$count') a, (select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 't3' and partition_name = 'p$count') b;
+ob1.mysql_p select a.ls_id = b.ls_id, a.partition_name, a.ls_id, b.ls_id, b.subpartition_name from (select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 't2' and partition_name = 'p$count') a, (select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 't33' and partition_name = 'p$count') b;
+inc $count;
+}
+
+ob1.mysql_p select distinct ls_id, table_id, count(*) from oceanbase.__all_virtual_tablet_to_ls where tenant_id = $tenant_id group by table_id order by ls_id;
+
+##case 3
+connection conn_mysql;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+--error 4179
+alter tablegroup tg sharding = 'ADAPTIVE';
+drop table t33;
+alter tablegroup tg sharding = 'ADAPTIVE';
+alter table t4 tablegroup = 'tg';
+create table t1 (c1 int primary key, c2 int);
+create table t5 (j int);
+create table t6 like t4;
+rename table t3 to t7;
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 4, 200;
+ob1.mysql_p select task_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+
+
+

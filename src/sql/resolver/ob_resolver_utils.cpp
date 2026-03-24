@@ -6001,8 +6001,8 @@ int ObResolverUtils::foreign_key_column_match_index_column(const ObTableSchema &
     // check_partial_match_columns: allow matching a prefix, such as (a, b) matching (a, b, c)
     if (OB_FAIL(check_partial_match_columns(parent_columns, pk_columns, tmp_is_match))) {
       LOG_WARN("Failed to check_partial_match_columns", K(ret));
-    }
-
+    } 
+ 
     if (OB_FAIL(ret)) {
       // do nothing
     } else if (tmp_is_match) {

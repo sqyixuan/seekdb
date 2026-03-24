@@ -1,0 +1,139 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhenling.zzg
+#owner group:sql2
+#description:information schema/tables
+--disable_query_log
+--source mysql_test/include/index_quick_major.inc
+--disable_query_log
+--disable_warnings
+drop database if exists db_is;
+--enable_warnings
+create database db_is;
+use db_is;
+
+#
+# 
+#
+# 无主键表的隐藏列设计上也是自增列，join条件需要过滤之
+# 非分区表
+create table t1(c1 int, c2 int auto_increment);
+create table t2(c1 int primary key, c2 int, c3 int);
+create table t3(c1 int primary key, c2 int, c3 int);
+create index idx1 on t3(c2, c3);
+
+# 一级分区表
+create table t4(c1 int, c2 int auto_increment) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create table t5 (c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create table t6(c1 int primary key, c2 int, c3 int) partition by range(c1)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create index idx2 on t6(c2, c3);
+
+# 二级分区表
+create table t7(c1 int, c2 int auto_increment) partition by range(c1) subpartition by list(c1 % 2)
+subpartition template (
+  subpartition sub_p1 values in (0),
+  subpartition sub_p2 values in (1)
+)
+(
+  PARTITION p1 VALUES less than(100),
+  PARTITION p2 VALUES less than(200),
+  PARTITION p3 VALUES less than(300)
+);
+
+create table t8 (c1 int primary key, c2 int, c3 int) partition by range(c1) subpartition by list(c1 % 2)
+subpartition template (
+  subpartition sub_p1 values in (0),
+  subpartition sub_p2 values in (1)
+)
+(
+  PARTITION p1 VALUES less than(100),
+  PARTITION p2 VALUES less than(200),
+  PARTITION p3 VALUES less than(300)
+);
+
+create table t9(c1 int primary key, c2 int, c3 int) partition by range(c1) subpartition by list(c1 % 2)
+subpartition template (
+  subpartition sub_p1 values in (0),
+  subpartition sub_p2 values in (1)
+)
+(
+  PARTITION p1 VALUES less than(100),
+  PARTITION p2 VALUES less than(200),
+  PARTITION p3 VALUES less than(300)
+);
+create index idx3 on t9(c2, c3);
+
+create table base_table (c1 int);
+insert into base_table select * from table(generator(300));
+insert into t1(c1) select c1 from base_table where c1 <= 50;
+insert into t4(c1) select c1 from base_table where c1 <= 100;
+insert into t7(c1) select c1 from base_table where c1 <= 150;
+insert into t2 select c1, c1 / 2, c1 * 2 from base_table where c1 <= 100;
+insert into t3 select c1, c1 / 2, c1 * 2 from base_table where c1 <= 200;
+insert into t5 select c1, c1 / 2, c1 * 2 from base_table where c1 < 300;
+insert into t6 select c1, c1 / 2, c1 * 2 from base_table where c1 <= 100;
+insert into t8 select c1, c1 / 2, c1 * 2 from base_table where c1 <= 200;
+insert into t9 select c1, c1 / 2, c1 * 2 from base_table where c1 < 300;
+
+--source mysql_test/include/minor_merge_tenant.inc
+--disable_query_log
+
+analyze table t1;
+analyze table t2;
+analyze table t3;
+analyze table t4;
+analyze table t5;
+analyze table t6;
+analyze table t7;
+analyze table t8;
+analyze table t9;
+call dbms_stats.gather_index_stats('db_is', 'idx1', tabname => 't3');
+call dbms_stats.gather_index_stats('db_is', 'idx2', tabname => 't6');
+call dbms_stats.gather_index_stats('db_is', 'idx3', tabname => 't9');
+--enable_query_log
+--sorted_result
+select TABLE_NAME, TABLE_ROWS, AVG_ROW_LENGTH from information_schema.tables where table_schema='db_is';
+--sorted_result
+select TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, PARTITION_ORDINAL_POSITION, SUBPARTITION_ORDINAL_POSITION, TABLE_ROWS, AVG_ROW_LENGTH from information_schema.partitions where table_schema='db_is';
+--sorted_result
+select table_schema, table_name, auto_increment from information_schema.tables where table_schema='db_is' and table_name = 't1';
+
+--disable_query_log
+drop table t1;
+
+#
+# 需要统计表的行数，目前的方法是对每个paritition的row_count累加，并且多分区表的情况下一张表不允许显示多条记录
+#
+create table t1(c1 int)partition by key(c1) partitions 2;
+insert into t1 values (1);
+insert into t1 values (2);
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+select table_schema, table_name, table_rows from information_schema.tables where table_schema='db_is' and table_name = 't1';
+
+
+#issue 56033727
+select collation(table_collation) from information_schema.tables where table_schema='db_is' and table_name = 't1';
+
+set @@collation_connection = 'utf8mb4_unicode_ci';
+select collation(table_collation) from information_schema.tables where table_schema='db_is' and table_name = 't1';
+
+drop database db_is;
+

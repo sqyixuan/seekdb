@@ -1,0 +1,72 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: 测试unit缩容
+ob1=OBI(cluster=3:3:3,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = "true";
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+# case 1: resource pool没有granted给任何租户时的扩容和缩容
+ob1.mysql CREATE RESOURCE UNIT unit1 max_cpu 1, max_memory '1G', max_iops 100000,max_disk_size '10G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='1G', MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL tt_pool UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+# 将unit_num的值扩展到3
+ob1.mysql alter resource pool tt_pool unit_num = 3;
+# 将unit_num的值缩容到1
+ob1.mysql alter resource pool tt_pool unit_num = 1;
+
+# case 2: resource pool已经granted给租户时，连续修改unit num
+#         2.1 前一个变更没有完成时，不允许执行其他操作
+#         2.2 回滚时，仅能回滚到之前的unit num值，其他值均不合法
+ob1.mysql alter resource pool tt_pool unit_num = 3;
+ob1.mysql CREATE TENANT tt resource_pool_list=('tt_pool'), locality = "F,R{ALL_SERVER}@z1,F,R{ALL_SERVER}@z2,F,R{ALL_SERVER}@z3" set ob_tcp_invited_nodes='%';
+sleep 3;
+
+sleep 5;
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+# 创建若干用户表
+connection tt_conn;
+create table t1(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t2(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t3(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t4(c1 int, c2 int, primary key(c1,c2)) locality = "F,R{2}@z1, F,R{2}@z2, F,R{2}@z3";
+
+connection sys_conn;
+--error 4179
+eval alter resource pool tt_pool unit_num = 1;
+# 缩容进行过程中，不允许再执行其他的缩容操作
+--error 4179
+eval alter resource pool tt_pool unit_num = 2;
+ ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job  ,0,30;
+
+# 缩容过程中再次指定unit num与当前值相等是被允许的，但不会执行任何操作
+connection tt_conn;
+alter table t4 locality = "F,R{ALL_SERVER}@z1, F,R{ALL_SERVER}@z2, F,R{ALL_SERVER}@z3";
+let $job_id = deploy_get_value(ob1.select select  job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TABLE_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_table where previous_locality != "", 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+connection sys_conn;
+eval alter resource pool tt_pool unit_num = 1;
+# 回滚unit num压缩操作，操作前的unit num值为3
+eval alter resource pool tt_pool unit_num = 3;
+
+# 执行一次真正意义的unit num缩容，将unit num缩容为2
+eval alter resource pool tt_pool unit_num = 2;
+let $job_id = deploy_get_value(ob1.select select max(job_id) as job_id  from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = 'DELETING', 0, 360;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id <= $job_id and job_status="SUCCESS" ,2,30;
+
+
+
+
+
+
+

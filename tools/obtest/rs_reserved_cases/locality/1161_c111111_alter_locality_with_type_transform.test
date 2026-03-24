@@ -1,0 +1,142 @@
+##############################
+# owner: wenduo.swd
+# owner group: rs
+# 功能点：测试Full和readonly类型转换的副本迁移情况。
+
+# 部署：
+# 6台observer，每台server一个zone：z1~z6, 
+# 部署在6个机房: z1,z2,z6在SZ，z3,z4在SH，z5在HZ。
+# 创建一个5副本的tenant，locality="F@z1,F@z2,F@z3,F@z4,F@z5";
+# 然后通过locality变更，将该租户的locality调整为locality="F@z1,F@z2,F@z6,R@z3,R@z4,R@z5";
+
+ob1=OBI(cluster=1:1:1:1:1:1:1,proxy_num=0,init_unit_cpu=0, locality=SZ:SZ:SH:SH:HZ:SZ:SZ);
+ob1.z6.obs0.set status=disable;
+ob1.z7.obs0.set status=disable;
+ob1.reboot;
+
+sleep 3;
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+ob1.z6.add;
+ob1.z6.start_zone;
+ob1.z6.obs0.set status=enable;
+ob1.z6.obs0.start;
+ob1.z6.obs0.add;
+ob1.z7.add;
+ob1.z7.start_zone;
+ob1.z7.obs0.set status=enable;
+ob1.z7.obs0.start;
+ob1.z7.obs0.add;
+sleep 30;
+
+# 创建租户tt，租户的locality为F{3}@HZ
+ob1.mysql create resource pool pool1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create resource pool pool2 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z6', 'z7');
+ob1.mysql create tenant tt resource_pool_list=('pool1'), primary_zone = 'z1', locality = "F@z1,F@z2,F@z3,F@z4,F@z5" set ob_tcp_invited_nodes='%';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+
+# 在租户tt下创建100张表
+connection tt_conn;
+let $count = 0;
+--disable_query_log
+while ($count < 100)
+{
+  eval create table tt_$count (pk bigint primary key);
+  eval insert into tt_$count (pk) values (0), (1), (2), (3), (4), (5), (6), (7), (8), (9);
+  inc $count;
+}
+--enable_query_log
+
+connection sys_conn;
+
+# 调整tt租户的locality，给tt租户在z5上的全功能副本转成只读副本
+ob1.mysql alter tenant tt locality = "F@z1,F@z2,F@z3,F@z4,R@z5";
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+# 检查tt租户的locality变更是否完成
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt", tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+let $count = 0;
+let $offset = 1;
+# 检查leader的成员列表
+while ($count < 100)
+{
+  let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id order by table_id, table_id, $offset);
+  let $port5 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_meta_table where zone = 'z5' and table_id = $table_id, svr_port, 1);
+  let $ip5 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_meta_table where zone = 'z5' and table_id = $table_id, svr_ip, 1);
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where role=1 and member_list like '%$ip5:$port5%' and table_id=$table_id, 0, 360;
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where replica_type=16 and zone='z5' and table_id=$table_id and svr_ip='$ip5' and svr_port=$port5, 1, 360;
+  inc $count;
+  inc $offset;
+}
+
+# 再次调整locality，给租户tt在z4上的全功能副本转成只读副本
+connection sys_conn;
+ob1.mysql alter tenant tt locality = 'F@z1,F@z2,F@z3,R@z4,R@z5';
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+# 检查tt租户的locality变更是否完成
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt", tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+let $count = 0;
+let $offset = 1;
+# 检查leader的成员列表
+while ($count < 100)
+{
+  let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id order by table_id, table_id, $offset);
+  let $port4 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_meta_table where zone = 'z4' and table_id = $table_id, svr_port, 1);
+  let $ip4 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_meta_table where zone = 'z4' and table_id = $table_id, svr_ip, 1);
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where role = 1 and member_list like '%$ip4:$port4%' and table_id = $table_id, 0, 360;
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where replica_type=16 and zone='z4' and table_id=$table_id and svr_ip='$ip4' and svr_port=$port4, 1, 360;
+  inc $count;
+  inc $offset;
+}
+
+# 调整tt租户的locality，给tt租户在z6上加一个全功能副本
+connection sys_conn;
+ob1.mysql alter tenant tt resource_pool_list = ('pool1', 'pool2'), locality = "F@z1,F@z2,F@z3,R@z4,R@z5,F@z6";
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+# 检查tt租户的locality变更是否完成
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt", tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+let $count = 0;
+let $offset = 1;
+# 检查leader的成员列表
+while ($count < 100)
+{
+  let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id order by table_id, table_id, $offset);
+  let $port6 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_meta_table where zone = 'z6' and replica_type = 0 and table_id = $table_id, svr_port, 1);
+  let $ip6 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_meta_table where zone = 'z6' and replica_type = 0 and table_id = $table_id, svr_ip, 1);
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where role = 1 and member_list like '%$ip6:$port6%' and table_id = $table_id, 1, 360;
+ 
+  inc $count;
+  inc $offset;
+}
+# 调整tt租户的locality，给tt租户在z7上加一个全功能副本
+connection sys_conn;
+ob1.mysql alter tenant tt resource_pool_list = ('pool1', 'pool2'), locality = "F@z1,F@z2,F@z3,R@z4,R@z5,F@z6,F@z7";
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+# 检查tt租户的locality变更是否完成
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt", tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+eval select job_status, tenant_id, sql_text from oceanbase.__all_rootservice_job order by job_id desc limit 1;
+let $count = 0;
+let $offset = 1;
+# 检查leader的成员列表
+while ($count < 100)
+{
+  let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id order by table_id, table_id, $offset);
+  let $port7 = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_meta_table where zone = 'z7' and replica_type = 0 and table_id = $table_id, svr_port, 1);
+  let $ip7 = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_meta_table where zone = 'z7' and replica_type = 0 and table_id = $table_id, svr_ip, 1);
+  ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where role = 1 and member_list like '%$ip7:$port7%' and table_id = $table_id, 1, 360;
+ 
+  inc $count;
+  inc $offset;
+}
+

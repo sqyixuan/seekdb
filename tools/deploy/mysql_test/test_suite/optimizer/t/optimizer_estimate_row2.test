@@ -1,0 +1,280 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: link.zt
+#owner group: sql1
+#tags: optimizer
+# 这个 case 只能测试单机的场景，没有测试远程估行
+# 测试远程估行可以使用 obtest ./mytest sql.1000_c222_p3_gather_storage_stat
+# 本质上，估行目前是一个分区选择的问题
+# 而分区选择其实并不受单机/分布式场景的影响
+# 它只依赖于是否存在统计信息
+# 因此，我们这里测试合并前（无统计信息），合并后（有统计信息）两种场景
+
+
+--disable_warnings
+drop table if exists td, t;
+--enable_warnings
+
+## 合并前，随机选择分区
+
+###################### 单分区表 ######################
+create table t (pk int primary key, c1 int, c2 int);
+## 单分区全局索引
+create index idx_c2 on t (c2, c1, pk) global;
+## 多分区全局索引
+create index dis_idx_c2 on t (c2, c1, pk) global
+  partition by range columns (c2)
+  (partition p0 values less than (5),
+   partition p1 values less than (20),
+   partition p3 values less than (40),
+   partition p4 values less than (2000));
+
+###################### 多分区表 ######################
+create table td (pk int primary key, c1 int, c2 int)
+  partition by range columns (pk)
+  (partition p0 values less than (5),
+   partition p1 values less than (20),
+   partition p3 values less than (40),
+   partition p4 values less than (2000));
+## 单分区全局索引
+create index idx_c2 on td (c2, c1, pk) global;
+## 多分区全局索引
+create index dis_idx_c2 on td (c2, c1, pk) global
+  partition by range columns (c2)
+  (partition p0 values less than (5),
+   partition p1 values less than (20),
+   partition p3 values less than (40),
+   partition p4 values less than (2000));
+
+--disable_warnings
+drop table if exists t_pg_table;
+purge recyclebin;
+drop tablegroup if exists tpg;
+create tablegroup if not exists tpg binding true;
+--enable_warnings
+create table t_pg_table (pk int primary key, c1 int, c2 int) tablegroup = 'tpg';
+
+################### 生成数据 ######################
+--source mysql_test/include/check_all_idx_ok.inc
+--disable_query_log
+let $cnt=5;
+while($cnt<1000)
+{
+  eval insert into td values($cnt, $cnt, $cnt);
+  inc $cnt;
+}
+insert into t select * from td;
+insert into t_pg_table select * from td;
+--enable_query_log
+
+########################### 1. 单分区表 合并前 ###########################
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p0, 严重低估，采用默认行数
+explain  select /*+index(t primary)*/ * from t where pk > 0;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 0;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 0;
+explain  select * from t where pk > 0;
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p0, 严重低估，采用默认行数
+explain  select /*+index(t primary)*/ * from t where pk > 5;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 5;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 5;
+explain  select * from t where pk > 5;
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p0，严重低估，采用默认行数
+explain  select /*+index(t primary)*/ * from t where pk > 50;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 50;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 50;
+explain  select * from t where pk > 50;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p0, 严重低估，采用默认行数
+explain  select /*+index(t primary)*/ * from t where c2 > 0;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 0;
+set @@ob_log_level='sql.*:debug';
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 0;
+set @@ob_log_level='sql.*:info';
+explain  select * from t where c2 > 0;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p1, 低估
+explain  select /*+index(t primary)*/ * from t where c2 > 5;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 5;
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 5;
+explain  select * from t where c2 > 5;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p4, 准确
+explain  select /*+index(t primary)*/ * from t where c2 > 50;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 50;
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 50;
+explain  select * from t where c2 > 50;
+
+########################### 2. 多分区表 合并前 ###########################
+
+## pk > 0
+## primary p0 分区,严重低估,使用默认
+## idx_c2 一个分区,相对准确
+## dis_idx_c2 p0 分区,严重低估,使用默认
+explain  select /*+index(td primary)*/ * from td where pk > 0;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 0;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 0;
+explain  select * from td where pk > 0;
+
+## pk > 5
+## primary p1 分区,低估
+## idx_c2 一个分区,相对准确
+## dis_idx_c2 p0 分区,严重低估,使用默认
+explain  select /*+index(td primary)*/ * from td where pk > 5;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 5;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 5;
+explain  select * from td where pk > 5;
+
+## pk > 50
+## primary p4 分区,准确
+## idx_c2 一个分区,相对准确
+## dis_idx_c2 p0 分区,严重低估,使用默认
+explain  select /*+index(td primary)*/ * from td where pk > 50;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 50;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 50;
+explain  select * from td where pk > 50;
+
+## c2 > 0
+## primary p0 分区，严重低估，使用默认
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p0 分区，严重低估，使用默认
+explain  select /*+index(td primary)*/ * from td where c2 > 0;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 0;
+set @@ob_log_level='sql.*:debug';
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 0;
+set @@ob_log_level='sql.*:info';
+explain  select * from td where c2 > 0;
+
+## c2 > 5
+## primary p0 分区，严重低估，使用默认
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p1 分区，低估
+explain  select /*+index(td primary)*/ * from td where c2 > 5;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 5;
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 5;
+explain  select * from td where c2 > 5;
+
+## c2 > 50
+## primary p0 分区，严重低估，使用默认
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，准确
+explain  select /*+index(td primary)*/ * from td where c2 > 50;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 50;
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 50;
+explain  select * from td where c2 > 50;
+
+## 合并后，可以根据统计信息选择分区
+
+explain select * from t_pg_table where pk > 50;
+# select distinct row_count from oceanbase.__all_tablet_replica_checksum where tablet_id in (select q.tablet_id as tablet_id from oceanbase.__all_table p, oceanbase.__all_tablet_to_ls q where p.table_name = 't_pg_table' and p.table_id = q.table_id);
+
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('TEST', 't');
+call dbms_stats.gather_table_stats('TEST', 'td');
+call dbms_stats.gather_table_stats('TEST', 't_pg_table');
+## 合并结束后 ObStatManager 并不能立刻拿到最新的行数
+sleep 10;
+
+# select distinct row_count from oceanbase.__all_tablet_replica_checksum where tablet_id in (select q.tablet_id as tablet_id from oceanbase.__all_table p, oceanbase.__all_tablet_to_ls q where p.table_name = 't_pg_table' and p.table_id = q.table_id);
+explain select * from t_pg_table where pk > 50;
+
+
+########################### 3. 单分区表 合并后 ###########################
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p4, 高估
+explain  select /*+index(t primary)*/ * from t where pk > 0;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 0;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 0;
+explain  select  * from t where pk > 0;
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p4, 高估
+explain  select /*+index(t primary)*/ * from t where pk > 5;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 5;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 5;
+explain  select  * from t where pk > 5;
+
+## primary 准确; idx_c2 相对准确; dis_idx_c2 选 p4, 高估
+explain  select /*+index(t primary)*/ * from t where pk > 50;
+explain  select /*+index(t idx_c2)*/ * from t where pk > 50;
+explain  select /*+index(t dis_idx_c2)*/ * from t where pk > 50;
+explain  select  * from t where pk > 50;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p4, 高估
+explain  select /*+index(t primary)*/ * from t where c2 > 0;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 0;
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 0;
+explain  select  * from t where c2 > 0;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p4, 高估
+explain  select /*+index(t primary)*/ * from t where c2 > 5;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 5;
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 5;
+explain  select  * from t where c2 > 5;
+
+## primary 相对准确; idx_c2 准确; dis_idx_c2 选 p4, 准确
+explain  select /*+index(t primary)*/ * from t where c2 > 50;
+explain  select /*+index(t idx_c2)*/ * from t where c2 > 50;
+explain  select /*+index(t dis_idx_c2)*/ * from t where c2 > 50;
+explain  select  * from t where c2 > 50;
+
+########################### 4. 多分区表 合并后 ###########################
+
+## pk > 0
+## primary p4 分区，高估
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，高估
+explain  select /*+index(td primary)*/ * from td where pk > 0;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 0;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 0;
+explain  select  * from td where pk > 0;
+
+## pk > 5
+## primary p4 分区，高估
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，高估
+explain  select /*+index(td primary)*/ * from td where pk > 5;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 5;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 5;
+explain  select  * from td where pk > 5;
+
+## pk > 50
+## primary p4 分区，准确
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，高估
+explain  select /*+index(td primary)*/ * from td where pk > 50;
+explain  select /*+index(td idx_c2)*/ * from td where pk > 50;
+explain  select /*+index(td dis_idx_c2)*/ * from td where pk > 50;
+explain  select  * from td where pk > 50;
+
+## c2 > 0
+## primary p4 分区，高估
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，高估
+explain  select /*+index(td primary)*/ * from td where c2 > 0;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 0;
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 0;
+explain  select  * from td where c2 > 0;
+
+
+## c2 > 5
+## primary p4 分区，高估
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，高估
+explain  select /*+index(td primary)*/ * from td where c2 > 5;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 5;
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 5;
+explain  select  * from td where c2 > 5;
+
+## c2 > 50
+## primary p4 分区，高估
+## idx_c2 一个分区，相对准确
+## dis_idx_c2 p4 分区，准确
+explain  select /*+index(td primary)*/ * from td where c2 > 50;
+explain  select /*+index(td idx_c2)*/ * from td where c2 > 50;
+explain  select /*+index(td dis_idx_c2)*/ * from td where c2 > 50;
+explain  select  * from td where c2 > 50;
+
+#drop table t, td;

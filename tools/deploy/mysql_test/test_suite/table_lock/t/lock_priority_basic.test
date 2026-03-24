@@ -1,0 +1,98 @@
+# owner: cxf262476
+# owner group: transaction
+# description: basic test for mysql lock table
+
+--disable_warnings
+DROP USER IF EXISTS table_lock;
+DROP TABLE IF EXISTS t;
+DROP TABLE IF EXISTS t_new;
+--enable_warnings
+
+CREATE USER table_lock IDENTIFIED BY "table_lock";
+grant all on *.* to table_lock;
+
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_sys,$OBMYSQL_MS0,root,"",oceanbase,$OBMYSQL_PORT);
+
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=2;
+alter proxyconfig set enable_single_leader_node_routing=false;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+sleep 3;
+
+connect (conn1,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+connection conn1;
+--disable_query_log
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_query_timeout = 10000000; #-- 10s
+set SESSION ob_trx_idle_timeout = 10000000000;
+
+CREATE TABLE t(k int);
+INSERT INTO t VALUES(1);
+ALTER SYSTEM SET enable_lock_priority=true;
+sleep 3;  # configuration should take time to take effect
+--enable_query_log
+
+# 1. LOCK TABLE
+--echo "STEP: lock table"
+LOCK TABLE t WRITE;
+
+connect (conn2,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+connect (conn3,$OBMYSQL_MS0,table_lock,table_lock,test,$OBMYSQL_PORT);
+# 2. INSERT PENDING
+connection conn2;
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_query_timeout = 10000000; #-- 10s
+set SESSION ob_trx_idle_timeout = 10000000000;
+SEND INSERT INTO t VALUES(2);
+
+# 3. RENAME PENDING
+connection conn3;
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_query_timeout = 10000000; #-- 10s
+set SESSION ob_trx_idle_timeout = 10000000000;
+SEND RENAME TABLE t TO t_new;
+
+# 4. UNLOCK
+connection conn1;
+sleep 1;
+UNLOCK TABLE;
+
+# 5. INSERT FAILED
+connection conn2;
+--error 1146
+REAP;
+
+# 6. RENAME SUCCESS
+connection conn3;
+REAP;
+SELECT * FROM t_new;
+RENAME TABLE t_new TO t;
+
+# 7. CLEAN
+--echo "STEP: clean"
+ALTER SYSTEM SET enable_lock_priority=false;
+--disable_warnings
+--echo "STEP: drop table"
+DROP TABLE t;
+--echo "STEP: drop user"
+--error 0,942
+DROP USER table_lock;
+--enable_warnings
+
+connection conn_sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=1;
+alter proxyconfig set enable_single_leader_node_routing=true;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+
+sleep 3;  # configuration should take time to take effect

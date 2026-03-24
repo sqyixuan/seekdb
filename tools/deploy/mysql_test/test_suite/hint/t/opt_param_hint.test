@@ -1,0 +1,163 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhanyue.zzy
+#owner group: SQL1
+#description: test opt_param hint
+#tags: optimizer, outline
+
+--result_format 4
+
+--disable_warnings
+drop table if exists t1,t2;
+drop view if exists v1,v2,v3,v4;
+--enable_warnings
+
+create table t1(c1 int, c2 int);
+
+--disable_query_log
+insert into t1 values(1, 1);
+insert into t1 values(5, 5);
+insert into t1 values(2, 2);
+--enable_query_log
+
+## 0. opt_param test basic test
+explain outline select /*+opt_param('hidden_column_visible','true')*/ `__pk_increment`, t1.* from t1;
+select /*+opt_param('hidden_column_visible' 'true') opt_param('hidden_column_visible' 'false')*/ `__pk_increment`, t1.* from t1;
+--error 1054
+select /*+opt_param('hidden_column_visible' 'false') opt_param('hidden_column_visible' 'true')*/ `__pk_increment`, t1.* from t1;
+
+## 1. hidden_column_visible
+select /*+opt_param('hidden_column_visible' 'true')*/ `__pk_increment`, t1.* from t1;
+select * from (select `__pk_increment`, t1.* from t1) v1,
+              (select /*+opt_param('hidden_column_visible','true')*/ t1.* from t1) v2 where v1.c1 = v2.c1;
+--error 1054
+select `__pk_increment`, t1.* from t1;
+--error 1054
+select t1.* from t1 where `__pk_increment` is not null;
+--error 1054
+select /*+opt_param('hidden_column_visible','false')*/ `__pk_increment`, t1.* from t1;
+--error 1054
+select /*+opt_param('hidden_column_visible','invalid')*/ `__pk_increment`, t1.* from t1;
+--error 1054
+select /*+opt_param('hidden_column_visible','1')*/ `__pk_increment`, t1.* from t1;
+
+## 2. table hidden column cannot be set without opt_param
+--error 1054
+update t1 set __pk_increment = 1;
+--error 1054
+insert into t1(__pk_increment, c1, c2) values(1, 1, 1);
+--error 1054
+insert into t1(__pk_increment, c1, c2) values(1, 1, 1) on duplicate key update __pk_increment = 1;
+
+## 2. table hidden column cannot be set with opt_param
+--error 1054
+update /*+opt_param('hidden_column_visible','true')*/ t1 set __pk_increment = 1;
+--error 1054
+insert /*+opt_param('hidden_column_visible','true')*/ into t1(__pk_increment, c1, c2) values(1, 1, 1);
+--error 1054
+insert /*+opt_param('hidden_column_visible','true')*/ into t1(__pk_increment, c1, c2) values(1, 1, 1) on duplicate key update __pk_increment = 1;
+
+
+## 4. view(with hidden pk) hidden column cannot be set without opt_param
+create view v1 as select __pk_increment,c1,c2 from t1;
+--error 1054
+update v1 set __pk_increment = 1;
+--error 1054
+insert into v1(__pk_increment, c1, c2) values(1, 1, 1);
+--error 1054
+insert into v1(__pk_increment, c1, c2) values(1, 1, 1) on duplicate key update __pk_increment = 1;
+
+## 5. view(with hidden pk) hidden column cannot be set with opt_param
+select /*+opt_param('hidden_column_visible','true')*/__pk_increment from v1;
+--error 1054
+update /*+opt_param('hidden_column_visible','true')*/ v1 set __pk_increment = 1;
+--error 1054
+insert /*+opt_param('hidden_column_visible','true')*/ into v1(__pk_increment, c1, c2) values(1, 1, 1);
+--error 1054
+insert /*+opt_param('hidden_column_visible','true')*/ into v1(__pk_increment, c1, c2) values(1, 1, 1) on duplicate key update __pk_increment = 1;
+
+## 6. pk + 1
+create table t2(c1 int, c2 int unique not null);
+create view v2 as select __pk_increment + 1 as r1, c1, c2 from t2;
+update /*+opt_param('hidden_column_visible','true')*/ v2 set c1 = 1;
+--error 1054
+update /*+opt_param('hidden_column_visible','true')*/ v2 set __pk_increment  = 1;
+--error 1348
+update /*+opt_param('hidden_column_visible','true')*/ v2 set r1  = 1;
+
+## 7. view(without hidden pk) can be set with opt_param
+create view v3 as select c1, c2 from t1;
+update /*+opt_param('hidden_column_visible','true')*/ v3 set c1 = 1;
+
+## 8.nest view
+create view v4 as select * from v1;
+--error 1054
+update v4 set __pk_increment = 1;
+--error 1054
+insert into v4(__pk_increment, c1, c2) values(1, 1, 1);
+--error 1054
+insert into v4(__pk_increment, c1, c2) values(1, 1, 1) on duplicate key update __pk_increment = 1;
+--error 1054
+update /*+opt_param('hidden_column_visible' 'true')*/ v4 set __pk_increment = 1;
+
+## 9.join
+explain basic select /*+opt_param('hash_join_enabled' 'true'), opt_param('optimizer_sortmerge_join_enabled' 'false'), opt_param('nested_loop_join_enabled' 'false')*/ * from t1, t2 where t1.c1 = t2.c1;
+explain basic select /*+opt_param('hash_join_enabled' 'false'), opt_param('optimizer_sortmerge_join_enabled' 'true'), opt_param('nested_loop_join_enabled' 'false')*/ * from t1, t2 where t1.c1 = t2.c1;
+explain basic select /*+opt_param('hash_join_enabled' 'false'), opt_param('optimizer_sortmerge_join_enabled' 'false'), opt_param('nested_loop_join_enabled' 'true')*/ * from t1, t2 where t1.c1 = t2.c1;
+explain basic select /*+opt_param('hash_join_enabled' 'false'), opt_param('optimizer_sortmerge_join_enabled' 'false'), opt_param('nested_loop_join_enabled' 'false')*/ * from t1, t2 where t1.c1 = t2.c1;
+
+create index i_t2_c1 on t2(c1);
+explain basic select /*+opt_param('nlj_batching_enabled' 'true'), opt_param('hash_join_enabled' 'false'), opt_param('optimizer_sortmerge_join_enabled' 'false'), opt_param('nested_loop_join_enabled' 'true')*/ * from t1, t2 where t1.c1 = t2.c1;
+explain basic select /*+opt_param('nlj_batching_enabled' 'false'), opt_param('hash_join_enabled' 'false'), opt_param('optimizer_sortmerge_join_enabled' 'false'), opt_param('nested_loop_join_enabled' 'true')*/ * from t1, t2 where t1.c1 = t2.c1;
+
+## 10.with_subquery
+explain basic WITH temp1 AS (SELECT t1.c1 FROM t1, t2 where t1.c1 = t2.c1)
+SELECT /*+opt_param('with_subquery', 1)*/ c1 FROM temp1 order by 1;
+explain basic WITH temp1 AS (SELECT t1.c1 FROM t1, t2 where t1.c1 = t2.c1)
+SELECT /*+opt_param('with_subquery', 2)*/ c1 FROM temp1 order by 1;
+
+alter system set _with_subquery = 1;
+explain basic WITH temp1 AS (SELECT t1.c1 FROM t1, t2 where t1.c1 = t2.c1)
+SELECT /*+opt_param('with_subquery', 0)*/ c1 FROM temp1 order by 1;
+alter system set _with_subquery = 0;
+
+## 11.enable_spf_batch_rescan
+explain basic select /*+no_rewrite, opt_param('enable_spf_batch_rescan', 'true')*/ * from t1 where exists (select * from t2 where t1.c2=t2.c1);
+explain basic select /*+no_rewrite, opt_param('enable_spf_batch_rescan', 'false')*/ * from t1 where exists (select * from t2 where t1.c2=t2.c1);
+explain basic select /*+leading(t1 v2) use_nl(v2)*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+
+explain basic select /*+NO_SEMI_TO_INNER leading(t1 view1) use_nl(view1) opt_param('_push_join_predicate','true')*/ count(*) from t1 where exists (select /*+no_merge*/ * from t2 where t1.c1 = t2.c2);
+explain basic select /*+NO_SEMI_TO_INNER leading(t1 view1) use_nl(view1) opt_param('_push_join_predicate','false')*/ count(*) from t1 where exists (select /*+no_merge*/ * from t2 where t1.c1 = t2.c2);
+
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ * from (select /*+no_merge*/ * from t2) v3)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ * from (select /*+no_merge*/ * from t2) v3)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ count(*) c2 from t2 group by t2.c1)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ count(*) c2 from t2 group by t2.c1)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ * from (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22) v3)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ * from (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22) v3)v2 where t1.c1 = v2.c2;
+
+set _push_join_predicate = false;
+explain basic select /*+leading(t1 v2) use_nl(v2)*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2)*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','true')*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+
+set _push_join_predicate = true;
+explain basic select /*+leading(t1 v2) use_nl(v2)*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ * from t2)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2)*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+explain basic select /*+leading(t1 v2) use_nl(v2) opt_param('_push_join_predicate','false')*/ count(*) from t1, (select /*+no_merge*/ t21.c1 c1, t22.c2 c2 from t2 t21, t2 t22)v2 where t1.c1 = v2.c2;
+
+drop view v1;
+drop view v2;
+drop view v3;
+drop view v4;
+drop table t1;
+drop table t2;

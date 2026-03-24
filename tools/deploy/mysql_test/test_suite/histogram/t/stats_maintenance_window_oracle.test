@@ -1,0 +1,242 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: dingjincheng.djc
+# owner group: SQL1
+# tags: optimizer, opt_stats
+# descriptor: test stat maintenance window
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set_tp tp_no = 368, error_code = 0, frequency = 1;
+connection default;
+
+##build tenant
+--source mysql_test/test_suite/histogram/include/create_oracle_tenant.inc
+--source mysql_test/test_suite/histogram/include/conn_oracle_sys_tenant.inc
+--disable_query_log
+call dbms_stats.gather_table_stats('SYS','ALL_VIRTUAL_CORE_ALL_TABLE');
+call dbms_stats.gather_table_stats('SYS','ALL_VIRTUAL_CORE_COLUMN_TABLE');
+--enable_query_log
+##see the maintenance window
+--sorted_result
+select OWNER,JOB_NAME,ENABLED,REPEAT_INTERVAL,MAX_RUN_DURATION from dba_scheduler_jobs where JOB_NAME in ('FRIDAY_WINDOW','MONDAY_WINDOW','OPT_STATS_HISTORY_MANAGER','SATURDAY_WINDOW','SUNDAY_WINDOW','THURSDAY_WINDOW','TUESDAY_WINDOW','WEDNESDAY_WINDOW');
+desc all_scheduler_windows;
+--sorted_result
+select OWNER,WINDOW_NAME,ENABLED,REPEAT_INTERVAL,DURATION,COMMENTS from all_scheduler_windows;
+desc dba_scheduler_windows;
+--sorted_result
+select OWNER,WINDOW_NAME,ENABLED,REPEAT_INTERVAL,DURATION,COMMENTS from dba_scheduler_windows;
+
+##connect sys tenant to set maintenance window
+
+call dbms_scheduler.disable('MONDAY_WINDOW');
+call dbms_scheduler.disable('FRIDAY_WINDOW');
+select OWNER,JOB_NAME,ENABLED from dba_scheduler_jobs where JOB_NAME in ('FRIDAY_WINDOW','MONDAY_WINDOW','OPT_STATS_HISTORY_MANAGER','SATURDAY_WINDOW','SUNDAY_WINDOW','THURSDAY_WINDOW','TUESDAY_WINDOW','WEDNESDAY_WINDOW');
+
+call dbms_scheduler.enable('MONDAY_WINDOW');
+call dbms_scheduler.enable('FRIDAY_WINDOW');
+select OWNER,JOB_NAME,ENABLED from dba_scheduler_jobs where JOB_NAME in ('FRIDAY_WINDOW','MONDAY_WINDOW');
+
+--disable_warnings
+--error 0, 942
+drop table t1;
+--error 0, 942
+drop table t_part;
+--error 0, 942
+drop table t_subpart;
+--error 0, 942
+drop view index_stats_view;
+--enable_warnings
+
+create table t1 (c1 int, c2 int, c3 int);
+create index idx1_t1 on t1(c2);
+
+create table t_part (c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create index idx1_part on t_part(c2);
+
+create table t_subpart (c1 int, c2 int, c3 int) partition by hash(c1)
+subpartition by hash(c2)
+subpartition template
+(
+  subpartition p0,
+  subpartition p1,
+  subpartition p2
+)
+partitions 3;
+create index idx1_subpart on t_subpart(c2) local;
+
+insert into t1 select level,level,level from dual connect by level<=100;
+insert into t_part select level,level,level from dual connect by level<=1000;
+insert into t_subpart select level,level,level from dual connect by level<=10000;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+--echo set stat maintenance attribute window auto gather table stats after 30 second.
+--disable_query_log
+--disable_result_log
+let $point = query_get_value("select substr(sysdate + 30*1/24/60/60, 0, 26) as X from dual;", X, 1);
+let $day = query_get_value("SELECT MOD(TO_NUMBER(TO_CHAR(sysdate, 'D')) + 5, 7) as X FROM dual;", X, 1);
+if ($day == 0) {
+  eval call dbms_scheduler.set_attribute('MONDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 1) {
+  eval call dbms_scheduler.set_attribute('TUESDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 2) {
+  eval call dbms_scheduler.set_attribute('WEDNESDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 3) {
+  eval call dbms_scheduler.set_attribute('THURSDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 4) {
+  eval call dbms_scheduler.set_attribute('FRIDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 5) {
+  eval call dbms_scheduler.set_attribute('SATURDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+if ($day == 6) {
+  eval call dbms_scheduler.set_attribute('SUNDAY_WINDOW', 'NEXT_DATE', '$point');
+}
+--enable_result_log
+--enable_query_log
+
+--sorted_result
+select TABLE_NAME, partition_name, subpartition_name, OBJECT_TYPE, NUM_ROWS, AVG_ROW_LEN, SAMPLE_SIZE from DBA_TAB_STATISTICS where table_name in ('T1','T_PART','T_SUBPART') and OWNER = 'SYS';
+##wait auto gather table stats finish
+let $__i__= 120;
+while($__i__ > 0)
+{
+  sleep 1;
+  dec $__i__;
+  let $__memstore_cnt__ = query_get_value("select count(*) as CNT from DBA_TAB_STATISTICS where LAST_ANALYZED is not null and table_name in ('T1','T_PART','T_SUBPART') and OWNER = 'SYS';", CNT, 1);
+  if ($__memstore_cnt__ == 19)
+  {
+    let $__i__ = -1;
+  }
+}
+if ($__i__ != -1)
+{
+  --echo auto gather table sats failed $__memstore_cnt__
+}
+--sorted_result
+select TABLE_NAME, partition_name, subpartition_name, OBJECT_TYPE, NUM_ROWS, AVG_ROW_LEN, SAMPLE_SIZE from DBA_TAB_STATISTICS where table_name in ('T1','T_PART','T_SUBPART') and OWNER = 'SYS';
+select count(*) from sys.all_virtual_tenant_scheduler_job_real_agent where this_date is not null or last_date is not null and JOB_NAME like '%_WINDOW%';
+drop table t1;
+drop table t_part;
+drop table t_subpart;
+
+--disable_query_log
+--disable_result_log
+let $day = query_get_value("SELECT MOD(TO_NUMBER(TO_CHAR(sysdate, 'D')) + 5, 7) as X FROM dual;", X, 1);
+let $cur_max_time = query_get_value("SELECT TRUNC(SYSDATE) + 7 AS X FROM DUAL;", X, 1);
+let $cur_min_time = query_get_value("SELECT (TRUNC(SYSDATE) + 7) + INTERVAL '23:59:59' HOUR TO SECOND AS X FROM DUAL;", X, 1);
+if ($day == 0) {
+  eval call dbms_scheduler.set_attribute('MONDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('MONDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 1) {
+  eval call dbms_scheduler.set_attribute('TUESDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('TUESDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 2) {
+  eval call dbms_scheduler.set_attribute('WEDNESDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('WEDNESDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 3) {
+  eval call dbms_scheduler.set_attribute('THURSDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('THURSDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 4) {
+  eval call dbms_scheduler.set_attribute('FRIDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('FRIDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 5) {
+  eval call dbms_scheduler.set_attribute('SATURDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('SATURDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+if ($day == 6) {
+  eval call dbms_scheduler.set_attribute('SUNDAY_WINDOW', 'NEXT_DATE', '$cur_max_time');
+  eval call dbms_scheduler.set_attribute('SUNDAY_WINDOW', 'NEXT_DATE', '$cur_min_time');
+}
+eval call dbms_scheduler.set_attribute('OPT_STATS_HISTORY_MANAGER', 'NEXT_DATE', '$cur_max_time');
+eval call dbms_scheduler.set_attribute('OPT_STATS_HISTORY_MANAGER', 'NEXT_DATE', '$cur_min_time');
+--enable_result_log
+--enable_query_log
+
+--error 0, 942
+drop table t1;
+create table t1(c1 int, c2 int, c3 int) partition by hash(c1) partitions 4;
+insert into t1 select level,level,level from dual connect by level<=200;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+call dbms_stats.set_table_prefs('SYS','t1','method_opt','for all columns size 128');
+call dbms_stats.gather_table_stats('SYS','t1');
+--sorted_result
+select TABLE_NAME, COLUMN_NAME, NUM_DISTINCT, NUM_BUCKETS, SAMPLE_SIZE, HISTOGRAM from sys.dba_tab_col_statistics where table_name='T1' and owner='SYS';
+delete from t1 partition(p0);
+call dbms_stats.gather_database_stats_job_proc();
+--sorted_result
+select TABLE_NAME, COLUMN_NAME, NUM_DISTINCT, NUM_BUCKETS, SAMPLE_SIZE, HISTOGRAM from sys.dba_tab_col_statistics where table_name='T1' and owner='SYS';
+
+drop table t1;
+create table t1(c1 int, c2 int, c3 int) partition by hash(c1) partitions 4;
+insert into t1 select level,level,level from dual connect by level<=40000;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+call dbms_stats.gather_table_stats('SYS', 't1');
+call dbms_stats.set_table_prefs('SYS', 't1', 'estimate_percent', '50');
+delete from t1 partition(p0) where rownum <= 2000;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+let $current_stmt = query_get_value("select substr(sysdate, 0, 26) as X from dual;", X, 1);
+call dbms_stats.gather_database_stats_job_proc();
+--disable_query_log
+eval select count(*) from sys.dba_tab_statistics where table_name='T1' and owner='SYS' and last_analyzed > '$current_stmt';
+--enable_query_log
+delete from t1 partition(p0) where rownum <= 5000;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+let $current_stmt = query_get_value("select substr(sysdate, 0, 26) as X from dual;", X, 1);
+call dbms_stats.gather_database_stats_job_proc();
+--disable_query_log
+eval select count(*) from sys.dba_tab_statistics where table_name='T1' and owner='SYS' and last_analyzed > '$current_stmt';
+--enable_query_log
+
+##bug:
+drop table t1;
+create table t1(c1 int, c2 int, c3 int)partition by hash(c1) subpartition by hash(c2) subpartitions 4 partitions 4;
+insert into t1 select 3416,8810,6483 from dual connect by level<=10000;
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+call dbms_stats.gather_table_stats('SYS','T1',granularity=>'GLOBAL AND PARTITION');
+--sorted_result
+select partition_name,subpartition_name,num_rows from dba_Tab_statistics where table_name='T1' and owner='SYS' and last_analyzed is not null;
+insert into t1 values(5321,-1515,2454);
+insert into t1 values(5321,-1515,2454);
+insert into t1 values(5321,-1515,2454);
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+connection conn_stat_test_sys;
+call dbms_stats.GATHER_DATABASE_STATS_JOB_PROC();
+--sorted_result
+select partition_name,subpartition_name,num_rows from dba_Tab_statistics where table_name='T1' and owner='SYS' and last_analyzed is not null;
+call dbms_stats.delete_table_stats('SYS', 'T1', 'P3');
+--sorted_result
+select partition_name,subpartition_name,num_rows from dba_Tab_statistics where table_name='T1' and owner='SYS' and last_analyzed is not null;
+call dbms_stats.GATHER_DATABASE_STATS_JOB_PROC();
+--sorted_result
+select partition_name,subpartition_name,num_rows from dba_Tab_statistics where table_name='T1' and owner='SYS' and last_analyzed is not null;
+
+##drop tenant
+--source mysql_test/test_suite/histogram/include/drop_oracle_tenant.inc
+connection default;
+
+connection conn_admin;
+alter system set_tp tp_no = 368, error_code = 4016, frequency = 1;
+connection default;

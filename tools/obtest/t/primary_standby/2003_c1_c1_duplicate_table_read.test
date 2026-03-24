@@ -1,0 +1,66 @@
+# owner: yixin.lyx
+# description:
+# duplicate table read
+
+ob1=OBI(cluster=1,proxy_num=1);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+
+# 配置备库
+sleep 3;
+ob2.mysql alter system set balancer_idle_time='10s';
+ob2.mysql alter system set debug_sync_timeout = '100000s';
+ob2.mysql alter system set data_copy_concurrency = 60;
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set merger_check_interval = '10s';
+
+################################################################
+# 租户环境准备
+# 建租户
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MAX_MEMORY 1073741824, MAX_IOPS 100000, MAX_DISK_SIZE 536870912, MAX_SESSION_NUM 64, MIN_CPU=1, MIN_MEMORY=1073741824, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE UNIT unit_2 MAX_CPU 1, MAX_MEMORY 1073741824, MAX_IOPS 100000, MAX_DISK_SIZE 536870912, MAX_SESSION_NUM 64, MIN_CPU=1, MIN_MEMORY=1073741824, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_2', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt1_oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+# sleep一下，保证租户在主库上创建成功
+sleep 3;
+
+
+# 创建主库普通租户连接
+# 创建表
+ob_connect(primary_tt1_conn, ob1.z1.obs0, root@tt1, , test, , USE_MYSQL_CONNECTOR);
+connection primary_tt1_conn;
+# 复制表
+create table t1 (x int, y int) duplicate_scope = 'cluster';
+create table t2 (x int, y int);
+insert into t1 values (1,1);
+insert into t2 values (2,2);
+select * from t1;
+select * from t2;
+
+let $tt1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt1', tenant_id, 1);
+let $t1_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't1' and tenant_id = $tt1_id, table_id, 1);
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't2' and tenant_id = $tt1_id, table_id, 1);
+
+# 保证备库同步租户成功
+let $partition_cnt = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = $tt1_id, c, 1);
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tt1_id, $partition_cnt, 120;
+# 保证t1表数据同步成功
+let $now = deploy_get_value(ob1.select select time_to_usec(now()) c, c, 1);
+ob2.check_until_timeout select min_log_service_ts > $now from __all_virtual_partition_info where table_id=$t1_id, 1, 120;
+ob2.check_until_timeout select min_log_service_ts > $now from __all_virtual_partition_info where table_id=$t2_id, 1, 120;
+
+
+## 备库上的复制表读取
+ob_connect(standby_tt1_conn, ob2.z1.obs0, root@tt1, , test, , USE_MYSQL_CONNECTOR);
+connection standby_tt1_conn;
+--error 4688
+select * from t2;
+--error 4688
+select * from t1;
+set ob_read_consistency='weak';
+select * from t1;
+select * from t2;

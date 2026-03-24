@@ -1,0 +1,162 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1,z2, z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+ob1.mysql alter system set log_storage_compress_all = true tenant = ALL;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+
+
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1,F@z2,f@z3', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+#删除副本，要保证剩下的还可以满足多数派不回退
+#限制z2所在的机器不回放，删除z3的副本
+
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z2', host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z2', host, 2);
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2';
+
+sleep 30;
+ob1.mysql_p select tenant_id, ls_id, count(*) as c from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id group by tenant_id, ls_id having c < 3;
+#z3的副本不能删除，但是z2的副本可以删除
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2,f@z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z3';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+
+#补副本也不能补成功
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and zone = 'z2', 0, 100; 
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2,f@z3';
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task_history where tenant_id = $tenant_id and task_status = 'FAILED' and execute_result like "%OB_MEMBER_CHANGE_FAILED%" and task_type = 'ADD REPLICA', 1, 100;
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+
+#验证类型转换F->R
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2,r@z3';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 1, 30;
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_id = '$task_id' and task_status = 'FAILED' and execute_result like "%OB_TIMEOUT%", 1, 30;
+#回滚
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2,f@z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+#转换z2可以成功
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,r@z2,f@z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+
+#类型转换
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z2,f@z3';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 1, 30;
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_id = '$task_id' and task_status = 'FAILED' and execute_result like "%OB_TIMEOUT%", 1, 100;
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+
+#验证永久下线也不能踢成员
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.z3.obs0.force_stop;
+ob1.z3.obs1.force_stop;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 1, 30;
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_id = '$task_id' and task_status = 'FAILED' and execute_result like "%OB_TIMEOUT%", 1, 30;
+ob1.z3.obs0.start;
+ob1.z3.obs1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time = 0, 0, 100;
+
+#验证副本迁移需要等待回放
+ob1.mysql alter resource tenant standby_oracle_tenant unit_num = 1;
+#迁移源端和目的端都不能回放
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 1, 30;
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task_history where task_status = 'FAILED' and execute_result like "%OB_MEMBER_CHANGE_FAILED%" and task_type = 'MIGRATE REPLICA', 1, 100;
+
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where status = 'DELETING', 0, 120;
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+sleep 3;
+
+#验证R副本不受回放控制
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,r@z2,f@z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+ob1.mysql alter tenant standby_oracle_tenant locality = 'f@z1,f@z3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 60;
+
+#主库 meta sys不受可读位点的控制
+
+ob1.mysql alter tenant oracle locality = 'f@z1,f@z2';
+ob1.mysql alter tenant sys locality = 'f@z1,f@z2';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != '', 0, 100;

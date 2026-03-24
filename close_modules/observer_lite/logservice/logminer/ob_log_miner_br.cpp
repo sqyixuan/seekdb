@@ -1,0 +1,83 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX LOGMNR
+
+#include "ob_log_binlog_record.h"
+#include "ob_log_miner_br.h"
+#include "lib/ob_define.h"
+#include "lib/oblog/ob_log.h"
+
+namespace oceanbase
+{
+
+namespace oblogminer
+{
+
+int ObLogMinerBR::init(libobcdc::IObCDCInstance *host,
+    ICDCRecord *br,
+    const lib::Worker::CompatMode mode,
+    const transaction::ObTransID &trans_id,
+    const uint64_t tenant_id,
+    const int32_t major_version)
+{
+  int ret = OB_SUCCESS;
+  libobcdc::ObLogBR *oblog_br = nullptr;
+  share::SCN commit_scn;
+  if (nullptr == br) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_ERROR("get null binlog record", K(br), K(tenant_id), K(major_version));
+  } else if (OB_INVALID_TENANT_ID == tenant_id) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_ERROR("get invalid tenant_id", K(br), K(tenant_id), K(major_version));
+  } else if (OB_ISNULL(oblog_br = static_cast<libobcdc::ObLogBR*>(br->getUserData()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("get ICDCRecord without user data, unexpected", KP(oblog_br));
+  } else if (OB_FAIL(commit_scn.convert_for_inner_table_field(oblog_br->get_commit_version()))) {
+    LOG_ERROR("failed to convert commit_version to scn", "commit_version", oblog_br->get_commit_version());
+  } else {
+    br_host_ = host;
+    br_ = br;
+    compat_mode_ = mode;
+    tenant_id_ = tenant_id;
+    major_version_ = major_version;
+    commit_scn_ = commit_scn;
+    record_type_ = static_cast<RecordType>(br->recordType());
+    trans_id_ = trans_id;
+  }
+  return ret;
+}
+
+void ObLogMinerBR::reset()
+{
+  is_filtered_ = false;
+  compat_mode_ = lib::Worker::CompatMode::INVALID;
+  seq_no_ = 0;
+  tenant_id_ = OB_INVALID_TENANT_ID;
+  major_version_ = 0;
+  commit_scn_.reset();
+  record_type_ = RecordType::EUNKNOWN;
+  trans_id_ = transaction::ObTransID();
+  if (nullptr != br_host_ && nullptr != br_) {
+    br_host_->release_record(br_);
+  }
+  br_host_ = nullptr;
+  br_ = nullptr;
+}
+
+}
+
+}

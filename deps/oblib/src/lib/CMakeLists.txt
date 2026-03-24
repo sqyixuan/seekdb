@@ -459,6 +459,8 @@ if(NOT APPLE)
   target_link_libraries(malloc_hook oblib_base)
 endif()
 
+target_compile_options(oblib_lib PUBLIC -D_GLIBCXX_USE_CXX11_ABI=0)
+
 target_link_libraries(oblib_lib
   PUBLIC ob_malloc compress restore
   ${DEP_DIR}/lib/libxml2.a

@@ -1,0 +1,102 @@
+# owner: lixia.yq
+# owner group: storage
+# description: this case is use for test storage schema
+#
+
+--disable_query_log
+ob1=OBI(cluster=1:1:1, proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+connect (conn2,$l_ip1,root@obtest,,test,$l_port1);
+connect (conn3,$l_ip1,root@obtest,,test,$l_port1);
+
+#设置灰度切主的时间为0, 关闭自动切主，关闭自动balance
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rebalance=false;
+ob1.mysql alter system set enable_rereplication=false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+connection conn1;
+set GLOBAL ob_trx_timeout = 10000000000;
+set GLOBAL ob_trx_idle_timeout = 10000000000;
+set GLOBAL ob_query_timeout = 10000000000;
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "obtest", tenant_id, 1);
+
+--enable_query_log
+connection conn2;
+create table test01(c1 int, c2 int, c3 varchar(4096), c4 int, c5 int, c6 double, c7 int, c8 varchar(512), c9 int, c10 float, primary key(c1)) primary_zone='z1';
+
+let $tid = deploy_get_value(ob1.select select table_id from  __all_virtual_table where table_name = 'test01', table_id, 1);
+
+--disable_query_log
+let $cnt=1;
+while($cnt < 30)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase', $cnt, $cnt, $cnt * 0.25, $cnt, 'hello world $cnt', $cnt, $cnt * 0.5);
+  inc $cnt;
+}
+--enable_query_log
+
+let $z2_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z2' and table_id=$tid, host, 1);
+let $z2 = deploy_get_value(ob1.get_obs_by_addr $z2_host);
+let $z2_ip = deploy_get_value($z2.ip);
+let $z2_port = deploy_get_value($z2.port);
+
+ob1.mysql alter system switch replica leader partition_id='0%0@$tid' server='$z2_ip:$z2_port';
+ob1.check_until_timeout select count(1) from __all_virtual_meta_table where svr_ip = '$z2_ip' and svr_port = $z2_port and table_id = $tid and member_list like "%$z2_host%" and role = 1, 1, 60;
+
+connection conn2;
+alter table test01 add column c11 double;
+
+--disable_query_log
+let $cnt=300;
+while($cnt < 330)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase', $cnt, $cnt, $cnt * 0.25, $cnt, 'hello world $cnt', $cnt, $cnt * 0.5, $cnt * 0.7);
+  inc $cnt;
+}
+--enable_query_log
+
+#冻结指定的partition
+connection conn1;
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_id = $tid and table_type = 0 and is_active = 0, 0, 300;
+
+let $z3_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z3' and table_id=$tid, host, 1);
+let $z3 = deploy_get_value(ob1.get_obs_by_addr $z3_host);
+let $z3_ip = deploy_get_value($z3.ip);
+let $z3_port = deploy_get_value($z3.port);
+
+ob1.mysql alter system switch replica leader partition_id='0%0@$tid' server='$z3_ip:$z3_port';
+ob1.check_until_timeout select count(1) from __all_virtual_meta_table where svr_ip = '$z3_ip' and svr_port = $z3_port and table_id = $tid and member_list like "%$z3_host%" and role = 1, 1, 60;
+
+connection conn2;
+alter table test01 drop column c7;
+
+--disable_query_log
+let $cnt=200;
+while($cnt < 230)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase', $cnt, $cnt, $cnt * 0.25, 'hello world $cnt', $cnt, $cnt * 0.5, $cnt * 0.7);
+  inc $cnt;
+}
+--enable_query_log
+
+#冻结指定的partition
+connection conn1;
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_id = $tid and table_type = 0 and is_active = 0, 0, 300;
+
+connection conn2;
+drop table test01;

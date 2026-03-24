@@ -1,0 +1,148 @@
+#owner: guohanyun.ghy
+#tags: optimizer,SQL,index merge
+#owner group: sql1
+#description: 测试非分区表场景，index merge代价估计的准确性
+
+--disable_warnings
+drop table if exists t1;
+drop sequence if exists s1;
+--enable_warnings
+set ob_query_timeout=30000000;
+alter system set _enable_index_merge=true;
+create table t1 (c1 int primary key, c2 int, c3 int, c4 varchar(100), c5 varchar(100));
+create sequence s1 cache 1000000 order;
+insert /*+enable_parallel_dml parallel(16) query_timeout(1000000000)*/ into t1 select s1.nextval, s1.currval-200000, s1.currval%1000, CONCAT('鄂A', s1.currval), CONCAT('鄂A', s1.currval%1000) from table(generator(400000));
+create index c2 on t1(c2) local;
+create index c3 on t1(c3) local;
+create index cg3 on t1(c3) global;
+create index c4 on t1(c4) local;
+create index cg5 on t1(c5) global;
+create index c23 on t1(c2,c3) local;
+call dbms_stats.gather_schema_stats(NULL);
+
+--source mysql_test/include/minor_merge_tenant.inc
+
+# 纯or场景
+explain select /*+union_merge(t1 c2 c3)*/ * from t1 where c2 = 1 or c3 = 1;
+explain select /*+union_merge(t1 c2 c3 c4)*/ * from t1 where c2 = 1 or c3 = 5 or c4 = '鄂A12345';
+explain select /*+union_merge(t1 primary c2 c3 c4)*/ * from t1 where c1 = 10000 or c2 = 1 or c3 = 5 or c4 = '鄂A12345';
+explain select /*+no_expand union_merge(t1 primary c2 c3 c4 cg5)*/ * from t1 where c1 = 10000 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c5 = '鄂A142145';
+
+explain select /*+union_merge(t1 primary c2)*/ * from t1 where c1 = 10 or c2 > 10;
+explain select /*+union_merge(t1 primary primary)*/ * from t1 where c1 > 391000 or c1 < 10;
+explain basic select /*+union_merge(t1 primary c2)*/ * from t1 where c1 > 391000 or c2 in (10,30,50);
+explain select /*+union_merge(t1 c3 c2)*/ * from t1 where c3 > 390000 or c2 < -190000;
+explain select /*+union_merge(t1 c4 primary c2)*/ * from t1 where c4 = '鄂A12345' or c1 < 5 or c2 > 199900;
+explain basic select /*+union_merge(t1 cg5 primary c3)*/ * from t1 where c5 = '鄂A142145' or c1 <> 5 or c3 < 199900;
+explain select /*+union_merge(t1 primary c2 cg5 c3 c4)*/ * from t1 where c1 = 123 or c2 = 32131 or c5 = '鄂A142145' or c3 > 390000 or c4 < '鄂A12345';
+
+# and or 场景
+explain select /*+union_merge(t1 c2 c3)*/ * from t1 where c2 = 1 and c3 = 200001 or c3 > 390000;
+explain select /*+union_merge(t1 c3 c23)*/ * from t1 where c3 = 10 or c3 > 10 and c2 = 10000;
+explain select /*+union_merge(t1 c2 c3)*/ * from t1 where c2 = 1 and c4 = '鄂A12345' or c3 > 390000;
+explain select /*+union_merge(t1 c4 c23)*/ * from t1 where c4 = '鄂A12345' or c3 > 10 and c2 = 10000;
+select /*+union_merge(t1 c4 c23)*/ * from t1 where c4 = '鄂A12345' or c3 > 10 and c2 = 10000;
+explain select /*+union_merge(t1 c4 c3)*/ * from t1 where c1 = 1 and c4 = '鄂A12345' or c3 > 390000;
+explain select /*+no_expand union_merge(t1 c3 primary)*/ * from t1 where c3 = 10 or c1 < 10 and c2 = 10000;
+
+explain select /*+no_expand union_merge(t1 c3 c4)*/ * from t1 where (c1 = 2 and c3 = 10) or (c4 = '鄂A12345' and c3 > 6);
+select /*+no_expand union_merge(t1 c3 c4)*/ * from t1 where (c1 = 2 and c3 = 10) or (c4 = '鄂A12345' and c3 > 6);
+explain select /*+no_expand union_merge(t1 c3 c4 c4)*/ * from t1 where (c1 = 2 and c3 = 10) or (c4 = '鄂A12345' and c3 > 6) or (c4 > '鄂A142145' and c2 = 5);
+explain select /*+no_expand union_merge(t1 c4 c4 c4)*/ * from t1 where (c4 = '鄂A12345' and c5 = '鄂A142145') or (c4 = '鄂A12345' and c3 > 6) or (c4 > '鄂A142145' and c2 = 5);
+explain select /*+no_expand union_merge(t1 primary primary primary)*/ * from t1 where (c1 = 10 and c2 > -10000) or (c4 = '鄂A12345' and c1 = 12345) or (c3 > 199999 and c1 = 1);
+explain select /*+union_merge(t1 c3 c3 c3)*/ * from t1 where (c3 = 10 and c2 > -10000) or (c4 > '鄂A12344' and c3 = 387655) or (c1 > 199999 and c3 = 1);
+explain select /*+no_expand union_merge(t1 c4 c2 c4)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145') or (c2 < 5 and c2 > 1) or (c4 > '鄂A12345' and c2 = 5);
+explain select /*+no_expand union_merge(t1 cg5 c2 c4)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145') or (c2 < 5 and c2 > 1) or (c4 > '鄂A12345' and c4 < '鄂A12346');
+explain select /*+no_expand union_merge(t1 cg5 c2 c4)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145' and c3 = 387655) or (c2 < 5 and c2 > 1 and c3 = 199997) or (c4 > '鄂A12345' and c2 = 5);
+explain select /*+no_expand union_merge(t1 c4 c2 c2 primary)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145' and c3 = 387655) or (c2 < 5 and c2 > 1 and c3 = 199997) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000);
+
+# or and 场景
+explain select /*+union_merge(t1 c2 c3)*/ * from t1 where (c1 = 10 or c4 = '鄂A12345') and (c2 = 1 or c3 > 5);
+--sorted_result
+select /*+union_merge(t1 c2 c3)*/ * from t1 where (c1 = 10 or c4 = '鄂A12345') and (c2 = 1 or c3 > 5);
+explain select /*+union_merge(t1 primary c3)*/ * from t1 where (c1 < 5 or c3 > 399900) and (c4 = '鄂A12345' or c2 < 4);
+explain select /*+union_merge(t1 c4 c4)*/ * from t1 where (c2 = -100 or c3 = 6) and (c4 = '鄂A12345' or c4 = '鄂A12346');
+explain select /*+no_expand union_merge(t1 c2 c3)*/ * from t1 where (c2 < -199900 or c3 > 399900) and (c1 < 1 or c3 > 399000);
+explain select /*+union_merge(t1 c4 c4)*/ * from t1 where (c2 < -100000 or c3 > 300000) and (c4 = '鄂A12345' or c4 = '鄂A12346') and (c2 = -187655 or c3 = 387654);
+explain select /*+union_merge(t1 primary primary)*/ * from t1 where (c1 = 10 or c4 = '鄂A12345') and (c4 < '鄂A12345' or c4 = '鄂A12346') and (c1 > 4 or c1 < 8);
+explain select /*+union_merge(t1 primary c4)*/ * from t1 where (c1 = 3 or c4 = '鄂A12345') and (c4 < '鄂A12345' or c4 = '鄂A3') and (c1 in (1,2,3,4,9));
+explain select /*+union_merge(t1 c2 c2)*/ * from t1 where (c1 > 399900 or c1 < 9) and (c2 > 10000 or c2 < -100000) and (c3 <> 10) and (c4 in ('鄂A1','鄂A2','鄂A3','鄂A4','鄂A5') or c4 = '鄂A6');
+explain select /*+union_merge(t1 c2 c2)*/ * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1);
+--sorted_result
+select /*+union_merge(t1 c2 c2)*/ * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1);
+explain select /*+no_expand union_merge(t1 c4 primary)*/* from t1 where (c4 = '鄂A321312' or c3 > 5 or c2 < -100000 or c1 > 199000) and (c4 = '鄂A321313' or c2 = 121314 or c1 = 199900) and (c4 = '鄂A321314' or c1 > 199000) and (c1 > 188000);
+explain select /*+union_merge(t1 c4 c3 c2 primary)*/* from t1 where (c4 = '鄂A189824' or c3 > 5 or c2 < -100000 or c1 > 199000) and (c4 = '鄂A189823' or c3 > 200000 or c2 = 121314 or c1 = 199800) and (c1 < 199900) and (c1 > 188000);
+
+# local索引和global索引
+explain select /*+no_expand union_merge(t1 primary c3 c4)*/ * from t1 where c1 = 12321 or c3 = 21312 or c4 = '鄂A54321';
+--sorted_result
+select /*+no_expand union_merge(t1 primary c3 c4)*/ * from t1 where c1 = 12321 or c3 = 21312 or c4 = '鄂A54321';
+explain select /*+no_expand union_merge(t1 primary c3 cg5)*/ * from t1 where c1 = 12321 or c3 = 21312 or c5 = '鄂A54321';
+select /*+no_expand union_merge(t1 primary c3 cg5)*/ * from t1 where c1 = 12321 or c3 = 21312 or c5 = '鄂A54321';
+explain select /*+union_merge(t1 c4 cg5)*/ * from t1 where (c2 = 145679 or c3 > 300) and (c4 = '鄂A54321' or c5 = '鄂A679') and (c1 = 54321 or c4 = '鄂A345679');
+--sorted_result
+select /*+union_merge(t1 c4 cg5)*/ * from t1 where (c2 = 145679 or c3 > 300) and (c4 = '鄂A54321' or c5 = '鄂A679') and (c1 = 54321 or c4 = '鄂A345679');
+explain select /*+no_expand union_merge(t1 primary c4)*/ * from t1 where (c2 = 1000 or c3 > 300) and (c4 = '鄂A54321' or c5 = '鄂A679') and (c1 = 54321 or c4 = '鄂A345679');
+--sorted_result
+select /*+no_expand union_merge(t1 primary c4)*/ * from t1 where (c2 = 1000 or c3 > 300) and (c4 = '鄂A54321' or c5 = '鄂A679') and (c1 = 54321 or c4 = '鄂A345679');
+explain select /*+union_merge(t1 c2 c4 c4)*/ * from t1 where (c1 > 10 and c2 = -1) or (c4 = '鄂A54321' and c5 = '鄂A321') or (c4 = '鄂A345679' and c3 > 10);
+--sorted_result
+select /*+union_merge(t1 c2 c4 c4)*/ * from t1 where (c1 > 10 and c2 = -1) or (c4 = '鄂A54321' and c5 = '鄂A321') or (c4 = '鄂A345679' and c3 > 10);
+explain select /*+no_expand union_merge(t1 c2 cg5 c4)*/ * from t1 where (c1 > 10 and c2 = -1) or (c4 = '鄂A54321' and c5 = '鄂A321') or (c4 = '鄂A345679' and c3 > 10);
+--sorted_result
+select /*+no_expand union_merge(t1 c2 cg5 c4)*/ * from t1 where (c1 > 10 and c2 = -1) or (c4 = '鄂A54321' and c5 = '鄂A321') or (c4 = '鄂A345679' and c3 > 10);
+
+# 不走hint，代价估算
+explain select * from t1 where c4 = '鄂A54321' or c1 < 10 and c2 = 10000;
+select * from t1 where c4 = '鄂A54321' or c1 < 10 and c2 = 10000;
+explain basic select a.c1,a.c3,b.c1 from t1 a inner join t1 b on a.c2 = b.c2 where a.c1 = 5 or (a.c3 < 6 and b.c1 = 4);
+select a.c1,a.c3,b.c1 from t1 a inner join t1 b on a.c2 = b.c2 where a.c1 = 5 or (a.c3 < 6 and b.c1 = 4);
+explain basic select * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1);
+--sorted_result
+select * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1);
+explain basic select * from t1 where (c3 = 10 and c2 > 199000) or (c4 = '鄂A12345' and c3 = 345) or (c1 > 399000 and c3 = 1);
+--sorted_result
+select * from t1 where (c3 = 10 and c2 > 199000) or (c4 = '鄂A12345' and c3 = 345) or (c1 > 399000 and c2 = 1);
+explain select * from t1 where (c1 < 500000 and c2 = -10000) or (c4 = '鄂A12345' and c2 = -187655) or (c3 >= 1 and c2 = 1);
+--sorted_result
+select * from t1 where (c1 < 500000 and c2 = -10000) or (c4 = '鄂A12345' and c2 = -187655) or (c3 >= 1 and c2 = 1);
+explain select * from t1 where (c4 = '鄂A12345' and c5 > '鄂A145' and c3 = 345) or (c3 < 5 and c3 > 1 and c2 = 4) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000);
+--sorted_result
+select * from t1 where (c4 = '鄂A12345' and c5 > '鄂A145' and c3 = 345) or (c3 < 5 and c3 > 1 and c2 = 4) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000);
+explain select * from t1 where (c4 = '鄂A321312' or c3 > 5 or c2 < -100000 or c1 > 199000) and (c4 = '鄂A321313' or c2 = 121314 or c1 = 199900) and (c4 = '鄂A321314' or c1 > 199000) and (c1 > 188000);
+--sorted_result
+select * from t1 where (c4 = '鄂A321312' or c3 > 5 or c2 < -100000 or c1 > 199000) and (c4 = '鄂A321313' or c2 = 121314 or c1 = 199900) and (c4 = '鄂A321314' or c1 > 199000) and (c1 > 188000);
+
+# order by
+explain select /*+union_merge(t1 primary c2 c3 c4)*/ * from t1 where c1 = 10000 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' order by c3;
+explain select /*+union_merge(t1 c4 primary c2)*/ * from t1 where c4 = '鄂A12345' or c1 < 5 or c2 > 199900 order by c2;
+explain select /*+union_merge(t1 c4 c3)*/ * from t1 where c1 = 1 and c4 = '鄂A12345' or c3 > 390000 order by c3, c4;
+explain select /*+union_merge(t1 c3 c3 c3)*/ * from t1 where (c3 = 10 and c2 > -10000) or (c4 > '鄂A12344' and c3 = 387655) or (c1 > 199999 and c3 = 1) order by c3 desc;
+explain select /*+no_expand union_merge(t1 c4 c2 c2 primary)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145' and c3 = 387655) or (c2 < 5 and c2 > 1 and c3 = 199997) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000) order by c1, c2 desc;
+explain select /*+no_expand union_merge(t1 c4 c2 c2 primary)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145' and c3 = 387655) or (c2 < 5 and c2 > 1 and c3 = 199997) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000) order by c1 desc;
+explain select /*+no_expand union_merge(t1 c4 c2 c2 primary)*/ * from t1 where (c4 = '鄂A12345' and c5 > '鄂A142145' and c3 = 387655) or (c2 < 5 and c2 > 1 and c3 = 199997) or (c4 > '鄂A12345' and c2 = 5) or (c1 = 10000) order by c1 desc, c2;
+explain select /*+union_merge(t1 c2 c3)*/ * from t1 where (c1 = 10 or c4 = '鄂A12345') and (c2 = 1 or c3 > 5) order by c3 desc;
+--sorted_result
+select /*+union_merge(t1 c2 c3)*/ * from t1 where (c1 = 10 or c4 = '鄂A12345') and (c2 = 1 or c3 > 5) order by c3 desc;
+explain select /*+union_merge(t1 c2 c2)*/ * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1) order by c2;
+--sorted_result
+select /*+union_merge(t1 c2 c2)*/ * from t1 where (c2 < -199000 or c2 > 199000) and (c3 <> 10 or c1 < 5) and (c4 = '鄂A1' or c1 in (2,3,4,9,10)) and (c5 = '鄂A142145' or c1 > 1) order by c2;
+
+
+# 反向hint不生效
+explain select /*+union_merge(t1 c2 primary)*/* from t1 where c1 = 3 or c2 = 5;
+
+# 类型转换
+explain select /*+no_expand union_merge(t1 c4 c2)*/ * from t1 where c4 = '鄂A54321' or c2 = '145679';
+explain select /*+union_merge(t1 c4 c2)*/ * from t1 where c4 = '鄂A54321' or c2 = CAST('145679' AS SIGNED);
+explain select /*+no_expand union_merge(t1 c4 c2)*/ * from t1 where c4 = 54321 or c2 = 145679;
+explain select /*+union_merge(t1 c4 c2)*/ * from t1 where c4 = CAST(54321 AS CHAR) or c2 = 145679;
+
+# 大or，超过1500个会爆内存
+explain select count(*) from t1 where c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 2 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c4 = '鄂A123345' or c2 = 52 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 12 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c4 = '鄂A123345' or c1 = 5 or c4 = '鄂A123345' or c2 = 52 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 12 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c2 = 823 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c2 = 522312 or c5 = '鄂A345';
+select count(*) from t1 where c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 2 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c4 = '鄂A123345' or c2 = 52 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 12 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c4 = '鄂A123345' or c1 = 5 or c4 = '鄂A123345' or c2 = 52 or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c3 = 5 or c4 = '鄂A345' or c2 = 1 or c3 = 5 or c4 = '鄂A12345' or c2 = 1 or c1 = 12 or c3 = 5 or c4 = '鄂A123245' or c2 = 2321 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c2 = 823 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c3 = 1 or c2 = 522312 or c5 = '鄂A345';
+
+drop table if exists t1;
+drop sequence if exists s1;
+
+alter system set _enable_index_merge = false;

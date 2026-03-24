@@ -7,6 +7,8 @@ use test;
 grant all on *.* to 'admin' WITH GRANT OPTION;
 
 
+create user if not exists 'proxyro' IDENTIFIED BY '3u^0kCdpE';
+grant select on oceanbase.* to proxyro IDENTIFIED BY '3u^0kCdpE';
 
 alter system set _use_odps_jni_connector = false;
 set @@session.ob_query_timeout = 200000000;

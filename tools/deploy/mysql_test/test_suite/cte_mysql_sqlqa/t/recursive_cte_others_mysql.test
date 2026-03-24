@@ -1,0 +1,529 @@
+#owner:dachuan.sdc
+#owner group:sql2
+#description:cte
+#tags:dml, hint ,group by ,join 
+#author:wb-zc01070363
+
+--echo #Environmental cleaning
+--disable_warnings
+--error 0,1396
+drop user zhe123@'%';
+--enable_warnings
+--error 0,1008
+drop database zhe123;
+create database zhe123;
+--enable_warnings
+create user zhe123 identified by 'zhe123';
+grant all on *.* to zhe123 WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,zhe123,zhe123,test,$OBMYSQL_PORT);
+connection conn;
+
+--echo #cte-2-2 数据截断,递归部分为列生成比非递归部分更宽的值
+set sql_mode = "";
+WITH RECURSIVE cte AS
+(
+  SELECT 1 AS n, 'abc' AS str
+  UNION ALL
+  SELECT n + 1, CONCAT(str, str) FROM cte WHERE n < 3
+)
+SELECT * FROM cte;
+set sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_IN_DATE';
+
+--echo #CAST() 在非递归中使用SELECT以使str列变宽
+WITH RECURSIVE cte AS
+(
+  SELECT 1 AS n, cast('abc' as char(20))AS str
+  UNION ALL
+  SELECT n + 1, CONCAT(str, str) FROM cte WHERE n < 3
+)
+SELECT * FROM cte;
+
+--echo #数据较长时，层次查询
+--error 0,1051
+drop table  c;
+create table c(id int PRIMARY KEY,ParentID int,name int);
+ 
+--error 0,1305
+drop procedure test1;
+delimiter //;
+
+create procedure test1(in i INTEGER)
+BEGIN
+	DECLARE  v_i INTEGER;
+	set v_i = 0;
+while v_i <= i do
+	insert into c values(v_i+1,v_i,v_i+1000);
+	set v_i = v_i + 1;
+end while;
+END;
+//
+delimiter ;//
+
+
+call test1(47);
+
+select * from c;
+
+with recursive r as
+(
+select id,ParentID,name from c where id =11
+union all
+select c.* from c,r where c.id=r.ParentID
+) select * from r order by id;
+
+with recursive r as
+(
+select id,cast(name as char(1000)) as name from c where id=35
+union all
+select c.id,CONCAT(r.name, '>', c.name) as name from c,r where r.id = c.ParentID
+)select id,name from r;
+
+
+--echo #cte-2-3 限制CTE递归相关配置
+set max_execution_time=1;
+--echo #error 0,1193
+#set cte_max_recursion_depth=5200;
+--echo #mysql is 3024
+--error 0,3636
+with recursive r as
+(
+select id,ParentID,name from c where id =11
+union all
+select r.* from c,r where c.id=r.ParentID
+) select * from r order by id;
+
+
+set max_execution_time=1000;
+--echo #error 0,1193
+#set cte_max_recursion_depth=1200;
+--echo #mysql is 3636
+--error 0,3636
+with recursive r as
+(
+select id,ParentID,name from c where id =11
+union all
+select r.* from c,r where c.id=r.ParentID
+) select * from r order by id;
+
+
+
+
+
+#cte-2-4 结合优化器的使用
+#--error 0,4012
+# WITH RECURSIVE cte (n) AS
+# (
+  # SELECT 1
+  # UNION ALL
+  # SELECT n + 1 FROM cte
+# )
+# SELECT /*+ SET_VAR(cte_max_recursion_depth = 1M) */ * FROM cte;
+
+#--error 0,4012
+# WITH RECURSIVE cte (n) AS
+# (
+  # SELECT 1
+  # UNION ALL
+  # SELECT n + 1 FROM cte
+# )
+# SELECT /*+ MAX_EXECUTION_TIME(1000) */ * FROM cte;
+
+
+--error 0,1051
+drop table rockets;
+
+CREATE TABLE rockets
+(origin CHAR(20), destination CHAR(20), trip_time INT);
+INSERT INTO rockets VALUES 
+('地球', '火星', 2),
+('火星', '木星', 3),
+('木星', '土星', 4);
+
+
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT /*+ MAX_EXECUTION_TIME(100) */ * FROM all_destinations;
+
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT /*+ MAX_EXECUTION_TIME(100) */ * FROM all_destinations;
+
+
+--echo #不指定hint
+#set cte_max_recursion_depth=1002;
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT * FROM all_destinations;
+
+
+
+--echo #cte-2-5 在SELECT, UPDATE, 和 DELETE  语句之后
+--error 0,1051
+DROP TABLE numbers;
+CREATE TABLE numbers(n int(5) PRIMARY KEY,name varchar(10));
+insert into numbers values(6,'');
+select * from rockets;
+--echo #UPDATE
+WITH RECURSIVE my_cte(n) AS
+(
+  SELECT 1
+  UNION ALL
+  SELECT 1+n FROM my_cte WHERE n<6
+)
+UPDATE rockets, my_cte
+SET rockets.trip_time=4
+WHERE rockets.trip_time=my_cte.n*my_cte.n;
+
+--echo #DELETE
+WITH RECURSIVE my_cte(n) AS
+(
+  SELECT 1
+  UNION ALL
+  SELECT 1+n FROM my_cte WHERE n<6
+)
+DELETE FROM rockets
+WHERE rockets.trip_time > (SELECT AVG(n) FROM my_cte);
+
+select * from rockets;
+
+
+DELETE FROM rockets 
+WHERE rockets.trip_time >
+  (
+    WITH RECURSIVE my_cte(n) AS
+    (
+      SELECT 1
+      UNION ALL
+      SELECT 1+n FROM my_cte WHERE n<3
+    )
+    SELECT MAX(n) FROM my_cte
+  );
+  
+INSERT INTO rockets VALUES ('木星', '土星', 4);
+
+
+--echo #cte-2-6 在INSERT,REPLACE,CREATE,DECLARE,EXPLAIN之后，在SELECT语句之前
+--error 0,1051
+DROP TABLE sales;
+create table sales (date date,price DECIMAL(9,2));
+insert into sales values
+(str_to_date('2017-01-03','%Y-%m-%d'),100.00),
+(str_to_date('2017-01-03','%Y-%m-%d'),200.00),
+(str_to_date('2017-01-06','%Y-%m-%d'),50.00),
+(str_to_date('2017-01-08','%Y-%m-%d'),10.00),
+(str_to_date('2017-01-08','%Y-%m-%d'),20.00),
+(str_to_date('2017-01-08','%Y-%m-%d'),150.00),
+(str_to_date('2017-01-10','%Y-%m-%d'),5.00);
+
+WITH RECURSIVE dates (date) AS
+(
+  SELECT MIN(date) FROM sales
+  UNION ALL
+  SELECT date + INTERVAL 1 DAY FROM dates
+  WHERE date + INTERVAL 1 DAY <= (SELECT MAX(date) FROM sales)
+)
+SELECT dates.date, COALESCE(SUM(price), 0) AS sum_price
+FROM dates LEFT JOIN sales ON dates.date = sales.date
+GROUP BY dates.date
+ORDER BY dates.date;
+
+
+--echo #CREATE TABEL
+--error 0,1051
+DROP TABLE numbers1;
+CREATE TABLE numbers1
+WITH RECURSIVE dates (date) AS
+(
+  SELECT MIN(date) FROM sales
+  UNION ALL
+  SELECT date + INTERVAL 1 DAY FROM dates
+  WHERE date + INTERVAL 1 DAY <= (SELECT MAX(date) FROM sales)
+)
+SELECT dates.date, COALESCE(SUM(price), 0) AS sum_price
+FROM dates LEFT JOIN sales ON dates.date = sales.date
+GROUP BY dates.date
+ORDER BY dates.date;
+
+--error 0,1051
+DROP TABLE numbers1;  
+create table numbers1 (date date,sum_price DECIMAL(9,2));
+--echo #INSERT
+INSERT INTO numbers1
+WITH RECURSIVE dates (date) AS
+(
+  SELECT MIN(date) FROM sales
+  UNION ALL
+  SELECT date + INTERVAL 1 DAY FROM dates
+  WHERE date + INTERVAL 1 DAY <= (SELECT MAX(date) FROM sales)
+)
+SELECT dates.date, COALESCE(SUM(price), 0) AS sum_price
+FROM dates LEFT JOIN sales ON dates.date = sales.date
+GROUP BY dates.date
+ORDER BY dates.date;
+
+--echo #REPLACE
+REPLACE INTO numbers1
+WITH RECURSIVE dates (date) AS
+(
+  SELECT MIN(date) FROM sales
+  UNION ALL
+  SELECT date + INTERVAL 1 DAY FROM dates
+  WHERE date + INTERVAL 1 DAY <= (SELECT MAX(date) FROM sales)
+)
+SELECT dates.date, COALESCE(SUM(price), 0) AS sum_price
+FROM dates LEFT JOIN sales ON dates.date = sales.date
+GROUP BY dates.date
+ORDER BY dates.date;
+
+
+--echo #CREATE VIEW
+--error 0,1051
+DROP VIEW numbers2;
+CREATE VIEW numbers2 AS
+WITH RECURSIVE dates (date) AS
+(
+  SELECT MIN(date) FROM sales
+  UNION ALL
+  SELECT date + INTERVAL 1 DAY FROM dates
+  WHERE date + INTERVAL 1 DAY <= (SELECT MAX(date) FROM sales)
+)
+SELECT dates.date, COALESCE(SUM(price), 0) AS sum_price
+FROM dates LEFT JOIN sales ON dates.date = sales.date
+GROUP BY dates.date
+ORDER BY dates.date;
+
+--echo #DECLARE CURSOR 
+
+
+--echo #EXPLAIN 
+EXPLAIN 
+WITH RECURSIVE my_cte(n) AS
+(
+  SELECT 1
+  UNION ALL
+  SELECT 1+n FROM my_cte WHERE n<6
+)
+SELECT * FROM my_cte;
+
+--echo #cte-2-7 作为子查询返回值嵌套在sql中
+select n from numbers;
+SELECT * FROM rockets;
+--echo #SELECT
+SELECT * FROM rockets
+WHERE origin=
+(
+  WITH RECURSIVE descendants AS
+  (
+	SELECT origin, 1 as level
+	FROM rockets
+	WHERE origin='木星'
+	UNION ALL
+	SELECT t.origin, d.level+1
+	FROM descendants d, rockets t
+	WHERE t.destination=d.origin
+  )
+  SELECT origin FROM descendants WHERE level=3 ORDER BY level
+);
+
+--echo #UPDATE
+UPDATE rockets
+SET destination=
+(
+  WITH RECURSIVE descendants AS
+  (
+	SELECT origin, CAST(origin AS CHAR(500)) AS path
+	FROM rockets
+	WHERE origin='木星'
+	UNION ALL
+	SELECT t.origin, CONCAT(d.path, ',', t.origin)
+	FROM descendants d, rockets t
+	WHERE t.destination=d.origin
+  )
+  SELECT path FROM descendants WHERE origin='地球' ORDER BY path
+  )
+WHERE origin='地球';
+
+UPDATE rockets
+SET destination='木星,火星' WHERE origin=
+(
+  WITH RECURSIVE descendants AS
+  (
+	SELECT origin, 1 as level
+	FROM rockets
+	WHERE origin='木星'
+	UNION ALL
+	SELECT t.origin, d.level+1
+	FROM descendants d, rockets t
+	WHERE t.destination=d.origin
+  )
+  SELECT origin FROM descendants WHERE level=2 ORDER BY level
+);
+
+
+UPDATE rockets
+SET trip_time=
+(
+	WITH RECURSIVE fibonacci (n, fib_n, next_fib_n) AS
+	(
+	  SELECT 1, 0, 1
+	  UNION ALL
+	  SELECT n + 1, next_fib_n, fib_n + next_fib_n
+	  FROM fibonacci WHERE n < 10
+	)
+	SELECT MAX(next_fib_n) FROM fibonacci
+)
+WHERE trip_time=
+(
+    WITH RECURSIVE my_cte(n) AS
+    (
+      SELECT 1
+      UNION ALL
+      SELECT 1+n FROM my_cte WHERE n<3
+    )
+    SELECT MAX(n) FROM my_cte
+  );
+
+--echo #DELETE
+DELETE FROM rockets WHERE destination in 
+(
+  WITH RECURSIVE all_destinations AS
+  (
+	SELECT destination AS planet
+	FROM rockets
+	WHERE origin='地球' 
+	UNION ALL
+	SELECT r.destination
+	FROM rockets r, all_destinations d
+	WHERE r.origin=d.planet
+  )
+  SELECT * FROM all_destinations
+);
+
+
+INSERT INTO rockets VALUES ('地球', '火星', 9);
+
+--echo #其他例子：传递闭包
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT * FROM all_destinations;
+
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT /*+ SET_VAR(cte_max_recursion_depth = 1M) */ * FROM all_destinations;
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT * FROM all_destinations;
+
+--echo #循环避免,OB不支持DISTINCE
+--error 0,1235
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet, trip_time AS total_time 
+FROM rockets
+WHERE origin='地球' 
+UNION DISTINCT
+SELECT r.destination, d.total_time+r.trip_time
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+)
+SELECT * FROM all_destinations;
+
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet, trip_time AS total_time,
+CAST(destination AS CHAR(500)) AS path
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination, d.total_time+r.trip_time,
+CONCAT(d.path, ',', r.destination)
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+AND FIND_IN_SET(r.destination, d.path)=0
+)
+SELECT * FROM all_destinations;
+
+
+WITH RECURSIVE all_destinations AS
+(
+SELECT destination AS planet, trip_time AS total_time,
+CAST(destination AS CHAR(500)) AS path, 0 AS is_cycle
+FROM rockets
+WHERE origin='地球' 
+UNION ALL
+SELECT r.destination, d.total_time+r.trip_time,
+CONCAT(d.path, ',', r.destination),
+FIND_IN_SET(r.destination, d.path)!=0
+FROM rockets r, all_destinations d
+WHERE r.origin=d.planet
+AND is_cycle=0
+)
+SELECT * FROM all_destinations ;
+
+
+
+--echo #end释放空间、断开连接、删除用户
+--enable_warnings
+purge recyclebin;
+connection default;
+--error 0,1008
+drop database zhe123;
+--error 0,600
+drop user zhe123;
+--enable_warnings

@@ -1,0 +1,64 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX OBLOG_PARSER
+
+#include "ob_log_rollback_section.h"
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+using namespace oceanbase::common;
+
+RollbackNode::RollbackNode(const transaction::ObTxSEQ &rollback_from_seq, const transaction::ObTxSEQ &rollback_to_seq)
+  : from_seq_(rollback_from_seq),
+    to_seq_(rollback_to_seq)
+{
+}
+
+RollbackNode::~RollbackNode()
+{
+  from_seq_.reset();
+  to_seq_.reset();
+}
+
+bool RollbackNode::is_valid() const
+{
+  return from_seq_.is_valid() && to_seq_.is_valid() && from_seq_ > to_seq_;
+}
+
+bool RollbackNode::should_rollback_stmt(const transaction::ObTxSEQ &stmt_seq_no) const
+{
+  bool need_rollback = false;
+  const int64_t rollback_branch_id = from_seq_.get_branch();
+  const int64_t stmt_branch_id = stmt_seq_no.get_branch();
+  const bool is_branch_rollback = (rollback_branch_id != 0); // branch_id should large than 0 if rollback in branch
+  const bool need_check_rollback = (! is_branch_rollback) || rollback_branch_id == stmt_branch_id;
+
+  if (need_check_rollback) {
+    // note: from_seq is large than to_seq
+    need_rollback = from_seq_ >= stmt_seq_no && to_seq_ < stmt_seq_no;
+    if (need_rollback) {
+      LOG_DEBUG("ROLLBACK_STMT", K(is_branch_rollback), K(stmt_seq_no), K_(from_seq), K_(to_seq));
+    }
+  }
+
+  return need_rollback;
+}
+
+}
+}

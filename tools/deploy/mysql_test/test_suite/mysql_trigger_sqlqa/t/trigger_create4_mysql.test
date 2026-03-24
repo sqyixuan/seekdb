@@ -1,0 +1,270 @@
+
+
+
+#owner: webber.wb
+#owner group: sqlqa
+#description:trigger
+#tags:pl,ddl,dml
+#author:wb-cwx715534
+
+--result_format 4
+
+--echo # 创建用户
+--source mysql_test/test_suite/mysql_trigger_sqlqa/t/create.inc
+
+
+--echo # 建立链接
+connect (conn1,$OBMYSQL_MS0,cwx,cwx,cwx_db,$OBMYSQL_PORT);
+connect (con1,$OBMYSQL_MS0,root,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn1;
+
+let $HOST_IP = query_get_value('select host_ip()',host_ip(), 1);
+let $DATA_FOLDER_NAME = data_for_mysqltest_loaddata;
+let $SCP_CMD = ssh $HOST_IP 'mkdir -p "$OBSERVER_DIR/$DATA_FOLDER_NAME"' && scp -r $PWD/mysql_test/test_suite/mysql_trigger_sqlqa/* $HOST_IP:"$OBSERVER_DIR/$DATA_FOLDER_NAME";
+exec $SCP_CMD;
+
+--echo ##trigger-1-1-3
+--echo ##创建（权限）
+
+
+--echo ##触发器创建
+--echo ##权限
+--echo ##old+new
+--echo ##无select权限,使用old+new
+connection con1;
+set session autocommit=1;
+commit;
+revoke select on *.* from 'cwx';
+
+
+connection conn1;
+set session autocommit=1;
+delimiter $;
+create table c1(t1 int);$
+create table c2(t1 int);$
+--echo ##正常使用
+--echo ##36077820,去除user的select权限,delete table时ob报错，mysql成功;预期结果：ob删除失败
+create trigger cai_trig before insert on c1
+for each row
+begin
+insert into c2 values(1);
+end;
+$
+insert into c1 values(1);$
+--error 1146
+select * from cwx.c2 order by t1;$
+delimiter ;$
+
+connection con1;
+set session autocommit=1;
+use cwx_db;
+commit;
+select * from c2 order by t1;
+
+--echo ##使用old + new(after$before+ insert$update$delete)
+connection conn1;
+set session autocommit=1;
+commit;
+--echo ##使用大写
+--echo ##同 36077820
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+delete from c1;
+delimiter $;
+drop trigger cai_trig;$
+--echo ##36078552，去除user的select权限,ob可成功触发触发器，mysql创建失败；预期结果：ob创建失败
+--error 1363
+create trigger cai_trig1 after insert on c1
+for each row
+begin
+insert into c2 values(OLD.t1);
+end;
+$
+
+insert into c1 values(1);$
+create trigger cai_trig1 after update on c1
+for each row
+begin
+insert into c2 values(OLD.t1);
+end;
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+update c1 set t1=4;$
+drop trigger cai_trig1;$
+
+create trigger cai_trig1 after delete on c1
+for each row
+begin
+insert into c2 values(OLD.t1);
+end;
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+delete from c1;$
+drop trigger cai_trig1;$
+
+create trigger cai_trig1 before insert on c1
+for each row
+begin
+insert into c2 values(NEW.t1);
+end;
+$
+--echo ##同 36078552
+insert into c1 values(1);$
+drop trigger cai_trig1;$
+
+insert into c1 values(1);$
+create trigger cai_trig1 before update on c1
+for each row
+begin
+insert into c2 values(NEW.t1);
+end;
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+update c1 set t1=4;$
+drop trigger cai_trig1;$
+
+insert into c1 values(1);$
+--error 1363
+create trigger cai_trig1 before delete on c1
+for each row
+begin
+insert into c2 values(NEW.t1);
+end;
+$
+delimiter ;$
+
+--echo ##无update权限，在before触发器中使用SET NEW.col_name = value
+connection con1;
+set session autocommit=1;
+commit;
+grant all privileges on *.* to 'cwx';
+revoke update on *.* from 'cwx';
+
+connection conn1;
+set session autocommit=1;
+commit;
+delimiter $;
+insert into c1 values(2);$
+create trigger cai_trig1 before update on c1
+for each row
+SET NEW.t1 = 7;
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+update c1 set t1=3;$
+drop trigger cai_trig1;$
+
+--error 1362
+create trigger cai_trig1 after update on c1
+for each row
+SET NEW.t1 = 7;
+$
+--error 1360
+drop trigger cai_trig1;$
+
+delimiter ;$
+
+--echo ##user不存在super权限，设置definer
+connection con1;
+set session autocommit=1;
+commit;
+grant all privileges on *.* to 'cwx';
+delete from c1;
+delete from c2;
+revoke super on *.* from 'cwx';
+
+connection conn1;
+set session autocommit=1;
+commit;
+delimiter $;
+create definer='cwx' trigger cai_trig1 before insert on c1
+for each row
+insert into c2 values(3);
+$
+insert into c1 values(1);$
+--echo ##proxy模式执行失败，obs0，obs1及obclient均成功
+#--error 0,1142
+#select * from c2 order by t1;$
+drop trigger cai_trig1;$
+
+
+--echo ##同 36078552
+create definer='cwx1' trigger cai_trig1 before insert on c1
+for each row
+insert into c2 values(3);
+$
+insert into c1 values(1);$
+--echo ##proxy0报错，其余模式成功
+#--error 0,1142
+#select * from c2 order by t1;$
+drop trigger cai_trig1;$
+
+
+create definer='notexist' trigger cai_trig1 before insert on c1
+for each row
+insert into c2 values(3);
+$
+--echo ##同 35918393
+--error 1449
+insert into c1 values(1);$
+--echo ##proxy0报错，其余模式成功
+#--error 0,1142
+#select * from c2 order by t1;$
+drop trigger cai_trig1;$
+
+delimiter ;$
+
+
+--echo ##无trigger权限
+--echo ##经开发新齐确认，目前ob暂未实现trigger权限
+
+--echo ##无基表权限（select，update，delete，insert）
+connection con1;
+set session autocommit=1;
+commit;
+grant all privileges on *.* to 'cwx';
+revoke insert,update,delete on *.* from 'cwx';
+
+connection conn1;
+set session autocommit=1;
+commit;
+delimiter $;
+create definer='cwx' trigger cai_trig1 before insert on c1
+for each row
+insert into c2 values(3);
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+insert into c1 values(1);$
+drop trigger cai_trig1;$
+
+create definer='cwx' trigger cai_trig1 before update on c1
+for each row
+insert into c2 values(3);
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+update c1 set t1=2;$
+drop trigger cai_trig1;$
+
+create definer='cwx' trigger cai_trig1 before delete on c1
+for each row
+insert into c2 values(3);
+$
+--echo ##目前执行为obclient端报错，mysqltest端执行成功
+--error 0,1142
+delete from c1;$
+drop trigger cai_trig1;$
+
+
+
+delimiter ;$
+
+ 
+--echo # 清理环境
+--source mysql_test/test_suite/mysql_trigger_sqlqa/t/drop.inc
+
+disconnect conn1;

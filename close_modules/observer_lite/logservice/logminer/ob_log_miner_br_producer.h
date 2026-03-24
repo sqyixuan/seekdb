@@ -1,0 +1,87 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LOG_MINER_BR_PRODUCER_H_
+#define OCEANBASE_LOG_MINER_BR_PRODUCER_H_
+
+#include "ob_log_miner_br.h"
+#include "ob_log_instance.h"
+#include "ob_log_miner_error_handler.h"
+#include "ob_log_miner_args.h"
+#include <map>
+namespace oceanbase
+{
+namespace oblogminer
+{
+
+class ILogMinerBRFilter;
+
+class ILogMinerBRProducer
+{
+public:
+  virtual int start() = 0;
+  virtual void stop() = 0;
+  virtual void wait() = 0;
+  virtual void destroy() = 0;
+};
+
+class ObLogMinerBRProducer :public ILogMinerBRProducer, public lib::ThreadPool
+{
+public:
+  static const int64_t BR_PRODUCER_THREAD_NUM;
+  static const int64_t BR_PRODUCER_POOL_DEFAULT_NUM;
+public:
+  virtual int start();
+  virtual void stop();
+  virtual void wait();
+  // need to be idempotent
+  virtual void destroy();
+
+private:
+  virtual void run1() override;
+
+public:
+  ObLogMinerBRProducer();
+  ~ObLogMinerBRProducer()
+  { destroy(); }
+  int init(const AnalyzerArgs &args,
+      ILogMinerBRFilter *filter,
+      ILogMinerErrorHandler *err_handle);
+
+private:
+  int build_cdc_config_map_(const AnalyzerArgs &args,
+      std::map<std::string, std::string> &cdc_config);
+  int get_tenant_compat_mode_(const RecordType type,
+      const uint64_t tenant_id,
+      lib::Worker::CompatMode &mode);
+
+  int set_current_trans_id_(ICDCRecord *cdc_rec);
+private:
+  bool is_inited_;
+  bool is_dispatch_end_;
+  int64_t start_time_us_;
+  int64_t end_time_us_;
+  transaction::ObTransID curr_trans_id_;
+  libobcdc::ObCDCFactory cdc_factory_;
+  libobcdc::IObCDCInstance *cdc_instance_;
+  ILogMinerBRFilter *br_filter_;
+  ILogMinerErrorHandler *err_handle_;
+};
+
+}
+}
+
+#endif

@@ -1,0 +1,144 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+ob1.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob2.set extra_config = "cpu_count=10,memory_limit='20G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.reboot;
+ob2.reboot;
+let $backup_mysql_tenant  = backup_mysql_tenant;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL large_pool_2 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_3 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+ob_connect(sys_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+
+# create oracle tenant
+ob1.mysql CREATE TENANT backup_oracle_tenant RESOURCE_POOL_LIST = ('large_pool_2'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='backup_oracle_tenant', tenant_id, 1);
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_oracle_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+# create log restore source user
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+create user mytest identified by "test";
+GRANT CONNECT to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--disable_all_result_log
+send CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_oracle_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_3'),locality='F@z1,F@z2,F@z3', comment='oracle_aaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_oracle_tenant' and STATUS = 'NORMAL', 1, 100;
+ob1.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_oracle_tenant', NORMAL, 200;
+let $standby_oracle_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection primary_oracle_tenant_conn;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_oracle_tenant_id and ls_id = 1001 and role = 'LEADER';, end_scn, 1);
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_oracle_tenant' and READABLE_SCN >= $check_scn, 1, 50;
+
+let $p_refreshed_schema_v=deploy_get_value(ob1.select select refreshed_schema_version from __all_virtual_server_schema_info where tenant_id = $backup_oracle_tenant_id order by refreshed_schema_version desc limit 1, refreshed_schema_version, 1);
+ob1.check_until_timeout SELECT count(*) FROM __all_virtual_server_schema_info where tenant_id= $standby_oracle_tenant_id and received_schema_version < $p_refreshed_schema_v, 0,10;
+
+ob_connect(standby_oracle_tenant_conn, ob1.z1.obs0, SYS@standby_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection standby_oracle_tenant_conn;
+select * from t1;
+# 1 1
+
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection primary_oracle_tenant_conn;
+insert into t1(a, b) values(2, 2);
+
+# case 1. 验证系统租户switchover 普通租户
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select TENANT_ID, TENANT_NAME, TENANT_TYPE, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED, TENANT_ROLE, SWITCHOVER_STATUS, LOG_MODE from DBA_OB_TENANTS order by TENANT_ID;
+select count(*) from DBA_OB_TENANTS where SYNC_SCN >= REPLAYABLE_SCN and REPLAYABLE_SCN>=READABLE_SCN and RECOVERY_UNTIL_SCN !=0 and TENANT_TYPE = "USER";
+# 4
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_oracle_tenant_id and ls_id = 1001 and role = 'LEADER';, end_scn, 1);
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+ALTER SYSTEM SWITCHOVER TO STANDBY VERIFY;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_oracle_tenant;
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_oracle_tenant' and SYNC_SCN >= $check_scn, 1, 50;
+
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_oracle_tenant' and SYNC_SCN >= $check_scn, 1, 50;
+
+# 等待备租户switchover_status状态是normal
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_oracle_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+ob_connect(standby_oracle_tenant_conn, ob1.z1.obs0, SYS@standby_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection standby_oracle_tenant_conn;
+select * from t1;
+# 1   1
+# 2   2
+insert into t1(a, b) values(3, 3);
+
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select TENANT_ID, TENANT_NAME, TENANT_TYPE, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED, TENANT_ROLE, SWITCHOVER_STATUS, LOG_MODE from DBA_OB_TENANTS order by TENANT_ID;
+select count(*) from DBA_OB_TENANTS where SYNC_SCN >= REPLAYABLE_SCN and REPLAYABLE_SCN>=READABLE_SCN and RECOVERY_UNTIL_SCN !=0 and TENANT_TYPE = "USER";
+# 4
+ob_connect(backup_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, , SYS, , USE_OB_CONNECTOR);
+ALTER SYSTEM ACTIVATE STANDBY VERIFY;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM ACTIVATE STANDBY TENANT backup_oracle_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+ob_connect(primary_oracle_tenant_conn, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection primary_oracle_tenant_conn;
+select * from t1;
+# 1   1
+# 2   2
+
+#测试在第二个集群上创建网络备租户，并在等待同步时，注入OB_LS_LOG_RESTORE_STATUS同步状态ERRSIM_FETCH_LOG_TIME_OUT，验证create tenant命令失败
+ob_connect(sys_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+alter system set _ob_ddl_timeout = '100s';
+ob2.mysql alter system set debug_sync_timeout = '100000s';
+sleep 5;
+ob2.mysql set ob_global_debug_sync = 'BLOCK_CREATE_STANDBY_TENANT_END wait_for continue_signal execute 10000';
+
+# check restore status -> fetch log time out
+# OB_TIMEOUT = -4012
+ob2.mysql alter system set_tp tp_name = ERRSIM_FETCH_LOG_TIME_OUT, error_code = 4012, frequency = 1;
+
+ob_connect(sys_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--disable_all_result_log
+--error 4765
+eval CREATE STANDBY TENANT IF NOT EXISTS ob2_standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_oracle_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1', comment='oracle_aaa';
+--enable_all_result_log
+
+ob2.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='ob2_standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob2.select select tenant_id from oceanbase.__all_tenant where tenant_name='ob2_standby_oracle_tenant', tenant_id, 1);
+
+ob2.check_until_timeout select count(*)>=1 from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $tenant_id and SYNC_STATUS='FETCH LOG TIMEOUT', 1, 50;
+ob2.check_until_timeout select count(*)>=1 from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $tenant_id and ERR_CODE=-4012, 1, 50;
+
+ob_connect(sys_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+alter system set_tp tp_name = ERRSIM_FETCH_LOG_TIME_OUT, error_code = 4012, frequency = 0;
+ob2.check_until_timeout select count(*) from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $tenant_id and SYNC_STATUS='NORMAL', 2, 50;
+ob2.check_until_timeout select count(*) from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $tenant_id and ERR_CODE=0, 2, 50;
+
+ob2.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob2.mysql set ob_global_debug_sync = 'BLOCK_CREATE_STANDBY_TENANT_END clear';
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'ob2_standby_oracle_tenant', NORMAL, 200;

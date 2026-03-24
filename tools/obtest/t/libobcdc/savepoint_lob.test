@@ -1,0 +1,93 @@
+#
+# owner:shuning.tsn
+# owner group:liboblog
+# description:
+# 测试点: 测试lob, text类型rollback savepoint语句处理
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+set global max_allowed_packet = 1073741824;
+
+# 重新连接使系统变量生效
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+# 创建database和表
+create database oblog_db;
+use oblog_db;
+ob_connect(oblog_conn_ddl,ob1.z1.obs0,root@oblog_tt,,oblog_db, , USE_MYSQL_CONNECTOR);
+connection oblog_conn_tt;
+create table t1 (a int primary key, b longblob);
+create table t2 (a int primary key, b longtext);
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+## blob数据
+begin;
+insert into t1 values(1223, repeat('a', 10000000));
+insert into t2 values(1221, repeat('a', 100));
+savepoint sp1;
+insert into t2 values(1222, repeat('b', 1000));
+insert into t2 values(1223, repeat('b', 10000000));
+insert into t2 values(1224, 'abcdef');
+insert into t2 values(1225, 'abcdefg');
+rollback to sp1;
+commit;
+select a, md5(b) from t1;
+select a, md5(b) from t2;
+ob1.oblog.next_dml;
+
+## blob数据
+begin;
+insert into t1 values(1, repeat('a', 10000000));
+insert into t2 values(1, 'abcdef');
+insert into t2 values(2, repeat('a', 100));
+insert into t2 values(3, repeat('b', 1000));
+savepoint sp1;
+insert into t2 values(4, repeat('b', 10000000));
+insert into t2 values(5, 'abcdef');
+insert into t2 values(6, 'abcdefg');
+rollback to sp1;
+commit;
+select a, md5(b) from t1;
+select a, md5(b) from t2;
+ob1.oblog.next_dml;
+
+## DML: insert -> rollback to -> DDL truncate -> DML commit
+begin;
+savepoint sp1;
+insert into t1 values(1024, repeat('a', 20000000));
+sleep 2;
+rollback to sp1;
+connection oblog_conn_ddl;
+truncate table t1;
+connection oblog_conn_tt;
+insert into t1 values(1, repeat('a', 10000000));
+commit;
+select a, md5(b) from t1;
+
+# expect ddl.
+ob1.oblog.next;
+# expect dml
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# 会拉历史数据启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+ob1.oblog.stop;

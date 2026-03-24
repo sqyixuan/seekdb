@@ -1,0 +1,318 @@
+#owner: gjw228474
+#owner group: trans
+#tags: table lock, priority queue
+#description: test leader switch for table lock priority queue
+
+--result_format 4
+--disable_query_log
+connect (sys,$OBMYSQL_MS0,root,"",oceanbase,$OBMYSQL_PORT);
+connection sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=2;
+alter proxyconfig set enable_single_leader_node_routing=false;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+sleep 3;
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,TEST,$OBMYSQL_PORT);
+connection conn1;
+set ob_query_timeout = 30000000;
+
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,TEST,$OBMYSQL_PORT);
+connection conn2;
+set ob_query_timeout = 30000000;
+
+connect (conn3,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,TEST,$OBMYSQL_PORT);
+connection conn3;
+set ob_query_timeout = 30000000;
+
+connection conn1;
+--error 0,1051
+drop table tlp_t1;
+create table tlp_t1 (c1 int, c2 int);
+--error 0,1051
+drop table tlp_t2;
+alter system set enable_lock_priority=true;
+sleep 3;  # need time to take effect
+
+connection sys;
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tlp_t1', table_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id, ls_id, 1);
+
+--enable_query_log
+
+## case 1, basic
+# session 1, lock table
+# session 2, lock table
+# session 3, lock table
+## conn1
+connection conn1;
+lock tables tlp_t1 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t1 write;
+sleep 1;
+
+## conn3
+connection conn3;
+send lock tables tlp_t1 write;
+sleep 1;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+unlock tables;
+
+## case 2, dml
+## conn1
+connection conn1;
+lock tables tlp_t1 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t1 write;
+sleep 1;
+
+## conn3
+connection conn3;
+start transaction;
+send insert into tlp_t1 values (1,1);
+sleep 1;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+commit;
+
+select c1 from tlp_t1;
+
+## case 3, dml first
+## conn1
+connection conn1;
+lock tables tlp_t1 write;
+
+## conn2
+connection conn2;
+start transaction;
+send insert into tlp_t1 values (2,2);
+sleep 1;
+
+## conn3
+connection conn3;
+send lock tables tlp_t1 write;
+sleep 1;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+commit;
+
+select c1 from tlp_t1;
+
+## case 4, rename table
+## conn1
+connection conn1;
+lock tables tlp_t1 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t1 write;
+sleep 1;
+
+## conn3
+connection conn3;
+send rename table tlp_t1 to tlp_t2;
+sleep 1;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+select c1 from tlp_t2;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## case 5, switch leader for lock table
+## conn1
+connection conn1;
+lock tables tlp_t2 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t2 write;
+sleep 1;
+
+## conn3
+connection conn3;
+send lock tables tlp_t2 write;
+sleep 1;
+
+## sys, switch leader from zone1 to zone2
+--disable_query_log
+connection sys;
+let $idx_follower_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = 1, svr_ip, 1);
+let $idx_follower_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = 1, svr_port, 1);
+eval alter system switch replica leader ls=$ls_id server='$idx_follower_ip:$idx_follower_port' tenant='mysql';
+--enable_query_log
+sleep 10;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+unlock tables;
+
+## case 6, switch leader for dml
+## conn1
+connection conn1;
+lock tables tlp_t2 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t2 write;
+sleep 1;
+
+## conn3
+connection conn3;
+start transaction;
+send insert into tlp_t2 values (3,3);
+sleep 1;
+
+## sys, switch leader from zone2 to zone1
+--disable_query_log
+connection sys;
+let $idx_follower_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_ip, 1);
+let $idx_follower_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_port, 1);
+eval alter system switch replica leader ls=$ls_id server='$idx_follower_ip:$idx_follower_port' tenant='mysql';
+--enable_query_log
+sleep 10;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+commit;
+
+select c1 from tlp_t2;
+
+## case 7, switch leader multiple times
+## conn1
+connection conn1;
+lock tables tlp_t2 write;
+
+## conn2
+connection conn2;
+send lock tables tlp_t2 write;
+sleep 1;
+
+## conn3
+connection conn3;
+send lock tables tlp_t2 write;
+sleep 1;
+
+## sys, switch leader from zone1 to zone2, then from zone2 to zone1
+--disable_query_log
+connection sys;
+let $idx_follower_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_ip, 1);
+let $idx_follower_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_port, 1);
+eval alter system switch replica leader ls=$ls_id server='$idx_follower_ip:$idx_follower_port' tenant='mysql';
+--enable_query_log
+sleep 10;
+
+--disable_query_log
+connection sys;
+let $idx_follower_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_ip, 1);
+let $idx_follower_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table where ls_id = $ls_id and role = 2 and tenant_id = $tenant_id, svr_port, 1);
+eval alter system switch replica leader ls=$ls_id server='$idx_follower_ip:$idx_follower_port' tenant='mysql';
+--enable_query_log
+sleep 10;
+
+## conn1
+connection conn1;
+unlock tables;
+
+## conn2
+connection conn2;
+REAP;
+unlock tables;
+
+## conn3
+connection conn3;
+REAP;
+unlock tables;
+
+## reset
+--disable_query_log
+connection conn1;
+alter system set enable_lock_priority=false;
+--error 0,1051
+drop table tlp_t1;
+--error 0,1051
+drop table tlp_t2;
+--enable_query_log
+
+connection sys;
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+alter proxyconfig set client_session_id_version=1;
+alter proxyconfig set enable_single_leader_node_routing=true;
+--enable_abort_on_error
+--enable_query_log
+--enable_result_log
+
+sleep 3;  # configuration should take time to take effect

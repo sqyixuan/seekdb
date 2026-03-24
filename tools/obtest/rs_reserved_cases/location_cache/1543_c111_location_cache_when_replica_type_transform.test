@@ -1,0 +1,109 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 
+#              当前location_cache刷新rpc 缓存命中有两种情形(走rpc刷新逻辑的前提是location_cache中本region有F，否则走sql查询)
+#              1.本region有F且为leader，通过rpc获取leader的member_list/child_list,检查当前location_cache是否与之匹配；
+#              2.本region有F但无leader，通过rpc获取所有F的member_list/child_list,要求所有F的member_list相同，且location_cache与child_list匹配
+#              bug场景分析：
+#              则以上逻辑在本region无leader的情况下，某server发生类型转换F->L时，
+#              member_list由于不携带replica_type信息，则member_list与location_cache匹配，
+#              当child_list也不发生变更时，且本region所有F的member_list／child_list都匹配location_cache,
+#              就会错误地认为rpc命中而不走sql查询，导致location_cache不更新的情况
+#
+#              除此之外，为避免错误地使用L型副本作为路由，location_cache对外提供的接口自动过滤L型副本
+#
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:sh);
+
+ob1.reboot;
+
+ob1.mysql alter system set max_stale_time_for_weak_consistency = '1h';
+ob1.mysql alter system set enable_monotonic_weak_read = 1;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1;z2,z3', locality='F{1}@z1,F{1}@z2,F{1}@z3' set ob_tcp_invited_nodes='%';
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_1', resource_pool_id, 1);
+let $tenant1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0_mysql_port = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+connect (conn_sys_z3,$z3_obs0_ip,admin@sys,admin,oceanbase,$z3_obs0_mysql_port);
+connect (conn_tenant_1,$rs_ip,root@tenant_1,,test,$rs_mysql_port);
+connect (conn_tenant_1_z3,$z3_obs0_ip,root@tenant_1,,test,$z3_obs0_mysql_port);
+# 建表
+connection conn_tenant_1;
+use test;
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 2;
+let $t1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = "$tenant1_id" and table_name = "t1", table_id, 1);
+# 获取变更之前z3的member_list
+let $old_member_list = deploy_get_value(ob1.select select curr_member_list from oceanbase.__all_virtual_clog_stat where svr_ip = "$z3_obs0_ip" and svr_port = "$z3_obs0_port" and table_id = "$t1_id" and partition_idx = 0, curr_member_list, 1);
+
+--disable_query_log
+
+# 查询预热
+connection conn_tenant_1_z3;
+select * from test.t1 where c1 = 1;
+# 检查location_cache内容，此时能刷出来z3的replica_type为F
+connection conn_sys_z3;
+let $judge = `select count(*) from __all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0 and svr_ip = "$z3_obs0_ip" and sql_port = "$z3_obs0_mysql_port"`;
+if ($judge == 1)
+{
+  echo "z3 replica_type is F";
+}
+
+# locality变更，z3通过类型转换，原地转换副本类型F->L，此时member_list不会发生变化
+ob1.mysql alter tenant tenant_1 set locality = "F{1}@z1,F{1}@z2,L{1}@z3";
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != "", 0, 600;
+
+connection conn_tenant_1_z3;
+select * from test.t1 where c1 = 1;
+sleep 10;
+# 检查location_cache内容，此时能刷出来z3的replica_type为L
+connection conn_sys_z3;
+let $count = `select count(*) from __all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0`;
+echo $count;
+if ($count == 2)
+{
+  echo "can only get two partition";
+}
+let $count = `select count(*) from __all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and svr_ip = "$z3_obs0_ip" and sql_port = "$z3_obs0_mysql_port"`;
+if ($count == 0)
+{
+  echo "can not see z3 replica location";
+}
+let $count = `select count(*) from __all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 5`;
+if ($count == 0)
+{
+  echo "can not see replica location with replica_type L";
+}
+
+# 获取变更之后的z3的member_list
+let $new_member_list = deploy_get_value(ob1.select select curr_member_list from oceanbase.__all_virtual_clog_stat where svr_ip = "$z3_obs0_ip" and svr_port = "$z3_obs0_port" and table_id = "$t1_id" and partition_idx = 0, curr_member_list, 1);
+
+if ($old_member_list == $new_member_list)
+{
+  echo "member_list not change";
+}

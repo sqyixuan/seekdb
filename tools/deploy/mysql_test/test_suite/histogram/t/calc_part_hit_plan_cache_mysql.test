@@ -1,0 +1,99 @@
+# owner: dingjincheng.djc
+# owner group: SQL1
+# tags: optimizer, opt_stats
+
+--disable_warnings
+drop table if exists t_part;
+drop table if exists t_subpart;
+drop table if exists TEST1;
+--enable_warnings
+
+create table t_part (c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+
+create table t_subpart (c1 int, c2 int, c3 int) partition by hash(c1)
+subpartition by range(c2)
+subpartition template
+(
+  subpartition p0 values less than (3000),
+  subpartition p1 values less than (6000),
+  subpartition p2 values less than (MAXVALUE)
+)
+partitions 4;
+
+CREATE TABLE `TEST1` (
+  `c1` int(11) NOT NULL,
+  `c2` int(11) DEFAULT NULL,
+  `c3` int(11) DEFAULT NULL,
+  PRIMARY KEY (`c1`),
+  KEY `i1` (`c2`) BLOCK_SIZE 16384 LOCAL,
+  KEY `i2` (`c2`, `c3`) BLOCK_SIZE 16384 GLOBAL
+ partition by hash(c2)
+(partition `p0`,
+partition `p1`,
+partition `p2`,
+partition `p3`)
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by key(c1)
+(partition `p0`,
+partition `p1`,
+partition `p2`,
+partition `p3`);
+
+set @num = 1;
+
+insert into TEST1 select @num := @num + 1, @num, @num from table(generator(100));
+let $t_part_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'T_PART', table_id, 1);
+let $t_part_id = query_get_value(select part_id from oceanbase.__all_part where table_id = $t_part_table_id and part_name = 'P2' , part_id, 1);
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS */ * from t_part where calc_partition_id(T_PART, PART) = $t_part_id;
+
+let $t_sub_part_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'T_SUBPART', table_id, 1);
+let $t_part_id = query_get_value(select part_id from oceanbase.__all_part where table_id = $t_sub_part_table_id and part_name = 'P1' , part_id, 1);
+let $t_sub_part_part_id = query_get_value(select part_id from oceanbase.__all_sub_part where table_id = $t_sub_part_table_id and sub_part_name = 'P2SP1' , part_id, 1);
+let $t_sub_part_subpart_id = query_get_value(select sub_part_id from oceanbase.__all_sub_part where table_id = $t_sub_part_table_id and sub_part_name = 'P2SP1' , sub_part_id, 1);
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS */ * from t_subpart where calc_partition_id(t_subpart, PART) = $t_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS */ * from t_subpart where calc_partition_id(t_subpart, PART) = $t_sub_part_part_id and calc_partition_id(t_subpart, SUBPART) = $t_sub_part_subpart_id;
+
+let TEST1_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'TEST1', table_id, 1);
+let i1_table_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = $TEST1_table_id and table_name like '%i1', table_id, 1);
+let i2_table_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = $TEST1_table_id and table_name like '%i2', table_id, 1);
+let TEST1_part_id = query_get_value(select part_id from oceanbase.__all_part where table_id = $TEST1_table_id and part_name = 'P1', part_id, 1);
+let i1_part_id = query_get_value(select part_id from oceanbase.__all_part where table_id = $i1_table_id and part_name = 'P2', part_id, 1);
+let i2_part_id = query_get_value(select part_id from oceanbase.__all_part where table_id = $i2_table_id and part_name = 'P3', part_id, 1);
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS FULL(TEST1) */ c1 from TEST1 where calc_partition_id(TEST1, PART) = $TEST1_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ DBMS_STATS FULL(TEST1) */ count(1) from TEST1 where calc_partition_id(TEST1, PART) = $TEST1_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ FULL(TEST1) */ count(1) from TEST1 where calc_partition_id(TEST1, PART) = $TEST1_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS INDEX(TEST1 i1) */ c2 from TEST1 where calc_partition_id(TEST1, i1, PART) = $i1_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ DBMS_STATS INDEX(TEST1 i1) */ count(1) from TEST1 where calc_partition_id(TEST1, i1, PART) = $i1_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ INDEX(TEST1 i1) */ count(1) from TEST1 where calc_partition_id(TEST1, i1, PART) = $i1_part_id;
+
+
+--replace_regex / = [0-9]*/ = xxx/
+eval explain select /*+ DBMS_STATS INDEX(TEST1 i2) */ c2 from TEST1 where calc_partition_id(TEST1, i2, PART) = $i2_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ DBMS_STATS INDEX(TEST1 i2) */ count(1) from TEST1 where calc_partition_id(TEST1, i2, PART) = $i2_part_id;
+
+--replace_regex / = [0-9]*/ = xxx/
+eval select /*+ INDEX(TEST1 i2) */ count(1) from TEST1 where calc_partition_id(TEST1, i2, PART) = $i2_part_id;
+
+drop table if exists t_part;
+drop table if exists t_subpart;
+drop table if exists TEST1;

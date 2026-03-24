@@ -1,0 +1,163 @@
+##
+# owner      : nianguan.lhy
+# owner group: clog
+# description: 测试从4.3.0升级到4.3.1版本时3.5MB日志写入是否符合预期
+##
+ob1=OBI(cluster=1:1:1,proxy_num=0,version=4_3_0_0);
+ob1.reboot;
+ 
+let $extra_conf = "cpu_count=8,memory_limit='30G',system_memory='20G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size=10G";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ 
+let $cpu = 3;
+let $memory = '15G';
+let $min_memory = 1073741824;
+ 
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# create tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MEMORY_SIZE $memory, LOG_DISK_SIZE '5G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1','z2','z3');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ 
+source include/check_schema_sync.inc;
+ 
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ 
+source include/check_schema_sync.inc;
+ 
+sleep 10;
+ 
+# 1. 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+ 
+# 2. 执行升级SQL
+ob1.upgrade_commond_for_server pre;
+ 
+# 3. upgrade z1
+ob1.mysql alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1',INACTIVE,20;
+ob1.z1.force_stop;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+ob1.check_until_timeout  select paxos_replica_num from GV\$OB_LOG_STAT where tenant_id = '1002' and ls_id = '1001', 3, 600;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ 
+# 4. 高版本leader写大日志
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+
+connection conn_mysql;
+# update pre阶段默认会关闭enable_ddl, 所以需要打开
+ob1.mysql alter system set enable_ddl = true;
+ 
+#################  produce big log, it should fail
+# OB_MAX_USER_ROW_LENGTH = 1572864L 
+# 4kb size for each column
+# 1572864 / (4 * 1024) = 384 
+--disable_all_result_log
+use test;
+drop table if exists big_table;
+# 创建包含383个varchar(4096)的表
+let $const = 383;
+--let $create_sql = create table big_table(pk int primary key
+--let $select_sql = select pk
+let $field = $const;
+while($field)
+{
+    --let $create_sql = $create_sql , f$field varchar(4096)
+    --let $select_sql = $select_sql , substr(f$field, 1, 5)
+    dec $field;
+}
+ 
+--let $create_sql = $create_sql) DEFAULT CHARSET=binary
+--let $select_sql = $select_sql from big_table
+eval $create_sql;
+ 
+# 为insert准备数据
+# 1047 bytes
+--let $value = 1
+--let $new_value = 2
+--let $byte = 111111111111111
+--let $new_byte = 222222222222222
+# 4096 / 15 = 273
+let $kb = 273;
+while($kb)
+{
+    --let $value = $value$byte
+    --let $new_value = $new_value$new_byte
+    dec $kb;
+}
+ 
+let $field = $const;
+--let $insert_sql = insert into big_table values(1
+while($field)
+{
+    --let $insert_sql = $insert_sql , '$value'
+    dec $field;
+}
+--let $insert_sql = $insert_sql)
+eval $insert_sql;
+ 
+let $field = $const;
+--let $update_sql = update big_table set f$field = '$new_value'
+dec $field;
+while($field)
+{
+    --let $update_sql = $update_sql , f$field = '$new_value'
+    dec $field;
+}
+--let $update_sql = $update_sql where pk = 1
+--enable_all_result_log
+set ob_trx_timeout = 100000000;
+--disable_query_log
+--error 4012
+eval $update_sql;
+--disable_all_result_log
+eval $select_sql;
+--enable_all_result_log
+#################
+ 
+# upgrade z2
+ob1.mysql alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob1.z2.force_stop;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob1.mysql alter system start zone 'z2';
+ 
+# upgrade z3
+ob1.mysql alter system stop zone 'z3';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z3',INACTIVE,20;
+ob1.z3.force_stop;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob1.mysql alter system start zone 'z3';
+ 
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ 
+# check schema for restart
+ob1.check_until_timeout select count(*) from oceanbase.__all_server a left join oceanbase.__all_virtual_server_schema_info b on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port where b.svr_ip is null, 0, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0, 0, 300;
+ 
+ 
+# set @@session.ob_query_timeout = 60000000;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info != "succeed", 1, 600;
+ 
+ob1.upgrade_commond_for_server post;
+ 
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info = "succeed", 1, 600;
+ 
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+#ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+connection conn_mysql;
+# update complete, produce big log again
+source include/prepare_for_big_log.inc;

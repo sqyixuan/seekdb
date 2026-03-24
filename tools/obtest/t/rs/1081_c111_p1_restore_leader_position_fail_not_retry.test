@@ -1,0 +1,62 @@
+# owner: rongxuan.lc
+# owner group: STORAGE
+#
+# Restore leader not position not retry if execute fail.
+#   
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit = 500;
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set internal_sql_execute_timeout = '1s';
+ob1.mysql alter system set merger_switch_leader_duration_time = 0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+
+sleep 2;
+ob1.mysql create resource pool xx1  unit = 'sys_unit_config',unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant xx1 replica_num 3, primary_zone 'z1', resource_pool_list ('xx1') set ob_tcp_invited_nodes='%';
+
+sleep 2;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(xx1_conn,$ip,root@xx1,,test, $mysql_port);
+connection xx1_conn;
+create table t1 (k int primary key, v int);
+
+connect(sys_conn,$ip,root,,oceanbase, $mysql_port);
+connect(sys_conn2,$ip,root,,oceanbase, $mysql_port);
+
+ob1.mysql alter system suspend merge  zone 'z1';
+ob1.mysql alter system major freeze;
+
+# make update last_merged_version sql hung
+connection sys_conn;
+set ob_query_timeout = 100000000;
+set autocommit = 0;
+select value from __all_zone where zone = 'z1' and name = 'last_merged_version' for update;
+
+ob1.mysql alter system resume merge zone = 'z1';
+sleep 30;
+ob1.mysql_p select zone, count(*) from oceanbase.__all_virtual_meta_table where is_original_leader = 1 group by 1;
+
+
+#connection sys_conn2;
+connection xx1_conn;
+set ob_query_timeout = 100000000;
+set autocommit = 0;
+select is_original_leader from oceanbase.__all_tenant_meta_table where tenant_id = 1001 and is_original_leader = 1 for update;
+
+# update last_merged_version
+connection sys_conn;
+rollback;
+
+ob1.check_until_timeout select value from oceanbase.__all_zone where zone = '' and name = 'last_merged_version', 2, 60;
+ob1.mysql_p select zone, count(*) from oceanbase.__all_virtual_meta_table where is_original_leader = 1 group by 1;
+connection sys_conn2;
+rollback;
+sleep 25;
+ob1.mysql_p select zone, count(*) from oceanbase.__all_virtual_meta_table where is_original_leader = 1 group by 1;
+

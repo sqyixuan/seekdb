@@ -1,0 +1,53 @@
+# owner: binifei.bnf
+# owner group: cloud storage
+# Test Case: ls replica prewarm
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=5);
+ob1.reboot;
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+# disable major compaction prewarm
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 2 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 2 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 2 tenant all_meta;
+# disable major_merge launched by major_freeze_duty_time
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+set ob_query_timeout = 10000000000;
+# generage data
+create table t1 (c1 varchar(10), c2 bigint, c3 bigint, c4 bigint, c5 bigint);
+--disable_query_log
+insert /*+ append enable_parallel_dml parallel(16) */ into t1 select randstr(10, random()) c1, random() c2, zipf(1, 100, random(3)), normal(0, 1, random()), uniform(1, 100, random()) from table(generator(1000000));
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+connection conn1;
+set ob_query_timeout = 10000000000;
+--disable_query_log
+create /*+parallel(16)*/ index idx_t1_c5 on t1(c5);
+--disable_query_log
+
+# check whether succ to prewarm
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "obtest", tenant_id, 1);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache replica prewarm count' and tenant_id = $tenant_id and svr_ip = '$z2_ip' and svr_port = $z2_port and value > 10, 1, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache replica prewarm count' and tenant_id = $tenant_id and svr_ip = '$z3_ip' and svr_port = $z3_port and value > 10, 1, 600;

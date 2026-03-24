@@ -1,0 +1,105 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: 用于列存副本 HA 加 C 副本的进一步测试, 包括
+#  (1) 未执行过合并时迁移增加 C 副本(非 emtpy shell); 
+#  (2) data tablet 迁移很慢, 行转列检查 dag 就已经调度多次
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2');
+ob1.mysql create TENANT tenant1 resource_pool_list=('cs_replica_pool'), locality = "F@z1" set ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant1", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo =================  Step 2: create table   =====================
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(z2_obs0, ob1.z2.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+
+create table t1 (k int primary key, v1 int, v2 int);
+insert into t1 values (1, 1, 1);
+insert into t1 values (2, 2, 2);
+insert into t1 values (3, 3, 3);
+select * from t1 order by k;
+
+--echo ===============================================================
+--echo =================  Step 2: add cs replcia   ===================
+--echo ===============================================================
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1,C{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+connection sys_conn;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+
+connection z2_obs0;
+set ob_route_policy=READONLY_ZONE_FIRST;
+select * from t1 order by k;
+select k, v1 from t1 order by k;
+select avg(k), avg(v1), avg(v2) from t1;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;
+
+--echo ===============================================================
+--echo ==========  Step 3: test slow data tablet migration ===========
+--echo ===============================================================
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+ob1.mysql set ob_global_debug_sync = 'BEFROE_UPDATE_MIG_TABLET_CONVERT_CO_PROGRESSING wait_for continue_signal execute 10000';
+ob1.mysql set ob_global_debug_sync = 'AFTER_SET_CO_CONVERT_RETRY_EXHUASTED wait_for continue_signal2 execute 10000';
+# EN_COMPACTION_CO_MERGE_PREPARE_FAILED = 4016
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 1;
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1,C{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.z2.obs0.check_log_until_success -c "set tablet co convert retry exhausted.*200001";
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+ob1.z2.obs0.check_log_until_success -c "Start schedule co merge dag to switch row to column store.*200001";
+ob1.mysql alter system set_tp tp_name = EN_ALL_STATE_DETERMINISTIC_FALSE, error_code = 4016, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal2';
+ob1.z2.obs0.check_log_until_success -c "ERRSIM EN_ALL_STATE_DETERMINISTIC_FALSE make new round check";
+ob1.mysql alter system set_tp tp_no = 720, error_code = 4016, frequency = 0;
+ob1.mysql alter system set_tp tp_name = EN_ALL_STATE_DETERMINISTIC_FALSE, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+connection sys_conn;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+
+connection z2_obs0;
+set ob_route_policy=READONLY_ZONE_FIRST;
+select * from t1 order by k;
+select k, v1 from t1 order by k;
+select avg(k), avg(v1), avg(v2) from t1;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from t1 order by k;
+select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from t1;

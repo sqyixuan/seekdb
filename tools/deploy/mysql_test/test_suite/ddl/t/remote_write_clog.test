@@ -1,0 +1,49 @@
+# owner: zhuoran.zzr
+# owner group: storage
+# description:this case is use for check remote write
+--disable_warnings
+--result_format 4
+drop sequence if exists s1;
+drop table if exists t1;
+--enable_warnings
+create sequence s1 cache 1000000 noorder;
+create table t1(id int primary key, name varchar(20), age bigint, description varchar(65535)) tablet_size=104857600 compression='none';
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $database_id = query_get_value(select * from oceanbase.__all_virtual_database where database_name = 'test' and tenant_id = '$tenant_id', database_id, 1);
+alter tenant sys set primary_zone = "zone1";
+--sleep 3
+connection default;
+
+set ob_query_timeout = 1000000000;
+insert /*+ append enable_parallel_dml parallel(8) */ into t1 select s1.nextval, 'oceanbase', random(), randstr(3000, random()) from table(generator(10000));
+set ob_query_timeout = 10000000;
+
+connection obsys;
+alter system set debug_sync_timeout = '60s';
+--sleep 5
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'AFTER_DDL_WRITE_MACRO_BLOCK wait_for signal1 execute 10000';
+--sleep 5
+
+connection default;
+send create index idx1 on t1(age);
+--sleep 3
+
+connection obsys;
+alter tenant sys set primary_zone = "zone1";
+--sleep 3
+
+set ob_global_debug_sync = 'AFTER_DDL_WRITE_MACRO_BLOCK clear';
+set ob_global_debug_sync = 'now signal signal1';
+
+connection default;
+reap;
+
+--disable_query_log
+eval select count(*) from oceanbase.__all_virtual_table where data_table_id in (select table_id from oceanbase.__all_virtual_table where table_name like "t1" and tenant_id = $tenant_id and database_id = $database_id);
+--enable_query_log
+drop table t1;
+drop sequence s1;

@@ -1,0 +1,130 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test shrink unit_num from 3 to 1
+#    And let duplicate log stream's F replica shrink
+#    Check auto_recovery can type transform valid R-replica to F
+#
+#
+#######################################################################
+#                        create inital objects
+#######################################################################
+ob1=OBI(cluster=3,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+--echo =============================================
+--echo            create mysql tenant
+--echo =============================================
+# create new tenant mysql
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 3, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+# get servers' addr in z1
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+
+let $z1_dst_ip1 = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_dst_port1 = deploy_get_value(ob1.z1.obs1.port);
+let $z1_dst1 = $z1_dst_ip1:$z1_dst_port1;
+
+let $z1_dst_ip2 = deploy_get_value(ob1.z1.obs2.ip);
+let $z1_dst_port2 = deploy_get_value(ob1.z1.obs2.port);
+let $z1_dst2 = $z1_dst_ip2:$z1_dst_port2;
+
+--echo =============================================
+--echo          create duplicate log stream
+--echo =============================================
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1 and role = "LEADER" limit 1, host, 1);
+let $mysql_leader_obs = deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# create table and insert data
+connection conn_mysql;
+create table dup_t1(c1 int) duplicate_scope = "cluster";
+insert into dup_t1 values (1), (2), (3), (4), (5);
+
+--echo =============================================
+--echo       get duplicate log stream infos
+--echo =============================================
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $dup_ls_id = deploy_get_value(ob1.select select ls_id as dup_ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'dup_t1', dup_ls_id, 1);
+ob1.check_until_timeout select ls_id as dup_ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', $dup_ls_id, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $dup_ls_id, 3, 20;
+
+--echo =============================================
+--echo     caculate smallest and biggest svr_ip
+--echo =============================================
+let $smallest_svr_ip = deploy_get_value(ob1.select select svr_ip as smallest_svr_ip from oceanbase.DBA_OB_SERVERS order by svr_ip asc, svr_port asc limit 1, smallest_svr_ip, 1);
+let $smallest_svr_port = deploy_get_value(ob1.select select svr_port as smallest_svr_port from oceanbase.DBA_OB_SERVERS order by svr_ip asc, svr_port asc limit 1, smallest_svr_port, 1);
+let $smallest_dest = $smallest_svr_ip:$smallest_svr_port;
+let $unit_id_on_smallest_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_smallest_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$smallest_svr_ip' and svr_port = $smallest_svr_port, unit_id_on_smallest_svr, 1);
+let $ug_id_on_smallest_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_smallest_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_smallest_svr, ug_id_on_smallest_svr, 1);
+
+let $biggest_svr_ip = deploy_get_value(ob1.select select svr_ip as biggest_svr_ip from oceanbase.DBA_OB_SERVERS order by svr_ip desc, svr_port desc limit 1, biggest_svr_ip, 1);
+let $biggest_svr_port = deploy_get_value(ob1.select select svr_port as biggest_svr_port from oceanbase.DBA_OB_SERVERS order by svr_ip desc, svr_port desc limit 1, biggest_svr_port, 1);
+let $biggest_dest = $biggest_svr_ip:$biggest_svr_port;
+let $unit_id_on_biggest_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_biggest_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$biggest_svr_ip' and svr_port = $biggest_svr_port, unit_id_on_biggest_svr, 1);
+let $ug_id_on_biggest_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_biggest_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_biggest_svr, ug_id_on_biggest_svr, 1);
+
+let $middle_svr_ip = deploy_get_value(ob1.select select svr_ip as middle_svr_ip from oceanbase.DBA_OB_SERVERS where (svr_ip != '$smallest_svr_ip' || svr_port != '$smallest_svr_port') and (svr_ip != '$biggest_svr_ip' || svr_port != '$biggest_svr_port'), middle_svr_ip, 1);
+let $middle_svr_port = deploy_get_value(ob1.select select svr_port as middle_svr_port from oceanbase.DBA_OB_SERVERS where (svr_ip != '$smallest_svr_ip' || svr_port != '$smallest_svr_port') and (svr_ip != '$biggest_svr_ip' || svr_port != '$biggest_svr_port'), middle_svr_port, 1);
+let $middle_dest = $middle_svr_ip:$middle_svr_port;
+let $unit_id_on_middle_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_middle_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$middle_svr_ip' and svr_port = $middle_svr_port, unit_id_on_middle_svr, 1);
+let $ug_id_on_middle_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_middle_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_middle_svr, ug_id_on_middle_svr, 1);
+
+--echo =============================================
+--echo    make sure F-replica on smallest svr_ip
+--echo =============================================
+# we try to shrink unit_group with most biggest svr_ip and second biggest svr_ip, thus making sure F-replica on smallest svr_ip
+--disable_query_log
+eval alter resource tenant mysql UNIT_NUM = 1 delete unit_group ($ug_id_on_biggest_svr, $ug_id_on_middle_svr);
+--enable_query_log
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_rootservice_job where job_type = "ALTER_RESOURCE_TENANT_UNIT_NUM" and tenant_id = $tenant_id and sql_text like "%alter resource tenant mysql unit_num = 1 delete unit_group%" and job_status = "SUCCESS", 1, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.gv\$ob_units, 3, 300;
+eval alter resource tenant mysql UNIT_NUM = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_rootservice_job where job_type = "ALTER_RESOURCE_TENANT_UNIT_NUM" and tenant_id = $tenant_id and sql_text like "%alter resource tenant mysql unit_num = 3%" and job_status = "SUCCESS", 1, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $dup_ls_id and member_list like "%$smallest_dest%" and member_list not like "%$biggest_dest%" and member_list not like "%$middle_dest%" and learner_list like "%$middle_dest%" and learner_list like "%$biggest_dest%" and learner_list not like "%$smallest_dest%" and role = "LEADER", 1, 60;
+
+let $smallest_svr_ip = deploy_get_value(ob1.select select svr_ip as smallest_svr_ip from oceanbase.DBA_OB_SERVERS order by svr_ip asc, svr_port asc limit 1, smallest_svr_ip, 1);
+let $smallest_svr_port = deploy_get_value(ob1.select select svr_port as smallest_svr_port from oceanbase.DBA_OB_SERVERS order by svr_ip asc, svr_port asc limit 1, smallest_svr_port, 1);
+let $smallest_dest = $smallest_svr_ip:$smallest_svr_port;
+let $unit_id_on_smallest_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_smallest_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$smallest_svr_ip' and svr_port = $smallest_svr_port, unit_id_on_smallest_svr, 1);
+let $ug_id_on_smallest_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_smallest_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_smallest_svr, ug_id_on_smallest_svr, 1);
+
+let $biggest_svr_ip = deploy_get_value(ob1.select select svr_ip as biggest_svr_ip from oceanbase.DBA_OB_SERVERS order by svr_ip desc, svr_port desc limit 1, biggest_svr_ip, 1);
+let $biggest_svr_port = deploy_get_value(ob1.select select svr_port as biggest_svr_port from oceanbase.DBA_OB_SERVERS order by svr_ip desc, svr_port desc limit 1, biggest_svr_port, 1);
+let $biggest_dest = $biggest_svr_ip:$biggest_svr_port;
+let $unit_id_on_biggest_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_biggest_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$biggest_svr_ip' and svr_port = $biggest_svr_port, unit_id_on_biggest_svr, 1);
+let $ug_id_on_biggest_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_biggest_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_biggest_svr, ug_id_on_biggest_svr, 1);
+
+let $middle_svr_ip = deploy_get_value(ob1.select select svr_ip as middle_svr_ip from oceanbase.DBA_OB_SERVERS where (svr_ip != '$smallest_svr_ip' || svr_port != '$smallest_svr_port') and (svr_ip != '$biggest_svr_ip' || svr_port != '$biggest_svr_port'), middle_svr_ip, 1);
+let $middle_svr_port = deploy_get_value(ob1.select select svr_port as middle_svr_port from oceanbase.DBA_OB_SERVERS where (svr_ip != '$smallest_svr_ip' || svr_port != '$smallest_svr_port') and (svr_ip != '$biggest_svr_ip' || svr_port != '$biggest_svr_port'), middle_svr_port, 1);
+let $middle_dest = $middle_svr_ip:$middle_svr_port;
+let $unit_id_on_middle_svr = deploy_get_value(ob1.select select unit_id as unit_id_on_middle_svr from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $dup_ls_id and svr_ip = '$middle_svr_ip' and svr_port = $middle_svr_port, unit_id_on_middle_svr, 1);
+let $ug_id_on_middle_svr = deploy_get_value(ob1.select select unit_group_id as ug_id_on_middle_svr from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_on_middle_svr, ug_id_on_middle_svr, 1);
+
+--echo =============================================
+--echo  shrink unit_num with F and R-with_min_ug_id 
+--echo =============================================
+# we want to shrink R-replica with smaller svr_ip:svr_port
+--disable_query_log
+eval alter resource tenant mysql UNIT_NUM = 1 delete unit_group ($ug_id_on_smallest_svr, $ug_id_on_middle_svr);
+--enable_query_log
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $dup_ls_id, 1, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $dup_ls_id and role = "LEADER" and member_list like "%$biggest_dest%" and learner_list = '', 1, 200;

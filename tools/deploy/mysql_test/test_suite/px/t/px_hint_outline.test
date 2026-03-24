@@ -1,0 +1,379 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+#owner: dachuan.sdc
+#owner group: sql3
+# tags: optimizer,outline
+
+
+--disable_warnings
+drop database if exists muhangtest;
+create database muhangtest;
+use muhangtest;
+--enable_warnings
+
+--result_format 4
+set ob_enable_plan_cache = false;
+
+# outline test
+
+create table stu (
+  sid     int,
+  name    varchar(32),
+  cls     int,
+  primary key (cls, sid)
+) partition by hash(sid) partitions 6;
+
+create table teacher (
+  tid        int,
+  name       varchar(32),
+  subject    varchar(4),
+  primary key (tid)
+) partition by hash(tid) partitions 8;
+
+create table score (
+  sid     int,
+  subject varchar(4),
+  score   int,
+  primary key (sid, subject)
+) partition by hash(sid) partitions 6;
+
+insert into stu values
+(11, 'a1', 1),
+(12, 'b1', 1),
+(13, 'c1', 1);
+
+insert into teacher values
+(1, 'Miss Zhang', 'EN'),
+(2, 'Mr Wang', 'MA');
+
+insert into score values
+(11, 'EN', 60),
+(12, 'EN', 70),
+(13, 'EN', 80);
+--sleep 1
+
+## 原始计划
+explain select /*+ USE_PX parallel(2) pq_distri*/ * from score, teacher where teacher.subject = score.subject;
+## 加了hint的计划
+explain select /*+ USE_PX parallel(2) pq_distribute(teacher hash hash)*/ * from score, teacher where teacher.subject = score.subject;
+## 绑定outline
+create outline test_ot_1 on select/*+ USE_PX parallel(2) pq_distribute(teacher hash hash)*/ * from score, teacher where teacher.subject = score.subject;
+
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_1';
+
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_1'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+
+drop outline test_ot_1;
+
+## 加了hint的计划
+explain select /*+no_rewrite() ordered pq_distribute(stu none broadcast)*/ * from (select /*+USE_PX parallel(2) pq_distribute(teacher hash hash)*/ teacher.tid as sid, score.score as score from score, teacher where teacher.subject = score.subject) as new_table, stu where stu.sid = new_table.sid;
+## 绑定outline
+create outline test_ot_2 on select /*+no_rewrite() ordered pq_distribute(stu none broadcast)*/ * from (select /*+USE_PX parallel(2) pq_distribute(teacher hash hash)*/ teacher.tid as sid, score.score as score from score, teacher where teacher.subject = score.subject) as new_table, stu where stu.sid = new_table.sid;
+
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_2';
+
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_2'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+
+drop outline test_ot_2;
+
+## 各类计划
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5;
+--enable_warnings
+
+create table t1 (c1 int, c2 int, c3 int, c4 int, primary key (c1));
+create table t2 (c1 int, c2 int, c3 int, c4 int, primary key (c1));
+create table t3 (c1 int, c2 int, c3 int, c4 int, primary key (c1));
+create table t4 (c1 int, c2 int, c3 int, c4 int, primary key (c1, c2))  partition by hash(c2) partitions 4;
+create table t5 (c1 int, c2 int, c3 int, c4 int, primary key (c1, c2))  partition by hash(c2) partitions 4;
+
+let $i = 5;
+while ($i)
+{
+  let $v = 10;
+  while ($v)
+  {
+    eval insert into t$i values ($v, $v, $v, $v);
+    dec $v;
+  }
+  dec $i;
+}
+--sleep 1
+
+## allocate exchange above subplan scan
+explain basic select /*+ use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a left join t2 b on a.c1 = b.c1;
+create outline test_ot_3 on select /*+ use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a left join t2 b on a.c1 = b.c1;
+select visible_signature,sql_text,outline_target,outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_3';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_3'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_3;
+## 非inner join不能broadcast
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a left join t2 b on a.c1 = b.c1;
+create outline test_ot_4 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a left join t2 b on a.c1 = b.c1;
+select visible_signature,sql_text,outline_target,outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_4';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_4'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_4;
+explain basic select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_5 on select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_5';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_5'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_5;
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_6 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_6';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_6'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_6;
+explain basic select /*+ NO_REWRITE() PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_7 on select /*+ NO_REWRITE() PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_7';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_7'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_7;
+explain basic select /*+ NO_REWRITE() PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_8 on select /*+ NO_REWRITE() PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_8';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_8'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_8;
+explain basic select /*+ NO_REWRITE() PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_9 on select /*+ NO_REWRITE() PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_9';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_9'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_9;
+explain basic select /*+ NO_REWRITE() PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+create outline test_ot_10 on select /*+ NO_REWRITE() PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_hash(a, b) */ * from (select * from t1) a inner join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_10';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_10'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_10;
+
+## NL with left repartined
+# bug has been fixed muhang: 
+explain basic select /*+ use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_11 on select /*+ use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_11';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_11'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_11;
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_12 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_12';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_12'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_12;
+explain basic select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_13 on select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_13';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_13'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_13;
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_14 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_14';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_14'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_14;
+explain basic select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_15 on select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_15';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_15'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_15;
+explain basic select /*+ PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+create outline test_ot_16 on select /*+ PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_nl(a, b) leading(a b)*/ * from t1 a, t4 b where a.c2 = b.c1 and a.c3 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_16';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_16'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_16;
+
+## NL with BC2HOST
+explain basic select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from t1 a, t2 b where a.c2 = b.c1;
+create outline test_ot_17 on select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from t1 a, t2 b where a.c2 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_17';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_17'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_17;
+
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t1 a, t2 b where a.c2 = b.c1;
+create outline test_ot_18 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t1 a, t2 b where a.c2 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_18';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_18'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_18;
+
+explain basic select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+create outline test_ot_19 on select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_19';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_19'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_19;
+
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+create outline test_ot_20 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_20';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_20'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_20;
+
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+create outline test_ot_21 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from t4 a, t5 b where a.c3 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_21';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_21'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_21;
+
+# partition wise join order by (allocate sort above GI)
+explain basic select /*+ use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+create outline test_ot_22 on select /*+ use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_22';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_22'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_22;
+
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+create outline test_ot_23 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_23';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_23'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_23;
+
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+create outline test_ot_24 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_24';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_24'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_24;
+
+explain basic select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+create outline test_ot_25 on select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_25';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_25'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_25;
+
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+create outline test_ot_26 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) user_merge(a b) */ * from t4 a, t5 b where a.c1 = b.c1 and a.c2 = b.c2 order by a.c1, a.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_26';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_26'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_26;
+
+# hash hash distribute
+explain basic select /*+ use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+create outline test_ot_27 on select /*+ use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_27';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_27'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_27;
+
+explain basic select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+create outline test_ot_28 on select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_28';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_28'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_28;
+
+explain basic select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+create outline test_ot_29 on select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a b) */ * from t1 a, t2 b where a.c2 = b.c2;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_29';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_29'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_29;
+
+explain basic select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a b c) */ * from t1 a, t2 b, t3 c where a.c2 = b.c2 and b.c3 = c.c3;
+create outline test_ot_30 on select /*+ PQ_DISTRIBUTE(b NONE BROADCAST) use_px parallel(4) use_hash(a b c) */ * from t1 a, t2 b, t3 c where a.c2 = b.c2 and b.c3 = c.c3;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_30';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_30'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_30;
+
+explain basic select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a b c) */ * from t1 a, t2 b, t3 c where a.c2 = b.c2 and b.c3 = c.c3;
+create outline test_ot_31 on select /*+ PQ_DISTRIBUTE(b NONE PARTITION) use_px parallel(4) use_hash(a b c) */ * from t1 a, t2 b, t3 c where a.c2 = b.c2 and b.c3 = c.c3;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_31';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_31'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_31;
+
+# local single PX worker execution
+explain basic select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+create outline test_ot_32 on select /*+ use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_32';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_32'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_32;
+
+explain basic select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+create outline test_ot_33 on select /*+ PQ_DISTRIBUTE(b BROADCAST NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_33';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_33'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_33;
+
+explain basic select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+create outline test_ot_34 on select /*+ PQ_DISTRIBUTE(b PARTITION NONE) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_34';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_34'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_34;
+
+explain basic select /*+ PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+create outline test_ot_35 on select /*+ PQ_DISTRIBUTE(b HASH HASH) use_px parallel(4) use_nl(a, b) leading(a b) */ * from (select * from t1 where t1.c3 < (select max(c2) from t2)) a, t3 b where a.c4 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_35';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_35'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_35;
+
+# broadcast subplan
+explain basic select /*+leading(b a) no_rewrite() use_px parallel(4) use_hash(a, b) pq_distribute(a none, broadcast)*/ * from (select * from t1) a join t2 b on a.c1 = b.c1;
+create outline test_ot_36 on select /*+leading(b a) no_rewrite() use_px parallel(4) use_hash(a, b) pq_distribute(a none, broadcast)*/ * from (select * from t1) a join t2 b on a.c1 = b.c1;
+select visible_signature, database_name, outline_name,  sql_text, outline_target, outline_sql from oceanbase.DBA_OB_OUTLINES where outline_name = 'test_ot_36';
+let $outline_sql = query_get_value("SELECT * from oceanbase.__tenant_virtual_outline where outline_name = 'test_ot_36'", outline_sql, 1);
+--echo $outline_sql
+eval explain $outline_sql;
+drop outline test_ot_36;
+
+drop table if exists t1,t2,t3,t4,t5;
+

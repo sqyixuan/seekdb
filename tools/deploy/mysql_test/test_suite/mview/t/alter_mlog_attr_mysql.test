@@ -1,0 +1,73 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: alter materialized view's attributes
+#
+
+set query_rewrite_enabled='force';
+set query_rewrite_integrity='enforced';
+set @@recyclebin = OFF;
+--disable_warnings
+drop database if exists alter_mlog_db;
+create database alter_mlog_db;
+--enable_warnings
+
+# 0. prepare
+use alter_mlog_db;
+create table alter_mlog_t1 (c1 int, c2 int, primary key(c1));
+insert into alter_mlog_t1 values(1, 1), (2, 2), (3, 3);
+create materialized view log on alter_mlog_t1 with primary key (c2) including new values purge start with sysdate() next sysdate() + interval 30 second;
+create table alter_mlog_t2 (c1 int, c2 int, primary key(c1));
+create materialized view log on alter_mlog_t2 with primary key (c2) including new values;
+let $t1_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'alter_mlog_t1', table_id, 1);
+let $mlog_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = $t1_id, table_id, 1);
+let $t2_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'alter_mlog_t2', table_id, 1);
+let $mlog2_id = query_get_value(select table_id from oceanbase.__all_table where data_table_id = $t2_id, table_id, 1);
+--disable_query_log
+eval select purge_next, purge_mode from oceanbase.__all_mlog where mlog_id = $mlog_id;
+eval select dop from oceanbase.__all_table where table_id = $mlog_id;
+let $purge_job = query_get_value(select purge_job from oceanbase.__all_mlog where mlog_id = $mlog_id, purge_job, 1);
+eval select repeat_interval from oceanbase.__all_tenant_scheduler_job where job_name = '$purge_job';
+eval select purge_next, purge_mode from oceanbase.__all_mlog where mlog_id = $mlog2_id;
+--enable_query_log
+
+# 1. alter table dop
+alter materialized view log on alter_mlog_t1 parallel 4;
+--disable_query_log
+eval select dop from oceanbase.__all_table where table_id = $mlog_id;
+--enable_query_log
+alter materialized view log on alter_mlog_t1 noparallel, parallel 1, parallel 2, parallel 4;
+--disable_query_log
+eval select dop from oceanbase.__all_table where table_id = $mlog_id;
+--enable_query_log
+
+# 2. alter purge job
+alter materialized view log on alter_mlog_t1 purge start with sysdate() next sysdate() + interval 40 second;
+alter materialized view log on alter_mlog_t2 purge start with sysdate() next sysdate() + interval 40 second;
+--disable_query_log
+eval select purge_next, purge_mode from oceanbase.__all_mlog where mlog_id = $mlog_id;
+let $purge_job = query_get_value(select purge_job from oceanbase.__all_mlog where mlog_id = $mlog_id, purge_job, 1);
+eval select repeat_interval from oceanbase.__all_tenant_scheduler_job where job_name = '$purge_job';
+eval select purge_next, purge_mode from oceanbase.__all_mlog where mlog_id = $mlog2_id;
+--enable_query_log
+
+# 3. alter lob threshold
+--disable_query_log
+eval select lob_inrow_threshold from oceanbase.__all_table where table_id = $mlog_id;
+--enable_query_log
+alter materialized view log on alter_mlog_t1 LOB_INROW_THRESHOLD = 9999;
+--disable_query_log
+eval select lob_inrow_threshold from oceanbase.__all_table where table_id = $mlog_id;
+--enable_query_log
+--error 1210
+alter materialized view log on alter_mlog_t1 LOB_INROW_THRESHOLD = 4096;
+--error 1210
+alter materialized view log on alter_mlog_t1 LOB_INROW_THRESHOLD = 786433;
+
+# 4. alter mlog of nested mv
+create materialized view alter_mlog_mv1 as select * from alter_mlog_t1;
+create materialized view log on alter_mlog_mv1 with primary key (c2) including new values;
+alter materialized view log on alter_mlog_mv1 parallel 4;
+select dop from oceanbase.__all_table where table_name = 'mlog$_alter_mlog_mv1';
+
+drop database alter_mlog_db;

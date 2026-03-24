@@ -1,0 +1,63 @@
+# owner: bohou.ws
+# owner group: liboblog
+# description:
+# test oblog support for encrypt zone
+
+ob1=OBI(cluster=1:1:1,proxy_num=1,init_unit_cpu=0);
+ob1.z3.obs0.set status=disable;
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port= deploy_get_value(ob1.proxy0.port);
+connect(conn_sys, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection conn_sys;
+
+alter system set tde_method = 'internal';
+sleep 10;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 20;
+
+# ADD ZONE
+alter system add zone "z3" zone_type = "encryption";
+alter system start zone "z3";
+
+# ADD SERVER
+ob1.z3.obs0.set status=enable;
+ob1.z3.obs0.start;
+sleep 60;
+ob1.z3.obs0.add;
+sleep 30;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and start_service_time<=0,0,120;
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+let $e_addr = deploy_get_value(ob1.z3.obs0.get_addr);
+
+drop database if exists oblog_db;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* sort_trans_participants=1 log_level=debug skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create database oblog_db;
+ob1.oblog.next;
+use oblog_db;
+
+create table t_1(pk int primary key) partition by hash(pk) partitions 10;
+ob1.oblog.next;
+create table t_t(pk int primary key, a int);
+set autocommit = 'OFF';
+ob1.oblog.next;
+let $idx = 0;
+while ($idx < 10)
+{
+  begin;
+  eval insert into t_1 values ($idx);
+  eval replace into t_t values (1, $idx);
+  commit;
+  ob1.oblog.next;
+  inc $idx;
+}
+
+ob1.oblog.stop;
+# expect 12 times log for svr not active: 10 for t_1 + 1 for t_t and 1 for ddl_table of oblog_tt tenant
+ob1.oblog.check_log "ignore server from clog history which is not active in all server table or server in encryption zone(principal_svr={server_addr:\"$e_addr";
+ob1.oblog.stat_check_log_cnt "ignore server from clog history which is not active in all server table or server in encryption zone(principal_svr={server_addr:\"$e_addr";

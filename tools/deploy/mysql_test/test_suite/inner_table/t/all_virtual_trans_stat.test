@@ -1,0 +1,177 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner : shanyan.g
+#owner group : transaction
+#description : 测试虚拟表__all_virtual_trans_stat
+
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+
+--disable_abort_on_error
+
+## case 0: 检查表结构
+connection sys;
+use oceanbase;
+desc __all_virtual_trans_stat;
+
+## 数据插入
+## 设置autocommit = 0，否则insert之后，查询__all_virtual_trans_stat之前，事务以及结束，可能查不到数据；
+
+connection conn1;
+set autocommit = 0;
+
+--disable_warnings
+drop table if exists stu;
+--enable_warnings
+
+create table if not exists stu(stu_no int primary key auto_increment, gendar varchar(1));
+insert into stu values(NULL, 'm');
+insert into stu values(NULL, 'f');
+
+## 数据插入之后，立即查询，由于autocommit＝0，语句级超时为9s，预期是能够查到相关数据的；
+connection sys;
+select count(1) > 0 from __all_virtual_trans_stat;
+
+## case 1: 普通查询
+select count(1) > 0 from (select * from __all_virtual_trans_stat limit 10) as t;
+
+## case 2: 子查询
+select count(1) > 0 from __all_virtual_trans_stat where svr_ip in (select svr_ip from __all_server);
+
+## case 3: check GV$OB_TRANSACTION_PARTICIPANTS
+connection sys;
+
+desc oceanbase.GV$OB_TRANSACTION_PARTICIPANTS;
+
+desc oceanbase.V$OB_TRANSACTION_PARTICIPANTS;
+
+connection conn1;
+
+select count(1) > 0 from oceanbase.GV$OB_TRANSACTION_PARTICIPANTS;
+
+connection sys;
+
+select count(1) > 0 from oceanbase.GV$OB_TRANSACTION_PARTICIPANTS;
+
+connection conn1;
+commit;
+
+--echo case 1: verify columns of the virtual table
+connection conn1;
+create table vt_tx_stat_t1(id int, v varchar(128));
+begin;
+insert into vt_tx_stat_t1 values(NULL, 'hello,world');
+let trans_id=`select ob_transaction_id()`;
+let $pending_log_size = query_get_value(select  pending_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id !=1 and trans_id = $trans_id, pending_log_size, 1);
+if ($pending_log_size <= 0) {
+  --echo "invalid pending log size: $pending_log_size"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+--echo insert rows to trigger flush redo
+let $i = 0;
+--disable_query_log
+while ($i < 128) {
+ insert into vt_tx_stat_t1 values(NULL, 'hello,world,1234567,world,hello,china,america,canada,france,hello,world,1234567,world,hello,china,america,canada,france,');
+ --inc $i
+}
+--enable_query_log
+
+let $flushed_log_size = query_get_value(select  flushed_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, flushed_log_size, 1);
+if ($flushed_log_size <= 0) {
+  --echo "invalid flushed log size: $flushed_log_size"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+commit;
+drop table vt_tx_stat_t1;
+
+--echo case2: pdml, verify columns of virtual table
+connection conn1;
+create table vt_tx_stat_test (id int, v int);
+insert into vt_tx_stat_test values(1,1);
+let $i = 0;
+--disable_query_log
+while ($i < 10) {
+  insert/*+enable_parallel_dml parallel(16)*/ into vt_tx_stat_test select id + (select count(1) from vt_tx_stat_test), v * 2 from vt_tx_stat_test;
+  --inc $i
+}
+--enable_query_log
+select count(1) from vt_tx_stat_test;
+
+commit;
+connection sys;
+alter system set _parallel_redo_logging_trigger='1B';
+sleep 5;
+connection conn1;
+begin;
+insert into vt_tx_stat_test values(1000001, 200001);
+
+let $trans_id=`select ob_transaction_id()`;
+
+let $pending_log_size = query_get_value(select  pending_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, pending_log_size, 1);
+if ($pending_log_size <= 0) {
+  --echo "invalid pending log size: $pending_log_size"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+let $flushed_log_size = query_get_value(select  flushed_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, flushed_log_size, 1);
+if ($flushed_log_size < 0) {
+  --echo "invalid flushed log size: $flushed_log_size"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+insert/*+enable_parallel_dml parallel(16)*/ into vt_tx_stat_test select id + 100000, v + 200000 from vt_tx_stat_test;
+sleep 2;
+let $serial_final_scn = query_get_value(select serial_log_final_scn from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, serial_log_final_scn, 1);
+if ($serial_final_scn == "-1") {
+  --echo "not switch to parallel logging: $serial_final_scn"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+  explain insert/*+enable_parallel_dml parallel(16)*/ into vt_tx_stat_test select id + 100000, v + 200000 from vt_tx_stat_test;
+}
+
+let $pending_log_size_2 = query_get_value(select  pending_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, pending_log_size, 1);
+if ($pending_log_size_2 <= 0) {
+  --echo "invalid pending log size: $pending_log_size_2"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+let $flushed_log_size_2 = query_get_value(select  flushed_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, flushed_log_size, 1);
+if ($flushed_log_size_2 <= 0) {
+  --echo "invalid pending log size: $flushed_log_size_2"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+if ($flushed_log_size_2 == $flushed_log_size) {
+   --echo "flushed log size not advanced: $flushed_log_size_2"
+   eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+--echo insert one row, pending_log_size should be changed
+insert into vt_tx_stat_test values(1111111,222222);
+let $pending_log_size_3 = query_get_value(select  pending_log_size from oceanbase.__all_virtual_trans_stat where role = 0 and ls_id != 1 and trans_id = $trans_id, pending_log_size, 1);
+
+if ($pending_log_size_3 <= 0) {
+  --echo "invalid pending log size: $pending_log_size_3"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+if ($pending_log_size_3 == $pending_log_size_2) {
+  --echo "pending log size not advanced: $pending_log_size_3"
+  eval select * from oceanbase.__all_virtual_trans_stat where role = 0 and trans_id = $trans_id;
+}
+
+select count(1) from vt_tx_stat_test;
+
+rollback;
+
+## clean data
+connection conn1;
+drop table if exists vt_tx_stat_test;
+drop table if exists stu;
+
+connection sys;
+
+##还原配置
+--enable_abort_on_error
+alter system set _parallel_redo_logging_trigger='16MB';

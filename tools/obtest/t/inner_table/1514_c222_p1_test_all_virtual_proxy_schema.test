@@ -1,0 +1,110 @@
+##
+# owner: wangzhennan.wzn
+# owner group: RS
+# description: test __all_virtual_proxy_schema for 4.0
+##
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set syslog_level= 'INFO';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# create tenant
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 128;
+let $session = 64;
+let $invalid_tablet_id = 9999;
+
+--disable_query_log
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), locality='F@z1,F@z2,F@z3', primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+
+# Case 1. test tenant server location
+# Description: specifing <tenant_name, 'oceanbase', '__all_dummy'> to query means getting tenant location
+## 1.1 sys tenant
+connection conn_sys;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = '__all_dummy', 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = '__all_dummy' and tablet_id = $invalid_tablet_id, 3, 10;
+ob1.check_until_timeout select tablet_id from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = '__all_dummy' and tablet_id = $invalid_tablet_id limit 1, $invalid_tablet_id, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = '__all_dummy', 0, 10;
+## 1.2 user tenant 'mysql'
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $tenant_server_count = deploy_get_value(ob1.select SELECT count(S.svr_ip) c FROM oceanbase.__all_resource_pool R, oceanbase.__all_unit U, oceanbase.__all_server S WHERE R.tenant_id = $tenant_id AND R.resource_pool_id = U.resource_pool_id AND ((U.svr_ip = S.svr_ip AND U.svr_port = S.svr_port) OR (U.migrate_from_svr_port > 0 AND U.migrate_from_svr_ip = S.svr_ip AND U.migrate_from_svr_port = S.svr_port)) AND S.inner_port > 0 ORDER BY S.zone ASC, c, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'oceanbase' and table_name = '__all_dummy', $tenant_server_count, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'oceanbase' and table_name = '__all_dummy' and tablet_id = 9999, 3, 10;
+ob1.check_until_timeout select tablet_id from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'oceanbase' and table_name = '__all_dummy' and tablet_id = $invalid_tablet_id limit 1, $invalid_tablet_id, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = '__all_dummy', 0, 10;
+## 1.3 query from user tenant
+connection conn_mysql;
+select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'oceanbase' and table_name = '__all_dummy';
+select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = '__all_dummy';
+
+# Case 2. verify that the location in __all_virtual_proxy_schema is correct
+# Description: svr_ip from __all_virtual_ls_meta_table should be same with svr_ip from __all_virtual_proxy_schema
+connection conn_mysql;
+create table t1 (c1 int, c2 int) partition by hash(c1) partitions 2;
+insert into t1 values (1,1),(2,2);
+## 2.1 get actual location of each tablet
+connection conn_sys;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't1', table_id, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_tablet_to_ls where table_id = $table_id, 2, 10;
+### 2.1.1 get location of tablet_id_1
+let $tablet_id_1 = deploy_get_value(ob1.select select tablet_id from __all_virtual_tablet_to_ls where table_id = $table_id order by tablet_id asc, tablet_id, 1);
+let $ls_id_1 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where tablet_id = $tablet_id_1, ls_id, 1);
+let $svr_ip_1 = deploy_get_value(ob1.select select svr_ip from __all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id_1, svr_ip, 1);
+let $sql_port_1 = deploy_get_value(ob1.select select sql_port from __all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id_1, sql_port, 1);
+### 2.1.2 get location of tablet_id_2
+let $tablet_id_2 = deploy_get_value(ob1.select select tablet_id from __all_virtual_tablet_to_ls where table_id = $table_id order by tablet_id asc, tablet_id, 2);
+let $ls_id_2 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where tablet_id = $tablet_id_2, ls_id, 1);
+let $svr_ip_2 = deploy_get_value(ob1.select select svr_ip from __all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id_2, svr_ip, 1);
+let $sql_port_2 = deploy_get_value(ob1.select select sql_port from __all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id_2, sql_port, 1);
+## 2.2 check location got from __all_virtual_proxy_schema
+ob1.check_until_timeout select count(*) from __all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = 't1' and tablet_id = $tablet_id_1 and svr_ip = '$svr_ip_1' and sql_port = '$sql_port_1', 1, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = 't1' and tablet_id = $tablet_id_2 and svr_ip = '$svr_ip_2' and sql_port = '$sql_port_2', 1, 10;
+## 2.3 check input tablet_id = 0 or invalid (should be same with tablet_id_1) 
+ob1.check_until_timeout select count(*) from __all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = 't1' and tablet_id = 0 and svr_ip = '$svr_ip_1' and sql_port = '$sql_port_1', 1, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = 't1' and tablet_id = 9999 and svr_ip = '$svr_ip_1' and sql_port = '$sql_port_1', 1, 10;
+## 2.4 batch query on tablet location
+ob1.check_until_timeout select count(*) from __all_virtual_proxy_schema where (tenant_name, database_name, table_name, tablet_id) in (('mysql', 'test', 't1', $tablet_id_1), ('mysql', 'test', 't1', $tablet_id_2)), 6, 10;
+## 2.5 query from user tenant
+connection conn_mysql;
+select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'mysql' and database_name = 'test' and table_name = 't1';
+select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = '__all_root_table' and tablet_id = 0;
+
+# Case 3. test view
+# Description: synonym not work in MYSQL mode. More tests about synonym and view are in /deploy/mysql_test/test_suite/proxy_related_vtable/tables.test
+connection conn_mysql;
+create table t2 (c1 int, c2 varchar(10));
+insert into t2 values (34, '34');
+create view v2 as select * from t2;
+connection conn_sys;
+SELECT tenant_name, database_name, table_name, table_type, part_num, complex_table_type, level1_decoded_db_name, level1_decoded_table_name,  level2_decoded_db_name,  level2_decoded_table_name FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name = 'mysql' AND database_name = 'test' AND table_name = 't2' AND tablet_id = 0 AND sql_port > 0 ORDER BY role ASC LIMIT 1;
+SELECT tenant_name, database_name, table_name, table_type, part_num, complex_table_type, level1_decoded_db_name, level1_decoded_table_name,  level2_decoded_db_name,  level2_decoded_table_name FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name = 'mysql' AND database_name = 'test' AND table_name = 'v2' AND tablet_id = 0 AND sql_port > 0 ORDER BY role ASC LIMIT 1;
+
+# Case 4. error test
+# Description: tenant_name, database_name, table_name must be all specified; tenant_names should be same in batch query
+--error ER_WRONG_ARGUMENTS
+SELECT * FROM oceanbase.__all_virtual_proxy_schema LIMIT 1;
+--error ER_WRONG_ARGUMENTS
+SELECT * FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name < 'mysql' AND database_name = 'test' AND table_name = 't2';
+--error ER_WRONG_ARGUMENTS
+SELECT * FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name > 123 AND database_name = 'test' AND table_name = 't2';
+--error ER_WRONG_ARGUMENTS
+SELECT * FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name < 123 AND database_name = 'test' AND table_name = 't2';
+--error ER_WRONG_ARGUMENTS
+SELECT * FROM oceanbase.__all_virtual_proxy_schema WHERE tenant_name = 'mysql' AND database_name = 'test';
+--error ER_NOT_SUPPORTED_YET
+SELECT * FROM oceanbase.__all_virtual_proxy_schema WHERE (tenant_name, database_name, table_name) in (('mysql', 'test', 't2'), ('sys', 'test', 't2'));

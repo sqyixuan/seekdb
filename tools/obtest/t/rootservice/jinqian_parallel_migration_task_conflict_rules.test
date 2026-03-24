@@ -1,0 +1,153 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试并行迁移时各种任务类型之间的互斥行为是否合法
+#    主要通过日志流副本运维命令进行生成各种类型的任务进行测试
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select SELECT tenant_id - 1 as meta_tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $meta_tenant_name = deploy_get_value(ob1.select SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id, tenant_name, 1);
+
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1001 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1002 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from GV\$OB_LOG_STAT where tenant_id = $tenant_id and ls_id = 1001 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from GV\$OB_LOG_STAT where tenant_id = $tenant_id and ls_id = 1002 and role = 'leader', 1, 10;
+
+# get servers' addr in z1, z2, z3
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1, ls_id_tmp, 1);
+
+let $delete_unit_group_id = deploy_get_value(ob1.select SELECT unit_group_id FROM __all_unit WHERE resource_pool_id = 1001 AND svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port, unit_group_id, 1);
+
+--disable_query_log
+alter system set replica_parallel_migration_mode = 'on' tenant = 'mysql_tenant';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+sleep 5;
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||               [MILESTONE] case 1: 常驻一个补副本任务                  ||
+--echo ========================================================================
+
+# 删除内部表和内存步骤卡住，使得第一个任务常驻内存和内部表
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal_for_log_sync';
+
+# 添加补副本任务，该任务执行卡住，后续该日志流的任何任务都无法执行
+eval alter system add replica ls=$tenant_ls_id server = '$z1_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z1_obs1%', 1, 40;
+
+# 执行该日志流的其他任务，报错任务冲突
+# 补副本任务报错
+--error 4017
+eval alter system add replica ls=$tenant_ls_id server = '$z2_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'mysql_tenant';
+
+# 删副本任务报错
+--error 4017
+eval alter system remove replica ls=$tenant_ls_id server = '$z2_obs0' paxos_replica_num = 3 tenant = 'mysql_tenant';
+
+# 副本类型转换任务报错
+--error 4017
+eval alter system modify replica ls=$tenant_ls_id server = '$z2_obs0' replica_type = 'R' paxos_replica_num = 3 tenant = 'mysql_tenant';
+
+# 迁移副本任务报错
+--error 4017
+eval alter system migrate replica ls=$tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'mysql_tenant';
+
+# 该部分测试结束，清除该任务
+ob1.mysql set ob_global_debug_sync = 'now signal signal_for_log_sync';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+# 删除之前添加的副本
+eval alter system remove replica ls=$tenant_ls_id server = '$z1_obs1' paxos_replica_num = 3 tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z1_obs1%', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id, 3, 30;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+sleep 10;
+--echo ========================================================================
+--echo ||              [MILESTONE] case 2: 常驻一个副本迁移任务                  ||
+--echo ========================================================================
+
+# 删除内部表和内存步骤卡住，使得第一个任务常驻内存和内部表
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal_for_log_sync2';
+
+# 添加zone2的副本迁移任务，该任务执行卡住，后续该日志流的任何非迁移任务都无法执行，其他zone的迁移任务可以执行
+eval alter system migrate replica ls=$tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z2_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z2_obs0%', 1, 40;
+sleep 3;
+
+# 执行该日志流的其他非迁移类型任务，报错任务冲突
+# 补副本任务报错
+--error 4017
+eval alter system add replica ls=$tenant_ls_id server = '$z1_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'mysql_tenant';
+
+# 删副本任务报错
+--error 4017
+eval alter system remove replica ls=$tenant_ls_id server = '$z1_obs0' paxos_replica_num = 2 tenant = 'mysql_tenant';
+
+# 副本类型转换任务报错
+--error 4017
+eval alter system modify replica ls=$tenant_ls_id server = '$z1_obs0' replica_type = 'R' paxos_replica_num = 2 tenant = 'mysql_tenant';
+
+# 添加zone1的副本迁移任务，可以添加成功
+eval alter system migrate replica ls=$tenant_ls_id source = '$z1_obs0' destination = '$z1_obs1' tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z1_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z1_obs0%', 1, 40;
+sleep 5;
+
+# 添加zone3的副本迁移任务，可以添加成功
+eval alter system migrate replica ls=$tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z3_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs0%', 1, 40;
+sleep 5;
+
+# 查看正在执行的容灾任务，应该有三个
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id and task_status = 'INPROGRESS', 3, 20;
+
+# 放开任务的清理
+ob1.mysql set ob_global_debug_sync = 'now signal signal_for_log_sync2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 30;

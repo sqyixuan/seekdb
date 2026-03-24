@@ -1,0 +1,129 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# 1. PG作为参与者是未来表
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant.inc;
+source include/liboblog/enable_oracle_archive.inc;
+
+alter session set current_schema = oblog_db;
+sleep 1;
+
+################### 1. create PG
+# 1.1 创建一个基本表
+create tablegroup tg1 binding true;
+create table t_base (pk int primary key) tablegroup = tg1;
+
+# 1.2 保存启动时刻时间戳
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+# 1.3 DDL alter table会主动block
+create table tant1(c1 int primary key, c2 int, c3 int, c4 int, index(c2), index(c2, c3), unique(c4)) tablegroup = tg1;
+alter table tant1 add c5 varchar(20);
+alter table tant1 add c6 varchar(20);
+alter table tant1 add c7 varchar(20);
+
+# 1.4 创建非分区表
+create tablegroup tg2 binding true;
+create table t_single (pk int primary key) tablegroup = tg2;
+
+# 1.5 开启一个事务
+begin;
+insert into t_base values (1),(2),(3);
+insert into t_single values (1),(2),(3);
+commit;
+
+# 1.6 回拉数据，t_single是未来表
+# 只拉取"t"开头的表
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.t* sort_trans_participants=1 test_mode_on=1 test_mode_block_alter_table_ddl_sec=1 log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+
+# 验证liboblog是否有检测到"未来表"
+ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+# 验证liboblog是否有检测到"分区存在"
+ob1.oblog.check_log "STATUS=PART_EXIST";
+drop table t_base;
+drop table t_single;
+
+ob1.oblog.stop;
+
+######## 场景2: 表动态删除
+# 动态删除一张非分区表
+# 2.1 保存启动时刻时间戳
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp2 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+# 2.2 创建非分区表
+create table t_single_1 (pk int primary key) tablegroup = tg1;
+create table t_single_2 (pk int primary key) tablegroup = tg2;
+# 2.3 构建分布式事务
+begin;
+insert into t_single_1 values (1),(2),(3);
+insert into t_single_2 values (1),(2),(3);
+commit;
+# 2.4 立即删除表，让__all_ddl_operation尽快看到这个删除操作
+# 关闭回收站
+set recyclebin=off;
+drop table t_single_1;
+# 2.5 回拉数据
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.t* sort_trans_participants=1 log_level=DEBUG test_mode_on=1 test_mode_block_verify_participants_time_sec=1 test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp2;
+ob1.oblog.restart;
+# 3.1之前的方案, 使用最新schema解析老数据, 因此Formatrer 获取table schema失败，t_single_1表数据被忽略
+# 3.1对于已经同步过来的数据，因为采用精准schema，因此不会看到t_single_1的table_schema为NULL
+ob1.oblog.next_dml;
+# 2.6 验证日志
+ob1.oblog.stop;
+drop table t_single_2;
+
+######## 场景3: tablegroup动态删除
+# 动态删除一张非分区表，liboblog识别是历史上删除的PG
+# 3.1 保存启动时刻时间戳
+# sys-mysql租户获取当前时间
+create tablegroup tg3 binding true;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp3 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+# 3.2 创建非分区表
+create table t_single_1 (pk int primary key) tablegroup = tg3;
+create table t_single_2 (pk int primary key) tablegroup = tg2;
+# 3.3 构建分布式事务
+begin;
+insert into t_single_1 values (1),(2),(3);
+insert into t_single_2 values (1),(2),(3);
+commit;
+# 3.4 立即删除PG，让__all_ddl_operation尽快看到这个删除操作
+# 关闭回收站
+set recyclebin=off;
+drop table t_single_1;
+drop tablegroup tg3;
+# 3.5 回拉数据
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+# 设置测试模式，并且阻塞参与者列表确认过程，保证在确认参与者时，分区已经删除成功。
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.t* sort_trans_participants=1 log_level=DEBUG test_mode_on=1 test_mode_block_verify_participants_time_sec=1 test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp3;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+# 2.6 验证日志
+# 验证liboblog是否有检测到"分区删除"
+ob1.oblog.check_log "STATUS=PART_DELETED";
+ob1.oblog.stop;

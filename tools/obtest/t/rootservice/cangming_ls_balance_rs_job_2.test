@@ -1,0 +1,141 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    This case tests three rs jobs
+#    namely ALTER_TENANT_LOCALITY, ALTER_RESOURCE_TENANT_UNIT_NUM, ALTER_TENANT_PRIMARY_ZONE.
+######################### case 1: enable_rebalance is opened #######################################
+########## FOR NOW, PRIMARY ZONE IS RANDOM， UNIT_NUM IS 1， LOCALITY IS "F@z1, F@z2, F@z3" #########
+######################### case 1.3: ALTER_RESOURCE_TENANT_UNIT_NUM##################################
+#    case 1.31 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (FAILED, due to case 1.32)
+#    case 1.32 ALTER_RESOURCE_TENANT_UNIT_NUM 1 (rollback) (SUCCESS)
+#    case 1.33 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (FAILED, due to case 1.34)
+#    case 1.34 ALTER_RESOURCE_TENANT_UNIT_NUM 2->3 (SUCCESS)
+#    case 1.35 ALTER_RESOURCE_TENANT_UNIT_NUM 3->2 (delete row)
+#    case 1.36 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (SUCCESS)
+#    case 1.37 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (SUCCESS) 2->1 (FAILED, wait at commit, then next rs job is created) 1->2 (SUCCESS)
+#    case 1.38 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 ROLLBACK (delete row) 1->2 (SUCCESS)
+#    case 1.39 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (SUCCESS) 1->2 (delete row at commit) 2->3
+
+ob1=OBI(cluster=3:3:3,proxy_num=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1', 'z2', 'z3'), RESOURCE_POOL_LIST=('pool1');
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ls_gc_delay_time='1s' tenant=all;
+sleep 3;
+#shutdown server balancer
+ob1.mysql alter system enable_rebalance = false tenant = 'sys';
+#    case 1.31 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (FAILED, due to case 1.32)
+#    case 1.32 ALTER_RESOURCE_TENANT_UNIT_NUM 1 (rollback) (OB_SUCCESS)
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_UNIT_NUM wait_for continue_signal';
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+# wait, let the program run to DEBUG_SYNC
+sleep 60;
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+eval select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'FAILED';
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+# wait committing, to make sure the new rs job is still in progress after commit the old job
+sleep 20;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 3, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 3, 240;
+#    case 1.33 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (FAILED, due to case 1.34)
+#    case 1.34 ALTER_RESOURCE_TENANT_UNIT_NUM 2->3 (OB_SUCCESS)
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 3;
+eval select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'FAILED';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+#    case 1.35 ALTER_RESOURCE_TENANT_UNIT_NUM 3->2 (delete row, wait until no deleting units exists)
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql delete from oceanbase.__all_rootservice_job WHERE job_id = $job_id;
+
+#    case 1.36 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (OB_SUCCESS)
+--disable_query_log
+--error 4179
+alter resource tenant test_tenant UNIT_NUM = 1;
+--enable_query_log
+
+ob1.check_until_timeout select count(*) from __all_unit where status = "DELETING", 0, 180;
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 3, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 3, 240;
+#    case 1.37 ALTER_RESOURCE_TENANT_UNIT_NUM 1->2 (SUCCESS) 2->1 (FAILED, wait at commit, then next rs job is created) 1->2 (SUCCESS)
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_UNIT_NUM wait_for continue_signal';
+
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+# wait, let the program run to DEBUG_SYNC
+sleep 60;
+
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+eval select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'FAILED';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 6, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 6, 240;
+#    case 1.38 ALTER_RESOURCE_TENANT_UNIT_NUM ROLLBACK 2->1 (delete row) 1->2 (SUCCESS)
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.mysql delete from oceanbase.__all_rootservice_job WHERE job_id = $job_id;
+
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+#    case 1.39 ALTER_RESOURCE_TENANT_UNIT_NUM 2->1 (SUCCESS) 1->2 (delete row at commit) 2->3
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1002, 3, 240;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = 1001, 3, 240;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_UNIT_NUM wait_for continue_signal';
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+# wait, let the program run to DEBUG_SYNC
+sleep 60;
+ob1.mysql delete from oceanbase.__all_rootservice_job WHERE job_id = $job_id;
+ob1.mysql alter resource tenant test_tenant UNIT_NUM = 3;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_UNIT_NUM clear';
+ob1.mysql alter system enable_rebalance = true tenant = 'sys';

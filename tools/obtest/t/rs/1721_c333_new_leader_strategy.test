@@ -1,0 +1,602 @@
+#owner:zhengshi
+#owner group: rs
+#功能：验证新leader均衡算法
+
+#case1:检查正常情况下能否平铺
+#case2:检查创建表之后能否平铺
+#case3:检查执行切主后，能否平铺
+#case4:检查stop一台server后能否平铺
+#case5:检查增加一台server后能否平铺
+#case6:轮转合并时，能否平铺
+#case7:分别检查单分区表、1级分区表、2级分区表
+
+
+#case1:检查正常情况下能否平铺
+ob1=OBI(cluster=3:3:3,proxy_num=0,memory_size_limit='35G');
+ob1.reboot;
+
+let $ob1_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $ob1_port=deploy_get_value(ob1.z1.obs0.port);
+let $ob2_ip=deploy_get_value(ob1.z1.obs1.ip);
+let $ob2_port=deploy_get_value(ob1.z1.obs1.port);
+let $ob3_ip=deploy_get_value(ob1.z2.obs0.ip);
+let $ob3_port=deploy_get_value(ob1.z2.obs0.port);
+let $ob4_ip=deploy_get_value(ob1.z2.obs1.ip);
+let $ob4_port=deploy_get_value(ob1.z2.obs1.port);
+let $ob5_ip=deploy_get_value(ob1.z3.obs0.ip);
+let $ob5_port=deploy_get_value(ob1.z3.obs0.port);
+let $ob6_ip=deploy_get_value(ob1.z3.obs1.ip);
+let $ob6_port=deploy_get_value(ob1.z3.obs1.port);
+
+#ob1.mysql alter system set resource_soft_limit = 500;
+#ob1.mysql alter system set resource_hard_limit = 800;
+
+let $cpu = 1;
+let $memory = '1G';
+let $min_memory = '1G';
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT test MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+
+
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'test', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT obtest1 RESOURCE_POOL_LIST = ('pool1') set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL pool2 UNIT = 'test', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT obtest2 RESOURCE_POOL_LIST = ('pool2') set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL pool3 UNIT = 'test', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT obtest3 RESOURCE_POOL_LIST = ('pool3') set ob_tcp_invited_nodes='%';
+
+ob1.mysql alter system set enable_auto_leader_switch = true;
+# wait config start to work
+sleep 2;
+
+# login as new tenant
+ob_connect(conn1, ob1.z1.obs1, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn2, ob1.z1.obs1, root@obtest1, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn3, ob1.z1.obs1, root@obtest2, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn4, ob1.z1.obs1, root@obtest3, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn2;
+CREATE DATABASE obtest;
+use obtest;
+
+
+#单分区表
+let $table_id = 1;
+let $table_num = 100;
+--disable_query_log
+while ($table_id <= $table_num)
+{
+  eval CREATE TABLE obtest$table_id (pk int, value int, primary key(pk));
+  inc $table_id;
+}
+--enable_query_log
+#binding的hash分区表
+#CREATE TABLEGROUP tg1 binding true partition by hash partitions 8192;
+#let $table_id = 1;
+#let $table_num = 2;
+#while ($table_id <= $table_num)
+#{
+#  eval create table tbindhash$table_id (c1 int) tablegroup = tg1 partition by hash(c1) partitions 8192;
+#  inc $table_id;
+#}
+
+#非binding的hash分区表
+CREATE TABLEGROUP tg1 binding false partition by hash partitions 10;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t1$table_id(c1 int) tablegroup = tg1 partition by hash(c1) partitions 10;
+  inc $table_id;
+}
+
+CREATE TABLEGROUP tg2 binding false partition by hash partitions 256;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table tnobindhash$table_id(c1 int) tablegroup = tg2 partition by hash(c1) partitions 256;
+  inc $table_id;
+}
+
+
+CREATE TABLEGROUP tg3 binding false partition by hash partitions 32;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table nobindhash$table_id(c1 int) tablegroup = tg3 partition by hash(c1) partitions 32;
+  inc $table_id;
+}
+
+CREATE TABLEGROUP tg4 binding false partition by hash partitions 128;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t4$table_id(c1 int) tablegroup = tg4 partition by hash(c1) partitions 128;
+  inc $table_id;
+}
+
+connection conn3;
+CREATE DATABASE obtest;
+use obtest;
+
+CREATE TABLEGROUP tg3 binding false partition by hash partitions 2;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t5$table_id(c1 int) tablegroup = tg3 partition by hash(c1) partitions 2;
+  inc $table_id;
+}
+
+CREATE TABLEGROUP tg1 binding false partition by hash partitions 10;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t6$table_id(c1 int) tablegroup = tg1 partition by hash(c1) partitions 10;
+  inc $table_id;
+}
+CREATE TABLEGROUP tg2 binding false partition by hash partitions 100;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t7$table_id(c1 int) tablegroup = tg2 partition by hash(c1) partitions 100;
+  inc $table_id;
+}
+connection conn4;
+CREATE DATABASE obtest;
+use obtest;
+
+CREATE TABLEGROUP tg1 binding false partition by hash partitions 32;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t8$table_id(c1 int) tablegroup = tg1 partition by hash(c1) partitions 32;
+  inc $table_id;
+}
+
+
+CREATE TABLEGROUP tg2 binding false partition by hash partitions 256;
+let $table_id = 1;
+let $table_num = 1;
+while ($table_id <= $table_num)
+{
+  eval create table t9$table_id(c1 int) tablegroup = tg2 partition by hash(c1) partitions 256;
+  inc $table_id;
+}
+
+#非binding的range分区
+#CREATE TABLEGROUP tg4 binding false partition by range (partition p0 values less than(100), partition p1 values less than(200), partition p2 values less than(300), partition p3 values less than(400));
+#let $table_id = 1;
+#let $table_num = 100;
+#while ($table_id <= $table_num)
+#{
+#  eval create table tnobindrange$table_id(c1 int) tablegroup = tg4 partition by range(c1) (partition p0 values less than(100), partition p1 values less than(200), partition p2 values less than(300), partition p3 values less than(400));
+#  inc $table_id;
+#}
+
+#查询表的分区信息
+#单分区表
+#binding的hash表
+#ob1.mysql_p select a.table_id,a.svr_ip,a.svr_port,b.unit_id,b.zone,a.role,a.partition_id from oceanbase.__all_virtual_tenant_partition_meta_table as a join __all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%tbindhash%') and role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id order by table_id,partition_id;
+#非binding的hash表
+#ob1.mysql_p select table_id,svr_ip,svr_port,unit_id,zone,role,partition_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%tnobindhash%') and role = 1 order by table_id,partition_id;
+
+
+#case3:检查执行切主后，能否平铺
+#3.1单分区表
+
+let $z1_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1', cnt, 1);
+let $z2_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2', cnt, 1);
+let $z3_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3', cnt, 1);
+
+#10张表，leader分布为2731，2731，2730，选出leader数最大的和最小的。
+if ($z1_leader_cnt > $z2_leader_cnt)
+{
+  let $max_leader_zone = 'z1';
+  let $min_leader_zone = 'z2';
+}
+if ($z2_leader_cnt > $z3_leader_cnt)
+{
+  let $max_leader_zone = 'z2';
+  let $min_leader_zone = 'z3';
+}
+if ($z3_leader_cnt > $z1_leader_cnt)
+{
+  let $max_leader_zone = 'z3';
+  let $min_leader_zone = 'z1';
+}
+
+#由2731，2731，2730，变更成2731，2730，2731不会触发leader均衡算法。
+
+let $table_id1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id1", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id1' server='$change_addr';
+sleep 10;
+
+#由2731，2730，2731，变更成2731，2729，2732会触发leader均衡算法
+#经过刚刚的迁移，导致max_leader_zone变成min_leader_zone
+let $table_id2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id2", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id2' server='$change_addr';
+sleep 10;
+let $table_id2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id2", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id2' server='$change_addr';
+sleep 10;
+let $table_id2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id2", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id2' server='$change_addr';
+sleep 10;
+let $table_id2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id2", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id2' server='$change_addr';
+sleep 10;
+let $table_id2 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = $max_leader_zone, table_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = 0 and replica_type = 0 and zone = $min_leader_zone and table_id = "$table_id2", addr, 1);
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id2' server='$change_addr';
+
+
+sleep 3;
+ob1.mysql alter system set enable_auto_leader_switch = true;
+#leader 数为3，3，4,都以3为判断标准即可。
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') <= 1366, 1, 300;
+
+
+
+#3.2binding hash分区
+#let $z1_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_tenant_partition_meta_table as a join __all_unit as b where table_id in (select table_id from __all_virtual_table where table_name = 'tbindhash1') and role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', cnt, 1);
+#let $z2_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_tenant_partition_meta_table as a join __all_unit as b where table_id in (select table_id from __all_virtual_table where table_name = 'tbindhash1') and role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', cnt, 1);
+#let $z3_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_tenant_partition_meta_table as a join __all_unit as b where table_id in (select table_id from __all_virtual_table where table_name = 'tbindhash1') and role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', cnt, 1);
+
+#10个分区，leader分布为4，3，3，选出leader数最大的和最小的。
+#if ($z1_leader_cnt > $z2_leader_cnt)
+#{
+#  let $max_leader_zone = 'z1';
+#  let $min_leader_zone = 'z2';
+#}
+#if ($z2_leader_cnt > $z3_leader_cnt)
+#{
+#  let $max_leader_zone = 'z2';
+#  let $min_leader_zone = 'z3';
+#}
+#if ($z3_leader_cnt > $z1_leader_cnt)
+#{
+#  let $max_leader_zone = 'z3';
+#  let $min_leader_zone = 'z1';
+#}#
+
+##由4，3，3，变更成3，4，3不会触发leader均衡算法。
+#let $table_id1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1', table_id, 1);
+#let $partition_id = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = $max_leader_zone, partition_id, 1);
+#let $change_addr = deploy_get_value(ob1.select select concat(a.svr_ip, ":", a.svr_port) as addr from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and partition_id = $partition_id and a.role = 2, addr, 1);
+##ob1.mysql alter system switch replica leader partition_id='$partition_id%0@$table_id1' server='$change_addr';#
+
+#sleep 3;
+##由4，3，3，变更成5，3，2会触发leader均衡算法
+##经过刚刚的迁移，导致max_leader_zone变成min_leader_zone
+#let $partition_id_1 = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = $max_leader_zone, partition_id, 1);
+#let $change_addr = deploy_get_value(ob1.select select concat(a.svr_ip, ":", a.svr_port) as addr from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and partition_id = $partition_id and a.role = 2, addr, 1);
+##ob1.mysql alter system switch replica leader partition_id='$partition_id_1%0@$table_id1' server='$change_addr';#
+
+#sleep 3;
+#ob1.mysql alter system set enable_auto_leader_switch = true;
+##leader 数为3，3，4,都以3为判断标准即可。
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;#
+#
+#
+
+#ob1.mysql alter system set enable_auto_leader_switch = false;
+##3.3非binding hash分区
+let $z1_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1', cnt, 1);
+let $z2_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2', cnt, 1);
+let $z3_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3', cnt, 1);#
+#10个分区，leader分布为4，3，3，选出leader数最大的和最小的。
+if ($z1_leader_cnt > $z2_leader_cnt)
+{
+  let $max_leader_zone = 'z1';
+  let $min_leader_zone = 'z2';
+}
+if ($z2_leader_cnt > $z3_leader_cnt)
+{
+  let $max_leader_zone = 'z2';
+  let $min_leader_zone = 'z3';
+}
+if ($z3_leader_cnt > $z1_leader_cnt)
+{
+  let $max_leader_zone = 'z3';
+  let $min_leader_zone = 'z1';
+}
+#由4，3，3，变更成3，4，3不会触发leader均衡算法。#
+let $table_id1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1', table_id, 1);
+let $partition_id = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_meta_table where table_id = $table_id1 and zone = $max_leader_zone and role = 1, partition_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = $partition_id and replica_type = 0 and zone = $min_leader_zone and table_id = $table_id1 and role = 2, addr, 1);
+ob1.mysql alter system switch replica leader partition_id='$partition_id%0@$table_id1' server='$change_addr';
+sleep 3;
+#由4，3，3，变更成5，3，2会触发leader均衡算法
+#经过刚刚的迁移，导致max_leader_zone变成min_leader_zone
+let $partition_id_1 = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_meta_table where table_id = $table_id1 and zone = $max_leader_zone and role = 1, partition_id, 1);
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = $partition_id_1 and replica_type = 0 and zone = $min_leader_zone and table_id = $table_id1 and role = 2, addr, 1);
+ob1.mysql alter system switch replica leader partition_id='$partition_id_1%0@$table_id1' server='$change_addr';
+ob1.mysql alter system set enable_auto_leader_switch = true;
+sleep 3;
+#leader 数为3，3，4,都以3为判断标准即可。
+
+#3.4非binding range分区
+let $z1_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1', cnt, 1);
+let $z2_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2', cnt, 1);
+let $z3_leader_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3', cnt, 1);
+
+##4个分区，leader分布为2，1，1，选出leader数最大的和最小的。
+#if ($z1_leader_cnt > $z2_leader_cnt)
+#{
+#  let $max_leader_zone = 'z1';
+#  let $min_leader_zone = 'z2';
+#}
+#if ($z2_leader_cnt > $z3_leader_cnt)
+#{
+#  let $max_leader_zone = 'z2';
+#  let $min_leader_zone = 'z3';
+#}
+#if ($z3_leader_cnt > $z1_leader_cnt)
+#{
+#  let $max_leader_zone = 'z3';
+#  let $min_leader_zone = 'z1';
+#}#
+
+##由2，1，1，变更成1，2，1不会触发leader均衡算法。#
+
+#let $table_id1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1', table_id, 1);
+#let $partition_id = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_meta_table where table_id = $table_id1 and zone = $max_leader_zone and role = 1, partition_id, 1);
+#let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = $partition_id and replica_type = 0 and zone = $min_leader_zone and table_id = $table_id1 and role = 2, addr, 1);
+#ob1.mysql alter system switch replica leader partition_id='$partition_id%0@$table_id1' server='$change_addr';#
+
+##由1，2，1，变更成1，3，0会触发leader均衡算法
+#let $table_id1 = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1', table_id, 1);
+#let $partition_id = deploy_get_value(ob1.select select partition_id from oceanbase.__all_virtual_meta_table where table_id = $table_id1 and zone = $max_leader_zone and role = 1, partition_id, 1);
+#let $change_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_meta_table where partition_id = $partition_id and replica_type = 0 and zone = $min_leader_zone and table_id = $table_id1 and role = 2, addr, 1);
+#sleep 3;
+#ob1.mysql alter system set enable_auto_leader_switch = true;
+##leader 数为1，1，1,都以1为判断标准即可。
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+
+
+#打开leader coordinator
+
+#case4:检查stop一台server后能否平铺
+#stop不会发起leader均衡，重新start后再均衡
+
+
+
+#验证单分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') <= 2730, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') <= 2730, 1, 300;
+
+
+
+#验证bind的hash分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;
+
+#验证非bind的hash分区表
+
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1') <= 1366, 1, 480;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2') <= 1366, 1, 480;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3') <= 1366, 1, 480;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3';
+
+
+##验证非bind的range分区表#
+
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3';
+
+
+
+#case5:增加一个zone两台server
+
+#检查leader是否会打散到z4上
+#验证单分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') <= 1366, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') <= 2730, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') <= 2730, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob7_ip' and svr_port = '$ob7_port') <= 2730, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob8_ip' and svr_port = '$ob8_port') <= 2730, 1, 300;
+
+
+
+
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4';#
+
+##验证bind的hash分区表
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+##ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;#
+
+##验证非bind的hash分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3';
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4') <= 2, 1, 300;
+#ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4';
+
+
+##验证非bind的range分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1', 1, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2', 1, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3', 1, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z4', 1, 300;
+
+#case6:增减unit
+#let $unit1 = deploy_get_value(ob1.select select unit_id from __all_unit where svr_ip = '$ob2_ip' and svr_port = '$ob2_port', unit_id, 1);
+#let $unit2 = deploy_get_value(ob1.select select unit_id from __all_unit where svr_ip = '$ob4_ip' and svr_port = '$ob4_port', unit_id, 1);
+#let $unit3 = deploy_get_value(ob1.select select unit_id from __all_unit where svr_ip = '$ob6_ip' and svr_port = '$ob6_port', unit_id, 1);
+#let $unit4 = deploy_get_value(ob1.select select unit_id from __all_unit where svr_ip = '$ob8_ip' and svr_port = '$ob8_port', unit_id, 1);
+
+#减unit
+#ob1.mysql alter resource pool pool1 unit_num = 1 delete unit=($unit1,$unit2,$unit3);
+#ob1.mysql alter resource pool pool2 unit_num = 1 delete unit=($unit4);
+#ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_type = 'SHRINK_RESOURCE_POOL_UNIT_NUM' and job_status = 'SUCCESS', 2, 1800;
+
+#非分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') = 250, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') = 250, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') = 250, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob7_ip' and svr_port = '$ob7_port') = 250, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob8_ip' and svr_port = '$ob8_port') = 0, 1, 300;
+
+#非binding hash表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') = 2048, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') = 0, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') = 2048, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') = 0, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') = 2048, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') = 0, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4' and svr_ip = '$ob7_ip' and svr_port = '$ob7_port') = 2048, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4' and svr_ip = '$ob8_ip' and svr_port = '$ob8_port') = 0, 1, 480;
+
+#sleep 100;
+#加unit
+#ob1.mysql alter resource pool pool1 unit_num = 2;
+#ob1.mysql alter resource pool pool2 unit_num = 2;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_type = 'SHRINK_RESOURCE_POOL_UNIT_NUM' and job_status = 'SUCCESS', 2, 1800;
+
+#非分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob7_ip' and svr_port = '$ob7_port') = 125, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name like '%obtest%') and role = 1 and zone = 'z4' and svr_ip = '$ob8_ip' and svr_port = '$ob8_port') = 125, 1, 300;
+
+#非binding hash表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1' and svr_ip = '$ob1_ip' and svr_port = '$ob1_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z1' and svr_ip = '$ob2_ip' and svr_port = '$ob2_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2' and svr_ip = '$ob3_ip' and svr_port = '$ob3_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z2' and svr_ip = '$ob4_ip' and svr_port = '$ob4_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3' and svr_ip = '$ob5_ip' and svr_port = '$ob5_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z3' and svr_ip = '$ob6_ip' and svr_port = '$ob6_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4' and svr_ip = '$ob7_ip' and svr_port = '$ob7_port') = 1024, 1, 480;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindhash1') and role = 1 and zone = 'z4' and svr_ip = '$ob8_ip' and svr_port = '$ob8_port') = 1024, 1, 480;
+
+
+#case7:stop zone
+
+
+#单分区表
+
+#非binding hash表
+
+
+#case8:轮转合并，是否打散
+
+
+ob1.mysql alter system major freeze;
+#z1
+#验证单分区表
+
+
+
+#验证bind的hash分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;
+
+#验证非bind的hash分区表
+
+#验证非bind的range分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z4') <= 2, 1, 300;
+
+#z2
+
+#验证bind的hash分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;
+
+#验证非bind的hash分区表
+
+#验证非bind的range分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z4') <= 2, 1, 300;
+
+#z3
+
+#验证bind的hash分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;
+
+#验证非bind的hash分区表
+
+#验证非bind的range分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z4') <= 2, 1, 300;
+
+#轮转合并完成
+
+#验证bind的hash分区表
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z1', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z2', 3, 300;
+#ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_partition_meta_table as a join oceanbase.__all_unit as b where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tbindhash1') and a.role = 1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port and a.tenant_id = b.resource_pool_id and b.zone = 'z3', 3, 300;
+
+#验证非bind的hash分区表
+
+#验证非bind的range分区表
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z4') = 0, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z2') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z3') <= 2, 1, 300;
+#ob1.check_until_timeout select (select count(*) from oceanbase.__all_virtual_meta_table where table_id in (select table_id from oceanbase.__all_virtual_table where table_name = 'tnobindrange1') and role = 1 and zone = 'z1') <= 2, 1, 300;
+

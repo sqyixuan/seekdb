@@ -1,0 +1,353 @@
+#############################################################################
+# owner: rongxuan.lc
+# owner group: storage
+#alter system start/stop server命令功能测试
+#
+#用例场景：
+#1. 不带zone参数的测试
+####1.1 单个server的测试
+########1.1.1 start处于start状态的server
+########1.1.2 stop处于start状态的server
+########1.1.3 stop处于stop状态的server
+########1.1.4 start处于stop状态的server
+########1.1.5 start不存在的server
+########1.1.6 stop不存在的server
+####1.2 多个server的测试
+########1.2.1 start两个处于start状态的server
+########1.2.2 stop两个处于start状态的server
+########1.2.3 stop两个处于stop状态的server
+########1.2.4 start两个处于stop状态的server
+#2. 带zone参数的测试
+####2.1 server和zone匹配的测试
+########2.1.1 start一个处于start状态的server
+########2.1.2 stop一个处于start状态的server
+########2.1.3 stop一个处于stop状态的server
+########2.1.4 start一个处于stop状态的server
+####2.2 server和zone不匹配的测试
+########2.2.1 start一个不在zone里面的server
+########2.2.2 stop一个不在zone里面的server
+########2.2.3 start两个不在zone里面的server
+########2.2.4 stop两个不在zone里面的server
+########2.2.5 start两个存在的server，但zone不存在
+########2.2.6 stop两个存在的server，但zone不存在
+########2.2.7 stop一个在zone里面的server，另一个不在zone里面的server
+########2.2.8 start一个在zone里面的server，另一个不在zone里面的server
+#############################################################################
+
+##construct the cluster
+ob1=OBI(cluster=2:2:2);
+ob1.reboot;
+
+let $obs = deploy_get_value(ob1.proxy0.ip);
+let $port = deploy_get_value(ob1.proxy0.port);
+
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT test MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+
+##create the tenant
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'test', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant RESOURCE_POOL_LIST = ('pool1') set ob_tcp_invited_nodes='%';
+
+ob1.mysql alter system set enable_auto_leader_switch = false;
+#wait for config taking effect
+sleep 2;
+connect(sys_conn, $obs, root, , oceanbase, $port);
+connection sys_conn;
+
+##create the table
+connect(conn1, $obs, root@tenant, , oceanbase, $port);
+connection conn1;
+CREATE DATABASE db;
+use db;
+
+CREATE TABLE table1 (pk int, value int, primary key(pk));
+ob1.mysql alter system set enable_auto_leader_switch = true;
+sleep 2;
+
+connect(conn_root, $obs, root@sys, , oceanbase, $port);
+connection conn_root;
+set ob_query_timeout = 30000000;
+#############
+##case 1.1.1
+#############
+echo case 1.1.1;
+let $leader = deploy_get_value(ob1.get_leader tenant:db:table1:0);
+let $leader_ip = deploy_get_value($leader.ip);
+let $leader_port = deploy_get_value($leader.port);
+ob1.mysql alter system start server '$leader_ip:$leader_port';
+$leader.check_leader tenant:db:table1:0;
+
+#############
+##case 1.1.2
+#############
+echo case 1.1.2;
+ob1.mysql alter system stop server '$leader_ip:$leader_port';
+
+let $ip = $leader_ip;
+let $port = $leader_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 1.1.3
+#############
+echo case 1.1.3;
+ob1.mysql alter system stop server '$leader_ip:$leader_port';
+
+let $ip = $leader_ip;
+let $port = $leader_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 1.1.4
+#############
+echo case 1.1.4;
+ob1.mysql alter system start server '$leader_ip:$leader_port';
+
+let $ip = $leader_ip;
+let $port = $leader_port;
+source include/get_server_stop_time.inc;
+
+#############
+##case 1.1.5
+#############
+echo case 1.1.5;
+let $invalid_obs_ip = 127.0.0.1;
+let $invalid_obs_port = 80;
+--error 4630
+eval alter system start server '$invalid_obs_ip:$invalid_obs_port';
+
+#############
+##case 1.1.6
+#############
+echo case 1.1.6;
+--error 4018
+eval alter system stop server '$invalid_obs_ip:$invalid_obs_port';
+
+#############
+##case 1.2.1
+#############
+echo case 1.2.1;
+let $server1 = ob1.z2.obs0;
+let $server2 = ob1.z2.obs1;
+
+let $server1_ip = deploy_get_value($server1.ip);
+let $server1_port = deploy_get_value($server1.port);
+let $server2_ip = deploy_get_value($server2.ip);
+let $server2_port = deploy_get_value($server2.port);
+
+ob1.mysql alter system start server '$server1_ip:$server1_port', '$server2_ip:$server2_port';
+let $ip = $server1_ip;
+let $port = $server1_port;
+source include/get_server_stop_time.inc;
+
+let $ip = $server2_ip;
+let $port = $server2_port;
+source include/get_server_stop_time.inc;
+
+connection sys_conn;
+set ob_query_timeout = 30000000;
+#############
+##case 1.2.2
+#############
+echo case 1.2.2;
+--disable_query_log
+eval alter system stop server '$server1_ip:$server1_port', '$server2_ip:$server2_port';
+--enable_query_log
+let $port = $server1_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+let $ip = $server2_ip;
+let $port = $server2_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 1.2.3
+#############
+echo case 1.2.3;
+--disable_query_log
+eval alter system stop server '$server1_ip:$server1_port', '$server2_ip:$server2_port';
+--enable_query_log
+let $ip = $server1_ip;
+let $port = $server1_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+let $ip = $server2_ip;
+let $port = $server2_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 1.2.4
+#############
+echo case 1.2.4;
+--disable_query_log
+eval alter system start server '$server1_ip:$server1_port', '$server2_ip:$server2_port';
+--enable_query_log
+let $ip = $server1_ip;
+let $port = $server1_port;
+source include/get_server_stop_time.inc;
+
+let $ip = $server2_ip;
+let $port = $server2_port;
+source include/get_server_stop_time.inc;
+
+#############
+##case 2.1.1
+#############
+echo case 2.1.1;
+let $obs = ob1.z2.obs0;
+let $obs_ip = deploy_get_value($obs.ip);
+let $obs_port = deploy_get_value($obs.port);
+let $zone = z2;
+ob1.mysql alter system start server '$obs_ip:$obs_port' zone '$zone';
+
+let $ip = $obs_ip;
+let $port = $obs_port;
+source include/get_server_stop_time.inc;
+
+#############
+##case 2.1.2
+#############
+echo case 2.1.2;
+ob1.mysql alter system stop server '$obs_ip:$obs_port' zone '$zone';
+
+let $ip = $obs_ip;
+let $port = $obs_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 2.1.3
+#############
+echo case 2.1.3;
+ob1.mysql alter system stop server '$obs_ip:$obs_port' zone '$zone';
+
+let $ip = $obs_ip;
+let $port = $obs_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 2.1.4
+#############
+echo case 2.1.4;
+ob1.mysql alter system start server '$obs_ip:$obs_port' zone '$zone';
+
+let $ip = $obs_ip;
+let $port = $obs_port;
+source include/get_server_stop_time.inc;
+
+#############
+##case 2.2.1
+#############
+echo case 2.2.1;
+let $obs = ob1.z1.obs0;
+let $zone = z2;
+let $obs_ip = deploy_get_value($obs.ip);
+let $obs_port = deploy_get_value($obs.port);
+--disable_query_log
+--error 4631
+eval alter system start server '$obs_ip:$obs_port' zone '$zone';
+--enable_query_log
+
+#############
+##case 2.2.2
+#############
+echo case 2.2.2;
+--disable_query_log
+--error 4631
+eval alter system stop server '$obs_ip:$obs_port' zone '$zone';
+--enable_query_log
+
+#############
+##case 2.2.3
+#############
+echo case 2.2.3;
+let $obs1 = ob1.z1.obs0;
+let $obs2 = ob1.z1.obs1;
+let $zone = z2;
+let $obs1_ip = deploy_get_value($obs1.ip);
+let $obs1_port = deploy_get_value($obs1.port);
+let $obs2_ip = deploy_get_value($obs2.ip);
+let $obs2_port = deploy_get_value($obs2.port);
+--disable_query_log
+--error 4631
+eval alter system start server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$zone';
+--enable_query_log
+
+#############
+##case 2.2.4
+#############
+echo case 2.2.4;
+--disable_query_log
+--error 4631
+eval alter system stop server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$zone';
+--enable_query_log
+
+#############
+##case 2.2.5
+#############
+echo case 2.2.5;
+let $invalid_zone = invalid_zone;
+--disable_query_log
+--error 4631
+eval alter system start server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$invalid_zone';
+--enable_query_log
+
+#############
+##case 2.2.6
+#############
+echo case 2.2.6;
+--disable_query_log
+--error 4631
+eval alter system stop server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$invalid_zone';
+--enable_query_log
+
+#############
+##case 2.2.7
+#############
+echo case 2.2.7;
+let $obs1 = ob1.z1.obs1;
+let $obs2 = ob1.z2.obs0;
+let $zone = z2;
+let $obs1_ip = deploy_get_value($obs1.ip);
+let $obs1_port = deploy_get_value($obs1.port);
+let $obs2_ip = deploy_get_value($obs2.ip);
+let $obs2_port = deploy_get_value($obs2.port);
+--disable_query_log
+--error 4631
+eval alter system stop server '$obs1_ip:$obs1_port' zone '$zone';
+--error 4179,4660
+eval alter system stop server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$zone';
+--enable_query_log
+
+#check obs2 is stopped
+let $ip = $obs2_ip;
+let $port = $obs2_port;
+source include/get_server_stop_time.inc;
+source include/get_server_leader_count.inc;
+
+#############
+##case 2.2.8
+#############
+--disable_query_log
+--error 4631
+eval alter system start server '$obs1_ip:$obs1_port', '$obs2_ip:$obs2_port' zone '$zone';
+--enable_query_log
+
+#check obs2 is started
+let $ip = $obs2_ip;
+let $port = $obs2_port;
+source include/get_server_stop_time.inc;

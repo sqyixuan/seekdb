@@ -1,0 +1,403 @@
+# owner: sean.yyj
+# owner group: SQL1
+# tags: optimizer
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+set foreign_key_checks=1;
+--enable_query_log
+result_format 4;
+
+# schema
+--disable_warnings
+--disable_query_log
+drop database if exists transformer;
+create database transformer;
+use transformer;
+
+drop table if exists t1, t2, t3, t4, t5;
+
+create table t1 (c1 int, c2 int, c3 int);
+insert into t1 values (2, 10, 2);
+create index t1_i1 on t1(c1);
+
+create table t2 (c1 int primary key, c2 int, c3 int);
+insert into t2 values (1, 3, 2);
+insert into t2 values (3, 3, 3);
+insert into t2 values (2, 1, 2);
+insert into t2 values (4, 3, 2);
+insert into t2 values (0, 0, 3);
+insert into t2 values (5, 3, 2);
+insert into t2 values (6, 0, 2);
+insert into t2 values (7, 2, 2);
+
+--let $count = 8
+while($count < 500)
+{
+  --let $stmt=insert into t2(c1, c2, c3) values ($count, $count, $count)
+  eval $stmt;
+  inc $count;
+}
+
+create table t3 (c1 int, c2 int, c3 int);
+insert into t3 values (1, 3, 2);
+create index t3_i2 on t3(c2);
+
+create table t4 (c1 varchar(20), c2 int, c3 int);
+insert into t4 values ('1.', 3, 2);
+insert into t4 values ('1.0', 1, 1);
+create index t4_i2 on t4(c2);
+
+create table t5(c1 int, c2 int) as select * from t2 where c1 < 100;
+
+--enable_warnings
+--enable_query_log
+# schema END
+
+--echo #Part1: Single Semi Info Test
+
+--echo ==> reject rewrite: no matched index on right, cross-stmt condition
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 > T2.C2);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 > T2.C2);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 > T2.C2);
+
+EXPLAIN SELECT * from t3 where C1 >= (SELECT COUNT(*) FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T3.C1 - T1.C1));
+SELECT * from t3 where C1 >= (SELECT COUNT(*) FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T3.C1 - T1.C1));
+SELECT /*+no_semi_to_inner*/ * from t3 where C1 >= (SELECT COUNT(*) FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T3.C1 - T1.C1));
+
+
+--echo ==> right expr unique
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2 && T1.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2 && T1.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C1 = T2.C2 && T1.C2 > T2.C1);
+
+--echo ==> right output one row
+EXPLAIN select * from t1 where c1 in (select c2 from t2 where c2 > 0 limit 1);
+select * from t1 where c1 in (select c2 from t2 where c2 > 0 limit 1);
+select /*+no_semi_to_inner*/* from t1 where c1 in (select c2 from t2 where c2 > 0 limit 1);
+
+--echo ==> outer stmt not sensitive to duplicate outputs
+EXPLAIN SELECT * from t3 where EXISTS (SELECT t1.c1 FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T1.C2));
+SELECT * from t3 where EXISTS (SELECT t1.c1 FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T1.C2));
+SELECT /*+no_semi_to_inner*/ * from t3 where EXISTS (SELECT t1.c1 FROM T1 WHERE EXISTS (SELECT C1 FROM T2 WHERE T2.C2 = T1.C2));
+
+--echo ==> distinct view
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 = T2.C1 && T1.C2 > 2);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 = T2.C1 && T1.C2 > 2);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 = T2.C1 && T1.C2 > 2);
+
+#with left filter
+EXPLAIN SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 = T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 = T2.C1);
+SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 = T2.C1);
+
+#with right filter
+EXPLAIN SELECT * FROM T1 WHERE (C1,1) = ANY(SELECT C1,1 FROM T3);
+SELECT /*+no_semi_to_inner*/ * FROM T1 WHERE (C1,1) = ANY(SELECT C1,1 FROM T3);
+SELECT * FROM T1 WHERE (C1,1) = ANY(SELECT C1,1 FROM T3);
+
+--echo ==> aggr view
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 > T2.C1);
+
+#with filters
+EXPLAIN SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 < T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 < T2.C1);
+SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C2 < T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 < T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 < T2.C1);
+SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T3 WHERE T3.C1 = T2.C2 AND T3.C2 < T2.C1);
+
+# test type cast
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T4 WHERE T4.C1 = T2.C2 AND T4.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T4 WHERE T4.C1 = T2.C2 AND T4.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T4 WHERE T4.C1 = T2.C2 AND T4.C2 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C2 > T2.C1 AND T2.C2 = T3.C2 AND T2.C3 = T3.C3);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C2 > T2.C1 AND T2.C2 = T3.C2 AND T2.C3 = T3.C3);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C2 > T2.C1 AND T2.C2 = T3.C2 AND T2.C3 = T3.C3);
+
+--echo ==> inner group by
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE (T3.C1 = T2.C2 OR T3.C1 = 1) AND T3.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE (T3.C1 = T2.C2 OR T3.C1 = 1) AND T3.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE (T3.C1 = T2.C2 OR T3.C1 = 1) AND T3.C2 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+
+EXPLAIN SELECT C2 FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+SELECT C2 FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+SELECT /*+no_semi_to_inner*/ C2 FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+
+EXPLAIN SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT /*+no_semi_to_inner*/ count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+
+#with filters
+EXPLAIN SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+SELECT * FROM T2 WHERE (C1,1) = ANY(SELECT 1,C2 FROM T1 WHERE T1.C2 > T2.C1 AND T1.C1 > T2.C1) GROUP BY T2.C2;
+
+--echo #Part2: Multi Semi Info Test
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+
+EXPLAIN SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+SELECT /*+no_semi_to_inner*/ count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2) AND EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C1);
+
+EXPLAIN SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T2.C1 > T3.C1) AND EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2);
+SELECT count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T2.C1 > T3.C1) AND EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2);
+SELECT /*+no_semi_to_inner*/ count(*) FROM T2 WHERE EXISTS (SELECT C1 FROM T3 WHERE T2.C1 > T3.C1) AND EXISTS (SELECT C1 FROM T1 WHERE T2.C1 < T1.C1 AND T1.C2 > T2.C2);
+
+EXPLAIN select * from T2 where exists(select 1 from T1 where T1.C1 = T2.C1 and exists(select 1 from T3 where T1.C1 > T3.C2 AND T1.C1 > T3.C1));
+select * from T2 where exists(select 1 from T1 where T1.C1 = T2.C1 and exists(select 1 from T3 where T1.C1 > T3.C2 AND T1.C1 > T3.C1));
+select /*+no_semi_to_inner*/ * from T2 where exists(select 1 from T1 where T1.C1 = T2.C1 and exists(select 1 from T3 where T1.C1 > T3.C2 AND T1.C1 > T3.C1));
+
+--echo ==> multi join(not match index)
+--echo ==> #inner group by with multi join
+##normal
+EXPLAIN SELECT /*+no_semi_to_inner*/ count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1);
+SELECT /*+no_semi_to_inner*/ count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1);
+EXPLAIN SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1);
+SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1);
+##with spj
+EXPLAIN SELECT T2.c2 FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1) GROUP BY T2.C2 HAVING T2.C2 < 20;
+SELECT T2.C2 FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1) GROUP BY T2.C2 HAVING T2.C2 < 20;
+EXPLAIN SELECT /*+no_semi_to_inner*/T2.c2 FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1) GROUP BY T2.C2 HAVING T2.C2 < 20;
+SELECT /*+no_semi_to_inner*/T2.C2 FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 > T3.C1 AND T5.C1 > T3.C1) GROUP BY T2.C2 HAVING T2.C2 < 20;
+
+##with other condition
+EXPLAIN SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2 > T3.C2);
+SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2 > T3.C2);
+EXPLAIN SELECT /*+no_semi_to_inner*/count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2 > T3.C2);
+SELECT /*+no_semi_to_inner*/count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2 > T3.C2);
+
+#not multi join condition
+EXPLAIN SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2+T2.C1 > T3.C2);
+SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T5.C2+T2.C1 > T3.C2);
+
+--echo ==> #aggr view with multi join
+##normal
+EXPLAIN SELECT count(*) FROM T2,T5 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T5.C1 > T3.C1);
+SELECT count(*) FROM T2,T5 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T5.C1 > T3.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/count(*) FROM T2,T5 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T5.C1 > T3.C1);
+SELECT /*+no_semi_to_inner*/count(*) FROM T2,T5 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = T2.C2 AND T5.C1 > T3.C1);
+#not multi join condition
+EXPLAIN SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T3.C1 + T5.C1 = T2.C2 );
+SELECT count(*) FROM T2, T5 WHERE EXISTS (SELECT 1 FROM T3 WHERE T2.C2 + T5.C1 > T3.C1 AND T3.C1 + T5.C1 = T2.C2 );
+
+--echo #Part5: Update/Delete Test
+--disable_warnings
+drop table if exists t6,t7;
+--enable_warnings
+create table t6(c1 int, c2 int) partition by hash(c1) partitions 4;
+create index t6_i1 on t6(c1);
+create table t7(c1 int, c2 int) partition by range(c1) (
+                partition p0 values less than(0),
+                partition p1 values less than(100),
+                partition p2 values less than(200),
+                partition p3 values less than(300),
+                partition p4 values less than maxvalue);
+insert into t6 select c1,c2 from t5;
+insert into t7 select c1,c2 from t2;
+--echo ==> inner group by
+#basic test
+EXPLAIN DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+
+EXPLAIN UPDATE T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+UPDATE T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1 AND T3.C3 < T2.C1);
+
+#partition table
+EXPLAIN DELETE T1 FROM T1 LEFT JOIN T6 ON T1.C1 = T6.C1 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+DELETE T1 FROM T1 LEFT JOIN T6 ON T1.C1 = T6.C1 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T6 ON T1.C1 = T6.C1 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T6 ON T1.C1 = T6.C1 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+
+EXPLAIN UPDATE T6 SET T6.C2 = 1000 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+UPDATE T6 SET T6.C2 = 1000 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T6 SET T6.C2 = 1000 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+UPDATE /*+no_semi_to_inner*/T6 SET T6.C2 = 1000 WHERE T6.C1 IN (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1 AND T7.C2 < T6.C1);
+
+--echo ==> aggr view
+#basic test
+EXPLAIN DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+
+EXPLAIN UPDATE T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+UPDATE T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE T2.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+
+EXPLAIN DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE EXISTS(SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+DELETE T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+DELETE /*+no_semi_to_inner*/T1 FROM T1 LEFT JOIN T2 ON T1.C1 = T2.C1 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+
+EXPLAIN UPDATE T2 SET T2.C2 = 1000 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+UPDATE T2 SET T2.C2 = 1000 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+UPDATE /*+no_semi_to_inner*/T2 SET T2.C2 = 1000 WHERE EXISTS (SELECT T3.C2 FROM T3 WHERE T3.C1 < T2.C1);
+
+#partition table
+EXPLAIN DELETE T6 FROM T6 LEFT JOIN T7 ON T7.C1 = T6.C1 WHERE T6.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T6.C1);
+DELETE T6 FROM T6 LEFT JOIN T7 ON T7.C1 = T6.C1 WHERE T6.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T6.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T6 FROM T6 LEFT JOIN T7 ON T7.C1 = T6.C1 WHERE T6.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T6.C1);
+DELETE /*+no_semi_to_inner*/T6 FROM T6 LEFT JOIN T7 ON T7.C1 = T6.C1 WHERE T6.C1 IN (SELECT T3.C2 FROM T3 WHERE T3.C1 < T6.C1);
+
+EXPLAIN UPDATE T7 SET T7.C2 = 1000 WHERE T7.C1 IN (SELECT T6.C2 FROM T6 WHERE T6.C1 < T7.C1);
+UPDATE T7 SET T7.C2 = 1000 WHERE T7.C1 IN (SELECT T6.C2 FROM T6 WHERE T6.C1 < T7.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T7 SET T7.C2 = 1000 WHERE T7.C1 IN (SELECT T6.C2 FROM T6 WHERE T6.C1 < T7.C1);
+UPDATE /*+no_semi_to_inner*/T7 SET T7.C2 = 1000 WHERE T7.C1 IN (SELECT T6.C2 FROM T6 WHERE T6.C1 < T7.C1);
+
+EXPLAIN DELETE T6 FROM T6 LEFT JOIN T2 ON T6.C1 = T2.C1 WHERE EXISTS(SELECT T7.C2 FROM T7 WHERE T7.C1 < T2.C1);
+DELETE T6 FROM T6 LEFT JOIN T2 ON T6.C1 = T2.C1 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T2.C1);
+EXPLAIN DELETE /*+no_semi_to_inner*/T6 FROM T6 LEFT JOIN T2 ON T6.C1 = T2.C1 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T2.C1);
+DELETE /*+no_semi_to_inner*/T6 FROM T6 LEFT JOIN T2 ON T6.C1 = T2.C1 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T2.C1);
+
+EXPLAIN UPDATE T6 SET T6.C2 = 1000 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1);
+UPDATE T6 SET T6.C2 = 1000 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1);
+EXPLAIN UPDATE /*+no_semi_to_inner*/T6 SET T6.C2 = 1000 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1);
+UPDATE /*+no_semi_to_inner*/T6 SET T6.C2 = 1000 WHERE EXISTS (SELECT T7.C2 FROM T7 WHERE T7.C1 < T6.C1);
+
+--echo #Part4: View table test
+drop view if exists v1,v2,v3,v4;
+insert into t1 select * from t2 where c1 < 20;
+create view v1(c1,c2,c3) as (select t1.c1+t2.c1, t1.c1+t1.c2, t1.c1+1 from t1 left join t2 on t1.c1=t2.c1);
+create view v2(c1,c2) as (select t2.c1, t3.c1+1 from t2 left join t3 on t2.c1 < t3.c1);
+create view v3(c1,c2) as select t2.c2,t5.c2 from t2,t5;
+create view v4(c1,c2) as select t1.c1, t3.c1 from t1,t3 where t1.c1=t3.c1;
+create view v5(c1,c2) as select t1.c1, t3.c1 from t1,t3 where t1.c1=t3.c1 group by t1.c1,t3.c1;
+select count(*) from v1;
+select count(*) from v2;
+select count(*) from v3;
+select count(*) from v4;
+--echo ==>aggr view
+EXPLAIN SELECT count(*) FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C2 > V2.C1);
+SELECT count(*) FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C2 > V2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/ count(*) FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C2 > V2.C1);
+SELECT /*+no_semi_to_inner*/ count(*) FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C2 > V2.C1);
+
+EXPLAIN SELECT * FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C3 = V2.C1 AND V1.C2 > V2.C1);
+SELECT * FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C3 = V2.C2 AND V1.C2 > V2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/ * FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C3 = V2.C2 AND V1.C2 > V2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM V2 WHERE EXISTS (SELECT C1 FROM V1 WHERE V1.C3 = V2.C2 AND V1.C2 > V2.C1);
+
+#no match index on left table
+EXPLAIN SELECT * FROM V1 WHERE EXISTS (SELECT C1 FROM V2 WHERE V1.C2 > V2.C1);
+SELECT * FROM V1 WHERE EXISTS (SELECT C1 FROM V2 WHERE V1.C2 > V2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/ * FROM V1 WHERE EXISTS (SELECT C1 FROM V2 WHERE V1.C2 > V2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM V1 WHERE EXISTS (SELECT C1 FROM V2 WHERE V1.C2 > V2.C1);
+
+#multi join
+EXPLAIN SELECT count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = V3.C2 AND V3.C1 > T3.C1);
+SELECT count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = V3.C2 AND V3.C1 > T3.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = V3.C2 AND V3.C1 > T3.C1);
+SELECT /*+no_semi_to_inner*/count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T3 WHERE T3.C1 = V3.C2 AND V3.C1 > T3.C1);
+
+--echo ==>inner group by
+#right table is view
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1);
+SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE (V4.C1 = T2.C2 OR V4.C1 = 1) AND V4.C2 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE (V4.C1 = T2.C2 OR V4.C1 = 1) AND V4.C2 > T2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE (V4.C1 = T2.C2 OR V4.C1 = 1) AND V4.C2 > T2.C1);
+SELECT /*+no_semi_to_inner*/ * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE (V4.C1 = T2.C2 OR V4.C1 = 1) AND V4.C2 > T2.C1);
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+EXPLAIN SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 < T2.C1) GROUP BY T2.C2;
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 < T2.C1) GROUP BY T2.C2;
+EXPLAIN SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 < T2.C1) GROUP BY T2.C2;
+SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 < T2.C1 AND V4.C1 < T2.C1) GROUP BY T2.C2;
+
+#nl param is generate column
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V5 WHERE V5.C2 < T2.C1 AND V5.C1 > T2.C1);
+SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V5 WHERE V5.C2 < T2.C1 AND V5.C1 > T2.C1);
+EXPLAIN SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V5 WHERE V5.C2 < T2.C1 AND V5.C1 > T2.C1);
+SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V5 WHERE V5.C2 < T2.C1 AND V5.C1 > T2.C1);
+
+#reject transform because the cost is increased
+EXPLAIN SELECT * FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 > T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+EXPLAIN SELECT /*+no_semi_to_inner*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 > T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+EXPLAIN SELECT /*+semi_to_inner(VIEW1)*/* FROM T2 WHERE EXISTS (SELECT C1 FROM V4 WHERE V4.C2 > T2.C1 AND V4.C1 > T2.C1) GROUP BY T2.C2;
+
+#multi join
+EXPLAIN SELECT count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T1 WHERE V3.C1 > T1.C2 AND V3.C2 > T1.C1) AND V3.C1 < 200;
+SELECT count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T1 WHERE V3.C1 > T1.C2 AND V3.C2 > T1.C1) AND V3.C1 < 200;
+EXPLAIN SELECT /*+no_semi_to_inner*/count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T1 WHERE V3.C1 > T1.C2 AND V3.C2 > T1.C1) AND V3.C1 < 200;
+SELECT /*+no_semi_to_inner*/count(*) FROM V3 WHERE EXISTS (SELECT C1 FROM T1 WHERE V3.C1 > T1.C2 AND V3.C2 > T1.C1) AND V3.C1 < 200;
+
+drop view if exists v1,v2,v3,v4,v5;
+
+drop table if exists t1, t2, t3, t4, t5, t6, t7;
+
+#inner group by with tables not used in semi condition
+create table t1(pk int primary key, c1 int, c2 varchar(30));
+create table t2(pk int primary key, c1 int, c2 varchar(30));
+create table t3(pk int primary key, c1 int, c2 varchar(30));
+create table t4(pk int primary key, c1 int, c2 varchar(30));
+insert into t1 values(1,1,'aaaaaaaaaaaaaaa');
+insert into t1 values(2,2,'bbbbbbbbbbbbbbb');
+insert into t2 values(4,4,'aaaaaaaaaaaaaaa');
+insert into t2 values(5,5,'aaaadaaaaaaaaaa');
+insert into t3 values(4,4,'aaaaaaaaaaaaaaa');
+insert into t3 values(5,5,'aaaadaaaaaaaaaa');
+insert into t3 values(6,6,'affadaaaaaaaaaa');
+insert into t4 values(0,0,'affadaaaaaaaaaa');
+explain select /*+semi_to_inner(t3 t1 view1)*/t1.pk,t2.pk,t3.pk from t1,t2,t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+##reject transform because the cost is increased
+explain select t1.pk,t2.pk,t3.pk from t1,t2,t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+select /*+semi_to_inner(t3 t1 view1)*/t1.pk,t2.pk,t3.pk from t1,t2,t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+select /*+no_rewrite*/t1.pk,t2.pk,t3.pk from t1,t2,t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+select /*+semi_to_inner(t3 t1 view1)*/t1.c1 from t1 left join t2 on (1=1), t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+select /*+no_rewrite*/t1.c1 from t1 left join t2 on (1=1), t3 where t1.c1 > some(select t4.c1 from t4 where t4.c1 < t3.c1);
+
+drop table t1,t2,t3,t4;
+
+#BugFix46978247:
+--disable_warnings
+drop table if exists B,BB,C;
+--enable_warnings
+
+create table B(c1 int, pk int primary key);
+create table BB(c1 int, pk int primary key);
+create table C(c1 int, pk int primary key);
+explain SELECT /*+ USE_CONCAT(@"SEL$C3026C6E" ) */ 1 FROM C LEFT JOIN B ON (C.c1 < B.c1) WHERE B .pk IN (SELECT BB.c1 FROM C LEFT JOIN BB ON (C.c1 > BB.pk) WHERE BB.c1 > BB.pk OR B.pk = 5 ORDER BY BB.pk) ;
+SELECT /*+ USE_CONCAT(@"SEL$C3026C6E" ) */ 1 FROM C LEFT JOIN B ON (C.c1 < B.c1) WHERE B .pk IN (SELECT BB.c1 FROM C LEFT JOIN BB ON (C.c1 > BB.pk) WHERE BB.c1 > BB.pk OR B.pk = 5 ORDER BY BB.pk) ;
+explain SELECT /*+ USE_CONCAT(@"SEL$C3026C6E" ) */ 1 FROM C LEFT JOIN B ON (C.c1 < B.c1) WHERE B .pk IN (SELECT BB.c1 FROM C LEFT JOIN BB ON (C.c1 > BB.pk) WHERE BB.c1 > BB.pk OR B.pk < 5 ORDER BY BB.pk) ;
+SELECT /*+ USE_CONCAT(@"SEL$C3026C6E" ) */ 1 FROM C LEFT JOIN B ON (C.c1 < B.c1) WHERE B .pk IN (SELECT BB.c1 FROM C LEFT JOIN BB ON (C.c1 > BB.pk) WHERE BB.c1 > BB.pk OR B.pk < 5 ORDER BY BB.pk) ;
+
+drop table B,BB,C;

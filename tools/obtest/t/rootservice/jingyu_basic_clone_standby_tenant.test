@@ -1,0 +1,100 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    test clone tenant from standby tenant
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config = $mini_ob_config;
+ob1.reboot;
+
+--echo ===========================================
+--echo        create resource pool to use
+--echo ===========================================
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+--echo ===========================================
+--echo        create backup_mysql_tenant
+--echo ===========================================
+connection sys_conn;
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='backup_mysql_tenant', tenant_id, 1);
+# mysql租户  开启日志备份
+ob1.mysql alter system archivelog;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+--echo =========================================== 
+--echo       create log restore source user
+--echo ===========================================
+ob_connect(backup_mysql_tenant_conn, ob1.z1.obs0, root@backup_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection backup_mysql_tenant_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+--echo ==============================================
+--echo   create standby tenant standby_mysql_tenant
+--echo ==============================================
+connection sys_conn;
+--disable_all_result_log
+send CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1,F@z2,F@z3', comment='standby tenant to do clone';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name='standby_mysql_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='standby_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout SELECT status FROM oceanbase.DBA_OB_TENANTS WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+--echo ==============================================
+--echo    clone tenant from standby_mysql_tenant
+--echo ==============================================
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest standby_mysql_tenant);
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest standby_mysql_tenant);
+let $standby_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'standby_mysql_tenant', tenant_id, 1);
+let $standby_mysql_leader_ip_port = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $standby_mysql_tenant_id and ls_id =  1 and role = "LEADER" limit 1, host, 1);
+let $standby_mysql_leader_obs = deploy_get_value(ob1.get_obs_by_addr $standby_mysql_leader_ip_port);
+#ob1.mysql alter system archivelog;
+ob_connect(standby_mysql_tenant_conn, $standby_mysql_leader_obs, root@standby_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection standby_mysql_tenant_conn;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+
+# minor freeze for standby_mysql_tenant before clone
+connection sys_conn;
+ALTER SYSTEM MINOR FREEZE TENANT standby_mysql_tenant;
+ob1.z1.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs0.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs0.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+create tenant clone_tenant from standby_mysql_tenant with resource_pool = 'clone_tenant_pool', unit = 'large_unit';
+
+--echo ================================================
+--echo           check clone tenant finished
+--echo ================================================
+connection sys_conn;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "clone_tenant" and status = "NORMAL", 1, 50;
+let $clone_tenant_id = deploy_get_value(ob1.select select tenant_id as clone_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='clone_tenant', clone_tenant_id, 1);
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_info where tenant_id = $clone_tenant_id and tenant_role = "STANDBY", 1, 50;

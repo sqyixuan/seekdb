@@ -1,0 +1,99 @@
+# owner: binifei.bnf
+# owner group: cloud storage
+# Test Case: direct load perf
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+--disable_query_log
+CREATE RESOURCE UNIT direct_load_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL direct_load_pool UNIT direct_load_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE TENANT tt RESOURCE_POOL_LIST = ('direct_load_pool'), primary_zone = "z1", locality = 'F@z1' SET VARIABLES ob_compatibility_mode='mysql',secure_file_priv = '/', ob_tcp_invited_nodes='%';
+--enable_query_log
+
+
+--echo # =========================================================
+--echo #           direct load data test
+--echo # =========================================================
+
+connect(conn1, $proxy_ip, root@tt,, test, $proxy_port);
+connection conn1;
+set ob_query_timeout=10000000000;
+--disable_warnings
+drop table if exists lineitem;
+--enable_warnings
+create table lineitem (L_ORDERKEY INTEGER NOT NULL, L_PARTKEY INTEGER NOT NULL, L_SUPPKEY INTEGER NOT NULL, L_LINENUMBER INTEGER NOT NULL, L_QUANTITY DECIMAL(15,2) NOT NULL, L_EXTENDEDPRICE DECIMAL(15,2) NOT NULL, L_DISCOUNT DECIMAL(15,2) NOT NULL, L_TAX DECIMAL(15,2) NOT NULL, L_RETURNFLAG CHAR(1) NOT NULL, L_LINESTATUS CHAR(1) NOT NULL, L_SHIPDATE DATE NOT NULL, L_COMMITDATE DATE NOT NULL, L_RECEIPTDATE DATE NOT NULL, L_SHIPINSTRUCT CHAR(25) NOT NULL, L_SHIPMODE CHAR(10) NOT NULL, L_COMMENT VARCHAR(44) NOT NULL, PRIMARY KEY (L_ORDERKEY,L_LINENUMBER));
+let $start_time = deploy_get_value(ob1.select select UNIX_TIMESTAMP(NOW()) as value from dual, value, 1);
+eval load data /*+parallel(4) direct(true,0)*/ infile '/data/1/binifei.bnf/lineitem-10g.tbl' into table lineitem fields terminated by '|' enclosed by '' lines starting by '' terminated by '\n';
+let $cost_time = deploy_get_value(ob1.select select (UNIX_TIMESTAMP(NOW()) - $start_time) as value from dual, value, 1);
+if ($cost_time < 850)
+{
+  --echo direct load cost less than 850 seconds
+}
+if ($cost_time > 850)
+{
+  --echo direct load cost too much time ($cost_time seconds)
+}
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245006, 0, 60;
+ob1.check_until_timeout select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245007, 0, 60;
+let $tmp_file_hit_cnt = query_get_value(select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_tmpfile_cache%" and stat_id = 240017, value, 1);
+let $tmp_file_miss_cnt = query_get_value(select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_tmpfile_cache%" and stat_id = 240018, value, 1);
+if ($tmp_file_hit_cnt < ($tmp_file_hit_cnt + $tmp_file_miss_cnt) * 0.8)
+{
+  --echo tmp file preread cache hit rate is too low
+  --echo $tmp_file_hit_cnt
+  --echo $tmp_file_miss_cnt
+}
+select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245006;
+select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245007;
+
+
+--echo # =========================================================
+--echo #           create index test
+--echo # =========================================================
+
+connect(conn1, $proxy_ip, root@tt,, test, $proxy_port);
+connection conn1;
+set ob_query_timeout=10000000000;
+let $start_time = deploy_get_value(ob1.select select UNIX_TIMESTAMP(NOW()) as value from dual, value, 1);
+eval create /*+parallel(4)*/ index i1 on lineitem(L_ORDERKEY, L_PARTKEY);
+let $cost_time = deploy_get_value(ob1.select select (UNIX_TIMESTAMP(NOW()) - $start_time) as value from dual, value, 1);
+if ($cost_time < 150)
+{
+  --echo create index cost less than 150 seconds
+}
+if ($cost_time > 150)
+{
+  --echo create index cost too much time ($cost_time seconds)
+}
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245006, 0, 60;
+ob1.check_until_timeout select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245007, 0, 60;
+let $tmp_file_hit_cnt = query_get_value(select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_tmpfile_cache%" and stat_id = 240017, value, 1);
+let $tmp_file_miss_cnt = query_get_value(select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_tmpfile_cache%" and stat_id = 240018, value, 1);
+if ($tmp_file_hit_cnt < ($tmp_file_hit_cnt + $tmp_file_miss_cnt) * 0.8)
+{
+  --echo tmp file preread cache hit rate is too low
+  --echo $tmp_file_hit_cnt
+  --echo $tmp_file_miss_cnt
+}
+let $major_macro_hit_cnt = query_get_value(select * from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_major_macro_cache%" and stat_id = 240020, value, 1);
+let $major_macro_miss_cnt = query_get_value(select * from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_major_macro_cache%" and stat_id = 240021, value, 1);
+if ($major_macro_hit_cnt < ($major_macro_hit_cnt + $major_macro_miss_cnt) * 0.8)
+{
+  --echo major macro preread cache hit rate is too low
+  --echo $major_macro_hit_cnt
+  --echo $major_macro_miss_cnt
+}
+select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245006;
+select value from __all_virtual_sysstat where tenant_id = 1002 and name like "%ss_local_cache%" and stat_id = 245007;

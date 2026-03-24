@@ -1,0 +1,174 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: this case is use for testing co merge dag canceled by migrate
+#
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+# set EN_ENABLE_SHARED_STORAGE_COLUMN_GROUP to enable column group under shared-storage mode
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@obtest,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table t1_no_pk (c1 int) with column group (all columns, each column);
+
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t1_no_pk', tablet_id, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$tenant_id and tablet_id=$tablet_id, ls_id, 1);
+
+connection conn_mysql;
+insert into t1_no_pk values (1), (2), (3);
+select * from t1_no_pk order by c1 desc;
+update t1_no_pk set c1=c1+10;
+select * from t1_no_pk order by c1 desc;
+
+create table t1_pk (c1 int primary key) with column group (all columns, each column);
+insert into t1_pk values (1), (2), (3);
+select * from t1_pk order by c1 desc;
+update t1_pk set c1=c1+10;
+select * from t1_pk order by c1 desc;
+
+create table t1_part (c1 int primary key) partition by hash(c1) partitions 4 with column group (all columns, each column);
+insert into t1_part values (1), (2), (3), (4);
+select * from t1_part order by c1 desc;
+update t1_part set c1=c1+10;
+select * from t1_part order by c1 desc;
+
+#########################################################################
+# TEST_1: set errsim, make co merge dag net always ready and wait for cancel
+#########################################################################
+# EN_CO_MREGE_DAG_READY_FOREVER = 4016
+ob1.mysql alter system set_tp tp_no = 738, error_code = 4016, frequency = 1;
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+ob1.mysql alter system major freeze tenant = 'obtest';
+sleep 20;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_CO_MREGE_DAG_READY_FOREVER";
+
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z3', unit_id, 1);
+
+let $dst_ip_z3_0 = deploy_get_value(ob1.z3.obs0.ip);
+let $dst_port_z3_0 = deploy_get_value(ob1.z3.obs0.port);
+let $dst_z3_0 = $dst_ip_z3_0:$dst_port_z3_0;
+
+let $dst_ip_z3_1 = deploy_get_value(ob1.z3.obs1.ip);
+let $dst_port_z3_1 = deploy_get_value(ob1.z3.obs1.port);
+let $dst_z3_1 = $dst_ip_z3_1:$dst_port_z3_1;
+
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $cur = $ip:$port;
+
+let $dst = $dst_z3_0;
+let $dst_port = $dst_port_z3_0;
+
+if ($cur != $dst_z3_1)
+{
+  let $dst = $dst_z3_1;
+  let $dst_port = $dst_port_z3_1;
+}
+ob1.mysql alter system migrate unit $unit_id destination "$dst";
+ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 600;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id and svr_port = '$dst_port' and replica_status = 'NORMAL', 1, 600;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.GV\$OB_UNITS where unit_id = $unit_id and svr_ip = '$ip' and svr_port = $port, 0, 600;
+
+# EN_CO_MREGE_DAG_READY_FOREVER = 4016
+ob1.mysql alter system set_tp tp_no = 738, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+if ($cur != $dst_z3_0)
+{
+  ob_connect(conn_mysql, ob1.z3.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+  connection conn_mysql;
+
+  select * from t1_no_pk order by c1 desc;
+  select * from t1_pk order by c1 desc;
+  select * from t1_part order by c1 desc;
+}
+
+if ($cur != $dst_z3_1)
+{
+  ob_connect(conn_mysql, ob1.z3.obs1, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+  connection conn_mysql;
+
+  select * from t1_no_pk order by c1 desc;
+  select * from t1_pk order by c1 desc;
+  select * from t1_part order by c1 desc;
+}
+
+#########################################################################
+# TEST_2: set errsim, make co merge dag net batch exe always failed never schedule rest, wait for cancel
+#########################################################################
+# EN_CO_MREGE_DAG_SCHEDULE_REST = 4016
+ob1.mysql alter system set_tp tp_no = 739, error_code = 4016, frequency = 1;
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+ob1.mysql alter system major freeze tenant = 'obtest';
+sleep 20;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_CO_MREGE_DAG_SCHEDULE_REST";
+
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z3', unit_id, 1);
+
+let $dst_ip_z3_0 = deploy_get_value(ob1.z3.obs0.ip);
+let $dst_port_z3_0 = deploy_get_value(ob1.z3.obs0.port);
+let $dst_z3_0 = $dst_ip_z3_0:$dst_port_z3_0;
+
+let $dst_ip_z3_1 = deploy_get_value(ob1.z3.obs1.ip);
+let $dst_port_z3_1 = deploy_get_value(ob1.z3.obs1.port);
+let $dst_z3_1 = $dst_ip_z3_1:$dst_port_z3_1;
+
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $cur = $ip:$port;
+
+let $dst = $dst_z3_0;
+let $dst_port = $dst_port_z3_0;
+
+if ($cur != $dst_z3_1)
+{
+  let $dst = $dst_z3_1;
+  let $dst_port = $dst_port_z3_1;
+}
+ob1.mysql alter system migrate unit $unit_id destination "$dst";
+ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 600;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id and svr_port = '$dst_port' and replica_status = 'NORMAL', 1, 600;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.GV\$OB_UNITS where unit_id = $unit_id and svr_ip = '$ip' and svr_port = $port, 0, 600;
+
+# EN_CO_MREGE_DAG_SCHEDULE_REST = 4016
+ob1.mysql alter system set_tp tp_no = 739, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+if ($cur != $dst_z3_0)
+{
+  ob_connect(conn_mysql, ob1.z3.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+  connection conn_mysql;
+
+  select * from t1_no_pk order by c1 desc;
+  select * from t1_pk order by c1 desc;
+  select * from t1_part order by c1 desc;
+}
+
+if ($cur != $dst_z3_1)
+{
+  ob_connect(conn_mysql, ob1.z3.obs1, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+  connection conn_mysql;
+
+  select * from t1_no_pk order by c1 desc;
+  select * from t1_pk order by c1 desc;
+  select * from t1_part order by c1 desc;
+}

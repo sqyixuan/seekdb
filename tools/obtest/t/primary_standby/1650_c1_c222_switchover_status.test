@@ -1,0 +1,134 @@
+#rs
+#msy
+#测试主备库切换过程中，需要保证all_cluster表更新到最新，和configserver同步；在切换过程中检查all_virtual_cluster 表
+#起主库，起备库
+#case1：杀掉备库的备rs，检查主备库的状态处于not_allow
+#case2：等到同步到configserver，状态处于to primary, not_allow;
+#case3: 禁掉备库的复制，建租户，等到系统租户schema同步完成，检查状态为not_allow
+#case4：在杀一台机器，放开复制，因为不满足多数派，所以还是not allow，
+#case4：起来一台机器，满足 
+##case5：把主切成备，状态为
+#case6：把备切成主，查看switchover的状态，检查all_cluster表同步完成的时间
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1:1:1, proxy_num = 0, leaderob=ob1);
+ob1.force_stop;
+ob2.force_stop;
+ob1.reboot;
+ob2.reboot;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version)as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 30;
+ob1.mysql set @@global.ob_query_timeout=30000000;
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+#case 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_cluster where switchover_status = 'TO STANDBY', 1, 30;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+
+ob2.mysql alter system set server_permanent_offline_time = '20s';
+ob2.z1.obs0.switch_rs;
+ob2.z1.obs0.check_leader sys:oceanbase:__all_core_table;
+ob2.z2.obs0.force_stop;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'ACTIVE', 2, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_cluster where switchover_status = 'TO STANDBY', 1, 10;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+
+#case 2
+let $cluster_id = deploy_get_value(ob2.select select cluster_id from __all_virtual_cluster, cluster_id, 1);
+let $z2_ip = deploy_get_value(ob2.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob2.z2.obs0.port);
+ob2.check_until_timeout select count(*) from __all_virtual_clog_stat where table_id = 1<<40|1 and curr_member_list like '%$z2_ip:$z2_port%', 0, 30;
+ob1.check_until_timeout select count(*) from __all_cluster where cluster_id = $cluster_id and rs_list like "%$z2_ip:$z2_port%", 0, 100;
+ob2.check_until_timeout select count(*) from __all_cluster where cluster_id = $cluster_id and rs_list like "%$z2_ip:$z2_port%", 0, 100;
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+
+#case 3
+ob2.mysql alter system set enable_rereplication = false;
+ob2.mysql alter system set enable_rebalance = false;
+#查看状态
+ob1.mysql_p select cluster_id,open_mode,cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_id,open_mode,cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_server_schema_info where refreshed_schema_version = $primary_schema_version and tenant_id = 1, 1, 30;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = 1001, s, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_server_schema_info where refreshed_schema_version = $primary_schema_version and tenant_id = 1001, 1, 30;
+sleep 3;
+ob1.z1.obs0.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1' and start_service_time > 0, 1, 60;
+ob_connect(conn3, ob1.z1.obs0, SYS@tt, ,SYS, , USE_OB_CONNECTOR);
+connection conn3;
+create table t1(c1 int primary key);
+insert into t1 values(1);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 30;
+ob2.mysql_p select zone_list, locality from oceanbase.__all_tenant where tenant_name = 'tt';
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+# case 4
+
+ob2.mysql alter system set enable_rereplication = true;
+ob2.mysql alter system set enable_rebalance = true;
+ob2.mysql alter system set balancer_idle_time = '10s';
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set data_copy_concurrency = 60;
+ob2.mysql alter system set enable_auto_leader_switch = 'False';
+let $partition_cnt = deploy_get_value(ob1.select select count(*) c from __all_root_table where tenant_id = 1001, c, 1);
+ob2.check_until_timeout select count(*) c from __all_root_table where tenant_id = 1001 and zone = 'z1', $partition_cnt, 120;
+ob2.check_until_timeout select count(*) c from __all_root_table where tenant_id = 1001 and zone = 'z3', $partition_cnt, 120;
+let $partition_cnt = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = 1001, c, 1);
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z1', $partition_cnt, 120;
+ob2.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and zone = 'z3', $partition_cnt, 120;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = 1001, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ddl_operation where schema_version = $primary_schema_version and tenant_id = 1001, 1, 90;
+#多数派同步成功
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+#起来z2
+ob2.z2.obs0.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time > 0 and status = 'active', 3, 150;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where status = 'REPLICA_STATUS_NORMAL', 3, 600;
+#等待副本全都OK
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_replica_task, 0, 600;
+ob2.z3.obs0.force_stop;
+sleep 10;
+#等到rs成为多数派，选主
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time > 0 and status = 'active', 2, 150;
+#等待z3永久下线
+ob2.mysql alter system set server_permanent_offline_time='60s';
+ob2.mysql alter system set replica_safe_remove_time='60s';
+#60s后踢永久下线的副本
+#但是不满足多数派，不能下线副本
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.z3.obs0.start;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time > 0 and status = 'active', 3, 150;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_cluster where switchover_status = 'TO STANDBY', 1, 150;
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+#等待z3补完副本
+ob2.check_until_timeout select count(*) from oceanbase.__all_root_table where tenant_id = 1 and member_list not like "%,%,%", 0, 400;
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 200;
+# case 5
+#主切备
+ob1.mysql alter system COMMIT TO SWITCHOVER TO PHYSICAL STANDBY;
+let $cluster_id = deploy_get_value(ob1.select select cluster_id from __all_virtual_cluster, cluster_id, 1);
+ob1.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+
+#case 6
+connection conn2;
+set @@session.ob_query_timeout=30000000;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_cluster where switchover_status = 'TO PRIMARY', 1, 100;
+ob2.mysql_p select cluster_role,switchover_status from oceanbase.__all_virtual_cluster;
+alter system COMMIT TO SWITCHOVER TO PRIMARY;
+connection conn1;
+ob1.check_until_timeout select count(*) from __all_cluster where cluster_id != $cluster_id and rs_list like "%Type\":\"PRIMARY%", 1, 100;
+ob2.check_until_timeout select count(*) from __all_cluster where cluster_id != $cluster_id and rs_list like "%Type\":\"PRIMARY%", 1, 100;
+
+
+
+

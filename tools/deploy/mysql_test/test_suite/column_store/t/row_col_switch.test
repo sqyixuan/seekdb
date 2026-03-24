@@ -1,0 +1,233 @@
+# owner: ouyanghongrong.oyh
+# owner group: STORAGE
+# description: for testing major compaction for columnar store table for (all columns, each column) or (each column) into only all cg.
+
+--echo ===============================================================
+--echo ===========  Step 0: prepare env and tables  ==================
+--echo ===============================================================
+
+alter system set undo_retention = 0;
+set global recyclebin = OFF;
+--disable_query_log
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+
+--disable_abort_on_error
+--disable_result_log
+drop sequence seq1;
+drop sequence seq2;
+drop sequence seq3;
+drop sequence seq4;
+drop sequence seq5;
+drop sequence seq6;
+--enable_result_log
+--enable_abort_on_error
+
+--enable_warnings
+--enable_query_log
+
+# table 1: 2 columns, always all cg only
+create table t1(c1 int, c2 int, primary key (c1)) with column group (all columns, each column);
+
+# table 2: 3 columns, critical value (only row count affect it too)
+create table t2(
+    c1 int, 
+    c2 DECIMAL(10, 2),
+    g1 DECIMAL(10, 2) as ((c1+c2+c3)*100/7) virtual,
+    g2 DECIMAL(10, 2) as ((c1+c2+c3)*100/7) stored,
+    c3 int,
+    primary key (c1, c2)) with column group (all columns, each column);
+
+# table 3: 7 columns, only row count affect it
+create table t3(c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, primary key (c1)) with column group (all columns, each column);
+
+# table 4: 2 columns, always all cg only
+create table t4(c1 int, c2 int, primary key (c1)) with column group (each column);
+
+# table 5: 3 columns, critical value (only row count affect it too)
+create table t5(
+    c1 int, 
+    c2 DECIMAL(10, 2),
+    g1 DECIMAL(10, 2) as ((c1+c2+c3)*100/7) virtual,
+    g2 DECIMAL(10, 2) as ((c1+c2+c3)*100/7) stored,
+    c3 int,
+    primary key (c1, c2)) with column group (each column);
+
+# table 6: 7 columns, only row count affect it
+create table t6(c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, primary key (c1)) with column group (each column);
+
+create sequence seq1 cache 100000 noorder;
+create sequence seq2 cache 100000 noorder;
+create sequence seq3 cache 100000 noorder;
+create sequence seq4 cache 100000 noorder;
+create sequence seq5 cache 100000 noorder;
+create sequence seq6 cache 100000 noorder;
+
+# Get basical information for tenant, tablet and table
+connect (obsys,$OBMYSQL_MS0, root, "", oceanbase, $OBMYSQL_PORT);
+connection obsys;
+
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = "sys", tenant_id, 1);
+
+--echo ===============================================================
+--echo ====  Step 1: test empty table (new and compcated)  ===========
+--echo ===============================================================
+connection default;
+## Case 1.1: before insert, only 1 major for each table
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+
+## Case 1.2: for empty tables, only all cg, no normal cg
+--echo [INFO] Start major freeze for empty tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+
+--echo ===============================================================
+--echo ====  Step 2: test small table (row_cnt = 500, 15000) =========
+--echo ===============================================================
+## Case 2.1: insert 500 lines, only all cg
+--let $insert_row_count=500
+--source mysql_test/include/row_col_switch_insert_until.inc
+--echo [INFO] Start major freeze for 500 lines tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+## Case 2.2: insert 15000 lines, t1/t2/t4/t5 only all cg, t3 and t6 switch to rowkey + normal cg
+--let $insert_row_count=14500
+--source mysql_test/include/row_col_switch_insert_until.inc
+--echo [INFO] Start major freeze for 15000 lines tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo ===============================================================
+--echo ====  Step 3: test a little big table (row_cnt 25000) =========
+--echo ===============================================================
+## Case 3.1: insert 25000 lines, t1/t4 only all cg, t2 and t3 switch to all + normal cg, t5 and t6 switch to rowkey + normal cg
+--let $insert_row_count=10000
+--source mysql_test/include/row_col_switch_insert_until.inc
+--echo [INFO] Start major freeze for 25000 lines tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+
+--echo ===============================================================
+--echo ====  Step 4: test for delete 15000 lines (40000 inc row) =====
+--echo ===============================================================
+## Case 4.1: delete 15000 lines, t1/t4 only all cg, t2 and t3 still all + normal cg, t5 and t6 still rowkey + normal cg
+delete from t1 where c1 > 10000; 
+delete from t2 where c1 > 10000; 
+delete from t3 where c1 > 10000; 
+delete from t4 where c1 > 10000; 
+delete from t5 where c1 > 10000; 
+delete from t6 where c1 > 10000; 
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo [INFO] Start major freeze after delete 15000 lines from tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo ===============================================================
+--echo ====  Step 5: test for delete 5000 lines (15000 inc row) =====
+--echo ===============================================================
+## Case 5.1: delete 10000 lines, t1/t4 only all cg, t2 and t3 still all + normal cg, t5 and t6 still rowkey + normal cg
+delete from t1 where c1 > 5000; 
+delete from t2 where c1 > 5000; 
+delete from t3 where c1 > 5000; 
+delete from t4 where c1 > 5000; 
+delete from t5 where c1 > 5000; 
+delete from t6 where c1 > 5000; 
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo [INFO] Start major freeze after delete 5000 lines from tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+## Case 5.2: compact again, physical row cnt is 5000, only all cg
+--echo [INFO] Start major freeze again from tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+
+--echo ===============================================================
+--echo ====  Step 6: test for insert 16000 lines (21000 inc row) =====
+--echo ===============================================================
+## Case 6.1: insert 16000 lines, t1/t4 only all cg, t2 and t3 still all + normal cg, t5 and t6 still rowkey + normal cg
+--let $insert_row_count=16000
+--source mysql_test/include/row_col_switch_insert_until.inc
+--echo [INFO] Start major freeze for 21000 lines tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo ===============================================================
+--echo ====  Step 7: test for delete all lines (42000 inc row) =======
+--echo ===============================================================
+## Case 7.1: delete all lines, only all cg (since zero count, so is emtpy co)
+delete from t1; 
+delete from t2; 
+delete from t3; 
+delete from t4; 
+delete from t5; 
+delete from t6; 
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo [INFO] Start major freeze after delete all lines from tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+--echo ===============================================================
+--echo ====  Step 8: test for EN_COMPACTION_DISABLE_ROW_COL_SWITCH  ==
+--echo ===============================================================
+
+## Case 11: test tracepoint EN_COMPACTION_DISABLE_ROW_COL_SWITCH, t1 ~ t3 all + normal cg, t4 ~ t6 rowkey + normal cg
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+connection default;
+
+--echo [INFO] Start major freeze after delete all lines from tables t1 ~ t6 when disable row col switch
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+
+insert into t1 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t2 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t3 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t4 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t5 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t6 (c1, c2) values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+
+--echo [INFO] Start major freeze for 10 lines table when disable row col switch
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 0;
+connection default;
+
+--echo [INFO] Start major freeze after disable tracepoint from tables t1 ~ t6
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/row_col_switch_check_major_sstables_for_all.inc
+--source mysql_test/include/row_col_switch_query.inc
+
+select "Finish Test";

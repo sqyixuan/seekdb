@@ -1,0 +1,57 @@
+# owner:binifei.binifei
+# owner group:storage
+# test prewarm of shared storage major compaction
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=5);
+ob1.reboot;
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_meta;
+# disable replica prewarm to avoid the impact of replica prewarm
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant sys;
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant all_user;
+ob1.mysql alter system set _enable_ss_replica_prewarm = false tenant all_meta;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# generage data
+create table t1(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none';
+--disable_query_log
+let $cnt = 0;
+while($cnt < 400)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check whether succ to prewarm
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $ip1 = deploy_get_value(ob1.z1.obs0.ip);
+let $port1 = deploy_get_value(ob1.z1.obs0.port);
+let $ip2 = deploy_get_value(ob1.z2.obs0.ip);
+let $port2 = deploy_get_value(ob1.z2.obs0.port);
+let $ip3 = deploy_get_value(ob1.z3.obs0.ip);
+let $port3 = deploy_get_value(ob1.z3.obs0.port);
+let $new_micro_cnt_1=deploy_get_value(ob1.select select sum(new_micro_count_in_new_macro) as cnt from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and svr_ip = '$ip1' and svr_port = $port1 and type = 'MAJOR_MERGE', cnt, 1);
+let $new_micro_cnt_2=deploy_get_value(ob1.select select sum(new_micro_count_in_new_macro) as cnt from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and svr_ip = '$ip2' and svr_port = $port2 and type = 'MAJOR_MERGE', cnt, 1);
+let $new_micro_cnt_3=deploy_get_value(ob1.select select sum(new_micro_count_in_new_macro) as cnt from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and svr_ip = '$ip3' and svr_port = $port3 and type = 'MAJOR_MERGE', cnt, 1);
+# Note: new_micro_count_in_new_macro of __all_virtual_tablet_compaction_history does not include
+# index block. hence, major_compaction prewarm count is larger than new_micro_count_in_new_macro
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip1' and svr_port = $port1 and value > $new_micro_cnt_1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip2' and svr_port = $port2 and value > $new_micro_cnt_2, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$ip3' and svr_port = $port3 and value > $new_micro_cnt_3, 1, 60;

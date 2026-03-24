@@ -1,0 +1,100 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX OBLOG
+
+#include "ob_log_store_key.h"
+#include "lib/ob_define.h"
+#include "lib/utility/ob_print_utils.h"  // databuff_printf
+
+using namespace oceanbase::common;
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+ObLogStoreKey::ObLogStoreKey() : tenant_ls_id_(), log_lsn_()
+{
+}
+
+ObLogStoreKey::~ObLogStoreKey()
+{
+  reset();
+}
+
+void ObLogStoreKey::reset()
+{
+  tenant_ls_id_.reset();
+  log_lsn_.reset();
+}
+
+int ObLogStoreKey::init(const logservice::TenantLSID &tenant_ls_id,
+    const palf::LSN &log_lsn)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_UNLIKELY(!tenant_ls_id.is_valid())
+        || OB_UNLIKELY(!log_lsn.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    tenant_ls_id_ = tenant_ls_id;
+    log_lsn_ = log_lsn;
+  }
+
+  return ret;
+}
+
+bool ObLogStoreKey::is_valid() const
+{
+  bool bool_ret = false;
+
+  bool_ret = tenant_ls_id_.is_valid()
+    && log_lsn_.is_valid();
+
+  return bool_ret;
+}
+
+int ObLogStoreKey::get_key(std::string &key)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_UNLIKELY(!is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_ERROR("store_key is not valid", KR(ret), KPC(this));
+  } else {
+    key.append(std::to_string(tenant_ls_id_.get_tenant_id()));
+    key.append("_");
+    key.append(std::to_string(tenant_ls_id_.get_ls_id().id()));
+    key.append("_");
+    key.append(std::to_string(log_lsn_.val_));
+  }
+
+  return ret;
+}
+
+int64_t ObLogStoreKey::to_string(char* buf, const int64_t buf_len) const
+{
+  int64_t pos = 0;
+  if (NULL != buf && buf_len > 0) {
+    (void)common::databuff_printf(buf, buf_len, pos, "key:%lu_", tenant_ls_id_.get_tenant_id());
+    (void)common::databuff_printf(buf, buf_len, pos, "%ld_", tenant_ls_id_.get_ls_id().id());
+    (void)common::databuff_printf(buf, buf_len, pos, "%lu", log_lsn_.val_);
+  }
+  return pos;
+}
+
+}
+}

@@ -1,0 +1,107 @@
+# owner: lijinmao.ljm
+# owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop database if exists fts;
+create database fts;
+use fts;
+drop table if exists doc;
+drop table if exists doc_part;
+--enable_warnings
+
+create table doc(
+id int primary key auto_increment,
+title varchar(512),
+content varchar(4096),
+publish_date datetime,
+fulltext index fti1(title),
+fulltext index fti2(content),
+index i1(publish_date)
+);
+
+create table doc_part(
+id int primary key auto_increment,
+title varchar(512),
+content varchar(4096),
+publish_date datetime,
+fulltext index fti1(title),
+fulltext index fti2(content),
+index i1(publish_date)
+) PARTITION BY hash(id) partitions 20;
+
+INSERT INTO doc (title, content, publish_date) VALUES
+('Title1', 'Extended information for document 1', '2024-10-14 15:18:26'),
+('Title2', 'Extended information for document 2', '2024-10-14 16:18:26'),
+('Title3', 'Extended information for document 3', '2024-10-14 17:18:26'),
+('mysql', 'MySQL is a widely-used open-source relational database management system (RDBMS) known for its reliability, performance, and ease of use.', '2024-10-14 18:18:26'),
+('oracle', 'Oracle Database is a powerful and feature-rich enterprise-grade relational database management system known for its scalability, security, and support for large-scale transaction processing and data warehousing applications', '2024-10-14 19:18:26'),
+('oceanbase', 'OceanBase is a distributed, highly scalable, and high-performance relational database system developed by Ant Group, designed for massive data storage and processing, with strong consistency and availability', '2024-10-14 20:18:26');
+
+--let $count = 0
+while($count < 10)
+{
+  eval insert into doc (title, content, publish_date) select concat("Title",id), concat(content, ' content', id), ADDTIME(publish_date, '01:00:00') from doc;
+  inc $count;
+}
+
+insert /*+query_timeout(600000000) enable_parallel_dml parallel(10)*/ into doc_part(title, content, publish_date) select title, content, publish_date from doc;
+
+--explain_protocol 1
+--result_format 4
+
+--echo ### 关闭 plan cache 测不同参数选择率
+set ob_enable_plan_cache = off;
+--echo ### 暂时关掉报错检查，functional lookup 执行还没支持
+--disable_abort_on_error
+
+select count(*) from doc;
+select count(*) from doc_part;
+
+--echo ###### basic index scan ######
+select count(*) from doc where match(title) against ('title1');
+select count(*) from doc where match(title) against ('title1100');
+select count(*) from doc where match(title) against ('title1 title2 title3');
+select count(*) from doc_part where match(title) against ('title1');
+select count(*) from doc_part where match(title) against ('title1100');
+select count(*) from doc_part where match(title) against ('title1 title2 title3');
+
+select count(*) from doc where match(content) against ('content1');
+select count(*) from doc where match(content) against ('content50');
+select count(*) from doc where match(content) against ('content100');
+select count(*) from doc where match(content) against ('content1100');
+select count(*) from doc where match(content) against ('content1 content2');
+select count(*) from doc where match(content) against ('content1 content2 content3');
+select count(*) from doc where match(content) against ('content1 content7');
+select count(*) from doc where match(content) against ('content1 content7 content20');
+select count(*) from doc_part where match(content) against ('content1');
+select count(*) from doc_part where match(content) against ('content50');
+select count(*) from doc_part where match(content) against ('content100');
+select count(*) from doc_part where match(content) against ('content1100');
+select count(*) from doc_part where match(content) against ('content1 content2');
+select count(*) from doc_part where match(content) against ('content1 content2 content3');
+select count(*) from doc_part where match(content) against ('content1 content7');
+select count(*) from doc_part where match(content) against ('content1 content7 content20');
+
+select count(*) from doc_part partition(p0) where match(content) against ('content1');
+select count(*) from doc_part partition(p1) where match(content) against ('content1');
+
+--echo ###### functional lookup ######
+select count(*) from doc where match(title) against ('title1') and publish_date > '2024-10-14';
+select count(*) from doc where match(title) against ('title1') and publish_date = '2024-10-14 16:18:26';
+select count(*) from doc where match(content) against ('content1 content7 content20') and publish_date > '2024-10-14';
+select count(*) from doc where  atch(title) against ('title1') and match(content) against ('content1 content7 content20');
+
+select count(*) from doc_part where match(title) against ('title1') and publish_date > '2024-10-14';
+select count(*) from doc_part where match(title) against ('title1') and publish_date = '2024-10-14 16:18:26';
+select count(*) from doc_part where match(content) against ('content1 content7 content20') and publish_date > '2024-10-14';
+select count(*) from doc_part where match(title) against ('title1') and match(content) against ('content1 content7 content20');
+select /*+index(doc_part fti2)*/ count(*) from doc_part where match(title) against ('title1') and match(content) against ('content1 content7 content20');
+select /*+index(doc_part fti1)*/ count(*) from doc_part where match(title) against ('title1') and match(content) against ('content1 content7 content20');
+select /*+index(doc_part primary)*/ count(*) from doc_part where match(title) against ('title1') and match(content) against ('content1 content7 content20');
+select /*+ index(doc fti1) */ title from doc where id = 0;
+
+--echo ###### path pruning ######
+select count(*) from doc_part where match(content) against ('content1 content7 content20 Extended relational') and publish_date > '2024-10-14';
+
+drop table doc, doc_part;

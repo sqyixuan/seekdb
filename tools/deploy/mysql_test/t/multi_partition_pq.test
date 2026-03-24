@@ -1,0 +1,246 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: dachuan.sdc
+#owner group: sql3
+# tags: optimizer
+
+--disable_query_log
+--disable_result_log
+--source mysql_test/include/index_quick_major.inc
+--enable_query_log
+--enable_result_log
+
+
+###############################prepare the data################################
+
+let $exist = query_get_value("select count(*) as x from oceanbase.__all_virtual_database where database_name = 'multi_partition_pq';", x,  1);
+
+if ($exist<=0)
+{
+create database multi_partition_pq;
+use multi_partition_pq;
+alter system  enable_micro_block_encoding=False;
+sleep 1;
+create table t1(c1 int not null auto_increment comment 'ID', c2 varchar(1000),  primary key(c1), index t1_c2(c2)) COMPRESSION = 'NONE';
+create table t2(c1 int primary key, c2 varchar(1000));
+create table t1_p(c1 int not null, c2 varchar(1000),  primary key(c1), index t1_c2(c2) local) COMPRESSION = 'NONE' partition by range columns(c1) (partition p0 values less than (20000), partition p1 values less than (35000), partition p2 values less than (50000), partition p3 values less than (MAXVALUE));
+
+--disable_query_log
+--disable_result_log
+
+#with recursive_cte(a,b) as (select 1, concat('insert into t1 values(','1',',\'',concat('1',repeat('d', 980),'\')')) from dual union all select a+1, concat(b, ',(',a+1,',\'',concat(a+1,repeat('d', 980)),'\')' ) from recursive_cte where a <= 100) select * from recursive_cte where a = 100;
+
+let $sql = query_get_value("with recursive_cte(a,b) as (select 1, concat('insert into t1(c2) values(','\'',concat('1',repeat('d', 980),'\')')) from dual union all select a+1, concat(b, ',(','\'',concat(a+1,repeat('d', 980)),'\')' ) from recursive_cte where a <= 1000) select * from recursive_cte where a = 1000;", b, 1);
+
+let $start=1;
+let $end=1000;
+
+#let $sql_1 = query_get_value("with recursive_cte(a,b) as (select $start, concat('insert into t1_p values(','$start',',\'',concat('1',repeat('d', 980),'\')')) from dual union all select a+1, concat(b, ',(',a+1,',\'',concat(a+1,repeat('d', 980)),'\')' ) from recursive_cte where a <= $end) select * from recursive_cte where a = $end;", b, 1);
+
+#--echo $sql_1
+#10w行
+set ob_query_timeout=10000000000;
+
+#let $time = query_get_value("select now() as x from dual", x, 1);
+#--echo $time
+
+let $cnt=100;
+while($cnt)
+{
+  eval $sql;
+  dec $cnt;
+}
+
+#let $time = query_get_value("select now() as x from dual", x, 1);
+#--echo $time
+
+let $cnt=100;
+while($cnt)
+{
+  let $sql_1 = query_get_value("with recursive_cte(a,b) as (select $start, concat('insert into t1_p values(','$start',',\'',concat('1',repeat('d', 980),'\')')) from dual union all select a+1, concat(b, ',(',a+1,',\'',concat(a+1,repeat('d', 980)),'\')' ) from recursive_cte where a <= $end) cycle a set iscyc to 'y' default 'n' select * from recursive_cte where a = $end;", b, 1);
+  eval $sql_1;
+  #不支持expr命令，暂时就用sql语句来写吧
+  let $start= query_get_value("select ($start+1000) as x from dual", x, 1);
+  let $end= query_get_value("select ($end+1000) as x from dual", x, 1);
+  alter system flush plan cache;
+  dec $cnt;
+}
+
+#let $time = query_get_value("select now() as x from dual", x, 1);
+#--echo $time
+
+set ob_query_timeout=10000000;
+--enable_query_log
+--enable_result_log
+}
+if ($exist>0) 
+{
+  use multi_partition_pq;
+}
+
+
+################################start test#####################################
+#
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1;
+select /*+ parallel(2) */ count(*) from t1;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p;
+select /*+ parallel(2) */ count(*) from t1_p;
+
+--disable_query_log
+
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('TEST', 'T1');
+call dbms_stats.gather_table_stats('TEST', 'T1_P');
+call dbms_stats.gather_table_stats('TEST', 'T2');
+
+--enable_query_log
+
+## primary index
+explain extended_noaddr select /*+ parallel(0) */ count(*) from t1;
+select /*+ parallel(0) */ count(*) from t1;
+explain extended_noaddr select /*+ parallel(0) */ count(*) from t1_p;
+select /*+ parallel(0) */ count(*) from t1_p;
+
+explain extended_noaddr select /*+ parallel(-1) */ count(*) from t1;
+select /*+ parallel(-1) */ count(*) from t1;
+explain extended_noaddr select /*+ parallel(-1) */ count(*) from t1_p;
+select /*+ parallel(-1) */ count(*) from t1_p;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1;
+select /*+ parallel(2) */ count(*) from t1;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p;
+select /*+ parallel(2) */ count(*) from t1_p;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 = 15;
+select /*+ parallel(2) */ count(*) from t1 where c1 = 15;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 = 15;
+select /*+ parallel(2) */ count(*) from t1_p where c1 = 15;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 < 0;
+select /*+ parallel(2) */ count(*) from t1 where c1 < 0;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 < 0;
+select /*+ parallel(2) */ count(*) from t1_p where c1 < 0;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > 100000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > 100000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > 100000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > 100000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > 1000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > 1000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > 1000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > 1000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > -1 and c1 < 100000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > -1 and c1 < 100000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > -1 and c1 < 100000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > -1 and c1 < 100000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > 0 and c1 < 50000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > 0 and c1 < 50000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > 0 and c1 < 50000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > 0 and c1 < 50000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > 50000 and c1 < 100000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > 50000 and c1 < 100000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > 50000 and c1 < 100000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > 50000 and c1 < 100000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 > 50000 and c1 < 70000;
+select /*+ parallel(2) */ count(*) from t1 where c1 > 50000 and c1 < 70000;
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 > 50000 and c1 < 70000;
+select /*+ parallel(2) */ count(*) from t1_p where c1 > 50000 and c1 < 70000;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+
+## out-of-order ranges
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1 where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999);
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1_p where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999);
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(2) */ count(*) from t1 where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(2) */ count(*) from t1_p where c1 in (99999, 1000, 20000, 45000, 30000, 5, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+
+## non-existing range
+explain extended_noaddr select /*+ parallel(2) */ * from t1 where c1 > 5000 and c1 < 1;
+select /*+ parallel(2) */ * from t1 where c1 > 5000 and c1 < 1;
+explain extended_noaddr select /*+ parallel(2) */ * from t1_p where c1 > 5000 and c1 < 1;
+select /*+ parallel(2) */ * from t1_p where c1 > 5000 and c1 < 1;
+
+## test with different parallelism
+select /*+ parallel(4) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(8) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(15) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(16) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(64) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(4) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(9) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(16) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(64) */ count(*) from t1 where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+
+select /*+ parallel(4) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(8) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(15) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(16) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(64) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999);
+select /*+ parallel(2) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(4) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(9) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(16) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+select /*+ parallel(64) */ count(*) from t1_p where c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) or (c1 > 30001 and c1 < 40000);
+
+explain extended_noaddr select /*+ parallel(2) */ * from t1 where c1 in (1, 10000, 50000, 90000);
+select /*+ parallel(2) */ * from t1 where c1 in (1, 100000, 500000, 900000);
+explain extended_noaddr select /*+ parallel(2) */ * from t1_p where c1 in (1, 10000, 50000, 90000);
+select /*+ parallel(2) */ * from t1_p where c1 in (1, 100000, 500000, 900000);
+
+## secondary index
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where c2 in (1, 100000, 500000, 900000);
+select /*+ parallel(2) */ count(*) from t1 where c2 in (1, 100000, 500000, 900000);
+select count(*) from t1 where c2 in (1, 100000, 500000, 900000);
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where c2 in (1, 100000, 500000, 900000);
+select /*+ parallel(2) */ count(*) from t1_p where c2 in (1, 100000, 500000, 900000);
+select count(*) from t1_p where c2 in (1, 100000, 500000, 900000);
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1 where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+select /*+ parallel(2) */ count(*) from t1 where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+select count(*) from t1 where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+
+explain extended_noaddr select /*+ parallel(2) */ count(*) from t1_p where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+select /*+ parallel(2) */ count(*) from t1_p where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+select count(*) from t1_p where (c2 > '1' and c2 < '2') or (c2 > '6' and c2 < '7') or (c2 > '8' and c2 < '9') ;
+
+## multi-table, parallelism disabled at the moment
+explain extended_noaddr select /*+ parallel(2) use_nl(a b) */ * from t1 a, t1 b where a.c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) and a.c1 = b.c1;
+explain extended_noaddr select /*+ parallel(2) use_nl(a b) */ * from t1_p a, t1_p b where a.c1 in (1, 1000, 20000, 25000, 30000, 50000, 90000, 99999) and a.c1 = b.c1;
+
+## parallelism must be specified
+explain extended_noaddr select /*+ parallel */ * from t1;
+explain extended_noaddr select /*+ parallel */ * from t1_p;
+
+# virtual table is not supported
+explain extended_noaddr select /*+ parallel(2) */ * from oceanbase.V$OB_PLAN_CACHE_STAT;
+
+## empty table, nothing to parallelize
+explain extended_noaddr select /*+ parallel(2) */ * from t2;
+select /*+ parallel(2) */ * from t2;
+
+#TODO(叶提)：需要处理一下分区内并行的task order
+explain extended_noaddr select /*+ parallel(2) */* from t1 order by c1 desc;
+
+## clean up
+drop table t1;
+drop table t2;
+drop table t1_p;
+drop database multi_partition_pq;
+

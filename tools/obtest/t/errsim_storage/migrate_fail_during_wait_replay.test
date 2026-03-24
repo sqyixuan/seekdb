@@ -1,0 +1,46 @@
+# owner: jingyan.kfy
+# owner group: transaction
+# description: 迁移在等待回放过程中失败后，应该将partition切换到OFFLINE状态
+#
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2, init_unit_num=2);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = false;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob1.create_client tenant=obtest,user=root,passwd=,database=test;
+
+create table test01(c1 int, c2 int, c3 varchar(4096), primary key(c1)) primary_zone='z1';
+sleep 10;
+
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+#发起迁移
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z2' and table_id=$table_id, host, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_unit where zone='z2' and svr_ip != '$src_ip' and resource_pool_id = 1001, host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+
+$dst.mysql alter system set_tp tp_no = 10, error_code = 4006, frequency = 1;
+sleep 2;
+
+$src.migrate_to $dst,obtest:test:test01;
+
+sleep 10;
+
+ob1.mysql_p select partition_state from oceanbase.__all_virtual_partition_info where table_id=$table_id order by partition_state;

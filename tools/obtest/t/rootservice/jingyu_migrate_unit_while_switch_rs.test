@@ -1,0 +1,95 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#     This case is aimed to test migrate unit while switch rs
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET default_compress_func = 'none';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.__all_tenant WHERE tenant_name = "sys", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+# get sys_tenant's unit info in z3
+let $unit_id = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.__all_unit WHERE resource_pool_id = $resource_pool_id AND zone = 'z3', unit_id, 1);
+let $ip = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.__all_unit WHERE unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.__all_unit WHERE unit_id = $unit_id, svr_port, 1);
+let $z3_cur = $ip:$port;
+
+# get servers' addr in z1 and z2
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+
+# get servers' addr in z3
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+
+
+
+#######################################################################
+#               CASE  1        migrate unit and switch rs
+#######################################################################
+
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_core_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND zone = "z1", 1, 20;
+
+if ($z3_cur != $z3_dst0)
+{
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$z3_dst0";
+  --enable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "INPROGRESS", 1, 20;
+  eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_core_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND zone = "z2", 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_unit WHERE unit_id = $unit_id AND migrate_from_svr_ip = '', 1, 400;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_ls_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND member_list NOT LIKE '%$z3_dst0%' AND member_list LIKE '%$z3_dst1%', 0, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_ls_replica_task WHERE tenant_id = $tenant_id, 0, 20;
+}
+if ($z3_cur != $z3_dst1)
+{
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$z3_dst1";
+  --enable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "INPROGRESS", 1, 20;
+  eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_core_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND zone = "z2", 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_unit WHERE unit_id = $unit_id AND migrate_from_svr_ip = '', 1, 400;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_ls_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND member_list NOT LIKE '%$z3_dst1%' AND member_list LIKE '%$z3_dst0%', 0, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_rootservice_job WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_ls_replica_task WHERE tenant_id = $tenant_id, 0, 20;
+}
+
+# do cleaning
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout SELECT COUNT(*) as cnt FROM oceanbase.__all_virtual_core_meta_table WHERE tenant_id = $tenant_id AND role = 1 AND zone = "z1", 1, 20;
+
+
+
+
+
+
+
+
+

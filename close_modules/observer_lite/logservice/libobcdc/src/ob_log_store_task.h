@@ -1,0 +1,72 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_STORE_TASK_H_
+#define OCEANBASE_LIBOBCDC_STORE_TASK_H_
+
+#include "ob_log_batch_buffer_task.h"  // IObLogBufTask
+#include "ob_log_callback.h"           // ObILogCallback
+#include "ob_log_store_key.h"          // ObLogStoreKey
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+class ObLogStoreTask : public IObLogBufTask
+{
+public:
+  ObLogStoreTask();
+  ~ObLogStoreTask();
+  void reset();
+  int init(const logservice::TenantLSID &tenant_ls_id,
+      const palf::LSN &log_lsn,
+      const char *data_buf,
+      const int64_t data_len,
+      ObILogCallback *log_callback);
+  void destroy() { reset(); }
+
+  bool is_valid() const;
+  int64_t get_data_len() const { return data_len_; }
+  int64_t get_entry_cnt() const { return 1; }
+  int fill_buffer(char *buf, const offset_t offset);
+  int st_after_consume(const int handle_err);
+
+public:
+  static const int64_t RP_MAX_FREE_LIST_NUM = 10240;
+
+  ObLogStoreKey &get_store_key() { return store_key_; }
+  const char *get_data_buffer() const { return data_buf_; }
+  offset_t get_offset() const { return offset_; }
+
+  TO_STRING_KV(K_(store_key),
+      K_(data_len),
+      K_(offset));
+
+private:
+  bool is_inited_;
+  ObLogStoreKey store_key_;
+  const char *data_buf_;
+  int64_t data_len_;
+  offset_t offset_;  // Fill Batch buf offset
+  ObILogCallback *log_callback_;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObLogStoreTask);
+};
+
+}; // end namespace libobcdc
+}; // end namespace oceanbase
+#endif

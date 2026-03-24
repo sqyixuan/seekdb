@@ -1,0 +1,72 @@
+# owner: lixia.yq
+# owner group: storage [major]
+# description: this case test major_compact_trigger & major_freeze_duty_time
+#
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+--source include/compaction/set_common_parameters.inc
+# set EN_ENABLE_SHARED_STORAGE_COLUMN_GROUP to enable column group under shared-storage mode
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+
+let $proxy_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set freeze_trigger_percentage=2 tenant obtest;
+ob1.mysql alter system set major_compact_trigger=2 tenant obtest;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+create table test01(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960), c5 varchar(40960), c6 varchar(40960), c7 varchar(40960)) compression= 'none';
+create table test02(c0 varchar(4096), c1 int, c2 int, c3 int, c4 varchar(40960), c5 varchar(40960), c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, primary key(c0, c1)) with column group (all columns, each column);
+create table test03(c0 varchar(4096), c1 int, c2 int, c3 int, c4 varchar(40960), c5 varchar(40960), c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, primary key(c0, c1)) with column group (each column);
+
+#########################################################################
+# TEST_1: insert row and reach major compact trigger
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+let $cnt=0;
+while($cnt < 1200)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), repeat('oceanbase', 4096), repeat('wakakakaka', 4096), repeat('oceanbase', 4096));
+  eval insert into test02 values(repeat('k', 4096), $cnt, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  eval insert into test03 values(repeat('k', 4096), $cnt, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  let $major_cnt=deploy_get_value(ob1.select select count(*) as c from oceanbase.__all_rootservice_event_history where module = "major_merge" and value1='$tenant_id' and name4="freeze_reason" and value4="MAJOR_COMPACT_TRIGGER", c, 1);
+  if ($major_cnt >= 1)
+  {
+    let $cnt = 1200;
+  }
+  inc $cnt;
+}
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and GLOBAL_BROADCAST_SCN > 1 , 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+#########################################################################
+# TEST_2: change major_freeze_duty_time to next minutes
+#########################################################################
+
+let $hour = deploy_get_value(ob1.select select substr(now(), 12, 2) as hour, hour, 1);
+let $minutes = deploy_get_value(ob1.select select substr(now(), 15, 2) + 2 as minutes, minutes, 1);
+--disable_query_log
+connection sys_conn;
+if ($minutes >= 60)
+{
+  let $new_hour = deploy_get_value(ob1.select select $hour + 1 as hour, hour, 1);
+  eval alter system set major_freeze_duty_time = "$new_hour:01" tenant obtest;
+}
+if ($minutes < 60)
+{
+  eval alter system set major_freeze_duty_time = "$hour:$minutes" tenant obtest;
+}
+--enable_query_log
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 1800;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_rootservice_event_history where module = "major_merge" and value1='$tenant_id' and name4="freeze_reason" and value4="DAILY_MERGE", 1, 10;

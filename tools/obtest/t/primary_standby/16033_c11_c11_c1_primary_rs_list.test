@@ -1,0 +1,85 @@
+#rs
+#msy
+#验证在注册和add_cluster之间存在rs_list的变更，对同步的判断
+ob1=OBI(cluster=1:1, proxy_num = 0);
+ob2=OBI(cluster=1:1, proxy_num = 0, leaderob=ob1);
+ob3=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+
+ob1.reboot;
+#在备库bootstrap成功之前，切换主库的rs_list和备库的rs_list
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1, f@z2';
+let $zone_list = 'z1','z2';
+source include/create_tenant_1.inc;
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+alter tenant sys set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1 and zone = 'z2', 1, 100;
+
+ob2.reset;
+ob2.deploy;
+ob2.bootstrap;
+ob3.reset;
+ob3.deploy;
+ob3.bootstrap;
+
+ob1.mysql_p select cluster_status from oceanbase.__all_cluster;
+ob_connect(conn2, ob2.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn2;
+select cluster_status from oceanbase.__all_cluster;
+source include/standby_sync_ddl.inc;
+alter system set enable_auto_leader_switch = false;
+let $tid = deploy_get_value(ob1.select select 1<<40 | 1 as table_id, table_id, 1);
+let $src = query_get_value(select concat(svr_ip,":",svr_port) addr from oceanbase.__all_virtual_core_meta_table where role = 1, addr,1);
+--disable_query_log
+eval alter system switch replica follower partition_id = '0%1@$tid' server = '$src';
+--enable_query_log
+let $cluster_id = query_get_value(select cluster_id from oceanbase.v\$ob_cluster, cluster_id, 1);
+let $cluster_name = query_get_value(select cluster_name from oceanbase.v\$ob_cluster, cluster_name, 1);
+
+ob1.mysql alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 300;
+let $cluster_id = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id set redo_transport_options='SYNC';
+let $cluster_id = deploy_get_value(ob2.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id set redo_transport_options='SYNC';
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob1.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PROTECTION;
+
+ob_connect(conntt, ob1.z1.obs0, root@tenant_1, ,oceanbase, , USE_OB_CONNECTOR);
+connection conntt;
+use test;
+set ob_query_timeout = 30000000;
+create table t1(c1 int ,c2 int ,c3 int, primary key(c1, c2));
+insert into t1 values(1, 1, 1),(1,2,1);
+
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 30;
+ob2.mysql alter system commit to switchover to primary;
+ob_connect(conn3, ob3.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn3;
+source include/standby_sync_ddl.inc;
+select cluster_status from oceanbase.__all_cluster;
+let $cluster_name = query_get_value(select cluster_name from oceanbase.v\$ob_cluster, cluster_name, 1);
+let $cluster_id = query_get_value(select cluster_id from oceanbase.v\$ob_cluster, cluster_id, 1);
+
+ob2.mysql alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+
+#虽然add成功，但是同步不能成功
+sleep 10;
+select cluster_status from oceanbase.__all_cluster;
+
+#重新设置rs_list和primary_cluster_id
+let $rs_list = deploy_get_value(ob2.select select concat(svr_ip,":",svr_port) addr from oceanbase.__all_server where with_rootserver =1, addr, 1);
+let $cluster_id = deploy_get_value(ob2.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+connection conn3;
+select cluster_status from oceanbase.__all_virtual_cluster;
+connection conn3;
+--disable_query_log
+eval alter system change cluster '$cluster_name' cluster_id $cluster_id set rootservice_list = '$rs_list';
+--enable_query_log
+#第三方备库可以同步成功
+sleep 10;
+select cluster_status from oceanbase.__all_virtual_cluster;

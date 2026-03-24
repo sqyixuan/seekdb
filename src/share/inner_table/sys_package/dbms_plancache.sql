@@ -1,0 +1,11 @@
+#package_name: dbms_plancache
+#author: xiaoyi.xy
+CREATE OR REPLACE PACKAGE "DBMS_PLAN_CACHE" IS
+  PROCEDURE PURGE(
+    SQL_ID IN VARCHAR,
+    SCHEMA IN VARCHAR := NULL,
+    GLOBAL IN BOOLEAN DEFAULT FALSE);
+END;
+
+//
+

@@ -1,0 +1,142 @@
+# owner: ouyanghongrong.oyh
+# owner group: STORAGE
+# description: test column store full direct load
+
+--echo ===============================================================
+--echo === Step 0: create tenant with cs replica locality in z2 ======
+--echo ===============================================================
+
+let $unit1 = unit_1;
+let $pool1 = pool_1;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection obsys;
+
+let $z1 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 1); 
+let $z2 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 2); 
+let $z2_ip         = query_get_value(select svr_ip     from oceanbase.__all_server where zone = '$z2', svr_ip,     1); 
+let $z2_mysql_port = query_get_value(select inner_port from oceanbase.__all_server where zone = '$z2', inner_port, 1);
+
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+#eval CREATE RESOURCE UNIT if not exists $unit1 MAX_CPU=1, MEMORY_SIZE='2G';
+#eval create resource pool if not exists $pool1 unit='$unit1', unit_num = 1, zone_list = ('$z1', '$z2');
+#eval create tenant tenant1 resource_pool_list=('$pool1'), replica_num=2, zone_list=('$z1','$z2'), locality = 'F@$z1, C@$z2' set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,root,'',test, $OBMYSQL_PORT);
+
+--echo ===============================================================
+--echo === Step 2: create table, prepare basic data ==================
+--echo ===============================================================
+connection conn1;
+
+--disable_query_log
+--disable_warnings
+drop table if exists t1;
+set global ob_query_timeout = 100000000;
+--enable_warnings
+--enable_query_log
+--disable_warnings
+drop table if exists t1,tload;
+drop sequence if exists seq;
+--enable_warnings
+create table t1    (k int primary key, v1 int, v2 int, v3 int);
+create table tload (k int primary key, v1 int, v2 int, v3 int) partition by hash(k) partitions 8;
+create sequence seq cache 100000 noorder;
+insert into tload select seq.nextval + 10, seq.nextval + 11, seq.nextval + 12, seq.nextval + 13 from table(generator(100000));
+
+--echo ===============================================================
+--echo === Step 3: Do full direct load  ==============================
+--echo ===============================================================
+connection conn1;
+set ob_query_timeout = 100000000;
+insert /*+ enable_parallel_dml parallel(7) append*/ into t1 select * from tload;
+connection conn2;
+sleep 5;
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from t1 order by k limit 10;
+
+connection conn1;
+set ob_query_timeout = 100000000;
+--disable_warnings
+DROP TABLE IF EXISTS t2;
+--enable_warnings
+create table t2 (k int primary key, v1 int, v2 int, v3 int) WITH COLUMN GROUP(all columns, each column);
+insert /*+ enable_parallel_dml parallel(7) append*/ into t2 select * from tload;
+connection conn2;
+sleep 5;
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from t2 order by k limit 10;
+
+connection obsys;
+alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+select count(*) from GV$OB_SSTABLES where tablet_id = (select tablet_id from __all_virtual_table where table_name = 't1') and table_type = 'MAJOR';
+select count(*) from GV$OB_SSTABLES where tablet_id = (select tablet_id from __all_virtual_table where table_name = 't1') and table_type = 'CO_MAJOR';
+
+--echo ===============================================================
+--echo === Step 3: Do big table offline ddl  =========================
+--echo ===============================================================
+connection conn1;
+set ob_query_timeout = 100000000;
+--disable_warnings
+DROP TABLE IF EXISTS t3;
+--enable_warnings
+create table t3 (k int primary key, 
+    v1  int, v2  int, v3  int, v4  int,  v5 int,  v6 int,  v7 int,  v8 int,  v9 int,  v10 int, 
+    v11 int, v12 int, v13 int, v14 int, v15 int, v16 int, v17 int, v18 int, v19 int,  v20 int);
+--disable_warnings
+DROP SEQUENCE IF EXISTS seq3;
+--enable_warnings
+create sequence seq3 cache 1000000 noorder;
+
+insert into t3 select seq.nextval,
+seq.nextval + 1, seq.nextval + 2, seq.nextval + 3, seq.nextval + 4, seq.nextval + 5, seq.nextval + 6, seq.nextval + 7, seq.nextval + 8, seq.nextval + 9, seq.nextval + 10,
+seq.nextval + 1, seq.nextval + 2, seq.nextval + 3, seq.nextval + 4, seq.nextval + 5, seq.nextval + 6, seq.nextval + 7, seq.nextval + 8, seq.nextval + 9, seq.nextval + 10
+from table(generator(1000000));
+alter /*+ parallel(4) */ table t3 modify v2 decimal(10, 1);
+select count(*) from t3;
+
+connection conn2;
+sleep 5;
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ count(*) from t3;
+
+--echo ===============================================================
+--echo === Step 4: Do lob table offline ddl  =========================
+--echo ===============================================================
+connection conn1;
+set ob_query_timeout = 100000000;
+--disable_warnings
+DROP TABLE IF EXISTS t4;
+--enable_warnings
+create table t4(k int primary key, c1 int, c2 varchar(1024), c3 varchar(1024), c4 text);
+--disable_warnings
+DROP SEQUENCE IF EXISTS seq4;
+--enable_warnings
+create sequence seq4 cache 1000000 noorder;
+insert into t4 select seq4.nextval, seq4.nextval, MD5(seq4.nextval), MD5(seq4.nextval*10), MD5(seq4.nextval*100) from table(generator(1000000));
+alter /*+ parallel(2) */ table t4 modify c1 decimal(10, 2);
+select count(*) from t4;
+
+connection conn2;
+sleep 5;
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ count(*) from t4;
+
+connection obsys;
+sleep 10;
+select count(*) from GV$OB_SSTABLES where tablet_id = (select tablet_id from __all_virtual_table where table_name = 't1') and table_type = 'MAJOR';
+select count(*) from GV$OB_SSTABLES where tablet_id = (select tablet_id from __all_virtual_table where table_name = 't1') and table_type = 'CO_MAJOR';
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+
+select "Finish";

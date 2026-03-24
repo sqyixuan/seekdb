@@ -1,0 +1,230 @@
+#owner: guohanyun.ghy
+#owner group: 技术部-SQL-优化器
+#description: 435优化器技改 重复值不敏感判定
+#tags:
+#author: wb-lyq858317
+
+--result_format 4
+purge recyclebin;
+
+--echo 重复值不敏感判定
+
+--error 0,1051
+drop table lyqtest1;
+CREATE TABLE lyqtest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, null, '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+
+--error 0,1051
+drop table lyqtest2;
+CREATE TABLE lyqtest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(null, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+
+--error 0,1051
+drop table lyqtest3;
+CREATE TABLE lyqtest3 AS SELECT * FROM lyqtest2;
+
+--error 0,1051
+drop view v_left_outer;
+create view v_left_outer as (select distinct t1.* from lyqtest1 t1 left outer join lyqtest2 t2 on t1.c1 = t2.c1);
+
+--error 0,1051
+drop view v_semi;
+create view v_semi as (select * from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+
+--echo Semi To Inner 的改动
+--echo 位于上层 Semi 右表
+
+select distinct view1.c1 from (select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+select distinct c1 from (select t1.c1 from lyqtest1 t1 inner join lyqtest2 t2 on t1.c1 = t2.c1) view1;
+explain basic select distinct view1.c1 from (select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+explain basic select distinct c1 from (select t1.c1 from lyqtest1 t1 inner join lyqtest2 t2 on t1.c1 = t2.c1) view1;
+explain basic select distinct view1.c1 from (select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+
+select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+
+select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where c2 = any (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where c2 = any (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where c2 = any (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+
+select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where c2 = all (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select c1 from lyqtest1 t1 where c2 = all (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic select * from lyqtest3 where c1 in (select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where c2 = all (select c2 from lyqtest2 t2 where t1.c1 = t2.c1));
+
+--echo 位于 set distinct
+
+select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)
+union
+select c1 from lyqtest3 order by 1;
+explain basic select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)
+union
+select c1 from lyqtest3 order by 1;
+explain basic select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)
+union
+select c1 from lyqtest3 order by 1;
+
+select c1 from lyqtest1 t1 where c2 = any (select c2 from lyqtest2 t2 where t1.c1 = t2.c1)
+union
+select c1 from lyqtest3 order by 1;
+select c1 from lyqtest1 t1 where c2 = all (select c2 from lyqtest2 t2 where t1.c1 = t2.c1)
+union
+select c1 from lyqtest3 order by 1;
+
+--echo 本层有重复值不敏感聚合
+
+select max(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select max(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select  /*+ NO_REWRITE */ max(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+
+select max(c1),min(c4) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select max(c1),min(c4) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select /*+ NO_REWRITE */ max(c1),min(c4) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+
+select avg(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select avg(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select /*+ NO_REWRITE */ avg(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+
+select count(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select count(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select /*+ NO_REWRITE */ count(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+
+--echo 本层有 Distinct
+
+select distinct c1 from lyqtest1 t1 where exists (select * from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select distinct c1 from lyqtest1 t1 where exists (select * from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select /*+ NO_REWRITE */ distinct c1 from lyqtest1 t1 where exists (select * from lyqtest2 t2 where t1.c1 = t2.c1);
+
+select distinct max(c1) from lyqtest1 t1 where exists (select * from lyqtest2 t2 where t1.c1 = t2.c1);
+explain basic select distinct max(c1) from lyqtest1 t1 where exists (select * from lyqtest2 t2 where t1.c1 = t2.c1);
+
+explain basic select distinct avg(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1);
+
+--echo 上层有 Distinct
+
+select distinct view1.c1 from lyqtest3,(select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+explain basic select distinct view1.c1 from lyqtest3,(select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+explain basic select distinct view1.c1 from lyqtest3,(select /*+ NO_REWRITE */ c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+
+select distinct max(view1.c1) from lyqtest3,(select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+explain basic select distinct max(view1.c1) from lyqtest3,(select c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+
+--echo 组合
+
+select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+explain basic select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1;
+
+select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1
+union
+select c1 from lyqtest3 order by 1;
+explain basic select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1
+union
+select c1 from lyqtest3 order by 1;
+
+select * from lyqtest3 where c1 in (select distinct max(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+explain basic  select * from lyqtest3 where c1 in (select distinct max(c1) from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1));
+
+
+--echo Outer Join Elimination 的改动
+
+select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+explain basic  select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+explain basic  select /*+ NO_REWRITE */ distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+
+--echo 本层有重复值不敏感聚合
+
+select max(t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+explain basic  select max(t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+explain basic  select /*+ NO_REWRITE */ max(t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+
+select avg(t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+explain basic select avg(t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1;
+
+
+--echo 上层有 Distinct
+select distinct t3.c1 from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+explain basic  select distinct t3.c1 from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+explain basic  select /*+ NO_REWRITE */ distinct t3.c1 from lyqtest3 t3,(select /*+ NO_REWRITE */ t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+
+--echo 组合
+select distinct t3.c1 from lyqtest3 t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1 order by 1;
+explain basic select distinct t3.c1 from lyqtest3 t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1 order by 1;
+
+select  max(t3.c1) from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+explain basic  select  max(t3.c1) from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+
+select  max(t3.c1) from lyqtest3 t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+explain basic  select  max(t3.c1) from lyqtest3 t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+
+select  max(t3.c1) from (select distinct max(view1.c1) c1 from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1) t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+explain basic  select  max(t3.c1) from (select distinct max(view1.c1) c1 from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1) t3,(select distinct t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1;
+
+select  max(t3.c1) from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1
+union
+select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1 order by 1;
+explain basic select  max(t3.c1) from lyqtest3 t3,(select t1.* from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1) vvvv1
+union
+select distinct max(view1.c1) from lyqtest3,(select distinct max(c1) c1 from lyqtest1 t1 where exists (select 1 from lyqtest2 t2 where t1.c1 = t2.c1)) view1 order by 1;
+
+select  max(t3.c1) from lyqtest3 t3,v_left_outer
+union
+select distinct max(v_semi.c1) from lyqtest3,v_semi order by 1;
+explain basic select  max(t3.c1) from lyqtest3 t3,v_left_outer
+union
+select distinct max(v_semi.c1) from lyqtest3,v_semi order by 1;
+
+
+--error 0,1051
+drop table lyqtest1;
+--error 0,1051
+drop table lyqtest2;
+--error 0,1051
+drop table lyqtest3;
+--error 0,1051
+drop view v_left_outer;
+--error 0,1051
+drop view v_semi;
+
+
+

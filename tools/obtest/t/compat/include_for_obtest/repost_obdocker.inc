@@ -1,0 +1,15 @@
+obdocker.mysql alter system run upgrade job 'upgrade_all';
+inc $cnt1;
+obdocker.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',$cnt1,3600;
+obdocker.mysql alter system set _enable_parallel_table_creation = false tenant=all_user;
+obdocker.mysql alter system set _enable_parallel_table_creation = false tenant=all_meta;
+obdocker.mysql alter system set _enable_parallel_table_creation = false tenant=sys;
+obdocker.mysql alter system run upgrade job 'upgrade_all';
+inc $cnt1;
+obdocker.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',$cnt1,3600;
+obdocker.mysql alter system run upgrade job 'upgrade_all';
+inc $cnt1;
+obdocker.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',$cnt1,3600;
+obdocker.mysql alter system set _enable_parallel_table_creation = true tenant=all_user;
+obdocker.mysql alter system set _enable_parallel_table_creation = true tenant=all_meta;
+obdocker.mysql alter system set _enable_parallel_table_creation = true tenant=sys;

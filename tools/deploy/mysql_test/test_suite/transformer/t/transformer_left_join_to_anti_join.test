@@ -1,0 +1,458 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+### owner:yibo.tyf
+### owner group: sql1
+### tags: optimizer
+### task: 
+
+--disable_warnings
+drop table if exists t1, t2, t3, t4, t5, t6;
+
+### 无特殊列
+create table t1(a int, b int, c int);
+### 带主键表
+create table t2(a int primary key, b int, c int);
+### 带not null限制表
+create table t3(a int, b int not null, c int);
+### 无特殊列
+create table t4(a int, b int);
+### 分区表
+create table t5(a int, b int, c int, primary key(a, b, c)) partition by hash(a) partitions 4;
+create table t6(a int, b int, c int, primary key(a, b, c)) partition by hash(a) partitions 4;
+
+insert into t1 values (NULL, NULL, NULL), (1, NULL, 2), (2, 2, 2), (2, 3, 3), (3, 3, NULL), (4, 4, 5);
+insert into t2 values (1, 1, 1), (2, 2, 3), (3, NULL, NULL);
+insert into t3 values (NULL, 1, NULL), (2, 2, 2), (1, 3, NULL), (4, 5, 6);
+insert into t5 values (0, 1, 1), (2, 3, 4), (3, 4, 5);
+insert into t6 values (1, 1, 1), (2, 3, 4), (5, 4, 5);
+
+--explain_protocol 2
+--result_format 4
+--enable_warnings
+### on condition含一个表达式，且有一个where is null，要求where条件中至少有一列满足以下两种条件之一：1）在on condtion的右侧列出现；2）是右表中的列且有not null的限制
+### 在on condition中出现，测试where带非null条件以及order by
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b > 0 order by t1.a;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b > 0 order by t1.a;
+
+### 在on condition中出现，测试where带非null条件以及order by
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b > 0 order by t2.a;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b > 0 order by t2.a;
+
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b + t2.b > 0 order by t2.a;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null and t1.b + t2.b > 0 order by t2.a;
+
+### t1.a is null是on condition的左侧列，不可改写
+select * from t1 left join t2 on t1.a = t2.a where t1.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t1.a is null;
+
+### ######### TODO: 空值拒绝传递，也可满足改写条件，考虑到业务上很少会出现expr(t2.a) is null这类写法，暂不处理
+select * from t1 left join t2 on t1.a = t2.a where t2.a + 1 is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a + 1 is null;
+
+### 包含多个列场景
+select * from t1 left join t2 on t1.a = t2.a where t2.a + t2.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a + t2.b is null;
+
+### is null表达式不是空值传递的则不会发生改写
+select * from t1 left join t2 on t1.a = t2.a where 1 between t2.a and 1 is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where 1 between t2.a and 1 is null;
+
+### 有not null限制的列，测试agg func，group by
+select count(*) from t1 left join t3 on t1.a = t3.a where t3.b is null group by t3.b;
+select /*+NO_REWRITE*/ count(*) from t1 left join t3 on t1.a = t3.a where t3.b is null group by t3.b;
+
+### 带分区
+select * from t5 left join t6 on t5.a = t6.a where t6.a is null and t5.a > 0;
+select /*+NO_REWRITE*/ * from t5 left join t6 on t5.a = t6.a where t6.a is null and t5.a > 0;
+
+select * from t5 left join t6 on t5.a = t6.a where t6.a is null and t5.b > 0;
+select /*+NO_REWRITE*/ * from t5 left join t6 on t5.a = t6.a where t6.a is null and t5.b > 0;
+
+#######################################################
+### on condition含一个表达式，且有多个以and连接的where is null，要求where条件中至少有一列满足以下两种条件之一：1）在on condtion的右侧列出现；2）有not null的限制
+### t2.a在on condition中出现，可改写
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null and t2.b is null and t2.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null and t2.b is null and t2.c is null;
+
+### t3.b有not null的限制，可改写
+select * from t1 left join t3 on t1.a = t3.a where t3.b is null and t3.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t3 on t1.a = t3.a where t3.b is null and t3.c is null;
+
+### ######### t2.b，t2.c不在on condtion中出现，也不含not null的限制，不可改写
+select * from t1 left join t2 on t1.a = t2.a where t2.b is null and t2.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.b is null and t2.c is null;
+
+#######################################################
+### on condition含一个表达式，且有多个以or连接的where is null，需保证where条件中的每一列都满足以下两种之一：1）在on condtion的右侧列出现；2）有not null的限制
+### 带or的场景暂不做改写，原因：1）业务很少出现这类写法；2）需要抽取出所有和右侧列相关的is null条件并在改写后移除，且不改写剩下的条件的语义，实现上较为复杂
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null or t2.b is null;
+select /*+NO_LEFT_TO_ANTI*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null or t2.b is null;
+
+# on condition含一个表达式，且同时包含以and和or连接的where is null，需保证以or连接的每一列都满足以下两种条件之一，以and连接的列至少有一列满足以下两种之一：1）在on condtion的右侧列出现；2）有not null的限制
+# 带or的场景不做改写
+select * from t1 left join t3 on t1.a = t3.a where t3.a is null or t3.b is null and t3.c is null;
+select /*+NO_LEFT_TO_ANTI*/ * from t1 left join t3 on t1.a = t3.a where t3.a is null or t3.b is null and t3.c is null;
+
+# 带or的场景不做改写
+select * from t1 left join t3 on t1.a = t3.a where t3.a is null and t3.b is null or t3.c is null;
+select /*+NO_LEFT_TO_ANTI*/ * from t1 left join t3 on t1.a = t3.a where t3.a is null and t3.b is null or t3.c is null;
+
+#######################################################
+### on condition含多个以and连接的表达式，where条件可为1个或多个，若为多个，以and或or连接均可，其中出现的列需满足以下条件之一：1）在on condtion的右侧列出现；2）有not null的限制
+### 一个where条件，在on condition出现，可被改写
+select * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null order by t2.a;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null order by t2.a;
+
+### 多个where条件，以and连接且每一列都满足两种条件之一，可被改写
+select * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null and t2.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null and t2.b is null;
+
+# 多个where条件，以or连接且每一列都满足两种条件之一，可被改写
+# 带or的场景不做改写
+# select * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null or t2.b is null;
+# select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b where t2.a is null or t2.b is null;
+
+# 多个where条件，以and，or连接且每一列都满足两种条件之一，可被改写
+# 带or的场景不做改写
+# select * from t1 left join t3 on t1.a = t3.a and t1.c = t3.c where t3.a is null and t3.c is null or t3.b is null; 
+# select /*+NO_REWRITE*/ * from t1 left join t3 on t1.a = t3.a and t1.c = t3.c where t3.a is null and t3.c is null or t3.b is null; 
+
+#######################################################
+### on condition含多个以or连接的列，where中的列必须是on condition的超集，且以and连接；不在on condtion中出现的列，若没有not null的限制，也必须以and连接
+### where条件均以and连接，每一列都在on condition中出现，可被改写
+select * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null;
+
+### 复杂的on condition，可抽象为a or ((b or c) and (d or e))
+### 需要展开成a or (b and d or b and e or c and d or d and e)
+### 等价于 a or (b and d) or (b and e) or (c and d) or (d and e)
+### 对应的where condition可抽象为a and b/d and b/e and c/d and d/e is null;
+select * from t1 left join t2 on t1.a = t2.a or ((t1.b = t2.b or t1.b = t2.c) and (t1.c = t2.a or t1.c = t2.b)) where t2.a is null and t2.b is null and t2.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a or ((t1.b = t2.b or t1.b = t2.c) and (t1.c = t2.a or t1.c = t2.b)) where t2.a is null and t2.b is null and t2.c is null;
+
+# 带or的场景不做改写
+# select * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null or t2.b is null;
+# select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null or t2.b is null;
+
+### t2.c不在on condition中出现，但是以and连接，可被改写
+select * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null and t2.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null and t2.c is null;
+
+# 带or的场景不做改写
+select * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null or t2.c is null;
+select /*+NO_LEFT_TO_ANTI*/ * from t1 left join t2 on t1.a = t2.a or t1.b = t2.b where t2.a is null and t2.b is null or t2.c is null;
+
+#######################################################
+### on condition中包含or和and，考虑方式同上
+### t2.c以and连接，可被改写
+select * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b or t1.c = t2.c where t2.a is null and t2.c is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b or t1.c = t2.c where t2.a is null and t2.c is null;
+
+# 带or的场景不做改写
+select * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b or t1.c = t2.c where t2.a is null or t2.c is null;
+select /*+NO_LEFT_TO_ANTI*/ * from t1 left join t2 on t1.a = t2.a and t1.b = t2.b or t1.c = t2.c where t2.a is null or t2.c is null;
+
+#######################################################
+### on condition中只含左侧列，t1.a是主键，可改写
+select * from t1 left join t2 on t1.a + 1 > 3 where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a + 1 > 3 where t2.a is null;
+
+### on condition中只含右侧列，需保证右侧列有not null的限制
+### 可被改写
+select * from t1 left join t2 on t2.a > 0 where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t2.a > 0 where t2.a is null;
+
+### t2.a是主键，有not null限制，可被改写
+select * from t1 left join t2 on t2.a is null where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t2.a is null where t2.a is null;
+
+### t2.a是主键，有not null限制，t1会匹配t2的所有行，可被改写，但是实际业务应该不会写出这种无意义的case
+select * from t1 left join t2 on t2.a is not null where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t2.a is not null where t2.a is null;
+
+### t2.b没有not null限制，不可改写
+select * from t1 left join t2 on t2.b is null where t2.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t2.b is null where t2.b is null;
+
+#######################################################
+### on condition的一侧是表达式，情况与等值类似
+select * from t1 left join t2 on t1.a = t2.a + 1 where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a + 1 where t2.a is null;
+
+### 非等值可改写
+select * from t1 left join t2 on t1.a != t2.a + 1 where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a != t2.a + 1 where t2.a is null;
+
+### on condition的右侧含多列可改写
+select * from t1 left join t2 on t1.a = t2.a + t2.b + 1 where t2.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a + t2.b + 1 where t2.a is null;
+
+######### on condition的右侧含多列可改写
+select * from t1 left join t2 on t1.a = t2.a + t2.b + 1 where t2.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a + t2.b + 1 where t2.b is null;
+
+#######################################################
+### right join，转anti-join处理，可被改写
+select * from t1 right join t2 on t1.a = t2.a where t1.a is null;
+select /*+NO_REWRITE*/ * from t1 right join t2 on t1.a = t2.a where t1.a is null;
+
+#######################################################
+### 多表连接
+### 连接条件在t2表上，t1 left join t2可转为anti-join
+select * from t1 left join t2 on t1.a = t2.a left join t3 on t1.b = t3.a where t2.a is null order by t2.b;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a left join t3 on t1.b = t3.a where t2.a is null order by t2.b;
+
+######### 可改写
+select * from t1 left join t2 on t1.a = t2.a left join t3 on t1.b = t3.a where t3.a is null order by t2.b;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a left join t3 on t1.b = t3.a where t3.a is null order by t2.b;
+
+######### 可改写
+select * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.a is null;
+
+### 多表连接的场景下，出现非null条件也可改写
+select * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.a is null and t2.a > 0;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.a is null and t2.a > 0;
+
+######### 可改写
+select * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.b is null;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a left join t3 on t2.b = t3.a where t3.b is null;
+
+### 连接的右表是个left join
+### t2.a在on condition中出现，可被改写
+select * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t2.a is null and t1.a > 0;
+select /*+NO_REWRITE*/ * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t2.a is null and t1.a > 0;
+
+### t3.a出现在右表的joined table中，不是在本层中出现，不可改写
+select * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t3.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t3.a is null;
+
+### 不可改写
+select * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t3.b is null;
+select /*+NO_REWRITE*/ * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t2.a where t3.b is null;
+
+### 可被改写
+select * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t3.a where t3.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t3.a where t3.a is null;
+
+### 可被改写，但是目前的逻辑是检测不到这个改写的，因此暂时不做改写
+select * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t3.a where t3.b is null;
+select /*+NO_REWRITE*/ * from t1 left join (t2 left join t3 on t2.a = t3.a) on t1.a = t3.a where t3.b is null;
+
+### 连接的左表是个left join
+### t3.a在on condition中出现，可被改写，并检测是否过滤掉t2.a > 0
+select * from (t1 left join t2 on t1.a = t2.a) left join t3 on t1.a = t3.a where t3.a is null and t2.a > 0;
+select /*+NO_REWRITE*/ * from (t1 left join t2 on t1.a = t2.a) left join t3 on t1.a = t3.a where t3.a is null and t2.a > 0;
+
+### t3.b有not null的限制，可被改写
+select * from (t1 left join t2 on t1.a = t2.a) left join t3 on t1.a = t3.a where t3.b is null;
+select /*+NO_REWRITE*/ * from (t1 left join t2 on t1.a = t2.a) left join t3 on t1.a = t3.a where t3.b is null;
+
+#######################################################
+### 连接的左表为视图，可被改写
+select * from (select t1.a, t2.b from t1 left join t2 on t1.a = t2.a) tt left join t3 on tt.a = t3.a where t3.a is null;
+select /*+NO_REWRITE*/ * from (select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a) tt left join t3 on tt.a = t3.a where t3.a is null;
+
+### 内层和外层均可被改写
+select * from (select t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt left join t3 on tt.a = t3.a where t3.a is null;
+select /*+NO_REWRITE*/ * from (select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt left join t3 on tt.a = t3.a where t3.a is null;
+
+### t3.b有not null的限制，可被改写
+select * from (select t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt left join t3 on tt.a = t3.a where t3.b is null;
+select /*+NO_REWRITE*/ * from (select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt left join t3 on tt.a = t3.a where t3.b is null;
+
+### 视图为aggr func的结果，也可改写
+select * from t1 left join (select count(*) as aggr from t2) v on t1.a = v.aggr where v.aggr is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ count(*) as aggr from t2) v on t1.a = v.aggr where v.aggr is null;
+
+## 可改写视图
+select * from t1 left join (select t3.a from t2 left join t3 on t2.a = t3.a group by t3.a) V on t1.a = V.a where V.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t3.a from t2 left join t3 on t2.a = t3.a group by t3.a) V on t1.a = V.a where V.a is null;
+#######################################################
+### 连接的右表为视图，也可改写
+select * from t1 left join (select t2.a, t3.b, t3.c from t2 left join t3 on t2.a = t3.a) tt on t1.a = tt.a where tt.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t2.a, t3.b, t3.c from t2 left join t3 on t2.a = t3.a) tt on t1.a = tt.a where tt.a is null;
+
+### 内层和外层均可被改写
+select * from t1 left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.a is null) tt on t1.a = tt.a where tt.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.a is null) tt on t1.a = tt.a where tt.a is null;
+
+### ######### t3.b有not null的限制，但是经视图过滤后得到的tt.b失去not null的限制，导致外层有where tt.b is null时不可被改写
+select * from t1 left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.a is null) tt on t1.a = tt.a where tt.b is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.a is null) tt on t1.a = tt.a where tt.b is null;
+
+### 在视图中对t3.b加上not null的过滤条件，使得外层有where tt.b is null时可被改写
+select * from t1 left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.b is not null) tt on t1.a = tt.a where tt.b is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.b is not null) tt on t1.a = tt.a where tt.b is null;
+
+### where中的列在连接条件的列中出现，可被改写
+select * from t1 left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.b is not null) tt on t1.a = tt.a where tt.a is null;
+select /*+NO_REWRITE*/ * from t1 left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t3.b is not null) tt on t1.a = tt.a where tt.a is null;
+
+#######################################################
+### 连接的两侧均为视图，可被改写
+select * from (select t1.a, t2.b from t1 left join t2 on t1.a = t2.a) tt1 
+    left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a) tt2 on tt1.a = tt2.a where tt2.a is null;
+select /*+NO_REWRITE*/ * from (select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a) tt1 
+    left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a) tt2 on tt1.a = tt2.a where tt2.a is null;
+
+### 可被改写
+select * from (select t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt1 
+    left join (select t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t2.a is null) tt2 on tt1.a = tt2.a where tt2.a is null;
+select /*+NO_REWRITE*/ * from (select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null) tt1 
+    left join (select /*+NO_REWRITE*/ t2.a, t3.b from t2 left join t3 on t2.a = t3.a where t2.a is null) tt2 on tt1.a = tt2.a where tt2.a is null;
+
+#######################################################
+### 连接出现在子查询中
+select * from t1 where t1.a > (select count(*) from t2 left join t3 on t2.a = t3.a where t3.a is null);
+select /*+NO_REWRITE*/ * from t1 where t1.a > (select /*+NO_REWRITE*/ count(*) from t2 left join t3 on t2.a = t3.a where t3.a is null);
+
+#######################################################
+### semi-join可被改写
+select * from t1 where exists(select 1 from t1 left join t2 on t1.a = t2.a where t2.a is null);
+select /*+NO_REWRITE*/ * from t1 where exists(select /*+NO_REWRITE*/ 1 from t1 left join t2 on t1.a = t2.a where t2.a is null);
+
+######### 可被改写
+select * from t1 where t1.a in (select t1.b from t1 left join t2 on t1.a = t2.a where t2.a is null);
+select /*+NO_REWRITE*/ * from t1 where t1.a in (select /*+NO_REWRITE*/ t1.b from t1 left join t2 on t1.a = t2.a where t2.a is null);
+
+### anti-join可被改写
+select * from t1 where t1.a not in (select t2.c from t2 left join t3 on t2.c = t3.c where t3.c is null);
+select /*+NO_REWRITE*/ * from t1 where t1.a not in (select /*+NO_REWRITE*/ t2.c from t2 left join t3 on t2.c = t3.c where t3.c is null);
+
+#######################################################
+### group by + order by + aggr func
+select sum(t1.b) from t1 left join t2 on t1.a = t2.a where t2.a is null group by t1.b order by t2.b;
+select /*+NO_REWRITE*/ sum(t1.b) from t1 left join t2 on t1.a = t2.a where t2.a is null group by t1.b order by t2.b;
+
+### having
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null having t1.a > 0;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null having t1.a > 0;
+
+### distinct
+### t2中的任一列都全为null
+select distinct t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select /*+NO_REWRITE*/ distinct t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+
+### win func
+select avg(t1.a) over(partition by t1.b order by t1.b desc) as avg from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select /*+NO_REWRITE*/ avg(t1.a) over(partition by t1.b order by t1.b desc) as avg from t1 left join t2 on t1.a = t2.a where t2.a is null;
+
+#######################################################
+### 以<=>连接，使得为null的列连接匹配，不可改写
+select * from t1 left join t3 on t1.a <=> t3.a where t3.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t3 on t1.a <=> t3.a where t3.a is null;
+
+### nvl函数改变了on condition两侧的语义，可能使得为null的列连接匹配，不可改写
+### 实际上有的case是可以改写的，但是目前未做处理
+select * from t1 left join t3 on nvl(t1.a, 1) = nvl(t3.a, 1) where t3.a is null;
+select /*+NO_REWRITE*/ * from t1 left join t3 on nvl(t1.a, 1) = nvl(t3.a, 1) where t3.a is null;
+
+#######################################################
+set autocommit=0;
+
+### insert into...select from
+insert into t4 select t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t4;
+rollback;
+insert into t4 select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t4;
+rollback;
+
+### create table...select from
+--disable_warnings
+drop table if exists t5;
+create table t5 as select t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+show columns from t5;
+rollback;
+drop table if exists t5;
+create table t5 as select /*+NO_REWRITE*/ t1.a, t2.b from t1 left join t2 on t1.a = t2.a where t2.a is null;
+show columns from t5;
+rollback;
+
+#######################################################
+### t1表被更新，t2表是anti-join的右表，可被改写
+select * from t1;
+update t1 left join t2 on t1.a = t2.b set t1.b = 1 where t2.b is null;
+select * from t1;
+rollback;
+update /*+NO_REWRITE*/ t1 left join t2 on t1.a = t2.b set t1.b = 1 where t2.b is null;
+select * from t1;
+rollback;
+
+### t2表被更新，不可改写
+select * from t1;
+update t1 left join t2 on t1.a = t2.b set t2.b = 1 where t2.b is null;
+select * from t1;
+rollback;
+update /*+NO_REWRITE*/ t1 left join t2 on t1.a = t2.b set t2.b = 1 where t2.b is null;
+select * from t1;
+rollback;
+
+### delete可改写
+select * from t1;
+delete t1 from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t1;
+rollback;
+delete /*+NO_REWRITE*/ t1 from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t1;
+rollback;
+
+### t2表被删除，不可改写
+select * from t2;
+delete t2 from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t2;
+rollback;
+delete /*+NO_REWRITE*/ t2 from t1 left join t2 on t1.a = t2.a where t2.a is null;
+select * from t2;
+rollback;
+
+select * from t1 left join t2 on t1.a = t2.a where t2.a is null for update;
+select /*+NO_REWRITE*/ * from t1 left join t2 on t1.a = t2.a where t2.a is null for update;
+
+### is null左边是复杂表达式
+select * from t1 left join t2 on t1.a = t2.a+t2.b where (t2.b or t2.a) is null;
+select /*+NO_LEFT_TO_ANTI*/* from t1 left join t2 on t1.a = t2.a+t2.b where (t2.b or t2.a) is null;
+
+# ========================== bug 
+select 1 from (t1 join t4) left join t2 on 1 = 1 left join t3 on 1 = 1 where t2.b > 0 and t2.a is null;
+select /*+NO_REWRITE*/ 1 from (t1 join t4) left join t2 on 1 = 1 left join t3 on 1 = 1 where t2.b > 0 and t2.a is null;
+
+select * from (t1 left join t2 on t1.a = t2.a) full join t4 on t1.a = t4.a where t2.a is NULL;
+select /*+NO_REWRITE*/ * from (t1 left join t2 on t1.a = t2.a) full join t4 on t1.a = t4.a where t2.a is NULL;
+# ========================== bug 
+
+# ========================== bug 
+drop table if exists tg1, tg2;
+create table tg1(c1 decimal(20,0));
+create table tg2 like tg1;
+insert into tg1(c1) values(123),(null);
+insert into tg2(c1) values(123),(123);
+SELECT tg1.c1 as tg1c1,tg2.c1 as tg2c1  FROM  tg2 RIGHT JOIN tg1 ON (tg2.c1) & (CAST(tg2.c1 AS SIGNED)) WHERE (((tg1.c1) < (tg2.c1)) is null);
+SELECT /*+NO_LEFT_TO_ANTI*/ tg1.c1 as tg1c1,tg2.c1 as tg2c1  FROM  tg2 RIGHT JOIN tg1 ON (tg2.c1) & (CAST(tg2.c1 AS SIGNED)) WHERE (((tg1.c1) < (tg2.c1)) is null);
+SELECT * FROM tg1 left join tg2 on tg1.c1 = tg2.c1 where (tg2.c1/null) is null;
+SELECT /*+NO_LEFT_TO_ANTI*/ * FROM tg1 left join tg2 on tg1.c1 = tg2.c1 where (tg2.c1/null) is null;
+# ========================== bug 
+
+
+# bug: left to anti makes the value of generated column be NULL, which is incorrect
+--explain_protocol 0
+drop table if exists tn, tg1, tg2;
+create table tn(c1 int, c2 int, c3 int);
+create table tg1(c1 int, c2 int, c3 int);
+create table tg2(c1 int, c2 int, c3 int);
+alter table tg1 add gen_c int generated always as (c1 + c2) virtual;
+alter table tg2 add gen_c int generated always as (c1 + c2) stored;
+insert into tn(c1, c2, c3) values(1, 2, 3), (3, 4, 5), (5, 6, 7);
+insert into tg1(c1, c2, c3) values(2, 3, 3), (NULL, 4, 5), (5, 6, 7);
+insert into tg2(c1, c2, c3) values(2, 3, 3), (NULL, 4, 5), (5, 6, 7);
+
+--explain_protocol 2
+select tn.*, tg1.gen_c from tn left join tg1 on tn.c1 = tg1.gen_c where tg1.gen_c is null;
+select/*+no_left_to_anti*/ tn.*, tg1.gen_c from tn left join tg1 on tn.c1 = tg1.gen_c where tg1.gen_c is null;
+select tn.*, tg2.gen_c from tn left join tg2 on tn.c1 = tg2.gen_c where tg2.gen_c is null;
+select/*+no_left_to_anti*/ tn.*, tg2.gen_c from tn left join tg2 on tn.c1 = tg2.gen_c where tg2.gen_c is null;
+--explain_protocol 0
+drop table if exists t1, t2, t3, t4, t5, t6, tn, tg1, tg2;
+set autocommit=1;

@@ -1,0 +1,425 @@
+--source mysql_test/test_suite/ps/t/enable_ps.sql
+
+#owner: xiaoyi.xy
+#owner group: SQL2
+#tags: pl, ps, optimizer
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#-- source include/not_embedded.inc
+#-- source include/have_log_bin.inc
+#call mtr.add_suppression('Unsafe statement written to the binary log using @statement format since BINLOG_FORMAT = STATEMENT.');
+#
+# SQL Syntax for Prepared Statements test
+#
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--disable_info
+--disable_metadata
+#--disable_abort_on_error
+
+--disable_query_log
+--disable_result_log
+
+alter system flush plan cache global;
+alter system set large_query_threshold = '1s';
+--sleep 3
+
+--disable_query_log
+--disable_result_log
+connection default;
+
+
+--disable_warnings
+drop table if exists t;
+--enable_warnings
+
+--echo *************** create table t(c1 varchar(20) primary key, c2 varchar(20), c3 varchar(20), c4 varchar(20)) ***********
+--echo *************** create index idx_c2 on t(c2) *************************************************************************
+--echo *************** create index idx_c2_c3 on t(c2, c3) ******************************************************************
+
+--disable_query_log
+--disable_result_log
+create table t(
+    c1 varchar(20) primary key, 
+    c2 varchar(20), 
+    c3 varchar(20),
+    c4 varchar(20)
+);
+create index idx_c2 on t(c2);
+
+prepare insert_stmt from insert into t values(?, ?, ?, ?);
+set @in_val1 = '123';
+set @in_val2 = 'abc';
+set @in_val3 = 'apple';
+set @in_val4 = 'China';
+execute insert_stmt using @in_val1, @in_val2, @in_val3, @in_val4;
+set @in_val1 = '456';
+set @in_val2 = 'def';
+set @in_val3 = 'pear';
+set @in_val4 = 'England';
+execute insert_stmt using @in_val1, @in_val2, @in_val3, @in_val4;
+set @in_val1 = '789';
+set @in_val2 = 'hij';
+set @in_val3 = 'peach';
+set @in_val4 = 'America';
+execute insert_stmt using @in_val1, @in_val2, @in_val3, @in_val4;
+
+--echo ********************* general const value ******************************
+--echo pk 
+--echo precise(non filter)
+--echo ******************* select * from t where c1 like '1%' ***************** 
+--error 1243,1
+execute stmt1;
+prepare stmt1 from select * from t where c1 like ?;
+set @a='1%';
+execute stmt1 using @a;
+--echo imprecise(has filter)
+--echo ******************* select * from t where c1 like '%3' *****************
+--echo ******************* select * from t where c1 like '%2%' ****************
+--echo ******************* select * from t where c1 like '1%3' ****************
+--echo ******************* select * from t where c1 like '123' ****************
+set @a='%3';
+execute stmt1 using @a;
+set @a='%2%';
+execute stmt1 using @a;
+set @a='1%3';
+execute stmt1 using @a;
+set @a='123';
+execute stmt1 using @a;
+--enable_result_log
+prepare stmt_pc_result from select hit_count, query_sql, statement from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = ?;
+set @stmt_query = 'select * from t where c1 like ?';
+execute stmt_pc_result using @stmt_query;
+
+
+prepare stmt2 from select * from t where c2 like ?;
+--echo 
+--disable_result_log
+--echo index
+--echo precise(non filter)
+--echo ******************* select * from t where c2 like 'a%' ***************** 
+set @a='a%';
+execute stmt2 using @a;
+--echo imprecise(has filter)
+--echo ******************* select * from t where c2 like '%c' *****************
+--echo ******************* select * from t where c2 like '%b%' ****************
+--echo ******************* select * from t where c2 like 'a%c' ****************
+--echo ******************* select * from t where c2 like 'abc' ****************
+set @a='%c';
+execute stmt2 using @a;
+set @a='%b%';
+execute stmt2 using @a;
+set @a='a%c';
+execute stmt2 using @a;
+set @a='abc';
+execute stmt2 using @a;
+--enable_result_log
+set @stmt_query = 'select * from t where c2 like ?';
+execute stmt_pc_result using @stmt_query;
+
+prepare stmt3 from select * from t where c3 like ?;
+--echo 
+--disable_result_log
+--echo normal column
+--echo imprecise(has filter)
+--echo ******************* select * from t where c3 like 'a%' ***************** 
+--echo ******************* select * from t where c3 like '%e' *****************
+--echo ******************* select * from t where c3 like '%pp%' ***************
+--echo ******************* select * from t where c3 like 'a%e' ****************
+--echo ******************* select * from t where c3 like 'apple' **************
+set @a='a%';
+execute stmt3 using @a;
+set @a='%e';
+execute stmt3 using @a;
+set @a='%pp%';
+execute stmt3 using @a;
+set @a='a%e';
+execute stmt3 using @a;
+set @a='apple';
+execute stmt3 using @a;
+--enable_result_log
+set @stmt_query = 'select * from t where c3 like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt4 from select * from t where c2 like concat(?,?,?);
+--echo
+--disable_result_log
+--echo ********* pre-calculable expression ************************************
+--echo index\pk
+--echo precise(no filter)
+--echo ********* select * from t where c2 like concat('a','b','%') ************
+set @val1='a';
+set @val2='b';
+set @val3='%';
+execute stmt4 using @val1, @val2, @val3;
+--echo ********* select * from t where c2 like concat('%','b','c') ************
+--echo ********* select * from t where c2 like concat('%','b','%') ************
+--echo ********* select * from t where c2 like concat('a','%','c') ************
+--echo ********* select * from t where c2 like concat('a','b','c') ************
+set @val1='%';
+set @val2='b';
+set @val3='c';
+execute stmt4 using @val1, @val2, @val3;
+set @val1='%';
+set @val2='b';
+set @val3='%';
+execute stmt4 using @val1, @val2, @val3;
+set @val1='a';
+set @val2='%';
+set @val3='c';
+execute stmt4 using @val1, @val2, @val3;
+set @val1='a';
+set @val2='b';
+set @val3='c';
+execute stmt4 using @val1, @val2, @val3;
+--enable_result_log
+set @stmt_query = 'select * from t where c3 like (?,?,?)';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt5 from select * from t where c1 like ?;
+--echo 
+--disable_result_log
+--echo ************** implicit cast *******************************************
+--echo ************** select * from t where c1 like 123 ***********************
+--echo ************** select * from t where c1 like 1 *************************
+set @val = 123;
+execute stmt5 using @val;
+set @val = 1;
+execute stmt5 using @val;
+--enable_result_log
+set @stmt_query = 'select * from t where c1 like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt6 from select * from t where  c1 like ?;
+--echo 
+--echo ************************** some small tests ****************************
+--echo ******************* select * from t where c1 like '1' ******************
+--echo ******************* select * from t where c1 like '2' ******************
+--disable_result_log
+set @val = '1';
+execute stmt6 using @val;
+set @val = '2';
+execute stmt6 using @val;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from t where  c1 like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt7 from select * from t where c1  like ?;
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like '1%' ******************
+--echo ******************* select * from t where c1 like '4%' ******************
+set @val = '1%';
+execute stmt7 using @val;
+set @val = '4%';
+execute stmt7 using @val;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from t where c1  like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt8 from select * from t where c1   like ?;
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like '%3' ******************
+--echo ******************* select * from t where c1 like '%6' ******************
+set @val = '%3';
+execute stmt8 using @val;
+set @val = '%6';
+execute stmt8 using @val;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from t where c1   like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmt9 from select * from t  where c1   like ?;
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like '%2%' ******************
+--echo ******************* select * from t where c1 like '%5%' ******************
+set @val = '%2%';
+execute stmt9 using @val;
+set @val = '%5%';
+execute stmt9 using @val;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from t  where c1   like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtA from select * from  t  where c1   like ?; 
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like '%2' ******************
+--echo ******************* select * from t where c1 like '%5%' *****************
+set @val = '%2';
+execute stmtA using @val;
+set @val = '%5%';
+execute stmtA using @val;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from  t  where c1   like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtB from select * from  t  where c1 like ?; 
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like '2%' ******************
+--echo ******************* select * from t where c1 like '%5%' *****************
+set @val = '2%';
+execute stmtB using @val;
+set @val = '%5%';
+execute stmtB using @val;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select * from  t  where c1 like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtC from select * from t where c1 like  ?; 
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like 2 ******************
+--echo ******************* select * from t where c1 like '2' ******************
+set @val = 2;
+execute stmtC using @val;
+set @val = '2';
+execute stmtC using @val;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select * from t where c1 like  ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtD from select *  from t where c1 like ?; 
+--echo 
+--disable_result_log
+--echo ******************* select * from t where c1 like 'null' ******************
+--echo ******************* select * from t where c1 like null ******************
+set @val = 'null';
+execute stmtD using @val;
+set @val = NULL;
+execute stmtD using @val;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select *  from t where c1 like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtE from select  * from t where ? like ?; 
+--echo 
+--disable_result_log
+--echo ******************* select * from t where '123' like null ******************
+--echo ******************* select * from t where null like null ******************
+set @val1 = '123';
+set @val2 = NULL;
+execute stmtE using @val1, @val2;
+set @val1 = NULL;
+set @val2 = NULL;
+execute stmtE using @val1, @val2;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select  * from t where ? like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtF from select * from t where ? like ?; 
+--echo 
+--echo always true and always false
+--disable_result_log
+--echo ******************* select * from t where 'a' like 'a%' ******************
+--echo ******************* select * from t where 'b' like 'a%' ******************
+set @val1 = 'a';
+set @val2 = 'a%';
+execute stmtF using @val1, @val2;
+set @val1 = 'b';
+set @val2 = 'a%';
+execute stmtF using @val1, @val2;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select * from t where ? like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtG from select * from  t where ? like ?; 
+--echo 
+--echo always true
+--disable_result_log
+--echo ******************* select * from t where 'a' like '%' ******************
+--echo ******************* select * from t where 'a' like 'a%' *****************
+--echo ******************* select * from t where 'a' like '%a' *****************
+--echo ******************* select * from t where 'a' like '%a%' ****************
+set @val1 = 'a';
+set @val2 = '%';
+execute stmtG using @val1, @val2;
+set @val1 = 'a';
+set @val2 = 'a%';
+execute stmtG using @val1, @val2;
+set @val1 = 'a';
+set @val2 = '%a';
+execute stmtG using @val1, @val2;
+set @val1 = 'a';
+set @val2 = '%a%';
+execute stmtG using @val1, @val2;
+--echo expect 3
+--enable_result_log
+set @stmt_query = 'select * from  t where ? like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtH from select * from t  where ? like ?;
+--echo
+--echo always false
+--disable_result_log
+--echo ******************* select * from t where 'b' like 'a%' *****************
+--echo ******************* select * from t where 'b' like '%a' *****************
+--echo ******************* select * from t where 'b' like '%a%' ****************
+set @val1 = 'b';
+set @val2 = 'a%';
+execute stmtH using @val1, @val2;
+set @val1 = 'b';
+set @val2 = '%a';
+execute stmtH using @val1, @val2;
+set @val1 = 'b';
+set @val2 = '%a%';
+execute stmtH using @val1, @val2;
+--echo expect 2
+--enable_result_log
+set @stmt_query = 'select * from t  where ? like ?';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtI from select * from t where c1 like concat(?,concat(?,?)); 
+--echo
+--echo pre cal expr
+--disable_result_log
+--echo ******** select * from t where c1 like concat('a',concat('%','c')) ******
+--echo ******** select * from t where c1 like concat('%',concat('b','c')) ******
+set @val1 = 'a';
+set @val2 = '%';
+set @val3 = 'c';
+execute stmtI using @val1, @val2, @val3;
+set @val1 = '%';
+set @val2 = 'b';
+set @val3 = 'c';
+execute stmtI using @val1, @val2, @val3;
+--echo expect 1
+--enable_result_log
+set @stmt_query = 'select * from t where c1 like concat(?,concat(?,?))';
+execute stmt_pc_result using @stmt_query; 
+
+prepare stmtJ from select * from t where c1 like concat(? like ?, ?); 
+--echo
+--echo pre cal expr
+--disable_result_log
+--echo ******** select * from t where c1 like concat(1 like 3, '0') ************
+--echo ******** select * from t where c1 like concat('1' like '3', '0') **********
+set @val1 = 1;
+set @val2 = 3;
+set @val3 = '0';
+execute stmtJ using @val1, @val2, @val3;
+set @val1 = '1';
+set @val2 = '3';
+set @val3 = '0';
+execute stmtJ using @val1, @val2, @val3;
+--echo expect 0
+--enable_result_log
+set @stmt_query = 'select * from t where c1 like concat(? like ?, ?)';
+execute stmt_pc_result using @stmt_query; 
+
+drop table t;
+--source mysql_test/test_suite/ps/t/disable_ps.sql

@@ -1,0 +1,85 @@
+##########################
+#owner : yunlong.cb
+#owner group: clog
+#description: 测试仲裁 server 残留cluster 信息时是否会串库
+# 测试场景2F1A：
+# 1. 启动仲裁服务/server;
+# 2. 添加仲裁服务到ob集群;
+# 3. 建租户时指定开启仲裁服务；
+# 4. 以新clusterID reboot 集群
+# 5. 添加仲裁服务到ob集群;
+# 6. 建租户时指定开启仲裁服务；
+# 6. 新集群是否正常
+##########################
+
+ob1=OBI(cluster=1:1, proxy_num=0, asvr_num=2);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+let $arb_extra_conf = "ob_startup_mode=arbitration,cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+
+ob1.asvr1.set status=disable;
+# bootstrap
+let $old_cluster_id=1;
+ob1.set cid = $old_cluster_id;
+ob1.reboot;
+sleep 3;
+ob1.asvr1.set status=enable;
+ob1.asvr1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# 启动仲裁server
+# 获取仲裁server的ip、port
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+let $arb_svr_ip_2= deploy_get_value(ob1.asvr1.ip);
+let $arb_svr_port_2= deploy_get_value(ob1.asvr1.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+# check arbitration service add success
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+
+let $sys_tenant_id=1;
+set @@session.ob_query_timeout = 1000000000;
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+
+# test replace arbitration server
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob1.check_until_timeout select count(*)=3 from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and role = 'LEADER', 1, 60;
+ob1.mysql alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+# check arbitration service replace success
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where previous_arbitration_service != "", 0, 120;
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip_2:$arb_svr_port_2", 1, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 0, 120;
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where previous_arbitration_service != "", 0, 120;
+sleep 5;
+
+# source include/check_schema_sync.inc;
+
+# bootstrap
+#ob1.asvr1.set status=disable;
+#let $new_cluster_id=2;
+#ob1.set cid = $new_cluster_id;
+#ob1.reboot;
+#sleep 3;
+#ob1.mysql alter system set debug_sync_timeout = '1000s';
+#ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+#ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+#ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+#
+#set @@session.ob_query_timeout = 1000000000;
+## create mysql tenant (2F1A)
+#eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+#eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+#
+#eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM' set ob_tcp_invited_nodes='%';
+#
+## source include/check_schema_sync.inc;
+#
+#let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);

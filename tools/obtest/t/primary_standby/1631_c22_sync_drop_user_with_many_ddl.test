@@ -1,0 +1,58 @@
+#rs
+#msy
+#主备库同步ddl的时候，需要同步schema version ,强同步,
+#一次从主库中all_ddl_operation中读取2000行，当一个事务超过这个限制的处理方式
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.force_stop;
+ob2.force_stop;
+
+ob1.reboot;
+sleep 10;
+
+#创建用户
+ob1.mysql create user msy identified by 'wrewgdg';
+#打开ddl限制
+ob1.mysql alter system set enable_sys_table_ddl = true;
+#建3000张表
+let $db_id = deploy_get_value(ob1.select select database_id from oceanbase.__all_virtual_database where database_name = 'oceanbase' and tenant_id = 1, database_id, 1);
+let $cnt = deploy_get_value(ob1.select select max(table_id & 0xffffffffff) as t_id from oceanbase.__all_virtual_table where database_id = $db_id and (table_id & 0xffffffffff) < 5000, t_id, 1);
+let $i = 1;
+let $count = 2000
+while ($i < $count)
+{
+  let $table_id = deploy_get_value(ob1.select select ($i + $cnt) as c from dual, c,1);
+  ob1.mysql create table oceanbase.__t$i (c1 int primary key,c3 int) table_id = $table_id tablegroup = 'oceanbase';
+  inc $i;
+}
+#授权这三千张表
+let $i = 1;
+while ($i < $count)
+{
+  ob1.mysql grant select on oceanbase.__t$i to msy;
+  inc $i;
+}
+#删除用户
+let $user_id = deploy_get_value(ob1.select select user_id from oceanbase.__all_virtual_user where user_name = 'msy', user_id, 1);
+ob1.mysql drop user msy;
+#起备库
+ob2.reboot;
+sleep 10;
+ob2.mysql alter system set enable_sys_table_ddl = false;
+ob2.mysql alter system set enable_ddl = false;
+#检测用户是否同步
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_virtual_user_history where user_name = 'msy', schema_version, 1);
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_user_history where user_name = 'msy', 1, 10;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ddl_operation where schema_version = $schema_version, 1, 3;
+#测试剩下ddl同步
+let $count = deploy_get_value(ob1.select select count(*) as count from oceanbase.__all_virtual_ddl_operation where schema_version > $schema_version, count, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ddl_operation where schema_version > $schema_version, $count, 500;
+dec $count;
+while ($count)
+{
+  let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase. __all_virtual_ddl_operation where schema_version > $schema_version limit 1,schema_version, 1);
+  ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ddl_operation where schema_version = $schema_version, 1, 3;
+  dec $count;
+}
+#ddl同步完成，切换主备库
+

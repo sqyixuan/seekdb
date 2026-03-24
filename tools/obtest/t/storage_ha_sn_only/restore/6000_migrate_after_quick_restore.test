@@ -1,0 +1,183 @@
+# owner: haoyuanke.hyk
+# owner group: physical_restore
+# Testing Case: migrate after quick restore
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $restore_oracle_tenant_new = restore_oracle_tenant_new;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $restore_mysql_tenant_new = restore_mysql_tenant_new;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+let $restore_log_archive_dest = deploy_get_value(ob1.get_log_backup_dest $restore_mysql_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.create_tenant CREATE TENANT backup_mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+source include/check_schema_sync.inc;
+connection backup_sys_conn;
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $backup_mysql_tenant_id, resource_pool_id, 1);
+let $src_ls_id = 1001;
+--echo create tenant finished
+
+
+--echo ===============================================================
+--echo ==================     create table ===========================
+--echo ===============================================================
+connect(sys_conn_mysql, $backup_ip, root@$backup_mysql_tenant,,oceanbase, $backup_port);
+connection sys_conn_mysql;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';
+ob1.set_piece_switch_interval $backup_mysql_tenant_id 0 2m;
+--enable_all_result_log
+
+connection sys_conn_mysql;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+
+connect(backup_mysql_conn, $backup_ip,test@$backup_mysql_tenant,test,test, $backup_port);
+connection backup_mysql_conn;
+
+create table t1(a int, b int, c int, PRIMARY KEY (a)) partition by hash(a) partitions 5;
+
+  --disable_query_log
+  --disable_result_log
+let $i=1;
+while($i < 2000)
+{
+  eval insert into t1 (a, b, c) values($i, $i, $i);
+  inc $i;
+}
+  --enable_result_log
+  --enable_query_log
+
+let $t1_tablet_id = deploy_get_value(ob1.select select a.tablet_id from __all_virtual_tablet_to_table_history a inner join __all_virtual_table b on a.tenant_id=b.tenant_id and a.table_id=b.table_id where a.tenant_id=$backup_mysql_tenant_id and table_name='t1' limit 1, tablet_id, 1);
+
+
+--echo ===============================================================
+--echo ==================     start archive   ========================
+--echo ===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+sleep 10;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+
+  --disable_query_log
+  --disable_result_log
+let $i=2000;
+while($i < 3000)
+{
+  eval insert into t1 (a, b, c) values($i, $i, $i);
+  inc $i;
+}
+  --enable_result_log
+  --enable_query_log
+
+ob1.mysql set ob_global_debug_sync = 'AFTER_REMOTE_WRITE_DDL_PREPARE_LOG wait_for signal1 execute 10000';
+
+send create /*+ parallel(10) */ index t1ib on t1(b) with column group(each column);
+sleep 5;
+
+ob1.z1.obs0.check_log_until_success -c "start wait.*name=signal1, signal_cnt=0";
+
+--echo ===============================================================
+--echo ==================     start backup data   ====================
+--echo ===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+
+ob1.mysql set ob_global_debug_sync = 'AFTER_REMOTE_WRITE_DDL_PREPARE_LOG clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+connection backup_mysql_conn;
+reap;
+
+# 确认索引生效
+ob1.check_until_timeout select STATUS from cdb_indexes where con_id=$backup_mysql_tenant_id and index_name like 't1ib', VALID, 300;
+
+create table t2(a int, b int, c int, PRIMARY KEY (a));
+
+sleep 3;
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+
+--echo ===============================================================
+--echo ===============  CALC RESTORE POINT  ==========================
+--echo ===============================================================
+let $now = `select timestamp_to_scn(current_timestamp(6))`;
+ob1.check_until_timeout select checkpoint_scn > $now from CDB_OB_ARCHIVELOG where tenant_id = $backup_mysql_tenant_id, 1, 600;
+
+--echo ===================================================================================
+--echo ===============  MIGRATE WITH HALF REMOTE SSTABLE  ================================
+--echo ===================================================================================
+connection backup_sys_conn;
+use oceanbase;
+
+#1. QUICK RESTORE
+ob1.restore alter system restore $restore_mysql_tenant_new from '$restore_path' until scn=$now with 'pool_list=small_pool_1&locality=F@z1,F@z2&primary_zone=z1&method=quick';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+
+#2. WAIT DDL MERGE FINISH
+use oceanbase;
+ob1.check_until_timeout select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1004 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%')), 0, 600;
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1006 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=10 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1006 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+ob1.check_until_timeout select count(*)>0 from __all_virtual_table_mgr where tenant_id = 1004 and table_flag = 2, 1, 600;
+let $half_remote_count_before = query_get_value(select count(*) as cnt from __all_virtual_table_mgr where tenant_id = 1004 and table_flag = 2, cnt, 1);
+let $pure_remote_count_before = query_get_value(select count(*) as cnt from __all_virtual_table_mgr where tenant_id = 1004 and table_flag = 3, cnt, 1);
+
+#3. ADD REPLICA TO TIRRGER MIGRATION
+ob1.mysql alter tenant $restore_mysql_tenant_new locality = "F@z1, F@z2, F@z3";
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and member_list like "%,%,%", 9, 600;
+ob1.check_until_timeout select count(*) from dba_ob_tenant_jobs where tenant_id = 1004 and job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'SUCCESS', 1, 600;
+ob1.check_until_timeout select count(*) > $half_remote_count_before FROM oceanbase.__all_virtual_table_mgr where tenant_id=1004 and table_flag = 2, 1, 100;
+ob1.check_until_timeout select count(*) > $pure_remote_count_before FROM oceanbase.__all_virtual_table_mgr where tenant_id=1004 and table_flag = 3, 1, 100;

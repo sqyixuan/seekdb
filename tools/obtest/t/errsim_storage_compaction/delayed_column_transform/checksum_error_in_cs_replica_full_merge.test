@@ -1,0 +1,95 @@
+# owner: zhanghuidong.zhd
+# owner group: storage
+# description: this case is used for testing column store replica checksum error with delayed column transform
+# 1. create cs replica
+# 2. create table with all column group
+# 3. add column group delayed
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+let $tenant_name = tenant1;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z3_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port0 = deploy_get_value(ob1.z3.obs0.port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create TENANT $tenant_name resource_pool_list=('cs_replica_pool'), locality = "F@z1, F@z2, C@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant $tenant_name;
+ob1.mysql alter system set merger_check_interval = '10s' tenant $tenant_name;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "$tenant_name", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo =================  Step 2: create table   =====================
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@$tenant_name, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+
+create table t1 (c1 varchar(256), c2 varchar(256), c3 varchar(256), c4 varchar(256), c5 varchar(256), c6 varchar(256));
+create table t2 (c1 varchar(256), c2 varchar(256), c3 varchar(256), c4 varchar(256), c5 varchar(256), c6 varchar(256)) with column group (all columns);
+--disable_query_log
+--disable_all_result_log
+let $row_cnt = 10001;
+while ($row_cnt > 0)
+{
+  eval insert into t1 select randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()) from table(generator(200));
+  eval insert into t2 select randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()), randstr(16, random()) from table(generator(200));
+  dec $row_cnt;
+}
+--enable_query_log
+--enable_all_result_log
+ob1.mysql alter system major freeze tenant = "$tenant_name";
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+--echo ===============================================================
+--echo =================  Step 3: add cg delayed   ===================
+--echo ===============================================================
+
+alter table t1 add column group (each column) delayed;
+alter table t2 add column group (each column) delayed;
+ob1.mysql alter system major freeze tenant = "$tenant_name";
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+ob1.mysql alter system major freeze tenant = "$tenant_name";
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+alter table t1 drop column c3;
+alter table t2 drop column c3;
+alter table t1 drop column c4;
+alter table t2 drop column c4;
+alter table t1 drop column c5;
+alter table t2 drop column c5;
+alter table t1 drop column c6;
+alter table t2 drop column c6;
+ob1.mysql alter system major freeze tenant = "$tenant_name";
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;

@@ -1,0 +1,73 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+# 测试show limit
+
+ob1=OBI(cluster=3:3,proxy_num=0);
+let $extra_conf = "cpu_count=32,memory_limit='50G',system_memory='5G',__min_full_resource_pool_memory='2147483648',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.set extra_config=$extra_conf;
+
+ob1.reboot;
+ob1.mysql create resource unit unit_config min_cpu 2, max_cpu 2, memory_size '4G';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+#测试主库3个unit，备库分别1个，2个, 3个，4个，5个，6个的资源计算
+connection conn_sys;
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_config', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2');
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 1);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 2);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 3);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 4);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 5);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 6);
+
+#测试主库缩容时，备库计算出错
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal';
+ob1.mysql alter resource tenant tt unit_num = 2;
+--error 4179
+CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => 1002, STANDBY_TENANT_UNIT_NUM => 1);
+
+#测试主库unit迁移时，备库也可以计算
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_DISASTER_RECOVERY wait_for signal1';
+drop tenant tt force;
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id= deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, unit_id, 1);
+let $unit_group_id = deploy_get_value(ob1.select select unit_group_id from oceanbase.__all_unit where unit_id = $unit_id, unit_group_id, 1);
+let $zone = deploy_get_value(ob1.select select zone from oceanbase.__all_virtual_unit where unit_id = $unit_id, zone, 1);
+let $destination = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) v from oceanbase.__all_server where zone = '$zone' and svr_port not in (select svr_port from oceanbase.__all_virtual_unit where tenant_id = $tenant_id), v, 1);
+ob1.mysql alter system migrate unit $unit_id destination '$destination';
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $tenant_id, STANDBY_TENANT_UNIT_NUM => 1);
+ob1.mysql_p CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $tenant_id, STANDBY_TENANT_UNIT_NUM => 2);
+
+#测试主库多个unit迁移，备库计算出错
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where  zone != '$zone' and unit_group_id = $unit_group_id, unit_id, 1);
+let $destination = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) v from oceanbase.__all_server where zone != '$zone' and svr_port not in (select svr_port from oceanbase.__all_virtual_unit where tenant_id = $tenant_id), v, 1);
+ob1.mysql alter system migrate unit $unit_id destination '$destination';
+--error 4179
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $tenant_id, STANDBY_TENANT_UNIT_NUM => 2);
+
+#验证需要触发均衡，计算不报错，会爆WARN
+ob1.mysql drop tenant tt force;
+ob1.mysql drop resource pool pool_1;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal1';
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_config', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter resource tenant tt unit_num = 3;
+
+let $tenant_id= deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $tenant_id, STANDBY_TENANT_UNIT_NUM => 3);
+show warnings;
+
+
+drop tenant tt force;
+#在非租户的机器上计算的问题
+ob1.mysql drop resource pool pool_2;
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_config', UNIT_NUM = 1, ZONE_LIST = ('z2');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_3'), primary_zone='z2' set ob_tcp_invited_nodes='%';
+
+let $tenant_id= deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt', tenant_id, 1);
+eval CALL DBMS_OB_LIMIT_CALCULATOR.CALCULATE_MIN_PHY_RES_NEEDED_BY_STANDBY_TENANT(PRIMARY_TENANT_ID => $tenant_id, STANDBY_TENANT_UNIT_NUM => 2);

@@ -1,0 +1,118 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     unit group management associated
+
+
+ob1=OBI(cluster=2:2:2:2,proxy_num=0,init_unit_cpu=0);
+
+ob1.reboot;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+ob1.mysql create resource unit test_unit max_cpu = 1, memory_size = '2G';
+ob1.mysql create resource pool pool1 unit = 'test_unit', unit_num = 2, zone_list = ('z1', 'z2');
+ob1.mysql create tenant tt resource_pool_list=('pool1'), primary_zone = 'z1', locality = 'F@z1,F@z2' set ob_tcp_invited_nodes='%';
+sleep 5;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+
+connection tt_conn;
+use test;
+create table wenduo(pk int primary key) partition by hash (pk) partitions 10;
+
+connection sys_conn;
+## before split
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+alter resource pool pool1 split into ('pool2', 'pool3') on ('z1', 'z2');
+## after split
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+create resource pool pool4 unit = 'test_unit', unit_num = 2, zone_list = ('z3');
+create resource pool pool5 unit = 'test_unit', unit_num = 2, zone_list = ('z4');
+
+## after create new pool
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+# case 1: alter pool unit num when not granted to any tenant
+## pool4 unit num can be modified using alter resource pool before it is granted to some certain tenant
+alter resource pool pool4 unit_num = 1;
+alter resource pool pool4 unit_num = 2;
+
+
+# case 2: alter resource tenant unit num test(normal, rollback)
+alter tenant tt resource_pool_list = ('pool2', 'pool3', 'pool4');
+## after alter tenant
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+alter tenant tt locality = 'F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != '', 0, 300;
+
+alter resource tenant tt unit_num = 1;
+## after alter resource tenant unit num
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+alter resource tenant tt unit_num = 2;
+## after rollback alter resource tenant unit num
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+# case 3: pool unit num cannot be modified when granted to some certain tenant
+## resource unit num can not be modified after granted to some certain tenant
+--error 4179
+alter resource pool pool4 unit_num = 1;
+
+alter tenant tt locality = 'F@z1,F@z2';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != '', 0, 300;
+
+alter tenant tt resource_pool_list = ('pool2', 'pool3');
+
+## alter pool unit num can be done after the pool is invoked from a tenant.
+alter resource pool pool4 unit_num = 1;
+
+
+# case 4: cannot grant a resource pool to some tenant when unit num not match
+--error 4179
+alter tenant tt resource_pool_list = ('pool2', 'pool3', 'pool4');
+
+alter tenant tt resource_pool_list = ('pool2', 'pool3', 'pool5');
+alter tenant tt locality = 'F@z1,F@z2,F@z4';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where previous_locality != '', 0, 300;
+
+# case 5: cannot grant resource pools to a tenant which is in shrinking pool unit num
+alter resource tenant tt unit_num = 1 delete unit_group (1002);
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+--error 4179
+alter tenant tt resource_pool_list = ('pool2', 'pool3', 'pool4', "pool5");
+
+alter resource tenant tt unit_num = 2;
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+
+# case 6: if to be deleted unit_group is not specified when shrinking, it will be automatically determined
+## if no unit is on inactive server, the unit_group with smaller id will be selected
+alter resource tenant tt unit_num = 1;
+select unit_id, unit_group_id, resource_pool_id, status, zone from oceanbase.__all_unit where unit_group_id != 1 order by unit_group_id, unit_id;
+alter resource tenant tt unit_num = 2;
+
+## if some units are on inactive servers, these unit_groups will be selected to delete first
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where status = 'INACTIVE', 1, 30;
+alter resource tenant tt unit_num = 1;
+select u.unit_id, u.unit_group_id, u.resource_pool_id, u.status, u.zone, s.status svr_status 
+from oceanbase.__all_unit as u, oceanbase.__all_server as s where u.svr_ip = s.svr_ip and u.svr_port = s.svr_port and unit_group_id != 1 
+order by unit_group_id, unit_id;
+alter resource tenant tt unit_num = 2;
+
+## if all unit_groups have units on inactive servers, still the ones with small id win
+ob1.z4.obs1.force_stop;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where status = 'INACTIVE', 2, 30;
+alter resource tenant tt unit_num = 1;
+select u.unit_id, u.unit_group_id, u.resource_pool_id, u.status, u.zone, s.status svr_status 
+from oceanbase.__all_unit as u, oceanbase.__all_server as s where u.svr_ip = s.svr_ip and u.svr_port = s.svr_port and unit_group_id != 1 
+order by unit_group_id, unit_id;
+alter resource tenant tt unit_num = 2;

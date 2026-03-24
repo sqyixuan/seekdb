@@ -1,0 +1,247 @@
+##########################
+# owner : yaoying.yyy
+# owner group: CLOG
+# description: test for log storage compressing
+# 测试点：
+# 1. alter system set log_storage_compress_all;
+# 2. 压缩日志的消费处理,包含一个小日志和一条近2M大小的日志
+# 2.1 正常写入，回放进度是否正常
+# 2.2 前向barrier日志的处理
+# 2.3 3.5M左右日志的处理: TODO
+# 2.4 重启流程,让leader重启看看
+# 2.5 整个集群的重启
+# 2.6 进行一次合并，合并后数据一致
+# 3.cdc
+# 4.删除租户，检查是否有内存泄露
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size=100G";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证建租户
+let $max_cpu = 2;
+let $min_cpu = 1;
+let $memory_size = 4589934592;
+let $log_disk_size = 11474836480;
+let $max_iops = 100000;
+let $min_iops = 1024;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+#for constuct big log
+alter system set _private_buffer_size='2M';
+##case 1: test alter config with sys tenant
+alter system set log_storage_compress_all = true tenant=mysql;
+alter system set log_storage_compress_all = false tenant=mysql;
+--error 4147
+alter system set log_storage_compress_func = 'none' tenant=mysql;
+--error 4147
+alter system set log_storage_compress_func = 'lz4_1.9.1' tenant=mysql;
+alter system set log_storage_compress_func = 'zstd_1.0' tenant=mysql;
+alter system set log_storage_compress_func = 'zstd_1.3.8' tenant=mysql;
+sleep 2;
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $DATA_COUNT = 0;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+sleep 3;
+create table t1 (c1 int primary key, c2 varchar(200));
+inc $DATA_COUNT;
+create table t2(c1 int primary key, a longtext);
+inc $DATA_COUNT;
+source include/check_schema_sync.inc;
+insert into t1 values (1, "abcdefg"), (2, "abcdefg"), (3, "abcdefg"), (4, "abcdefg"), (5, "abcdefg");
+inc $DATA_COUNT;
+select * from t1;
+select count(*) from t1;
+alter system set log_storage_compress_all = true;
+alter system set log_storage_compress_func = 'zstd_1.0';
+sleep 20;
+insert into t1 values (11, "abcdefg"), (12, "abcdefg"), (13, "abcdefg"), (14, "abcdefg"), (15, "abcdefg");
+inc $DATA_COUNT;
+insert into t1 values (21, "abcdefg"), (22, "abcdefg"), (23, "abcdefg"), (24, "abcdefg"), (25, "abcdefg");
+inc $DATA_COUNT;
+alter system set log_storage_compress_func = 'zstd_1.3.8';
+insert into t1 values (31, "abcdefg"), (32, "abcdefg"), (33, "abcdefg"), (34, "abcdefg"), (35, "abcdefg");
+inc $DATA_COUNT;
+insert into t1 values (41, "abcdefg"), (42, "abcdefg"), (43, "abcdefg"), (44, "abcdefg"), (45, "abcdefg");
+inc $DATA_COUNT;
+
+
+let $is_compressed = deploy_get_value(ob1.select select (a.value -  b.value) > 1000 as is_compressed from __all_virtual_sysstat  a join __all_virtual_sysstat b  on a.tenant_id=b.tenant_id and a.svr_ip=b.svr_ip and a.svr_port=b.svr_port and a.value >0 and b.value >0 and a.name='log storage compress original size' and b.name='log storage compress compressed size' and a.tenant_id=$mysql_tenant_id, is_compressed, 1);
+
+if ($is_compressed != 1)
+{
+  echo log is not compressed
+  --exit
+}
+
+alter system set log_storage_compress_all = false;
+sleep 20;
+insert into t1 values (51, "abcdefg"), (52, "abcdefg"), (53, "abcdefg"), (54, "abcdefg"), (55, "abcdefg");
+inc $DATA_COUNT;
+insert into t1 values (61, "abcdefg"), (62, "abcdefg"), (63, "abcdefg"), (64, "abcdefg"), (65, "abcdefg");
+inc $DATA_COUNT;
+insert into t1 values (71, "abcdefg"), (72, "abcdefg"), (73, "abcdefg"), (74, "abcdefg"), (75, "abcdefg");
+inc $DATA_COUNT;
+source include/prepare_for_big_log.inc;
+--enable_query_log
+# for create table in prepare_for_big_log
+inc $DATA_COUNT;
+# for insert sql in prepare_for_big_log
+inc $DATA_COUNT;
+# for update sql in prepare_for_big_log
+inc $DATA_COUNT;
+
+## test replay  of barrier log
+create index index_t2 on t1(c2);
+inc $DATA_COUNT;
+
+alter system set log_storage_compress_all = true;
+sleep 15;
+
+set autocommit=0;
+begin;
+insert into t2(c1, a) values(77, repeat('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab', 19669));
+insert into t2(c1, a) values(88, repeat('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab', 19669));
+sleep 5;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp_usec_1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_mysql;
+sleep 5;
+
+insert into t1 values (101, "abcdefg"), (102, "abcdefg"), (103, "abcdefg"), (104, "abcdefg"), (105, "abcdefg");
+commit;
+set autocommit=1;
+
+let $TX_COUNT = 0;
+inc $TX_COUNT;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name like '%index_t2%', table_id, 1);
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where table_id=$table_id, 2, 100;
+
+let $ls_id = deploy_get_value(ob1.select select max(ls_id) max_ls_id from oceanbase.__all_virtual_log_stat where tenant_id='$mysql_tenant_id' and ls_id != 1, max_ls_id, 1);
+
+let $current_time = `select current_timestamp(6)`;
+ob1.check_until_timeout select count(1) as cnt from __all_virtual_ha_diagnose where tenant_id='$mysql_tenant_id' and ls_id=$ls_id and log_handler_role='FOLLOWER' and scn_to_timestamp(max_replayed_scn) > timestamp'$current_time', 2, 60;
+
+# [senior 2.4]#check all log replay successfully
+ob1.z1.obs0.stop;
+sleep 5;
+ob1.z1.obs0.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+let $max_lsn = deploy_get_value(ob1.select select max_lsn from __all_virtual_log_stat where tenant_id='$mysql_tenant_id' and ls_id = '$ls_id' and role='LEADER', max_lsn, 1);
+ob1.check_until_timeout select count(1) as cnt from __all_virtual_ha_diagnose where tenant_id = '$mysql_tenant_id' and ls_id = '$ls_id' and log_handler_role ='FOLLOWER' and max_replayed_lsn >='$max_lsn' , 2, 60;
+#
+##[senior 2.5] test cluster restart
+ob1.z1.stop;
+sleep 5;
+ob1.z1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+ob1.check_until_timeout select count(1) from __all_virtual_log_stat where tenant_id='$mysql_tenant_id' and ls_id = '$ls_id' and role='LEADER', 1, 60;
+
+let $max_lsn = deploy_get_value(ob1.select select max_lsn from __all_virtual_log_stat where tenant_id='$mysql_tenant_id' and ls_id = '$ls_id' and role='LEADER', max_lsn, 1);
+ob1.check_until_timeout select count(1) as cnt from __all_virtual_ha_diagnose where tenant_id = '$mysql_tenant_id' and ls_id = '$ls_id' and log_handler_role ='FOLLOWER' and max_replayed_lsn >='$max_lsn' , 2, 60;
+
+##[senior 2.6]
+set @@session.ob_query_timeout = 60000000;
+
+alter system set merger_check_interval = '10s';
+alter system set ob_compaction_schedule_interval = '10s';
+alter system set merger_check_interval = '10s' tenant = mysql;
+alter system set ob_compaction_schedule_interval = '10s' tenant = mysql;
+alter system major freeze tenant=all;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    # all tenant should major merge complete
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+sleep 5;
+let $new_current_time = `select current_timestamp(6)`;
+ob1.check_until_timeout select count(1) as cnt from __all_virtual_ha_diagnose where tenant_id='$mysql_tenant_id' and ls_id=$ls_id and log_handler_role='FOLLOWER' and scn_to_timestamp(max_replayed_scn) > timestamp'$new_current_time', 2, 60;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|mysql.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+
+let $cnt = 0;
+while ($cnt < $DATA_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+
+ob1.oblog.stop;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|mysql.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec_1;
+
+ob1.oblog.restart;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+select md5(c1), md5(a) from t2;
+select md5(c1), md5(c2) from t1 where c1 > 100;
+
+let $cnt = 0;
+while ($cnt < $TX_COUNT)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+ob1.oblog.stop;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval drop tenant mysql;
+ob1.check_until_timeout select count(1) as cnt from __all_virtual_log_stat where tenant_id='$mysql_tenant_id', 0, 200;
+ob1.check_until_timeout select count(1) as cnt from __all_tenant where tenant_id='$mysql_tenant_id', 0, 200;

@@ -1,0 +1,237 @@
+# owner: lixia.yq
+# owner group: storage
+# description: this case test __all_virtual_tablet_compaction_history & progressive merge
+#
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+let $proxy_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_port=deploy_get_value(ob1.z1.obs0.port);
+
+connect(sys_conn, $proxy_ip, root@obtest,,oceanbase, $proxy_port);
+
+--source include/compaction/set_common_parameters.inc
+set GLOBAL ob_query_timeout = 1000000000000;
+set GLOBAL ob_trx_timeout = 10000000000000;
+set GLOBAL ob_trx_idle_timeout = 10000000000;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+--source include/compaction/create_table_for_compaction.inc
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $row_tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+let $col_tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test02', tablet_id, 1);
+
+#disable row_col_switch
+ob1.mysql alter system set_tp tp_name="EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code=4016, frequency=1;
+
+#########################################################################
+# TEST_1: mini merge
+#########################################################################
+let $__cnt__=0;
+
+#########################################################################
+# TEST_1.1: minor freeze 1
+#########################################################################
+let $__row_cnt__=50;
+--source include/compaction/insert_rows_for_compaction.inc
+connection sys_conn;
+alter system minor freeze tenant='obtest';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=0 and is_active='NO', 0, 200;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MINI_MERGE' and svr_port='$z1_port', 1, 10;
+let $mini_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MINI_MERGE' and svr_port='$z1_port' limit 1, task_id, 1);
+let $finish_time=deploy_get_value(ob1.select select finish_time from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$mini_trace', finish_time, 1);
+let $memtable_compaction_scn=deploy_get_value(ob1.select select compaction_scn from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$mini_trace', compaction_scn, 1);
+let $macro_seq=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$memtable_compaction_scn and macro_idx_in_sstable=0 and svr_port='$z1_port',macro_block_idx, 1);
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$mini_trace' and macro_block_count>0 and multiplexed_macro_block_count=0 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$mini_trace' and participant_table like '%table_cnt=1%end_scn=$memtable_compaction_scn%' and new_flush_data_rate>0, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$mini_trace' and macro_id_list like "$macro_seq%" and kept_snapshot like "%snapshot%" and merge_level='MACRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_1.2: minor freeze 2
+#########################################################################
+
+let $__row_cnt__=100;
+--source include/compaction/insert_rows_for_compaction.inc
+
+connection sys_conn;
+alter system minor freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=0 and is_active='NO', 0, 200;
+
+#########################################################################
+# TEST_1.3: minor freeze 3
+#########################################################################
+let $__row_cnt__=150;
+--source include/compaction/insert_rows_for_compaction.inc
+
+connection sys_conn;
+alter system minor freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type=0 and is_active='NO', 0, 200;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and tablet_id=$row_tablet_id and table_type=12 and svr_port='$z1_port', 3, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and start_time>'$finish_time' and svr_port='$z1_port', 1, 10;
+
+#########################################################################
+# TEST_2: minor merge
+#########################################################################
+ob1.mysql alter system set minor_compact_trigger=2 tenant obtest;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MINOR_MERGE' and svr_port='$z1_port', 1, 200;
+let $minor_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MINOR_MERGE' and svr_port='$z1_port' limit 1, task_id, 1);
+
+let $minor_compaction_scn=deploy_get_value(ob1.select select compaction_scn from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$minor_trace', compaction_scn, 1);
+let $macro_seq=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$minor_compaction_scn and macro_idx_in_sstable=0  and svr_port='$z1_port',macro_block_idx, 1);
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$minor_trace' and macro_block_count>0 and multiplexed_macro_block_count>0 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$minor_trace' and participant_table like '%table_cnt=3%end_scn=$minor_compaction_scn%' and new_flush_data_rate>0, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$minor_trace' and macro_id_list like "$macro_seq%" and kept_snapshot like "%snapshot%" and merge_level='MACRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_3: major merge
+#########################################################################
+
+#########################################################################
+# TEST_3.1: major merge 1
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn1=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+###
+# row major compaction history
+###
+let $major_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MAJOR_MERGE' and compaction_scn=$major_scn1 and (exec_mode='EXEC_MODE_LOCAL' or exec_mode='EXEC_MODE_OUTPUT') limit 1, task_id, 1);
+
+let $first_macro_seq=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn1 and macro_idx_in_sstable=0 and macro_block_type='data_block',macro_block_idx, 1);
+let $last_macro_seq=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn1 and macro_block_type='data_block' order by macro_idx_in_sstable desc limit 1,macro_block_idx, 1);
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_block_count>0 and multiplexed_macro_block_count=0 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and participant_table like '%[MAJOR]snapshot_version=1;[MINI]%' and new_flush_data_rate>0 and merge_reason = 'TENANT_MAJOR', 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_id_list like "$first_macro_seq%$last_macro_seq" and kept_snapshot like "%snapshot%" and merge_level='MICRO_BLOCK_LEVEL', 1, 10;
+
+###
+# col major compaction history
+###
+#let $major_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$col_tablet_id and type='MAJOR_MERGE' and compaction_scn=$major_scn1 and start_cg_id!=0 and (exec_mode='EXEC_MODE_LOCAL' or exec_mode='EXEC_MODE_OUTPUT') limit 1, task_id, 1);
+
+#ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$col_tablet_id and task_id='$major_trace' and macro_block_count>0 and multiplexed_macro_block_count=0 and total_row_count=$__row_cnt__, 1, 10;
+#ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$col_tablet_id and task_id='$major_trace' and participant_table like '%[MAJOR]snapshot_version=1;[MINI]%' and new_flush_data_rate>0 and merge_reason = 'TENANT_MAJOR', 1, 10;
+#ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$col_tablet_id and task_id='$major_trace' and macro_id_list like "$first_macro_seq%$last_macro_seq" and kept_snapshot like "%snapshot%" and merge_level='MICRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_3.2: major merge 2, no inc row, all macro will be multiplexed
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_compaction_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and max_received_scn>$major_scn1 and svr_port='$z1_port', 1, 500;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_compaction_info where tenant_id=$tenant_id and tablet_id=$col_tablet_id and max_received_scn>$major_scn1 and svr_port='$z1_port', 1, 500;
+let $major_scn2=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+ob1.check_until_timeout select count(*) > 1 from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and tablet_id=$row_tablet_id and table_type=10 and end_log_scn>$major_scn1, 1, 10;
+
+ob1.check_until_timeout select/*+ query_timeout(1000000000)*/ count(*) > 1 from oceanbase.__all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn2 and macro_idx_in_sstable=0 and macro_block_type='data_block' and macro_block_idx=$first_macro_seq, 1, 60;
+
+#########################################################################
+# TEST_3.3: major merge with progressive merge, will rewrite 1st macro
+#########################################################################
+connection conn_mysql;
+alter table test01 add column c5 int;
+alter table test02 add column c13 int;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where tenant_id=$tenant_id and table_name="test01" and progressive_merge_round=2 , 1, 100;
+
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn3=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+let $major_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MAJOR_MERGE' and compaction_scn=$major_scn3 and (exec_mode='EXEC_MODE_LOCAL' or exec_mode='EXEC_MODE_OUTPUT') limit 1, task_id, 1);
+let $macro_seq_rewrite1=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn3 and macro_idx_in_sstable=0 and macro_block_type='data_block',macro_block_idx, 1);
+let $macro_seq2=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn3 and macro_idx_in_sstable=1 and macro_block_type='data_block',macro_block_idx, 1);
+let $macro_seq3=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn3 and macro_idx_in_sstable=2 and macro_block_type='data_block',macro_block_idx, 1);
+
+if ($macro_seq3 != $last_macro_seq)
+{
+--echo "major sstable have more than 3 macro, case will not pass", $last_macro_seq
+}
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_block_count=multiplexed_macro_block_count + 1 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and participant_table like '%[MAJOR]snapshot_version=$major_scn2;', 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_id_list like "$macro_seq_rewrite1%$last_macro_seq%" and progressive_compaction_round=2 and progressive_compaction_num=100 and merge_level='MACRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_3.4: major merge with progressive merge, will rewrite 2nd macro
+#########################################################################
+
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn4=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+let $major_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MAJOR_MERGE' and compaction_scn=$major_scn4 and (exec_mode='EXEC_MODE_LOCAL' or exec_mode='EXEC_MODE_OUTPUT') limit 1, task_id, 1);
+
+let $macro_seq_rewrite1_in_major4=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn4 and macro_idx_in_sstable=0 and macro_block_type='data_block',macro_block_idx, 1);
+if ($macro_seq_rewrite1_in_major4 != $macro_seq_rewrite1)
+{
+--echo "ERROR! macro 1nd is rewrite", $macro_seq_rewrite1_in_major4, $macro_seq_rewrite1
+ob1.mysql select * from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn4 and macro_block_type='data_block';
+ob1.mysql select * from __all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id = '$major_trace';
+}
+
+let $macro_seq_rewrite2=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn4 and macro_idx_in_sstable=1 and macro_block_type='data_block',macro_block_idx, 1);
+
+if ($macro_seq_rewrite2 == $macro_seq2)
+{
+--echo "ERROR! macro 2nd is not rewrite", $macro_seq_rewrite2, $macro_seq2
+}
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_block_count=multiplexed_macro_block_count + 1 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and participant_table like '%[MAJOR]snapshot_version=$major_scn3;' and new_flush_data_rate>0, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_id_list like "$macro_seq_rewrite1%%$last_macro_seq" and progressive_compaction_round=2 and progressive_compaction_num=100 and merge_level='MACRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_3.5: major merge with progressive merge, will rewrite 3nd macro
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn5=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+let $major_trace=deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and type='MAJOR_MERGE' and compaction_scn=$major_scn5 and (exec_mode='EXEC_MODE_LOCAL' or exec_mode='EXEC_MODE_OUTPUT') limit 1, task_id, 1);
+
+ob1.check_until_timeout select/*+ query_timeout(1000000000)*/ count(*) > 0 from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn5 and macro_idx_in_sstable=0 and macro_block_idx = $macro_seq_rewrite1 and macro_block_type='data_block', 1, 50;
+
+let $macro_seq_rewrite3=deploy_get_value(ob1.select select/*+ query_timeout(1000000000)*/ macro_block_idx from __all_virtual_tablet_sstable_macro_info where tenant_id=$tenant_id and tablet_id=$row_tablet_id and end_log_scn=$major_scn5 and macro_idx_in_sstable=2 and macro_block_type='data_block',macro_block_idx, 1);
+
+if ($macro_seq_rewrite3 == $macro_seq3)
+{
+--echo "macro 3rd is not rewrite", $macro_seq_rewrite3, $macro_seq3
+}
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_block_count=multiplexed_macro_block_count + 1 and total_row_count=$__row_cnt__, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and participant_table like '%[MAJOR]snapshot_version=$major_scn4;' and new_flush_data_rate>0, 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and task_id='$major_trace' and macro_id_list like "$macro_seq_rewrite1%%$macro_seq_rewrite3" and progressive_compaction_round=2 and progressive_compaction_num=100 and merge_level='MACRO_BLOCK_LEVEL', 1, 10;
+
+#########################################################################
+# TEST_3.5: all macro will be reuse, end progressive_merge, set progressive_merge_step=num
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn6=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='progressive_merge_finish' and name1='tablet_id' and value1=$row_tablet_id, 1, 600;
+ob1.z1.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='progressive_merge_finish' and name1='tablet_id' and value1=$col_tablet_id, 1, 600;
+
+
+#########################################################################
+# TEST_3.6: all macro will be reuse, end progressive_merge, this round major will be skiped
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn7=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$tenant_id and tablet_id=$row_tablet_id and compaction_scn=$major_scn7 and type like '%MAJOR%', 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;

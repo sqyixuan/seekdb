@@ -1,0 +1,134 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     测试alter system migrate unit命令
+#     用例场景：
+#     case 1 : 迁移unit到其他的zone的server
+#     case 2 : 迁移unit到unit本身的server
+#     case 3 : 迁移unit到不能迁移的server
+#     case 4 : 迁移unit到资源不够的server
+#     case 5 : 迁移unit到可以成功迁移的server
+#     case 6 : 无效的迁移参数
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+let $extra_conf = "cpu_count=4,memory_limit='8G',system_memory='2G',log_disk_size='30G',__min_full_resource_pool_memory='1073741824'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z3.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $obs = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob1.mysql alter system set resource_hard_limit = '120';
+
+let $rs_job_count=deploy_get_value(ob1.select select count(*) a from oceanbase.__all_rootservice_job, a, 1);
+
+connect(conn_root, $obs, root@sys, , oceanbase, $port);
+connection conn_root;
+
+##########
+##case 1
+##########
+echo case 1;
+let $zone_name = z1;
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone = '$zone_name', unit_id, 1);
+let $obs = ob1.z2.obs0;
+let $obs_ip = deploy_get_value($obs.ip);
+let $obs_port = deploy_get_value($obs.port);
+
+--disable_query_log
+--error 1235
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+ob1.check_until_timeout select count(*) - $rs_job_count c from oceanbase.__all_rootservice_job, 0, 30;
+
+##########
+##case 2
+##########
+echo case 2;
+let $obs_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where unit_id = $unit_id, svr_ip, 1);
+let $obs_port = deploy_get_value(ob1.select select svr_port from __all_unit where unit_id = $unit_id, svr_port, 1);
+
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+ob1.check_until_timeout select count(*) - $rs_job_count c from oceanbase.__all_rootservice_job, 0, 30;
+
+##########
+##case 3
+##########
+echo case 3;
+
+#make obs block migrate in
+let $obs = ob1.z1.obs1;
+let $obs_ip = deploy_get_value($obs.ip);
+let $obs_port = deploy_get_value($obs.port);
+$obs.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time<=0 and status='INACTIVE'),1,20;
+
+--error 4551
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+
+$obs.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time<= 0, 0, 30;
+
+ob1.mysql alter system set resource_hard_limit = '200';
+sleep 2;
+
+##########
+##case 4
+##########
+echo case 4;
+let $obs = ob1.z1.obs1;
+let $obs_ip = deploy_get_value($obs.ip);
+let $obs_port = deploy_get_value($obs.port);
+
+# create a resource pool to occupy resource on dest server
+let $cpu_max = 8;
+let $cpu = 4;
+let $memory_size = 6442450944;
+let $log_disk_size = 32212254720;
+eval create resource unit uc max_cpu = $cpu_max, min_cpu = $cpu, memory_size = $memory_size, log_disk_size = $log_disk_size;
+create resource pool rp unit = uc, unit_num = 1;
+
+alter system set_tp tp_name = ERRSIM_USE_DUMMY_SERVER, error_code = 4000, frequency = 1;
+
+--error 4624
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+
+eval alter resource unit uc max_cpu = $cpu;
+--error 4624
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+
+eval alter resource unit uc min_cpu = 1;
+--error 4624
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+
+eval alter resource unit uc memory_size = '2G';
+--error 4624
+eval alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+
+alter system set_tp tp_name = ERRSIM_USE_DUMMY_SERVER, error_code = 4000, frequency = 0;
+drop resource pool rp;
+
+##########
+##case 5
+##########
+ob1.mysql alter system migrate unit $unit_id destination '$obs_ip:$obs_port';
+let $unit_cnt = deploy_get_value(ob1.select select count(*) as cnt from __all_unit where svr_ip = '$obs_ip' and svr_port = '$obs_port', cnt, 1);
+if ($unit_cnt == 1)
+{
+  echo pass;
+}
+ob1.check_until_timeout select count(*) - $rs_job_count c from oceanbase.__all_rootservice_job, 1 ,30;
+
+##########
+##case 5
+##########
+--disable_query_log
+--error 4018
+eval alter system migrate unit 9999 destination '$obs_ip:$obs_port';
+--error 4018
+eval alter system migrate unit $unit_id destination '127.0.0.1:1';
+ob1.check_until_timeout select count(*) - $rs_job_count c from oceanbase.__all_rootservice_job, 1 ,30;

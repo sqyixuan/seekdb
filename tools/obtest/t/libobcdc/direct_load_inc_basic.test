@@ -1,0 +1,731 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description: support direct load inc
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant_with_gts.inc;
+
+let $OBSERVER_DIR=deploy_get_value(ob1.z1.obs0.workdir);
+let $HOST_IP=query_get_value(select host_ip() as host_ip, host_ip, 1);
+let $DATA_FOLDER_NAME = mysqltest_data_direct_load_inc;
+
+# create file
+--disable_query_log
+let $SCP_CMD = ssh $HOST_IP 'mkdir -p "$OBSERVER_DIR/$DATA_FOLDER_NAME"' && scp -r include/liboblog/direct_load_data/* $HOST_IP:"$OBSERVER_DIR/$DATA_FOLDER_NAME";
+exec $SCP_CMD;
+--enable_query_log
+
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all;
+
+let $restart_ts_usec1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+# set secure_file_priv
+ob1.z1.obs0.sh obclient -S $OBSERVER_DIR/run/sql.sock -uroot@oblog_tt -Dtest -A -e 'SET GLOBAL secure_file_priv=\"/\"';
+
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+let $mysql_tenant_name=oblog_tt;
+source include/liboblog/set_direct_load_allow_fallback_false.inc;
+connection oblog_conn_tt;
+use test;
+
+set ob_default_lob_inrow_threshold=4096;
+
+--disable_warnings
+--disable_query_log
+drop table if exists t_pqTly6tEb1;
+drop table if exists t1_pqTly6tEb1;
+drop table if exists t2_pqTly6tEb1;
+drop table if exists t3_pqTly6tEb1;
+drop table if exists t4_pqTly6tEb1;
+--enable_query_log
+--enable_warnings
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_direct_load_inc=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+select md5('hello');
+select md5('world');
+select md5(repeat('1', 7000));
+select md5('kkk');
+
+--echo ================ test rowkey table =========
+create table t_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+
+insert into t_pqTly6tEb1 values(-100, 5);
+ob1.oblog.next;
+sleep 30;
+--disable_query_log
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc0.csv' into table t_pqTly6tEb1 fields terminated by ',';
+ob1.oblog.next;
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc1.csv' into table t_pqTly6tEb1 fields terminated by ',';
+ob1.oblog.next;
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc2.csv' into table t_pqTly6tEb1 fields terminated by ',';
+ob1.oblog.next;
+--enable_query_log
+
+insert into t_pqTly6tEb1 values(100,4);
+ob1.oblog.next;
+
+drop table t_pqTly6tEb1;
+ob1.oblog.next;
+
+--echo ================ test heap table =========
+# 测试堆表
+
+create table t_pqTly6tEb1  (c1 int, c2 int);
+ob1.oblog.next;
+
+insert into t_pqTly6tEb1 values(-100, 5);
+ob1.oblog.next;
+
+--disable_query_log
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc0.csv' into table t_pqTly6tEb1 fields terminated by ',';
+ob1.oblog.next;
+--enable_query_log
+
+insert into t_pqTly6tEb1 values(100,4);
+ob1.oblog.next;
+
+# select * from t_pqTly6tEb1;
+
+drop table t_pqTly6tEb1;
+ob1.oblog.next;
+
+--echo ================ test insert into select =========
+# 测试insert into select
+
+create table t1_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+create table t2_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+
+insert into t1_pqTly6tEb1 values(1,2),(3,4),(5,6);
+ob1.oblog.next;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+
+# select * from t2_pqTly6tEb1;
+
+delete from t2_pqTly6tEb1;
+ob1.oblog.next;
+
+
+begin;
+insert into t2_pqTly6tEb1 values(100, 1);
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+# select * from t2_pqTly6tEb1;
+rollback;
+
+# select * from t2_pqTly6tEb1;
+
+
+begin;
+insert into t2_pqTly6tEb1 values(100, 1);
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+insert into t2_pqTly6tEb1 values(101, 1);
+# select * from t2_pqTly6tEb1;
+rollback;
+
+# select * from t2_pqTly6tEb1;
+
+let $ddl_stmt_count = 0;
+let $dml_stmt_count = 0;
+sleep 2;
+begin;
+insert into t2_pqTly6tEb1 values(100, 1);
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+
+let $restart_ts_usec2 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+insert into t2_pqTly6tEb1 values(101, 1);
+# select * from t2_pqTly6tEb1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+
+# select * from t2_pqTly6tEb1;
+
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test load fail =========
+
+create table t1_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 varchar(10));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t2_pqTly6tEb1 values(40, 'kkk1');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, 'maybe very long text longer than ten chars'), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1406
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+
+insert into t2_pqTly6tEb1 values(4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# select * from t2_pqTly6tEb1;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test lob =========
+
+create table t1_pqTly6tEb1  (c1 int primary key, c2 varchar(8000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 text);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t3_pqTly6tEb1  (c1 int primary key, c2 json);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t4_pqTly6tEb1  (c1 int primary key, c2 text);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, repeat('1', 7000)), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t4_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, repeat('1', 7000)), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t2_pqTly6tEb1 values(40, repeat('1', 7000));
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t4_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+delete from t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t4_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t3_pqTly6tEb1 select c1, json_object('c2', c2) as c2 from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select c1, json_object('c2', c2) as c2 from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select c1, json_object('c2', c2) as c2 from t4_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+delete from t3_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select c1, json_object('c2', c2) as c2 from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select c1, json_object('c2', c2) as c2 from t4_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t3_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t4_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test local index =========
+create table t1_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create index i1 on t2_pqTly6tEb1(c2);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, 'maybe very long text longer than ten chars'), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test global index =========
+create table t1_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create index i1 on t2_pqTly6tEb1(c2) global PARTITION BY HASH(c2) PARTITIONS 5;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1, 1), (2, 2), (3, 3), (4, 4);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1235
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test heap table with with multi unique index =========
+create table t1_pqTly6tEb1  (c1 int, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create unique index i1 on t2_pqTly6tEb1(c1);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create unique index i2 on t2_pqTly6tEb1(c2);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, 'maybe very long text longer than ten chars'), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1235
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test heap table with single local unique index =========
+create table t1_pqTly6tEb1  (c1 int, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t3_pqTly6tEb1  (c1 int, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create index i1 on t3_pqTly6tEb1(c1);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create unique index i2 on t3_pqTly6tEb1(c2);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, 'maybe very long text longer than ten chars'), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t2_pqTly6tEb1 values(7,'hello'), (8, 'world');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t3_pqTly6tEb1 select * from t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test index organized table with unique index =========
+create table t1_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create unique index i1 on t2_pqTly6tEb1(c2);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,'hello'), (2, 'world'), (3, 'maybe very long text longer than ten chars'), (4, 'kkk');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1235
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test check row conflict =========
+create table t1_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 varchar(1000));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values (1,'hello');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1062
+insert into t2_pqTly6tEb1 values (1,'hello');
+
+insert into t1_pqTly6tEb1 values (2, 'world');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--error 1062
+insert into t2_pqTly6tEb1 values (1,'hello'), (2, 'world');
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test rollback to savepoint =========
+
+create table t1_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1,2),(3,4),(5,6);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+savepoint sv1;
+insert into t2_pqTly6tEb1 values(7,8);
+rollback to savepoint sv1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+delete from t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+insert into t2_pqTly6tEb1 values(7,8);
+savepoint sv1;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+rollback to savepoint sv1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# test load data ignore duplicate
+truncate table t3_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t3_pqTly6tEb1 values(5,'hello'), (6, 'world'), (3, 'maybe very long text longer than ten chars');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+--disable_query_log
+eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc3.csv' ignore into table t3_pqTly6tEb1 fields terminated by ',';
+--enable_query_log
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t3_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+--echo ================ test big lob =========
+
+connection oblog_conn_sys;
+alter tenant oblog_tt set variables max_allowed_packet=1073741824;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 在oblog_tt租户下操作
+sleep 2;
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+# 设置最大包大小 1G
+set global max_allowed_packet=1073741824;
+
+connection oblog_conn_tt;
+
+use test;
+
+set @text:=repeat('a', 63210);
+set @long_text:=repeat('b', 50331647);
+set @long_blob:=repeat('c', 50331647);
+
+select md5(@text);
+select md5(@long_text);
+select md5(@long_blob);
+
+create table t1_pqTly6tEb1  (c1 int primary key, c2 text, c3 longtext, c4 longblob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create table t2_pqTly6tEb1  (c1 int primary key, c2 text, c3 longtext, c4 longblob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t1_pqTly6tEb1 values(1, @text, @long_text, @long_blob);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert into t2_pqTly6tEb1 values(1, 'a', 'b', 'c');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+update t2_pqTly6tEb1 set c3=@long_blob where c1=1;
+insert into t2_pqTly6tEb1 values(2, @text, @long_text, @long_blob);
+savepoint sv1;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+savepoint sv2;
+insert into t2_pqTly6tEb1 values(3, @text, @long_text, @long_blob);
+rollback to savepoint sv1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+delete from t2_pqTly6tEb1;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t2_pqTly6tEb1 select * from t1_pqTly6tEb1;
+savepoint sv1;
+insert into t2_pqTly6tEb1 values(2, @text, @long_text, @long_blob);
+rollback to savepoint sv1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+drop table t1_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+drop table t2_pqTly6tEb1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf log_level=DEBUG tb_white_list=oblog_tt.*.* enable_direct_load_inc=1 meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec2;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $ddl_stmt_count + $dml_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_direct_load_inc=1 meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_direct_load_inc=1 meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $dml_stmt_count = 0;
+
+create table t_pqTly6tEb1 (c1 int primary key, c2 int);
+ob1.oblog.next;
+
+create table t1_pqTly6tEb1 (c1 int primary key, c2 int);
+ob1.oblog.next;
+
+insert into t1_pqTly6tEb1 values(1,2), (3,4);
+ob1.oblog.next;
+
+begin;
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t_pqTly6tEb1 select * from t1_pqTly6tEb1;
+sleep 1;
+let $restart_ts_usec3 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+insert into t_pqTly6tEb1 values(-100, 5);
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+insert into t_pqTly6tEb1 values(-101, 5);
+sleep 1;
+let $restart_ts_usec4 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+insert /*+ enable_parallel_dml parallel(2) direct(true, 0, 'inc_replace') */ into t_pqTly6tEb1 select * from t1_pqTly6tEb1;
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+begin;
+insert into t_pqTly6tEb1 values(-102, 5);
+--disable_query_log
+eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/$DATA_FOLDER_NAME/misc/load_data_inc0.csv' into table t_pqTly6tEb1 fields terminated by ',';
+--enable_query_log
+commit;
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_direct_load_inc=1 meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec3;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $dml_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_direct_load_inc=1 meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec4;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < ($dml_stmt_count - 1))
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.stop;
+
+# delete file
+--disable_query_log
+let $RM_CMD = ssh $HOST_IP 'rm -rf "$OBSERVER_DIR/$DATA_FOLDER_NAME"';
+exec $RM_CMD;
+--enable_query_log

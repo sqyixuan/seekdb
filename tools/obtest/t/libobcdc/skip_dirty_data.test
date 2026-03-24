@@ -1,0 +1,88 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点: 测试skip_dirty_data配置项
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+# 准备数据
+--disable_warnings
+drop database if exists oblog_db;
+create database oblog_db;
+
+use oblog_db;
+create table t1 (pk int primary key, v1 int, v2 varchar(100));
+
+let $DML_COUNT=0;
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 启动liboblog
+# 默认skip_dirty_data=0
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 设置开启全量日志
+set binlog_row_image='FULL';
+
+# 插入数据
+insert into t1 values (1, 1, 'abc');
+ob1.oblog.next_dml;
+inc $DML_COUNT;
+
+# 更新
+update t1 set v1=100;
+ob1.oblog.next_dml;
+inc $DML_COUNT;
+
+# 删除
+delete from t1;
+ob1.oblog.next_dml;
+inc $DML_COUNT;
+
+# 设置关闭全量日志
+set binlog_row_image='MINIMAL';
+
+# 插入数据
+# insert始终是全量日志，所以liboblog不会退出
+insert into t1 values (1, 1, 'abc');
+ob1.oblog.next_dml;
+inc $DML_COUNT;
+
+# 更新
+# 更新语句一定不是全量日志，所以liboblog会退出，这里获取不到数据
+update t1 set v1=100;
+inc $DML_COUNT;
+
+# 删除
+delete from t1;
+inc $DML_COUNT;
+
+################### 下面验证liboblog skip dirty data模式 ###################
+
+# 停止liboblog, 暂停OBTailer
+ob1.oblog.kill;
+
+# 从历史位置启动
+ob1.oblog.set_start_tstamp $start_tstamp;
+# 设置skip dirty data为1
+ob1.oblog.gen_conf skip_dirty_data=1 tb_white_list=oblog_tt.oblog_db.t1 skip_ob_version_compat_check=1 log_level=TLOG.*:DEBUG;
+ob1.oblog.restart;
+
+# 要求全部DML都能够收到
+let $count = $DML_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next_dml;
+  dec $count;
+}
+
+# 停止liboblog
+ob1.oblog.stop;

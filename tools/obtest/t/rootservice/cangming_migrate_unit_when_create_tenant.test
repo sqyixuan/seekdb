@@ -1,0 +1,53 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     测试在建租户的过程中不允许迁unit
+
+ob1=OBI(cluster=2, proxy_num =0, init_unit_cpu=2);
+ob1.reboot;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 5;
+let $obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $obs0_addr = $obs0_ip:$obs0_port;
+let $obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $obs1_addr = $obs1_ip:$obs1_port;
+
+# create tenant
+ob1.mysql create resource unit uc max_cpu = 1, memory_size = '2G';
+ob1.mysql create resource pool rp unit = 'uc', unit_num = 1;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_RELOAD_UNIT wait_for signal1';
+send create tenant tt resource_pool_list = ('rp');
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = 'tt', 1, 300;
+
+# try to migrate unit during process of creating tenant
+ob_connect(sys_conn2, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'rp', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $resource_pool_id, unit_id, 1);
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where unit_id = $unit_id, svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where unit_id = $unit_id, svr_port, 1);
+let $src_addr = $src_ip:$src_port;
+--disable_all_result_log
+if ($src_addr == $obs0_addr)
+{
+  --error 4016
+  eval alter system migrate unit $unit_id destination '$obs1_addr';
+}
+
+if ($src_addr == $obs1_addr)
+{
+  --error 4016
+  eval alter system migrate unit $unit_id destination '$obs0_addr';
+}
+--enable_all_result_log
+
+# continue to create tenant
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+connection sys_conn;
+reap;

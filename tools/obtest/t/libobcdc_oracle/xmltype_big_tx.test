@@ -1,0 +1,155 @@
+#
+# owner: zhichen
+# owner group: shenzhen
+# description:
+#  xmltype big tx test
+##
+
+# prepare cluster and tenant
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+let $user_define_tenant_size=1;
+let $max_cpu=10;
+let $memory_size='50G';
+
+# ref big_tx.test
+source include/liboblog/create_oracle_tenant.inc;
+
+connection conn_sys;
+let $restart_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=oracle.*.*  test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 redo_dispatcher_memory_limit=128M enable_output_trans_order_by_sql_operation=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection conn_oracle_obtest;
+
+set ob_query_timeout=90000000000000;
+set ob_trx_timeout=1200000000000000;
+
+#create database obcdc_db;
+#use obcdc_db;
+
+# 1KB for per col if col_size = 1024.
+let $init_col_cnt = 10;
+let $col_size=1024;
+let $col_cnt = $init_col_cnt;
+let $part_cnt = 10;
+# create table.
+eval create table t_small_tx(c0 number(38) GENERATED ALWAYS as IDENTITY START with 1 INCREMENT by 1) partition by hash (c0) partitions $part_cnt;
+eval create table t_big_tx(c0 number(38) GENERATED ALWAYS as IDENTITY START with 1 INCREMENT by 1) partition by hash (c0) partitions $part_cnt;
+
+while ($col_cnt > 0)
+{
+  eval alter table t_small_tx add c$col_cnt xmltype;
+  eval alter table t_big_tx add c$col_cnt xmltype;
+  dec $col_cnt;
+}
+
+# start time.
+connection conn_sys;
+let $restart_ts0_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+set ob_query_timeout=90000000000000;
+set ob_trx_timeout=1200000000000000;
+set autocommit=0;
+
+--disable_query_log
+let $init_row_cnt = 1024;
+begin;
+# init data in small _tb;
+insert into t_small_tx (c1) values (NULL);
+let $col_cnt = $init_col_cnt;
+# 10KB for one row
+while ($col_cnt > 0)
+{
+  eval update t_small_tx set c$col_cnt = xmltype(concat(concat('<data>', rpad('a', $col_size, 'a')), '</data>')) where c0 = 1;
+  dec $col_cnt;
+}
+
+let $small_pdml_cnt = 4;
+# 2^10 rows in t_small_tx
+while ($small_pdml_cnt > 0)
+{
+  eval insert /*+ disable_parallel_dml */ into t_small_tx (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)  select c1, c2, c3, c4, c4, c6, c7, c8, c9, c10 from t_small_tx;
+  dec $small_pdml_cnt;
+}
+
+# expect 2^10 reord
+select count(*) from t_small_tx;
+
+# commit;
+# restart at trans begin;
+connection conn_sys;
+let $restart_ts1_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+set ob_query_timeout=90000000000000;
+set ob_trx_timeout=1200000000000000;
+set autocommit=0;
+#echo $restart_ts1_usec;
+# commit;
+
+let $pdml_round = 2;
+let $total_pdml_round = 0;
+while($total_pdml_round < $pdml_round)
+{
+  insert /*+ disable_parallel_dml */ into t_big_tx (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)  select c1, c2, c3, c4, c4, c6, c7, c8, c9, c10 from t_small_tx;
+  inc $total_pdml_round;
+}
+# commit;
+
+connection conn_sys;
+let $restart_ts2_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+set ob_query_timeout=90000000000000;
+set ob_trx_timeout=1200000000000000;
+set autocommit=0;
+#echo $restart_ts2_usec;
+let $col_cnt = $init_col_cnt;
+while ($col_cnt > 0)
+{
+  eval update t_big_tx set c$col_cnt = xmltype(concat(concat(to_clob('<data>'), rpad('b', $col_size, 'b')), '</data>')) where c0 = 1;
+  dec $col_cnt;
+}
+
+commit;
+
+select count(*) from t_big_tx;
+
+set autocommit=1;
+--enable_query_log
+
+ob1.oblog.waitUntilRealtime 2400;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+# restart from tx_start
+# restart_ts1_usec/restart_ts2_usec get from tx_overall.inc
+ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 redo_dispatcher_memory_limit=128M enable_output_trans_order_by_sql_operation=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 2400;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+# restart from tx_start2
+#ob1.oblog.gen_conf tb_white_list=*cdc*.*.* log_level=INFO skip_ob_version_compat_check=1;
+#ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+#ob1.oblog.set_extra_argument '-c';
+#ob1.oblog.restart;
+#ob1.oblog.waitUntilRealtime 600;
+#ob1.oblog.next_dml;
+#ob1.oblog.stop;
+
+# restart_ts1_usec/restart_ts2_usec get from tx_overall.inc
+ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 redo_dispatcher_memory_limit=128M enable_output_trans_order_by_sql_operation=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 2400;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+

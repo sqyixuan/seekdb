@@ -1,0 +1,71 @@
+#owner: binifei.bnf
+#owner group: rootserver
+#tags: major freeze while truncate table
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set enable_major_freeze = true;
+# Note: there may be unfinished major_merge, which are launched according to major_freeze_duty_time.
+# Therefore, we need to disable daily_merge and wait the launched major_merge to finish here.
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+connection sys_conn;
+--disable_warnings
+drop table if exists test1;
+drop table if exists test2;
+--enable_warnings
+create table test1(c1 int primary key, c2 int);
+insert into test1 values(0, 2);
+insert into test1 values(1, 2);
+insert into test1 values(2, 2);
+create table test2(c1 int primary key, c2 int);
+insert into test2 values(0, 2);
+insert into test2 values(1, 2);
+insert into test2 values(2, 2);
+
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $tablet_id_1 = query_get_value(select tablet_id from __all_table where table_name = 'test1', tablet_id, 1);
+let $tablet_id_2 = query_get_value(select tablet_id from __all_table where table_name = 'test2', tablet_id, 1);
+
+# simulate truncate table case 1: delete infos of tablet_id_1 from __all_tablet_to_ls
+--disable_query_log
+eval delete from __all_tablet_to_ls where tablet_id = $tablet_id_1;
+--enable_query_log
+
+alter system major freeze;
+
+# simulate truncate table case 2: delete infos of tablet_id_2 from __all_tablet_replica_checksum
+let $ori_gmt_modified = query_get_value(select gmt_modified from __all_tablet_replica_checksum where tablet_id = $tablet_id_2, gmt_modified, 1);
+let $start_time = query_get_value(select now() as value, value, 1);
+let $__i__ = 100;
+while ($__i__ > 0)
+{
+    let $interval_second = query_get_value("select timestampdiff(second, '$start_time', now()) as value;", value, 1);
+    if ($interval_second <= 600)
+    {
+    let $new_gmt_modified = query_get_value(select gmt_modified from __all_tablet_replica_checksum where tablet_id = $tablet_id_2, gmt_modified, 1);
+        if ($new_gmt_modified != $ori_gmt_modified)
+        {
+            --disable_query_log
+            eval delete from __all_tablet_replica_checksum where tablet_id = $tablet_id_2;
+            --enable_query_log
+            let $__i__ = -5;
+        }
+    }
+    if ($interval_second > 600)
+    {
+        --echo timeout: __all_tablet_replica_checksum not updated
+        let $__i__ = -3;
+    }
+}
+
+--source mysql_test/include/wait_daily_merge.inc
+
+# clean up environment
+connection sys_conn;
+--disable_warnings
+drop table if exists test1;
+drop table if exists test2;
+--enable_warnings

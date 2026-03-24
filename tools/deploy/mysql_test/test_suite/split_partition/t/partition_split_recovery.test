@@ -1,0 +1,482 @@
+# owner: bingsong.sy
+# owner group: storage
+# description: this case is use for testing split partition recovery
+#
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+--enable_warnings
+
+connect (obsys1,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (obsys2,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (obsys3,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (obsys4,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+
+connection obsys1;
+alter system set debug_sync_timeout = '9999999s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn3,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn4,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn5,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+#单表的单个分区分裂任务卡住, 进行兜底恢复
+connection conn1;
+set ob_query_timeout=100000000000000;
+CREATE TABLE t1 (id bigint not null auto_increment, dob bigint, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (3000),
+        PARTITION p1 VALUES LESS THAN (4000),
+        PARTITION p2 VALUES LESS THAN (5000)
+    );
+insert /*+ append parallel(8) enable_parallel_dml */ into t1(dob) select random() from table(generator(4500));
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 1000';
+
+connection conn1;
+send ALTER TABLE t1 REORGANIZE PARTITION p0 INTO (PARTITION p0_1 VALUES LESS THAN (1000), PARTITION p0_2 VALUES LESS THAN (2000), PARTITION p0_3 VALUES LESS THAN (3000));
+
+connection obsys2;
+sleep 2;
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t1'`;
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+
+connection conn1;
+--error 4072
+reap;
+
+connection conn2;
+select count(*) from t1 partition(p0_1);
+select count(*) from t1 partition(p0_2);
+select count(*) from t1 partition(p0_3);
+select count(*) from t1 partition(p1);
+
+#单表的多个分区分裂任务卡住, 进行兜底恢复
+connection obsys1;
+alter system set debug_sync_timeout = '60s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+
+connection conn1;
+drop table t1;
+set ob_query_timeout=100000000000000;
+CREATE TABLE t1 (id bigint not null auto_increment, dob bigint, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (3000),
+        PARTITION p1 VALUES LESS THAN (4000),
+        PARTITION p2 VALUES LESS THAN (5000)
+    );
+insert /*+ append parallel(8) enable_parallel_dml */ into t1(dob) select random() from table(generator(4500));
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal1 execute 100000';
+set ob_global_debug_sync = 'TABLE_REDEFINITION_REPLICA_BUILD wait_for continue_signal2 execute 100000';
+
+connection conn1;
+send ALTER TABLE t1 REORGANIZE PARTITION p0 INTO (PARTITION p0_1 VALUES LESS THAN (1000), PARTITION p0_2 VALUES LESS THAN (2000), PARTITION p0_3 VALUES LESS THAN (3000));
+sleep 2;
+connection conn2;
+send ALTER TABLE t1 REORGANIZE PARTITION p1 INTO (PARTITION p1_1 VALUES LESS THAN (3200), PARTITION p1_2 VALUES LESS THAN (3600), PARTITION p1_3 VALUES LESS THAN (4000));
+sleep 2;
+connection conn3;
+sleep 2;
+send ALTER TABLE t1 REORGANIZE PARTITION p2 INTO (PARTITION p2_1 VALUES LESS THAN (4200), PARTITION p2_2 VALUES LESS THAN (4600), PARTITION p2_3 VALUES LESS THAN (5000));
+
+connection obsys2;
+sleep 2;
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t1'`;
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+sleep 5;
+
+connection obsys3;
+select ddl_type from __all_virtual_ddl_task_status;
+
+select count(*), lock_mode, op_type, obj_type from oceanbase.__all_virtual_obj_lock where (svr_ip, svr_port) = (select svr_ip, svr_port from oceanbase.__all_server order by svr_ip, svr_port limit 1) 
+and owner_id in (select task_id from oceanbase.__all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+
+select ddl_type from __all_virtual_ddl_task_status;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'now signal continue_signal2';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'now signal continue_signal2';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'now signal continue_signal2';
+
+connection conn1;
+--error 4072
+reap;
+connection conn2;
+reap;
+connection conn3;
+reap;
+
+connection obsys3;
+sleep 1;
+select count(*), lock_mode, op_type, obj_type from oceanbase.__all_virtual_obj_lock where (svr_ip, svr_port) = (select svr_ip, svr_port from oceanbase.__all_server order by svr_ip, svr_port limit 1) and owner_id in (select task_id from oceanbase.__all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+select ddl_type from __all_virtual_ddl_task_status;
+
+connection conn4;
+select count(*) from t1 partition(p0_1);
+select count(*) from t1 partition(p0_2);
+select count(*) from t1 partition(p0_3);
+select count(*) from t1 partition(p1_1);
+select count(*) from t1 partition(p1_2);
+select count(*) from t1 partition(p1_3);
+select count(*) from t1 partition(p2_1);
+select count(*) from t1 partition(p2_2);
+select count(*) from t1 partition(p2_3);
+update t1 set dob = 0 where id = 1;
+update t1 set dob = 0 where id = 2;
+delete from t1 where id = 100;
+delete from t1 where id = 102;
+alter table t1 add column c3 bigint;
+alter table t1 add column c4 varchar(100);
+drop table t1;
+
+# 测试大事务插入数据情况下, 进行兜底恢复, 是否出现数据异常
+connection conn1;
+set ob_query_timeout=1000000000000000000;
+CREATE TABLE t1 (id bigint not null auto_increment, dob bigint, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (3000000),
+        PARTITION p1 VALUES LESS THAN (4000000),
+        PARTITION p2 VALUES LESS THAN (5000000)
+    );
+create unique index unique_idx on t1(id, dob) global;
+--disable_warnings
+drop sequence if exists s1;
+--enable_warnings
+
+create sequence s1 cache 1000000000 noorder;
+insert /*+ append parallel(8) enable_parallel_dml */  into t1(dob) select s1.nextval from table(generator(10000));
+drop sequence s1;
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000000000';
+
+connection conn2;
+send ALTER TABLE t1 REORGANIZE PARTITION p0 INTO (PARTITION p0_1 VALUES LESS THAN (1000000), PARTITION p0_2 VALUES LESS THAN (2000000), PARTITION p0_3 VALUES LESS THAN (3000000));
+sleep 2;
+connection conn3;
+send ALTER TABLE t1 REORGANIZE PARTITION p1 INTO (PARTITION p1_1 VALUES LESS THAN (3200000), PARTITION p1_2 VALUES LESS THAN (3600000), PARTITION p1_3 VALUES LESS THAN (4000000));
+sleep 2;
+connection conn4;
+send ALTER TABLE t1 REORGANIZE PARTITION p2 INTO (PARTITION p2_1 VALUES LESS THAN (4200000), PARTITION p2_2 VALUES LESS THAN (4600000), PARTITION p2_3 VALUES LESS THAN (5000000));
+sleep 2;
+
+connection conn1;
+set ob_query_timeout=1000000000000000000;
+--disable_warnings
+drop sequence if exists s2;
+--enable_warnings
+create sequence s2 start with 20000 cache 1000000000 noorder;
+insert into t1(dob) select s2.nextval from table(generator(1000));
+drop sequence s2;
+
+connection obsys2;
+sleep 2;
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t1'`;
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+
+connection obsys3;
+sleep 1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+
+connection conn2;
+--error 4072
+reap;
+connection conn3;
+reap;
+connection conn4;
+reap;
+
+connection conn5;
+select count(*) from t1;
+select count(*) from t1 partition(p0_1);
+select count(*) from t1 partition(p0_2);
+select count(*) from t1 partition(p0_3);
+select count(*) from t1 partition(p1_1);
+select count(*) from t1 partition(p1_2);
+select count(*) from t1 partition(p1_3);
+select count(*) from t1 partition(p2_1);
+select count(*) from t1 partition(p2_2);
+select count(*) from t1 partition(p2_3);
+select count(distinct dob) from t1;
+
+connection obsys3;
+alter system change tenant sys;
+let $table_id  = `select table_id from oceanbase.__all_table where table_name='t1'`;
+--disable_query_log
+eval select index_status, index_type, index_column_num from oceanbase.__all_table where data_table_id = '$table_id';
+--enable_query_log
+
+connection conn5;
+drop table t1;
+
+#测试单表的多个分区分裂任务卡住, 然后同时进行兜底恢复
+connection obsys1;
+alter system set debug_sync_timeout = '99999999s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+
+connection conn1;
+set ob_query_timeout=100000000000000;
+CREATE TABLE t1 (id bigint not null auto_increment, dob bigint, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (3000),
+        PARTITION p1 VALUES LESS THAN (4000),
+        PARTITION p2 VALUES LESS THAN (5000)
+    );
+insert /*+ append parallel(8) enable_parallel_dml */ into t1(dob) select random() from table(generator(4500));
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal1 execute 100000';
+
+connection conn1;
+send ALTER TABLE t1 REORGANIZE PARTITION p0 INTO (PARTITION p0_1 VALUES LESS THAN (1000), PARTITION p0_2 VALUES LESS THAN (2000), PARTITION p0_3 VALUES LESS THAN (3000));
+sleep 2;
+connection conn2;
+send ALTER TABLE t1 REORGANIZE PARTITION p1 INTO (PARTITION p1_1 VALUES LESS THAN (3200), PARTITION p1_2 VALUES LESS THAN (3600), PARTITION p1_3 VALUES LESS THAN (4000));
+sleep 2;
+connection conn3;
+sleep 2;
+send ALTER TABLE t1 REORGANIZE PARTITION p2 INTO (PARTITION p2_1 VALUES LESS THAN (4200), PARTITION p2_2 VALUES LESS THAN (4600), PARTITION p2_3 VALUES LESS THAN (5000));
+
+connection obsys2;
+sleep 2;
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t1'`;
+let $trace_id_1 = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+let $trace_id_2 = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 2);
+let $trace_id_3 = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 3);
+
+--disable_query_log
+eval alter system cancel task '$trace_id_1';
+eval alter system cancel task '$trace_id_2';
+eval alter system cancel task '$trace_id_3';
+--enable_query_log
+
+connection obsys4;
+select ddl_type from __all_virtual_ddl_task_status;
+select count(*), lock_mode, op_type, obj_type from oceanbase.__all_virtual_obj_lock where (svr_ip, svr_port) = (select svr_ip, svr_port from oceanbase.__all_server order by svr_ip, svr_port limit 1) and owner_id in (select task_id from oceanbase.__all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+select ddl_type from __all_virtual_ddl_task_status;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+
+connection conn1;
+--error 4072
+reap;
+connection conn2;
+--error 4072
+reap;
+connection conn3;
+--error 4072
+reap;
+
+connection obsys4;
+sleep 1;
+select count(*), lock_mode, op_type, obj_type from oceanbase.__all_virtual_obj_lock where (svr_ip, svr_port) = (select svr_ip, svr_port from oceanbase.__all_server order by svr_ip, svr_port limit 1) and owner_id in (select task_id from oceanbase.__all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+select ddl_type from __all_virtual_ddl_task_status;
+
+connection conn4;
+select count(*) from t1 partition(p0_1);
+select count(*) from t1 partition(p0_2);
+select count(*) from t1 partition(p0_3);
+select count(*) from t1 partition(p1_1);
+select count(*) from t1 partition(p1_2);
+select count(*) from t1 partition(p1_3);
+select count(*) from t1 partition(p2_1);
+select count(*) from t1 partition(p2_2);
+select count(*) from t1 partition(p2_3);
+update t1 set dob = 0 where id = 1;
+update t1 set dob = 0 where id = 2;
+delete from t1 where id = 100;
+delete from t1 where id = 102;
+alter table t1 add column c3 bigint;
+alter table t1 add column c4 varchar(100);
+drop table t1;
+
+
+#测试单表的全局索引自动分裂, 然后同时进行兜底恢复
+connection obsys1;
+alter system set debug_sync_timeout = '600s';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal1 execute 100000';
+
+
+connection conn1;
+alter system set enable_auto_split=true;
+--disable_warnings
+drop table if exists t11; 
+--enable_warnings
+create table t11(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b,c))  
+partition by range(a) (partition p0 values less than (5000000),
+partition p1 values less than (10000000), 
+partition p2 values less than (25000000), 
+partition p3 values less than (50000000),
+partition p4 values less than (75000000),
+partition p5 values less than (90000000),  
+partition p6 values less than (MAXVALUE));
+
+create index gkey ON t11(c,d) GLOBAL PARTITION BY RANGE(c) (partition p0 values less than (MAXVALUE));
+set ob_query_timeout=100000000000000;
+
+let $times_insert = 0;
+while ($times_insert < 10)
+{
+  --inc $times_insert
+  insert into t11(a,b,c,d) select 
+    uniform(1, 100000000, random()),
+    randstr(150, random()) c1,
+    uniform(1, 1000, random()),
+    randstr(4000, random()) c1
+  from 
+    table(generator(8000));
+}
+
+connection obsys1;
+ALTER SYSTEM MINOR FREEZE TENANT = ALL;
+
+sleep 80; #wait auto split task start 
+
+select ddl_type from __all_virtual_ddl_task_status;
+
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t11'`;
+let $gidx_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where data_table_id=$table_id, table_id, 1);
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $gidx_table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+
+
+let $times_check = 0;
+while ($times_check < 30) 
+{
+  --sleep 10
+  --inc $times_check
+  let $num = query_get_value(select count(1) as count from __all_virtual_ddl_task_status where ddl_type = 100 or ddl_type = 102, count, 1);
+  if ($num == 0) 
+  {
+    let $times_check = 30;
+  }
+}
+
+select * from __all_virtual_ddl_task_status where ddl_type = 100 or ddl_type = 102;
+connection conn1;
+select count(*) from t11;
+
+--disable_query_log
+eval select index_status, index_type, index_column_num from oceanbase.__all_table where data_table_id = '$table_id';
+--enable_query_log
+drop table t11;
+alter system set enable_auto_split=false;
+
+
+#测试单表的多个分区分裂任务卡住及该表上的全局索引多个分区自动分裂卡住, 然后同时进行兜底恢复
+connection obsys1;
+alter system set debug_sync_timeout = '600s';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal1 execute 100000';
+
+
+connection conn1;
+alter system set enable_auto_split=true;
+set ob_query_timeout=100000000000000;
+--disable_warnings
+drop table if exists t11; 
+--enable_warnings
+create table t11(a int, b VARCHAR(150), c int, d VARCHAR(4000),primary key(a,b,c))  
+partition by range(a) (partition p0 values less than (50000000), partition p1 values less than (MAXVALUE));
+
+create index gkey ON t11(c,d) GLOBAL PARTITION BY RANGE(c) (partition p0 values less than (50000000), partition p1 values less than (MAXVALUE));
+
+
+
+let $times_insert = 0;
+while ($times_insert < 10)
+{
+  --inc $times_insert
+  insert into t11(a,b,c,d) select 
+    uniform(1, 100000000, random()),
+    randstr(150, random()) c1,
+    uniform(1, 100000000, random()),
+    randstr(4000, random()) c1
+  from 
+    table(generator(15000));
+}
+
+connection obsys1;
+ALTER SYSTEM MINOR FREEZE TENANT = ALL;
+
+sleep 100; #wait auto split task start 
+
+select ddl_type from __all_virtual_ddl_task_status;
+
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t11'`;
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal1';
+
+let $times_check = 0;
+while ($times_check < 40) 
+{
+  --sleep 10
+  --inc $times_check
+  let $num = query_get_value(select count(1) as count from __all_virtual_ddl_task_status where ddl_type = 100 or ddl_type = 102, count, 1);
+  if ($num == 0) 
+  {
+    let $times_check = 40;
+  }
+}
+
+select * from __all_virtual_ddl_task_status where ddl_type = 100 or ddl_type = 102;
+connection conn1;
+select count(*) from t11;
+
+--disable_query_log
+eval select index_status, index_type, index_column_num from oceanbase.__all_table where data_table_id = '$table_id';
+--enable_query_log
+drop table t11;
+alter system set enable_auto_split=false;

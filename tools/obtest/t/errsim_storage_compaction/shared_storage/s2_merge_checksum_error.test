@@ -1,0 +1,109 @@
+# owner: fengjingkun.fjk
+# owner group: storage
+# Test Case: clear merge error in ss merge
+
+
+#################################### reboot && connect sys tenant  ####################################
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (obsys, $svr_ip, root@sys, , oceanbase, $svr_port);
+connection obsys;
+
+
+
+#####################################  set tenant config  #####################################
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set ob_compaction_schedule_interval = '5s' tenant sys;
+alter system set _ss_major_compaction_prewarm_level = 2 tenant sys;
+alter system set merger_check_interval = '10s' tenant sys;
+
+
+
+###################################  prepare table for sys tenant   ###################################
+create table t1(c1 int primary key, c2 int, c3 int);
+create index t1_idx_c2 on t1(c2);
+insert into t1 values(1, 1, 1);
+insert into t1 values(2, 2, 2);
+insert into t1 values(3, 3, 3);
+
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $idx_tablet_id = query_get_value(select tablet_id from __all_table where table_name like "%t1_idx_c2%", tablet_id, 1);
+
+
+
+###################################  launch major merge  ###################################
+alter system major freeze tenant = sys;
+sleep 5;
+
+# wait for all zone starts merge
+let $frozen_scn = query_get_value(select max(frozen_scn) as value from __all_freeze_info, value, 1);
+let $zone_num = query_get_value(select count(*) as value from __all_zone_merge_info where tenant_id = $sys_tenant_id, value, 1);
+ob1.check_until_timeout select count(*) from __all_zone_merge_info where tenant_id = $sys_tenant_id and broadcast_scn = $frozen_scn, $zone_num, 10;
+
+
+
+###################################  mock column checksum error  ###################################
+let $ZERO_B_COLUMN_CHECKSUMS = '636865636B636F6C0000160400000000';
+
+ob1.check_until_timeout select count(1) from __all_tablet_replica_checksum where tenant_id = $sys_tenant_id and tablet_id = $idx_tablet_id and compaction_scn = $frozen_scn, 1, 300;
+let $ori_col_ckm = query_get_value(select b_column_checksums from __all_tablet_replica_checksum where tenant_id = $sys_tenant_id and tablet_id = $idx_tablet_id, b_column_checksums, 1);
+
+ob1.check_until_timeout select count(1) from __all_virtual_server_compaction_event_history where tenant_id = $sys_tenant_id and compaction_scn = $frozen_scn and role = 'LS_LEADER' and event like '%new_state=\"INDEX_VERIFY\"%', 1, 300;
+
+--disable_query_log
+eval update __all_tablet_replica_checksum set b_column_checksums = $ZERO_B_COLUMN_CHECKSUMS where tenant_id = $sys_tenant_id and tablet_id = $idx_tablet_id;
+--enable_query_log
+
+ob1.check_until_timeout select count(1) from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id and is_error = 'YES' and info = 'CHECKSUM_ERROR', 1, 600;
+
+
+
+####################################  expect new major freeze forbidden  ####################################
+let $__ret_forbidden__ = 100;
+let $ori_max_frozen_scn = query_get_value(select max(frozen_scn) as value from __all_freeze_info, value, 1);
+alter system major freeze tenant sys;
+let $new_max_frozen_scn = query_get_value(select max(frozen_scn) as value from __all_freeze_info, value, 1);
+
+if ($ori_max_frozen_scn == $new_max_frozen_scn)
+{
+  let $__ret_forbidden__ = -5;
+  --echo succeed to forbid launching one new major freeze
+}
+if ($ori_max_frozen_scn != $new_max_frozen_scn)
+{
+  --echo fail to forbid launching one new major freeze
+}
+
+
+
+#####################################  clear merge error && resume merge  #####################################
+if ($__ret_forbidden__ == -5)
+{
+  --disable_query_log
+  eval update __all_tablet_replica_checksum set b_column_checksums = '$ori_col_ckm' where tenant_id = $sys_tenant_id and tablet_id = $idx_tablet_id;
+  alter system clear merge error;
+  --enable_query_log
+
+  # wait until finishing the last major freeze with merge error
+  ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+}
+
+
+
+##################################### launch a new round major merge #####################################
+alter system major freeze tenant sys;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+
+
+#############################################  drop table #############################################
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+disconnect obsys;
+

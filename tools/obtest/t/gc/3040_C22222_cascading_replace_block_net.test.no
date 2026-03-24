@@ -1,0 +1,214 @@
+##############################
+# owner: debin.jdb
+# owner group: clog
+#
+# 测试功能点：
+# 1. 同region的多个只读副本同时找 leader 注册，确保不会发生频繁地来回替换问题；
+# 2. L->A->R 级联，L与A网络隔离，判断R是否能正常注册到L上，并把A替换掉（A、R均为只读副本）.
+# 3. L->F->R 级联，F为paxos类型，L->F单向网络隔离，预期R能检测到并挂到L下，恢复网络后一段时间，L自动检测出F、R同region，通知R重新注册到F上.
+#
+# 部署：
+# 5 zone, 10 observer
+# 副本分布 locality = F,R@z1, R{2}@z2, F,R@z3, R{2}@z4, F,R@z5; HZ:SZ:SH:SH:HZ
+
+ob1=OBI(cluster=2:2:2:2:2,proxy_num=0,init_unit_cpu=0,locality=HZ:SZ:SH:SH:HZ);
+
+# disable servers
+ob1.z2.obs0.set status=disable;
+ob1.z4.obs0.set status=disable;
+
+ob1.reboot;
+
+ob1.mysql alter system set max_stale_time_for_weak_consistency = '1h';
+ob1.mysql alter system set enable_monotonic_weak_read = 1;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+# 日志限流设置
+ob1.mysql alter system set syslog_io_bandwidth_limit = '1024MB';
+
+ob1.z2.add;
+ob1.z2.start_zone;
+ob1.z2.obs0.set status=enable;
+ob1.z2.obs0.start;
+ob1.z2.obs0.add;
+
+ob1.z4.add;
+ob1.z4.start_zone;
+ob1.z4.obs0.set status=enable;
+ob1.z4.obs0.start;
+ob1.z4.obs0.add;
+
+# waiting for the servers to start service
+sleep 20;
+
+ob_connect(sys_conn, ob1.z5.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+--disable_query_log
+
+select zone,count(*) from __all_zone where name='status' and info = 'ACTIVE' group by zone order by zone;
+select zone,count(*) from __all_server group by zone order by zone;
+alter system set max_stale_time_for_weak_consistency = '1h';
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 30;
+
+
+# 租户环境准备
+# create tenant tt1
+let $cpu = 2;
+let $min_cpu = 1;
+let $memory = 2073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+eval CREATE RESOURCE UNIT my_unit MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=$min_cpu, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+CREATE RESOURCE POOL my_pool UNIT = 'my_unit', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3', 'z4', 'z5');
+# primary zone所在region必须要有另一个非只读zone，否则bootstrap失败
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('my_pool'), locality='F,R@z1, R{2}@z2, F,R@z3, R{2}@z4, F,R@z5', primary_zone='z1;z5;' set ob_tcp_invited_nodes='%';
+
+sleep 5;
+
+ob_connect(tt1_conn, ob1.z5.obs0, root@tt1, ,test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+
+create table t1(c1 int);
+insert into t1 values (1), (2);
+select * from t1;
+
+# change zone type
+connection sys_conn;
+alter system modify zone 'z2' zone_type 'readonly';
+alter system modify zone 'z4' zone_type 'readonly';
+
+# 验证副本类型和分布
+select B.zone, B.replica_type from oceanbase.__all_virtual_table A, oceanbase.__all_virtual_meta_table B where A.table_name='t1' and A.table_id=B.table_id order by B.zone, B.replica_type;
+sleep 5;
+# 确定所有follower都分配到了有效的parent
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_clog_stat where role != 'LEADER' and parent like '%0.0.0.0%', 0, 60;
+
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+
+let $z4_obs0_ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_obs0_port = deploy_get_value(ob1.z4.obs0.port);
+let $z4_obs1_ip = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_obs1_port = deploy_get_value(ob1.z4.obs1.port);
+
+################################################################
+# CASE 1: 检查只读zone是否都有正常的parent
+sleep 20;
+# check all readonly replica has got a valid parent
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_clog_stat where role != 'LEADER' and parent like '%0.0.0.0%', 0, 60;
+# 检验z2_obs1这个只读副本的parent是否稳定
+let $parent_of_z2s1 = deploy_get_value(ob1.select select parent from __all_virtual_clog_stat where table_id='$table_id' and svr_ip='$z2_obs1_ip' and svr_port='$z2_obs1_port', parent, 1);
+sleep 30;
+# check parent is stable
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_clog_stat where table_id='$table_id' and svr_ip='$z2_obs1_ip' and svr_port='$z2_obs1_port' and parent='$parent_of_z2s1', 1, 60;
+
+# 验证插入数据并读取
+connection tt1_conn;
+insert into t1 values (3), (4);
+select * from t1;
+
+sleep 5;
+
+ob_connect(z2_conn, ob1.z2.obs0, root@tt1, ,test, , USE_MYSQL_CONNECTOR);
+connection z2_conn;
+select /*+ read_consistency(weak)*/* from t1;
+
+ob_connect(z4_conn, ob1.z4.obs0, root@tt1, ,test, , USE_MYSQL_CONNECTOR);
+connection z4_conn;
+select /*+ read_consistency(weak)*/* from t1;
+
+################################################################
+# CASE 2: 阻塞leader与z2只读下游A的网络，z2另一个只读副本B会触发重新分配上游，最终在leader的下游列表中把A替换掉
+let $leader_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_clog_stat where table_id = '$table_id' and role = 'LEADER', svr_ip, 1);
+let $leader_addr = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_clog_stat where table_id = '$table_id' and role = 'LEADER', host, 1);
+let $obs_leader = deploy_get_value(ob1.get_obs_by_addr $leader_addr);
+
+# 首先检查z2中leader的下游只有1个
+ob1.check_until_timeout select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z2' and A.parent like '%$leader_ip%', 1, 60;
+# 获取z2中leader的直接下游ip
+let $leader_z2_child_ip = deploy_get_value(ob1.select select A.svr_ip from __all_virtual_clog_stat A, __all_server B  where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z2' and A.parent like '%$leader_ip%', svr_ip, 1);
+let $leader_z2_child_port = deploy_get_value(ob1.select select A.svr_port from __all_virtual_clog_stat A, __all_server B  where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z2' and A.parent like '%$leader_ip%', svr_port, 1);
+let $leader_z2_child_addr = deploy_get_value(ob1.select select concat(A.svr_ip, ':', A.svr_port) host from __all_virtual_clog_stat A, __all_server B  where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z2' and A.parent like '%$leader_ip%', host, 1);
+let $obs_leader_z2_child = deploy_get_value(ob1.get_obs_by_addr $leader_z2_child_addr);
+# 单向阻塞leader->child的网络,此时不能连接leader查虚拟表,需要连其他server
+$obs_leader.block_net $obs_leader_z2_child;
+# 单向阻塞child->leader的网络
+$obs_leader_z2_child.block_net $obs_leader;
+
+sleep 30;
+connection sys_conn;
+--disable_query_log
+# 验证z2中另一个server将上述child替换掉了
+# expect val = 1; 注意sql语句中使用变量名的话前面需要加eval，否则变量不会生效
+# 查询结果为0，阻塞网络之后，clog虚拟表中查不到z2的两个副本了
+# eval select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z2' and A.parent like '%$leader_ip%' and  (A.svr_ip!='$leader_z2_child_ip' or A.svr_port!='$leader_z2_child_port');
+
+# 恢复网络
+$obs_leader.clean_net $obs_leader_z2_child;
+$obs_leader_z2_child.clean_net $obs_leader;
+
+################################################################
+# CASE 3: 阻塞leader与z3 paxos child F的网络，z4的只读副本检测出F异常后，强制挂到leader下；
+#         恢复网络之后，leader再次触发z4的只读下游重新注册到F上.
+let $leader_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_clog_stat where table_id = '$table_id' and role = 'LEADER', svr_ip, 1);
+let $leader_addr = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_clog_stat where table_id = '$table_id' and role = 'LEADER', host, 1);
+let $obs_leader = deploy_get_value(ob1.get_obs_by_addr $leader_addr);
+
+# 首先检查leader的下游中属于z3的为1个,因为二者同为region SH
+ob1.check_until_timeout select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z3' and A.parent like '%$leader_ip%', 1, 60;
+# 检查leader的下游中属于z4的为0个,因为二者同为region SH
+ob1.check_until_timeout select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z4' and A.parent like '%$leader_ip%', 0, 60;
+# 获取z3中leader的直接下游ip
+let $leader_z3_child_addr = deploy_get_value(ob1.select select concat(A.svr_ip, ':', A.svr_port) host from __all_virtual_clog_stat A, __all_server B  where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and B.zone='z3' and A.replica_type=0 and A.parent like '%$leader_ip%', host, 1);
+let $obs_leader_z3_child = deploy_get_value(ob1.get_obs_by_addr $leader_z3_child_addr);
+
+# 单向阻塞leader->child的网络,此时不能连接leader查虚拟表,需要连其他server
+$obs_leader.block_net $obs_leader_z3_child;
+
+sleep 30;
+
+# 验证插入数据并读取
+connection tt1_conn;
+insert into t1 values (5), (6);
+select * from t1;
+connection sys_conn;
+# 验证leader的下游中属于z3/z4的为2个,因为二者同为region SH
+# eval select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and (B.zone='z3' or B.zone='z4') and A.parent like '%$leader_ip%';
+# 验证除被阻塞网络的副本外无副本出现unsync
+# expect val = 1
+eval select count(*) from __all_virtual_clog_stat where table_id = '$table_id' and is_in_sync=0;
+
+connection z2_conn;
+select /*+ read_consistency(weak)*/* from t1;
+
+connection z4_conn;
+select /*+ read_consistency(weak)*/* from t1;
+
+# 恢复网络
+$obs_leader.clean_net $obs_leader_z3_child;
+sleep 30;
+
+# 检查leader的下游中属于z3/z4的恢复为1个,因为二者同为region SH
+# 级联策略更新之后，目前paxos副本直接将leader设为parent，不再通知leader，故leader不会主动删除与其同region的只读副本
+# ob1.check_until_timeout select count(*) from __all_virtual_clog_stat A, __all_server B where A.svr_ip=B.svr_ip and A.svr_port=B.svr_port and A.table_id = '$table_id' and (B.zone='z3' or B.zone='z4') and A.parent like '%$leader_ip%', 1, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_clog_stat where table_id = '$table_id' and is_in_sync=0, 0, 10;

@@ -1,0 +1,65 @@
+# owner: zhenhan.gzh
+# owner group: storage
+# description: test GV$SESSION_LONGOPS when creating index
+#
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn1;
+sleep 3;
+create table t1(c1 int, c2 int auto_increment);
+insert into t1 values(1,1),(2,2),(3,3),(4,4);
+create index i1 on t1(c1);
+sleep 3;
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+alter system set debug_sync_timeout = '10000s';
+sleep 5;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CREATE_INDEX_WAIT_TRANS_END wait_for signal1 execute 10000';
+set ob_global_debug_sync = 'CREATE_INDEX_REPLICA_BUILD wait_for signal2 execute 10000';
+set ob_global_debug_sync = 'CREATE_INDEX_TAKE_EFFECT wait_for signal3 execute 10000';
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn1;
+send alter table t1 drop column c2;
+sleep 5;
+
+connection conn2;
+SELECT OPNAME FROM oceanbase.GV$SESSION_LONGOPS WHERE MESSAGE LIKE '%PENDING_TX_ID%';
+
+connection obsys;
+set ob_global_debug_sync = 'CREATE_INDEX_WAIT_TRANS_END clear';
+set ob_global_debug_sync = 'now signal signal1';
+sleep 3;
+
+connection conn2;
+SELECT OPNAME FROM oceanbase.GV$SESSION_LONGOPS ORDER BY OPNAME;
+
+connection obsys;
+set ob_global_debug_sync = 'CREATE_INDEX_REPLICA_BUILD clear';
+set ob_global_debug_sync = 'now signal signal2';
+sleep 3;
+
+connection conn2;
+SELECT OPNAME FROM oceanbase.GV$SESSION_LONGOPS ORDER BY OPNAME;
+let $op_start_ts = query_get_value(select START_TIME from oceanbase.__all_virtual_virtual_long_ops_status_mysql_sys_agent, START_TIME, 1);
+let $curr_ts = query_get_value(select time_to_usec(NOW()) as ts, ts, 1);
+let $diff = query_get_value(select ($curr_ts - $op_start_ts) as diff, diff, 1);
+# diff > 10000s
+if ($diff > 10000000000)
+{
+  --echo "longops start time is not correct";
+}
+
+connection obsys;
+set ob_global_debug_sync = 'CREATE_INDEX_TAKE_EFFECT clear';
+set ob_global_debug_sync = 'now signal signal3';
+sleep 3;
+
+connection conn1;
+reap;
+drop table t1;

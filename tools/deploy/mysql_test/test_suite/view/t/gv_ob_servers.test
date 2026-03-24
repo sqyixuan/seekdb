@@ -1,0 +1,115 @@
+#owner: wanhong.wwh
+#owner group: RS
+#tags: views
+#description:
+# V$OB_SERVERS / GV$OB_SERVERS
+
+--disable_abort_on_error
+
+connect (sys,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connect (mysql,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+
+connection sys;
+# case 1: sys only views
+
+DESC GV$OB_SERVERS;
+DESC V$OB_SERVERS;
+
+# 验证与__all_server表一致
+select count(*) from GV$OB_SERVERS where (svr_ip, svr_port, zone, sql_port) not in (select svr_ip, svr_port, zone, inner_port as sql_port from __all_server);
+
+# 通过GV$OB_UNITS，验证GV$OB_SERVERS已分配的资源信息
+# FIXME: case不稳定，暂时不验证分配信息
+# SELECT COUNT(*) FROM GV$OB_SERVERS WHERE (SVR_IP, SVR_PORT, CPU_ASSIGNED,CPU_ASSIGNED_MAX,MEM_ASSIGNED,DATA_DISK_IN_USE) not in (SELECT SVR_IP, SVR_PORT, sum(min_cpu) as CPU_ASSIGNED, sum(max_cpu) as CPU_ASSIGNED_MAX, sum(memory_size) as MEM_ASSIGNED, sum(DATA_DISK_IN_USE) as DATA_DISK_IN_USE from GV$OB_UNITS group by svr_ip, svr_port);
+
+# 验证资源相关字段的逻辑关系
+# CPU_CAPACITY_MAX = CPU_CAPACITY * resource_hard_limit
+# CPU_ASSIGNED_MAX <= CPU_CAPACITY_MAX
+# MEM_ASSIGNED <= MEM_CAPACITY
+
+SELECT DISTINCT(CPU_CAPACITY >= CPU_ASSIGNED) FROM GV$OB_SERVERS;
+SELECT DISTINCT(CPU_ASSIGNED_MAX <= CPU_CAPACITY_MAX) FROM GV$OB_SERVERS;
+SELECT DISTINCT(MEM_ASSIGNED <= MEM_CAPACITY) FROM GV$OB_SERVERS;
+
+# 验证resource_hard_limit 不可以小于100
+--error 4147
+ALTER SYSTEM SET resource_hard_limit = 99;
+
+# 验证resource_hard_limit
+ALTER SYSTEM SET resource_hard_limit = 100;
+# 保证resource_hard_limit在所有server上都刷新到了100
+let $CNT=60;
+while($CNT > 0)
+{
+  let $v = query_get_value("SELECT (T1.svr_cnt = T2.p_cnt) v from (SELECT count(*) svr_cnt from DBA_OB_SERVERS) T1, (select count(*) p_cnt from __all_virtual_tenant_parameter_stat WHERE NAME LIKE 'resource_hard_limit' and VALUE= '100') T2", v, 1);
+  if($v == 1)
+  {
+    let $CNT=0;
+  }
+  dec $CNT;
+  sleep 1;
+}
+
+let $rhl = query_get_value(show parameters like 'resource_hard_limit', value, 1);
+eval SELECT DISTINCT(CPU_CAPACITY_MAX = CPU_CAPACITY * $rhl / 100) CPU_CAPACITY_MAX_EQ FROM GV\$OB_SERVERS;
+
+ALTER SYSTEM SET resource_hard_limit = 167;
+# 保证resource_hard_limit在所有server上都刷新到了167
+let $CNT=60;
+while($CNT > 0)
+{
+  let $v = query_get_value("SELECT (T1.svr_cnt = T2.p_cnt) v from (SELECT count(*) svr_cnt from DBA_OB_SERVERS) T1, (select count(*) p_cnt from __all_virtual_tenant_parameter_stat WHERE NAME LIKE 'resource_hard_limit' and VALUE= '167') T2", v, 1);
+  if($v == 1)
+  {
+    let $CNT=0;
+  }
+  dec $CNT;
+  sleep 1;
+}
+
+let $rhl = query_get_value(show parameters like 'resource_hard_limit', value, 1);
+eval SELECT DISTINCT(CPU_CAPACITY_MAX = CPU_CAPACITY * $rhl / 100) CPU_CAPACITY_MAX_EQ FROM GV\$OB_SERVERS;
+
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+
+# case 2: other database can access
+USE TEST;
+select count(*) >= 1 from oceanbase.GV$OB_SERVERS;
+select count(*) >= 1 from oceanbase.V$OB_SERVERS;
+
+# case 3: mysql tenant can not access
+#connection mysql;
+#--error 1146
+#select * from oceanbase.GV$OB_SERVERS;
+#--error 1146
+#select * from oceanbase.V$OB_SERVERS;
+
+connection sys;
+#case 4: enable encrypted communication channels
+ALTER SYSTEM SET ssl_client_authentication = True;
+let $CNT = 10;
+while ($CNT > 0)
+{
+  let $v = query_get_value("select count(*) >= 1 as value from oceanbase.__all_virtual_server where ssl_cert_expired_time > 0", value, 1);
+  if ($v > 0)
+  {
+    let $CNT = 0;
+  }
+  dec $CNT;
+  sleep 1;
+}
+#case 5: disable encrypted communication channels
+ALTER SYSTEM SET ssl_client_authentication = False;
+let $CNT = 10;
+while ($CNT > 0)
+{
+  let $v = query_get_value("select count(*) >= 1 as value from oceanbase.__all_virtual_server where ssl_cert_expired_time = 0", value, 1);
+  if ($v > 0)
+  {
+    let $CNT = 0;
+  }
+  dec $CNT;
+  sleep 1;
+}
+# 还原配置
+ALTER SYSTEM SET resource_hard_limit = 100;

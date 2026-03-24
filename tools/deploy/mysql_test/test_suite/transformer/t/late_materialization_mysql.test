@@ -1,0 +1,229 @@
+#owner: zhuangyifeng.zyf
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+--disable_result_log
+--disable_warnings
+
+set @@session.explicit_defaults_for_timestamp=off;
+# --source mysql_test/include/index_quick_major.inc
+--echo 非分区表
+drop table if exists t1;
+create table t1 (pk int primary key, c1 int, c2 int, c3 int, c4 int as (c1 + c2) virtual, c5 int as (c2 + c3) stored, c6 text);
+create index idx1 on t1(c1, c2);
+create index idx2 on t1(c1, c4);
+create index idx3 on t1(c1, c5);
+create index idx4 on t1((c3 + 4), c1);
+set cte_max_recursion_depth=100000;
+insert into t1(pk, c1, c2, c3, c6) select * from (with RECURSIVE cte(a,b,c,d,e) as (select 1,1,1,1,repeat(1, 1024) union all select a+1,b+1,c+1,d+1,repeat(a, 1024) from cte where a < 5000) select * from cte);
+insert into t1(pk, c1, c2, c3, c6) select * from (with RECURSIVE cte(a,b,c,d,e) as (select 5001,1,1,1,repeat(1, 1024) union all select a+1,b+1,c-1,d+1,repeat(a, 1024) from cte where a < 10000) select * from cte);
+call dbms_stats.gather_table_stats(NULL, 'T1');
+
+--enable_query_log
+--enable_result_log
+--enable_warnings
+--result_format 4
+--explain_protocol 2
+
+#基础测试
+#索引命中 valid
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c2 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c1 limit 5;
+
+#order by 测试 valid
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1 desc, c2 desc limit 5;
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1 desc, c2 asc limit 5;
+
+#大列
+select /*+no_index(t1 idx1), use_late_materialization*/ c1, c2, c6 from t1 where c1 >= 1000 and c1 <= 1005 order by c2 limit 5;
+
+# 晚期物化后，再触发别的改写
+select /*+NO_EXPAND(@"SEL$1") use_late_materialization use_concat(@"SEL$74784567")*/ * from t1 where c1 > 1 and (c2 > 1 or pk > 1) order by c2 limit 10;
+
+--echo invalid 场景
+# 1. 索引表没有 query range
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1, c2 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c4 >= 1000 and c4 <= 1005 order by c1, c2 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c5 >= 1000 and c5 <= 1005 order by c1, c2 limit 5;
+
+# 2. 索引表直接 limit 回表
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1, c2 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1, c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1, c5 limit 5;
+
+# 3. order by 中的无法被替换成函数索引列， 所以也无法触发晚期物化
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c1, c3 + 4 limit 5;
+
+# 4. no limit
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c1 desc, c2 asc;
+
+# 5. condition + order by 和 index 匹配度测试
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c1 >= 1000 and c1 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c1 <= 1005 order by c1 limit 5;
+
+
+--echo 有主键分区表
+--disable_query_log
+--disable_result_log
+--disable_warnings
+
+drop table t1;
+create table t1 (c1 int primary key, c2 int, c3 int, c4 int as (c1 + c2) virtual, c5 int as (c2 + c3) stored, c6 text) partition by hash (c1) partitions 4;
+create index idx1 on t1(c2, c3) local;
+create index idx2 on t1(c2, c4) local;
+create index idx3 on t1(c2, c5) local;
+create index idx4 on t1((c3 + 4), c2) local;
+
+create index idx5 on t1(c2, c3) global;
+create index idx6 on t1(c2, c4) global;
+create index idx7 on t1(c2, c5) global;
+create index idx8 on t1((c3 + 4), c2) global;
+
+set cte_max_recursion_depth=100000;
+insert into t1(c1, c2, c3, c6) select * from (with RECURSIVE cte(b,c,d,e) as (select 1,1,1,repeat(1, 1024) union all select b+1,c+1,d+1,repeat(b, 1024) from cte where b < 5000) select * from cte);
+insert into t1(c1, c2, c3, c6) select * from (with RECURSIVE cte(b,c,d,e) as (select 5001,1,1,repeat(1, 1024) union all select b+1,c-1,d+1,repeat(b, 1024) from cte where b < 10000) select * from cte);
+call dbms_stats.gather_table_stats(NULL, 'T1');
+
+--enable_query_log
+--enable_result_log
+--enable_warnings
+--result_format 4
+--explain_protocol 2
+
+--echo 有主键分区表 valid
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+# 全局索引
+select /*+index(t1 idx5), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+index(t1 idx6), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx7), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx8), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+# 全局索引上有hash键
+select /*+index(t1 idx5), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx6), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx7), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx8), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2, c1 limit 5;
+
+# 并发度
+select /*+parallel(4), index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3, c2 limit 5;
+select /*+parallel(4), index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c2, c4 limit 5;
+select /*+parallel(4), index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c2, c5 limit 5;
+select /*+parallel(4), index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+# 函数索引列作为 order by, invalid
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2, c3 + 4 limit 5;
+
+# 没有 order by 
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 limit 5;
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 limit 5, 5;
+
+# invalid 版本
+set optimizer_features_enable = '4.2.3';
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order  by c3 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order  by c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order  by c5 limit 5;
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005  order by c2 limit 5;
+
+set optimizer_features_enable = '4.2.5';
+select /*+optimizer_features_enable('4.2.3'), index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+optimizer_features_enable('4.2.3'), index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+optimizer_features_enable('4.2.3'), index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+optimizer_features_enable('4.2.3'), index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+set optimizer_features_enable = '4.3.2';
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1  where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1  where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1  where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1  where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+set optimizer_features_enable = '4.3.3';
+select /*+optimizer_features_enable('4.3.2'), index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+optimizer_features_enable('4.3.2'), index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+optimizer_features_enable('4.3.2'), index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+optimizer_features_enable('4.3.2'), index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+# pk: idx5 idx6 idx7 idx8 large
+select /*+use_late_materialization*/ c1, c2, c3, c6 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+
+# large column
+select /*+no_index(t1 idx5), no_index(t1 idx6), no_index(t1 idx7), no_index(t1 idx8), use_late_materialization*/ c1, c2, c6 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+
+
+--echo 无主键分区表
+--disable_query_log
+--disable_result_log
+--disable_warnings
+
+drop table t1;
+create table t1 (c1 int, c2 int, c3 int, c4 int as (c1 + c2) virtual, c5 int as (c2 + c3) stored, c6 text) partition by hash (c1) partitions 4;
+create index idx1 on t1(c2, c3) local;
+create index idx2 on t1(c2, c4) local;
+create index idx3 on t1(c2, c5) local;
+create index idx4 on t1((c3 + 4), c2) local;
+create index idx9 on t1(c2, c3, c1) local;
+
+create index idx5 on t1(c2, c3) global;
+create index idx6 on t1(c2, c4) global;
+create index idx7 on t1(c2, c5) global;
+create index idx8 on t1((c3 + 4), c2) global;
+
+set cte_max_recursion_depth=100000;
+insert into t1(c1, c2, c3, c6) select * from (with RECURSIVE cte(b,c,d,e) as (select 1,1,1,repeat(1, 1024) union all select b+1,c+1,d+1,repeat(b, 1024) from cte where b < 5000) select * from cte);
+insert into t1(c1, c2, c3, c6) select * from (with RECURSIVE cte(b,c,d,e) as (select 5001,1,1,repeat(1, 1024) union all select b+1,c-1,d+1,repeat(b, 1024) from cte where b < 10000) select * from cte);
+call dbms_stats.gather_table_stats(NULL, 'T1');
+
+--enable_query_log
+--enable_result_log
+--enable_warnings
+--result_format 4
+--explain_protocol 2
+
+# 局部索引 invalid
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+index(t1 idx2), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx3), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx4), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+select /*+index(t1 idx9), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+
+# 全局索引
+select /*+index(t1 idx5), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+index(t1 idx6), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+index(t1 idx7), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+index(t1 idx8), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+select /*+parallel(4), index(t1 idx5), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c3 limit 5;
+select /*+parallel(4), index(t1 idx6), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c4 limit 5;
+select /*+parallel(4), index(t1 idx7), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c5 limit 5;
+select /*+parallel(4), index(t1 idx8), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c2 limit 5;
+
+# pk: idx5 idx6 idx7 idx8 large
+select /*+use_late_materialization*/ c1, c2, c3, c6 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+
+select /*+no_index(t1 idx5), no_index(t1 idx6), no_index(t1 idx7), no_index(t1 idx8), use_late_materialization*/ c1, c2, c6 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+
+# 没有order by 
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 limit 5;
+select /*+index(t1 idx1), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 limit 5, 5;
+
+# 全局索引上有hash键
+select /*+index(t1 idx5), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx6), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx7), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c2 >= 1000 and c2 <= 1005 order by c1 limit 5;
+select /*+index(t1 idx8), use_late_materialization*/ c1, c2, c3, c4, c5 from t1 where c3 + 4 >= 1000 and c3 + 4 <= 1005 order by c1 limit 5;
+
+# 维护select into
+drop table if exists t1;
+create table t1(c1 int, c2 int, c3 int);
+create index i1 on t1(c1, c2);
+explain select * from t1 where c1 > 0 order by c2 limit 10 into outfile '/tmp/test.tmp';
+
+drop table t1;

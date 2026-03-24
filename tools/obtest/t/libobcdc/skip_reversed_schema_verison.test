@@ -1,0 +1,86 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点: 测试skip_reversed_schema_verison配置项
+
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant_with_gts.inc;
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+# 启动liboblog
+# 默认skip_reversed_schema_verison=0
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=sys.oceanbase.__all_ddl_operation|oblog_tt.oblog_db1.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# sys租户下操作
+connection oblog_conn_sys;
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+
+# 查询
+let $db1_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation where ddl_stmt_str !='', ver, 1);
+#echo $db1_schema_version;
+
+use oblog_db1;
+create table t1 (pk int primary key, v1 int, v2 varchar(100));
+ob1.oblog.next;
+
+use oceanbase;
+let $cur_max_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation where ddl_stmt_str !='', ver, 1);
+#echo $cur_max_schema_version;
+
+let $reverd_schema_version = $cur_max_schema_version - 1;
+#echo $reverd_schema_version;
+
+#let $tenant_id = 1002;
+let $tenant_id = 1;
+let $user_id = 0;
+let $database_id = query_get_value(select database_id from __all_ddl_operation where schema_version = $db1_schema_version, database_id, 1);
+let $tablegroup_id = -1;
+let $table_id = query_get_value(select table_id from __all_ddl_operation where schema_version = $db1_schema_version, talbe_id, 1);
+
+# 人工插入一条schema version反转的记录
+# liboblog遇到退出
+let $db1_database_id = query_get_value(select database_id from __all_database where database_name = "oblog_db1", database_id, 1);
+
+disable_all_result_log;
+begin;
+eval insert into __all_ddl_operation values(now(), now(), $reverd_schema_version, $tenant_id, $user_id, $database_id, "", $tablegroup_id, $table_id, "", 204, "drop database oblog_db1", 1);
+let $cur_max_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+eval delete from __all_database where tenant_id = $tenant_id and database_name = "oblog_db1";
+eval insert into __all_database_history values(now(), now(), 1, $database_id, $cur_max_schema_version, 1, "", -1, NULL, -1, 0, -1);
+commit;
+
+create table t2 (pk int primary key, v1 int, v2 varchar(100));
+ob1.oblog.next;
+
+################### 下面验证liboblog skip_reversed_schema_verison模式 ###################
+
+# 停止liboblog
+enable_all_result_log;
+ob1.oblog.kill;
+
+## 从历史位置启动
+ob1.oblog.set_start_tstamp $start_tstamp;
+## 设置skip dirty data为1
+ob1.oblog.gen_conf skip_reversed_schema_verison=1 tb_white_list=sys.oceanbase.__all_ddl_operation|oblog_tt.oblog_db1.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 迭代3条DDL
+ob1.oblog.next;
+ob1.oblog.next;
+ob1.oblog.next;
+
+## 停止liboblog
+ob1.oblog.stop;

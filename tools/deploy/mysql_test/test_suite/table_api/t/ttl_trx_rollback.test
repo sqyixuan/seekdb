@@ -1,0 +1,51 @@
+#owner: shenyunlong.syl
+#owner group: shenzhen
+
+#######################################################################################
+#    TEST: ttl dag task was rolled back by other transaction (NOT STABLE)
+#######################################################################################
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default; 
+alter system minor freeze;
+alter system set enable_kv_ttl = true;
+
+--disable_warnings
+drop table if exists htable_ttl_rollback;
+--enable_warnings
+create table if not exists htable_ttl_rollback (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024), primary key(K, Q, T)) kv_attributes ='{"Hbase": {"TimeToLive": 5, "MaxVersions": 3}}' partition by key(K) partitions 10;
+
+insert into htable_ttl_rollback values("row1", "cq1", 0, "del"),
+("row1", "cq1", -truncate(time_to_usec(date_sub(now(), interval -100 hour))/1000, 0), "no del"),
+("row1", "cq2", -truncate(time_to_usec(date_sub(now(), interval -101 hour))/1000, 0), "no del"),
+("row1", "cq2", 0, "del"),
+("row2", "cq1", 0, "del"),
+("row2", "cq1", 1, "del"),
+("row2", "cq2", -truncate(time_to_usec(date_sub(now(), interval -100 hour))/1000, 0), "no del"),
+("row2", "cq2", 0, "del"),
+("row3", "cq1", -truncate(time_to_usec(date_sub(now(), interval -101 hour))/1000, 0), "no del"),
+("row3", "cq1", 0, "del"),
+("row3", "cq2", 0, "del"),
+("row3", "cq2", 1, "del"),
+("row4", "cq1", -truncate(time_to_usec(date_sub(now(), interval -100 hour))/1000, 0), "no del"),
+("row4", "cq1", 0, "del"),
+("row4", "cq2", -truncate(time_to_usec(date_sub(now(), interval -101 hour))/1000, 0), "no del"),
+("row4", "cq2", -truncate(time_to_usec(date_sub(now(), interval -102 hour))/1000, 0), "no del");
+
+sleep 10;
+
+alter system trigger ttl;
+
+# start transaction and lock all table rows
+begin;
+select K, Q from htable_ttl_rollback order by K, Q for update;
+sleep 30;
+select count(*) from htable_ttl_rollback;
+rollback;
+
+sleep 80;
+select count(*) from htable_ttl_rollback;
+select table_name, trigger_type, status, ttl_del_cnt, max_version_del_cnt, ret_code from (select table_name, tablet_id, trigger_type, status, ttl_del_cnt, max_version_del_cnt, ret_code 
+from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where table_name = 'htable_ttl_rollback' order by START_TIME limit 10) order by tablet_id;  
+
+drop table htable_ttl_rollback;

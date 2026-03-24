@@ -1,0 +1,453 @@
+##owner: sean.yyj
+##owner group: 技术部-SQL-优化器
+##description: 权限嵌套
+##tags: PL routine
+##author : wb-zwc01059807
+purge recyclebin;
+--disable_warnings
+drop database if exists db1;
+--enable_warnings
+ 
+create database db1;
+use db1;
+ 
+ 
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+ 
+ 
+ 
+--error 0,1396
+drop user root1;
+create user 'root1' identified by '123';
+GRANT ALL PRIVILEGES ON *.* TO 'root1'@'%' WITH GRANT OPTION;
+ 
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (root1,$OBMYSQL_MS0,root1,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#root1
+connection root1;
+use db1;
+--replace_regex /[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/127.0.0.1/g
+select user();
+ 
+--disable_warnings
+drop database if exists db3;
+--enable_warnings
+CREATE database db3;
+ 
+ 
+ 
+ 
+--echo	#嵌套
+--echo	#root
+connection root1;
+ 
+set global automatic_sp_privileges = 1;
+ 
+--error 0,1396
+drop user oer1;
+create user 'oer1' identified by '123';
+grant CREATE,INSERT,SELECT,DELETE,update on *.* to oer1;
+GRANT CREATE ROUTINE ON db3.* to oer1;
+grant INSERT,select on *.* to oer1;
+ 
+show grants for oer1;
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (oer1,$OBMYSQL_MS0,oer1,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#oer1
+connection oer1;
+ 
+use db3;
+CREATE TABLE t1(c1 int);
+CREATE TABLE t2(c2 int);
+INSERT INTO t2 values(6),(6),(6),(6),(6);
+ 
+delimiter /;
+CREATE PROCEDURE p1()
+begin
+  INSERT INTO t1 VALUES(1);
+  SELECT f2();
+END;
+/
+delimiter ;/
+ 
+delimiter /;
+CREATE PROCEDURE p2()
+begin
+  INSERT INTO t1 VALUES(1);
+  DELETE FROM t2 WHERE c2 = f2();
+END;
+/
+delimiter ;/
+ 
+ 
+show grants FOR oer1;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+--error 0,1396
+drop user oer2;
+create user 'oer2' identified by '123';
+grant CREATE,INSERT,SELECT,DELETE,update on *.* to oer2;
+GRANT CREATE ROUTINE ON db3.* to oer2;
+grant INSERT,select on *.* to oer2;
+show grants for oer2;
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (oer2,$OBMYSQL_MS0,oer2,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#oer2
+connection oer2;
+use db3;
+ 
+ 
+ 
+delimiter /;
+CREATE  function f2() returns int
+begin
+  UPDATE t1 SET c1 = 6 WHERE c1 = 1;
+  return 6;
+END;
+/
+delimiter ;/
+ 
+show grants FOR oer2;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+--error 0,1396
+drop user oer3;
+create user 'oer3' identified by '123';
+grant CREATE,INSERT,SELECT,DELETE,update on *.* to oer3;
+GRANT CREATE ROUTINE ON db3.* to oer3;
+grant INSERT,select on *.* to oer3;
+show grants for oer3;
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (oer3,$OBMYSQL_MS0,oer3,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#oer3
+connection oer3;
+ 
+use db3;
+ 
+ 
+delimiter /;
+CREATE  function f3() returns int DETERMINISTIC
+begin
+  CALL p1();
+  return 10;
+END;
+/
+delimiter ;/
+ 
+delimiter /;
+CREATE  function f4() returns int DETERMINISTIC
+begin
+  CALL p2();
+  return 20;
+END;
+/
+delimiter ;/
+ 
+show grants FOR oer3;
+ 
+ 
+ 
+ 
+--echo	#oer3
+--echo	#oer3调用 p1 ,p1包含 f2(),需要有p1,f2的执行权限
+connection oer3;
+ 
+--error 1370
+CALL p1(); 
+ 
+--echo	#root
+connection root1;
+ 
+GRANT EXECUTE  ON PROCEDURE `db3`.`p1` TO 'oer3';
+ 
+--echo	#oer3 预期报错缺少 f2 execute权限
+connection oer3;
+ 
+--error 1370 
+CALL p1();
+ 
+--echo	#root
+connection root1;
+ 
+GRANT EXECUTE ON FUNCTION `db3`.`f2` TO 'oer3';
+ 
+--echo	#oer3 预期报错  oer1缺少对 f2的execute权限
+CONNECTION oer3;
+--error 1370
+CALL p1();
+ 
+--echo	#root
+connection root1;
+ 
+GRANT EXECUTE ON FUNCTION `db3`.`f2` TO 'oer1';
+ 
+--echo	#oer3
+connection oer3;
+ 
+CALL p1();
+ 
+SELECT f2();
+ 
+--echo	#不允许返回结果集
+--error 1415
+SELECT f3();
+ 
+--error 1370
+SELECT f4();
+ 
+--echo	#root
+CONNECTION root1;
+GRANT EXECUTE  ON PROCEDURE `db3`.`p2` TO 'oer3';
+ 
+--echo	#oer3
+CONNECTION oer3;
+SELECT f4();
+ 
+ 
+--echo	#oer2
+CONNECTION oer2;
+--error 1370
+call p1();
+--error 1370
+CALL p2();
+ 
+--echo	#root
+CONNECTION root1;
+--error 1064
+GRANT EXECUTE  ON PROCEDURE db3.p1,db3.p2 TO 'oer2';
+ 
+GRANT EXECUTE  ON PROCEDURE db3.p1 TO 'oer2';
+GRANT EXECUTE  ON PROCEDURE db3.p2 TO 'oer2';
+ 
+--echo	#oer2
+CONNECTION oer2;
+CALL p1();
+CALL p2();
+ 
+SELECT f2();
+ 
+--echo	#oer2需要有 f3,f4的执行权限
+--error 1370
+SELECT f3();
+--error 1370
+SELECT f4();
+ 
+ 
+--echo	#root
+connection root1;
+GRANT EXECUTE ON FUNCTION `db3`.`f3` TO 'oer2';
+GRANT EXECUTE ON FUNCTION `db3`.`f4` TO 'oer2';
+ 
+--echo	#oer2
+connection oer2;
+ 
+--error 1415
+SELECT f3();
+ 
+SELECT f4();
+ 
+ 
+--echo	#oer1
+connection oer1;
+CALL p1;
+CALL p2;
+ 
+SELECT f2();
+ 
+--error 1370
+SELECT f3();
+--error 1370
+SELECT f4();
+ 
+--echo	#root
+--echo	#oer1需要 f3 ,f4 execute权限
+connection root1;
+ 
+GRANT EXECUTE ON FUNCTION `db3`.`f3` TO 'oer1';
+GRANT EXECUTE ON FUNCTION `db3`.`f4` TO 'oer1';
+ 
+--echo	#oer1
+connection oer1;
+ 
+--error 1415
+SELECT f3();
+ 
+SELECT f4();
+ 
+ 
+--echo	#alter routine
+--echo	#oer1 
+connection oer1;
+ 
+ALTER  PROCEDURE p1 SQL SECURITY INVOKER;
+ 
+ 
+--echo	#oer2
+connection oer2;
+ 
+CALL p1;
+--error 1370
+ALTER  PROCEDURE p1 SQL SECURITY DEFINER;
+ 
+--echo	#oer3
+connection oer3;
+ 
+CALL p1;
+--error 1370
+ALTER  PROCEDURE p1 SQL SECURITY DEFINER;
+ 
+ 
+--echo	#root 
+connection root1;
+ 
+--echo	#p1 为invoker 收回 f2 执行权限，其他用户调用 只需要又 p1,f2 执行权限就能调用。
+show grants for oer1;
+#--error 5362
+REVOKE EXECUTE ON PROCEDURE  `db3`.`p1` FROM  'oer1';
+ 
+ 
+--echo	#oer2 拥有oer1 p1执行权限，拥有 oer2 f2 执行权限。 
+connection oer2;
+ 
+CALL p1();
+ 
+--echo	#oer3 拥有oer1 p1执行权限，拥有 oer2 f2 执行权限。 
+connection oer3;
+ 
+CALL p1();
+ 
+ 
+--echo	#root 
+connection root1;
+use db3;
+ 
+GRANT EXECUTE ON PROCEDURE db3.p1 TO oer1;
+ALTER  PROCEDURE p1 SQL SECURITY DEFINER;
+ 
+--echo	#修改 f3 为 invoker f3的 执行权限（oer3）
+ALTER  FUNCTION  f3 SQL SECURITY INVOKER;
+#--error 5362
+REVOKE EXECUTE ON FUNCTION  `db3`.`f3` FROM  'oer3';
+ 
+ALTER  FUNCTION  f4 SQL SECURITY INVOKER;
+#--error 5362
+REVOKE EXECUTE ON FUNCTION  `db3`.`f4` FROM  'oer3';
+ 
+ 
+ 
+--echo	#oer3
+connection oer3;
+ 
+--error 1415, 1370
+SELECT f3;
+--error 1370
+SELECT f4;
+ 
+ 
+--echo	#oer2
+connection oer2;
+ 
+--error 1415
+SELECT f3;
+ 
+SELECT f4;
+ 
+--echo	#oer1
+connection oer1;
+ 
+--error 1415
+SELECT f3;
+ 
+SELECT f4;
+ 
+--echo	#root
+CONNECTION root1;
+ 
+--echo	#给oer1 添加 修改 f3,f4权限，修改 SQL SECUITY 为 definer， 验证执行。
+GRANT  ALTER ROUTINE ON FUNCTION `db3`.`f3` TO 'oer1';
+GRANT  ALTER ROUTINE ON FUNCTION `db3`.`f4` TO 'oer1';
+ 
+--echo	#oer1
+connection oer1;
+ 
+--error 1064
+ALTER  FUNCTION  f3,f4  SQL SECURITY DEFINER;
+ 
+ALTER  FUNCTION  f3 SQL SECURITY DEFINER;
+ 
+ALTER  FUNCTION  f4 SQL SECURITY DEFINER;
+ 
+--error 1415, 1370
+SELECT f3;
+ 
+--error 1370
+SELECT f4;
+ 
+--echo	#oer3
+connection oer3;
+ 
+--error 1370,1415
+SELECT f3;
+ 
+--error 1370
+SELECT f4;
+ 
+ 
+--echo	#drop 
+--echo	#oer1
+connection oer1;
+ 
+DROP PROCEDURE p1;
+--error 1370
+DROP FUNCTION f2;
+ 
+DROP PROCEDURE p2;
+ 
+DROP FUNCTION f3;
+ 
+DROP FUNCTION f4;
+ 
+--echo	#root
+connection root1;
+ 
+GRANT  ALTER ROUTINE ON FUNCTION `db3`.`f2` TO 'oer1';
+ 
+--echo	#oer1
+connection oer1;
+ 
+DROP FUNCTION f2;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+DROP TABLE t1;
+DROP TABLE t2;
+DROP database db3;
+DROP USER oer1;
+DROP USER oer2;
+DROP USER oer3;
+ 
+ 
+ 
+ 
+--echo	#root1
+connection root1;
+drop database db1;
+ 

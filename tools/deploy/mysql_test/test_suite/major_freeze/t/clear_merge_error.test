@@ -1,0 +1,123 @@
+#owner: donglou.zl 
+#owner group: rootserver
+#tags: clear merge error
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set enable_major_freeze = true;
+--disable_warnings
+drop table if exists test;
+--enable_warnings
+create table test(c1 int primary key, c2 int);
+insert into test values(0, 2);
+insert into test values(1, 2);
+insert into test values(2, 2);
+
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $mysql_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+############################################################
+connection sys_conn;
+# update sys is_error=1, error_type=1
+--disable_query_log
+eval update __all_merge_info set is_merge_error = 1, error_type = 1 where tenant_id = $sys_tenant_id;
+--enable_query_log
+let $sys_is_error = query_get_value(select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, is_error, 1);
+let $sys_info = query_get_value(select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, info, 1);
+if ($sys_is_error != "YES")
+{
+    --echo update sys is_error column failed
+}
+if ($sys_info != "CHECKSUM_ERROR")
+{
+    --echo update sys error_type column failed
+}
+
+# change tenant and update mysql is_error=1, error_type=1
+let $mysql_meta_tenant_id = 1;
+# dec $mysql_meta_tenant_id;
+--disable_query_log
+eval alter system change tenant tenant_id = $mysql_meta_tenant_id;
+use oceanbase;
+eval update __all_merge_info set is_merge_error = 1, error_type = 1 where tenant_id = $mysql_tenant_id;
+
+# change tenant and clear merge error for sys and mysql
+alter system change tenant sys;
+use oceanbase;
+--enable_query_log
+
+# ensure freeze_service_epoch has been updated before clear merge error,
+# since clear merge error need to check freeze_service_epoch.
+let $start_time = query_get_value(select now() as value, value, 1);
+let $__i__ = 100;
+while ($__i__ > 0)
+{
+    let $interval_second = query_get_value("select timestampdiff(second, '$start_time', now()) as value;", value, 1);
+    if ($interval_second <= 120)
+    {
+        let $value = query_get_value(select value from __all_service_epoch where name = 'freeze_service_epoch', value, 1);
+        if ($value >= 1)
+        {
+            let $__i__ = -5;
+        }
+    }
+    if ($interval_second > 120)
+    {
+        --echo check freeze_service_epoch timeout
+        let $__i__ = -3;
+    }
+}
+
+# when observer restart, __all_service_epoch exists one old valid freeze_service_epoch. the
+# new freeze_service_epoch may has not been updated. in this case, freeze_service_epoch in memory
+# is equal to -1. give some time for ObMajorMergeScheduler to update the new freeze_service_epoch.
+sleep 20;
+alter system clear merge error tenant = sys;
+
+# check clear_merge_error is valid
+let $sys_is_error = query_get_value(select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, is_error, 1);
+let $sys_info = query_get_value(select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, info, 1);
+if ($sys_is_error != "NO")
+{
+    --echo clear merge error failed
+}
+if ($sys_info == "CHECKSUM_ERROR")
+{
+    --echo clear merge error failed
+}
+let $mysql_is_error = query_get_value(select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $mysql_tenant_id, is_error, 1);
+let $mysql_info = query_get_value(select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $mysql_tenant_id, info, 1);
+if ($mysql_is_error != "NO")
+{
+    --echo clear merge error failed
+}
+if ($mysql_info == "CHECKSUM_ERROR")
+{
+    --echo clear merge error failed
+}
+
+# re-check again
+--disable_query_log
+eval update __all_merge_info set is_merge_error = 1, error_type = 1 where tenant_id = $sys_tenant_id;
+--enable_query_log
+let $sys_is_error = query_get_value(select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, is_error, 1);
+let $sys_info = query_get_value(select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, info, 1);
+if ($sys_is_error != "YES")
+{
+    --echo update sys is_error column failed
+}
+if ($sys_info != "CHECKSUM_ERROR")
+{
+    --echo update sys error_type column failed
+}
+# only clear merge error of sys tenant
+alter system clear merge error;
+let $sys_is_error = query_get_value(select is_error from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, is_error, 1);
+let $sys_info = query_get_value(select info from CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id, info, 1);
+if ($sys_is_error != "NO")
+{
+    --echo clear merge error failed
+}
+if ($sys_info == "CHECKSUM_ERROR")
+{
+    --echo clear merge error failed
+}

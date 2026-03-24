@@ -1,0 +1,68 @@
+
+ob1=OBI(cluster=3:3:3,proxy_num=0,memory_size_limit='30G');
+ob1.reboot;
+
+
+let $cpu = 1;
+let $memory = '2G';
+let $min_memory = '2G';
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT test MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'test', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2', 'z3');
+#ob1.mysql CREATE RESOURCE POOL pool2 UNIT = 'test', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT obtest1 RESOURCE_POOL_LIST = ('pool1'),primary_zone='z1' set ob_tcp_invited_nodes='%';
+#ob1.mysql CREATE TENANT obtest2 RESOURCE_POOL_LIST = ('pool2'),primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system server_data_copy_out_concurrency = 20;
+ob1.mysql alter system server_data_copy_in_concurrency = 20;
+ob1.mysql alter system balancer_idle_time = '10s';
+ob1.mysql alter system enable_rebalance = true;
+
+#ob1.mysql alter system wait_leader_batch_count = 4096;
+sleep 2;
+#let $ip=deploy_get_value(ob1.z1.obs0.ip);
+#let $port=deploy_get_value(ob1.z1.ob0.mysql_port);
+let $rsip=deploy_get_value(ob1.z1.obs0.ip);
+let $rsport=deploy_get_value(ob1.z1.obs0.port);
+#connect(sys,$ip, root@sys,,test,$port);
+#connect(conn2,$ip, root@obtest1,,test,$port);
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn2, ob1.z1.obs0, root@obtest1, , oceanbase, , USE_MYSQL_CONNECTOR);
+#ob_connect(conn3, ob1.z1.obs0, root@obtest2, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn2;
+CREATE DATABASE obtest;
+use obtest;
+create table t1(c1 int) partition by hash(c1) partitions 20;
+create tablegroup tg1 binding=true;
+#create table t2(c1 int) partition by hash(c1) partitions 8000;
+#create table t3(c1 int) partition by hash(c1) partitions 8000;
+#create table t4(c1 int) partition by hash(c1) partitions 8000;
+#create table t5(c1 int) partition by hash(c1) partitions 8000;
+
+
+connection conn1;
+set ob_query_timeout = 1000000000;
+#case1 stop server   just switch leader in stop server
+let $count_server = deploy_get_value(ob1.select select count(*) as cnt from __all_virtual_meta_table where role = 1 and svr_ip = '$rsip' and svr_port = '$rsport' and tenant_id = 1001, cnt, 1);
+eval alter system stop server '$rsip:$rsport';
+let $count_zone_2 = deploy_get_value(ob1.select select count(*) as cnt from __all_virtual_meta_table where role = 1 and zone = 'z2' and tenant_id = 1001, cnt ,1);
+let $count_zone_3 = deploy_get_value(ob1.select select count(*) as cnt from __all_virtual_meta_table where role = 1 and zone = 'z3' and tenant_id = 1001, cnt ,1);
+ob1.check_until_timeout select ($count_zone_2 + $count_zone_3), $count_server, 10;
+
+#case2 primary_zone don't switch
+ob1.mysql alter tenant obtest1 primary_zone = 'z3';
+sleep 5;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where role = 1 and zone = 'z3' and tenant_id = 1001, $count_zone_3, 10;
+
+#case3 migrate unit
+ob1.mysql alter resource pool pool1 unit_num = 2;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type = 'SHRINK_RESOURCE_POOL_UNIT_NUM' and job_status = 'SUCCESS', 1, 1000000;
+#connection conn3;
+#create database obtest;
+#use obtest;
+#create table t1(c1 int) partition by hash(c1) partitions 8000;
+#create table t2(c1 int) partition by hash(c1) partitions 8000;
+#ob1.mysql alter tenant obtest2 primary_zone = 'RANDOM';

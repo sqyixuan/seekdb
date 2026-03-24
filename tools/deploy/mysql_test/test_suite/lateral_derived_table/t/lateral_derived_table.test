@@ -1,0 +1,184 @@
+#owner:dingjincheng.djc
+#owner group: sql1
+#tags: optimizer,lateral
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t11;
+drop table if exists t12;
+drop view if exists v1;
+--enable_warnings
+
+create table t1(a int, b int);
+insert into t1 (a) values(1),(2);
+create table t2 select * from t1;
+create table t3 (a int, b int);
+insert into t3 values(1, 10), (1, 11), (2, 10), (2, 11);
+CREATE TABLE t11 (t11a int, t11b int);
+INSERT INTO t11 VALUES (99, NULL),(99, 3),(99,0);
+CREATE TABLE t12 (t12a int, t12b int, KEY idx (t12b));
+INSERT INTO t12 VALUES (100,0),(150,200),(999, 0),(999, NULL);
+create table t4 (c1 int primary key, c2 int, c3 int, key t4c2 (c2));
+insert into t4 values (1,1,1),(2,2,2),(3,3,3),(4,4,4);
+--explain_protocol 2
+--result_format 4
+
+--echo LATERAL
+
+--echo # prevents join buffer if materialized (but not if merged)
+select dt.a from t1, lateral (select t1.a from t2) dt;
+
+--echo # no right join
+--error ER_BAD_FIELD_ERROR
+select dt.a from t1 right join lateral (select t1.a from t2) dt on 1;
+
+--echo # no bad left join either
+--error ER_BAD_FIELD_ERROR
+select dt.a from lateral (select t1.a from t2) dt left join t1 on 1;
+
+--echo # more complex case
+
+--error ER_BAD_FIELD_ERROR
+SELECT * FROM t1
+LEFT JOIN
+lateral (select t1.a) as dt ON t1.a=dt.a
+RIGHT JOIN
+lateral (select dt.a) as dt1 ON dt.a=dt1.a;
+
+--echo # LATERAL DT depending on LATERAL DT
+
+# Justifies resolving _and_ materializing dt before resolving dt1,
+# i.e. changing the order in SELECT_LEX::resolve_derived().
+
+SELECT * FROM t1
+JOIN
+lateral (select t1.a) as dt ON t1.a=dt.a
+JOIN
+lateral (select dt.a) as dt1 ON dt.a=dt1.a;
+
+--echo # Placing lateral outer ref in SELECT list then HAVING
+
+--sorted_result
+select t1.a, dt.a from t1, lateral (select t1.a+t2.a as a from t2) dt;
+
+--sorted_result
+select t1.a, dt.a from t1, lateral (select t2.a as a from t2 having t1.a) dt;
+
+--echo # Inside view
+create view v1 as
+ select t1.a as f1, dt.a as f2
+ from t1, lateral (select t1.a+t2.a as a from t2) dt;
+show create view v1;
+--sorted_result
+select * from v1;
+drop view v1;
+
+SELECT COUNT(*) FROM t1 GROUP BY t1.a  HAVING t1.a IN (SELECT t3.a
+FROM t1 AS t3 WHERE t3.b IN (SELECT b FROM t2, lateral (select t1.a) dt));
+
+create view v1 as select a, b from t1;
+
+select vq1.b,dt.b from v1 vq1, lateral (select vq1.b) dt;
+
+select b from v1 vq1, lateral (select count(*) from v1 vq2 having vq1.b = 3) dt;
+
+drop view v1;
+
+SELECT
+* FROM t1 AS ta, lateral (select 1 WHERE ta.a IN (SELECT b FROM t2 AS tb                WHERE tb.b >= SOME(SELECT SUM(tc.a) as sg FROM t1 as tc                                   GROUP BY tc.b                                   HAVING ta.a=tc.b))) dt;
+
+select (select dt.a from   lateral (select 1 as a, 3 as b from t2 having t1.a)
+dt where dt.b=t1.a) as subq from t1;
+
+--echo # Aggregation in outer context
+
+# derived table: we want to allow aggregated outer references.
+
+select (select f from lateral (select max(t1.a) as f) as dt) as g from t1;
+
+select t1.a, f from t1, lateral (select max(t1.a) as f) as dt;
+
+--echo # We support CTE inside derived table
+select * from t1,
+lateral (with qn as (select t1.a) select (select max(a) from qn)) as dt;
+
+select * from t1, lateral (select * from (select * from (select t1.a from t2) as dt limit 1) dt2) dt3;
+
+--sorted_result
+select * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
+
+--sorted_result
+select /*+ no_merge() */ * from t1 as t0,
+lateral
+(select dt3.* from t1, lateral (select * from (select * from (select t0.a
+from t2) as dt limit 1) dt2) dt3) dt4;
+
+select * from t1, lateral (select * from (select 42) t1, (select t1.a) dt2) dt3;
+
+select /*+ ordered */ * from t1, t2, lateral (select t1.a) as dt;
+
+select /*+ ordered */ * from t1, lateral (select t1.a) as dt, t2;
+
+select /*+ ordered */ * from t2, t1, lateral (select t1.a) as dt;
+
+select * from t1, t2, lateral (select t1.a) as dt;
+
+select * from t1, lateral (select t1.a) as dt, t2;
+
+select * from t2, t1, lateral (select t1.a) as dt;
+
+select * from t1, lateral (select t1.a from t2 as t3, t2 as t4) as dt, t2;
+
+select * from t3, lateral (select t3.a+1) as dt;
+
+select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t2.a) as dt2;
+
+select * from t2, t1, lateral (select t1.a) as dt,
+                      lateral (select t1.a+1) as dt2;
+
+select * from t2, t1, lateral (select t1.a+t2.a) as dt;
+
+SELECT * FROM t11 LEFT JOIN t12 force index (idx) ON t12.t12b = t11.t11b
+JOIN LATERAL (SELECT t12a) dt;
+
+select * from t1, lateral (select t3.b from t3 where t3.a=t1.a) dt
+ where dt.b=t1.a+9;
+
+SELECT * FROM t1 JOIN LATERAL (   SELECT GROUP_CONCAT(t.a) AS c FROM t2 t WHERE (t.a = t1.a) ) d0 ON (1);
+
+SELECT * FROM   LATERAL   (SELECT *     FROM t1     WHERE t1.a = t2.a)   right join   t2 on 1=1;
+
+SELECT *
+  FROM
+    t1
+    LEFT JOIN (
+      t1 AS t2
+      LEFT JOIN t1 AS t3 ON TRUE
+    ) ON TRUE,
+    LATERAL (
+      SELECT SUM(t1.a), t2.a FROM t1
+    ) AS d1;
+
+select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
+
+select /*+ use_concat */ * from t1, lateral (select * from t4 where t4.c1 = t1.a or t4.c2 = t1.b) v;
+
+select * from t1, lateral(select c1 a, 1 b, null c from t4 where t1.a = t4.c1) v where v.a is not null and v.b is not null and v.c is null;
+
+select * from t1 left join lateral (select * from t4 where t1.a = t4.c2) v  on v.c1 = t1.a;
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+drop table t11;
+drop table t12;
+
+

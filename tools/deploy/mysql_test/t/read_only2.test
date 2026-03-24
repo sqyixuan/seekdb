@@ -1,0 +1,282 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: dachuan.sdc
+# owner group: SQL2
+# description:
+#
+#Test of the READ_ONLY
+create user hualong;
+
+grant CREATE, SELECT, INSERT, DROP on *.* to hualong;
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+
+--source mysql_test/include/check_schema_sync.inc
+--echo connect(con1, localhost, hualong,,test);
+connect (con1, $OBMYSQL_MS0, hualong,,test, $OBMYSQL_PORT);
+
+--echo connection default;
+connection default;
+
+set @@global.read_only = off;
+sleep 1;
+
+--echo connection con1;
+connection con1;
+
+create table t1 (a int);
+connection con1;
+
+insert into t1 values(1);
+
+--echo connection default;
+connection default;
+
+set @@global.read_only = on;
+sleep 1;
+show variables like 'read_only';
+show global variables like 'read_only';
+select @@global.read_only;
+show tenant status;
+
+create table t2 (a int primary key, b int);
+connection default;
+insert into t2 values (1,1),(2,2),(3,3),(4,4);
+select * from t2;
+update t2 set b = 11 where a = 1;
+replace into t2 values (2,22);
+drop table t2;
+
+--echo connection con1;
+connection con1;
+
+show variables like 'read_only';
+show global variables like 'read_only';
+select @@global.read_only;
+show tenant status;
+
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR 
+set @@global.read_only = off;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+show tenant status;
+
+disconnect obsys;
+connection con1;
+
+--error ER_OPTION_PREVENTS_STATEMENT
+create table t3(a int);
+
+--error ER_OPTION_PREVENTS_STATEMENT
+insert into t1 values(1);
+
+--error ER_OPTION_PREVENTS_STATEMENT
+update t1 set a = 1 where 1 = 0;
+
+--error ER_OPTION_PREVENTS_STATEMENT
+delete from t1 where a = 1;
+
+--error ER_OPTION_PREVENTS_STATEMENT
+alter table t1 add column b int default 10;
+
+select * from t1;
+desc t1;
+
+# pending transaction / READ_ONLY
+# - is an error in the same connection
+# - is ok in a different connection
+
+--echo connection default;
+connection default;
+set @@global.read_only = on;
+BEGIN;
+
+--echo connection con1;
+connection con1;
+BEGIN;
+
+--echo connection default;
+connection default;
+--error ER_LOCK_OR_ACTIVE_TRANSACTION
+set @@global.read_only = off;
+ROLLBACK;
+
+set @@global.read_only = off;
+sleep 2;
+show global variables like 'read_only';
+show variables like 'read_only';
+show tenant status;
+select @@global.read_only;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+show tenant status;
+
+--echo conection con1;
+connection con1;
+#select @@global.read_only;
+
+ROLLBACK; 
+
+--echo #
+--echo # WL#5968 Implement START TRANSACTION READ (WRITE|ONLY);
+--echo #
+
+--echo #
+--echo # Test interaction with read_only system variable.
+connection default;
+--disable_warnings
+DROP TABLE IF EXISTS t1;
+--enable_warnings
+
+CREATE TABLE t1(a INT);
+connection default;
+INSERT INTO t1 VALUES (1), (2);
+
+SET GLOBAL read_only = on;
+sleep 2;
+show global variables like 'read_only';
+show variables like 'read_only';
+show tenant status;
+select @@global.read_only;
+
+--echo # All allowed with super privilege
+START TRANSACTION;
+COMMIT;
+
+START TRANSACTION READ ONLY;
+COMMIT;
+
+START TRANSACTION READ WRITE;
+COMMIT;
+
+--echo # We allow implicit RW transaction without super privilege
+--echo # for compatibility reasons
+connection con1;
+show global variables like 'read_only';
+show variables like 'read_only';
+show tenant status;
+select @@global.read_only;
+
+START TRANSACTION;
+--echo # Check that table updates are still disallowed.
+--error ER_OPTION_PREVENTS_STATEMENT
+INSERT INTO t1 VALUES (3);
+--error ER_OPTION_PREVENTS_STATEMENT
+UPDATE t1 SET a= 1;
+--error ER_OPTION_PREVENTS_STATEMENT
+DELETE FROM t1;
+COMMIT;
+
+START TRANSACTION READ ONLY;
+COMMIT;
+
+--echo # Explicit RW trans is not allowed without super privilege
+--error ER_OPTION_PREVENTS_STATEMENT
+START TRANSACTION READ WRITE;
+COMMIT;
+
+
+### test read only database
+connection default;
+set global read_only = off;
+sleep 2;
+--disable_warnings
+drop database if exists hualong;
+--enable_warnings
+create database hualong;
+grant all on hualong.* to hualong;
+show databases like 'hualong';
+show databases status like 'hualong';
+alter database hualong read only;
+sleep 2;
+show databases status like 'hualong';
+create table hualong.t1 (c1 int primary key, c2 int);
+connection default;
+insert into hualong.t1 values(1,2);
+alter table hualong.t1 add column c3 int default 3;
+select * from hualong.t1;
+
+--echo connection con1;
+connection con1;
+sleep 1;
+show databases status like 'hualong';
+--error 5234
+alter database hualong read write;
+--error 5234
+create table hualong.t2 (c1 int primary key, c2 int);
+select * from hualong.t1;
+show tables from hualong;
+
+
+--echo connection default;
+connection default;
+alter database hualong read write;
+sleep 2;
+show databases status like 'hualong';
+
+--echo connection con1;
+insert into hualong.t1 values(2,4,6);
+update hualong.t1 set c3 = 10 where c1 = 2;
+
+
+--echo connection default
+connection default;
+set @@global.read_only = on;
+sleep 2;
+
+--echo connection con1;
+connection con1;
+--error ER_OPTION_PREVENTS_STATEMENT
+insert into hualong.t1 values (3,6,9);
+select * from hualong.t1;
+
+--echo connection obsys
+connection obsys;
+
+select name, value from oceanbase.__all_virtual_sys_variable where tenant_id = 1 and name = 'read_only';
+select name, value from oceanbase.__all_virtual_sys_variable_history where tenant_id = 1 and is_deleted = 0 and name = 'read_only' order by schema_version desc limit 1;
+set @@global.read_only = on;
+select name, value from oceanbase.__all_virtual_sys_variable where tenant_id = 1 and name = 'read_only';
+select name, value from oceanbase.__all_virtual_sys_variable_history where tenant_id = 1 and is_deleted = 0 and name = 'read_only' order by schema_version desc limit 1;
+set @@global.read_only = off;
+select name, value from oceanbase.__all_virtual_sys_variable where tenant_id = 1 and name = 'read_only';
+select name, value from oceanbase.__all_virtual_sys_variable_history where tenant_id = 1 and is_deleted = 0 and name = 'read_only' order by schema_version desc limit 1;
+set @@global.read_only = off;
+select name, value from oceanbase.__all_virtual_sys_variable where tenant_id = 1 and name = 'read_only';
+select name, value from oceanbase.__all_virtual_sys_variable_history where tenant_id = 1 and is_deleted = 0 and name = 'read_only' order by schema_version desc limit 1;
+sleep 2;
+
+--echo connection default
+connection default;
+set @@global.read_only = off;
+
+alter database hualong read write;
+alter table hualong.t1 read only;
+insert into hualong.t1 values (3,6,9);
+alter table hualong.t1 add index idx1 (c2,c3);
+
+--echo connection con1
+connection con1;
+show databases status like 'hualong';
+--error 5235
+insert into hualong.t1 values (4,8,12);
+select * from hualong.t1;
+--error 5235 
+alter table hualong.t1 read write;
+
+--echo connection default
+connection default;
+#cleanup
+disconnect con1;
+drop database hualong;
+drop user hualong;
+set global read_only = off;
+
+

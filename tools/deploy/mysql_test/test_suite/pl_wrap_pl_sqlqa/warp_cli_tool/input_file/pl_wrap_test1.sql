@@ -1,0 +1,12 @@
+delimiter //
+CREATE OR REPLACE PROCEDURE "pro1" IS
+BEGIN
+  null;
+END;
+//
+
+CREATE OR REPLACE PROCEDURE "pro2" IS
+BEGIN
+  null;
+END;
+//

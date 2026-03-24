@@ -1,0 +1,136 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点: drop tenant之后，测试回拉历史DDL数据场景
+
+ob1=OBI(cluster=1,version=2_2_30,oblog_version=current);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+# 在oblog_tt租户下操作
+connection oblog_conn_tt;
+# 开启回收站
+set @@recyclebin = on;
+show variables like 'recyclebin';
+
+# 创建database操作，在回拉liboblog前完成
+create database oblog_db1;
+create database oblog_db2;
+create database oblog_db3;
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $DDL_COUNT=0;
+
+# oblog_db1操作
+create table oblog_db1.t1 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+create table oblog_db1.t2 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+drop table oblog_db1.t1;
+ob1.oblog.next;
+inc $DDL_COUNT;
+
+# oblog_db2操作
+create table oblog_db2.t1 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+create table oblog_db2.t2 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+# 关闭回收站，删除oblog_db2
+set @@recyclebin = off;
+show variables like 'recyclebin';
+# 删除
+drop database oblog_db2;
+ob1.oblog.next;
+inc $DDL_COUNT;
+
+# oblog_db3操作
+create table oblog_db3.t1 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+create table oblog_db3.t2 (pk int primary key);
+ob1.oblog.next;
+inc $DDL_COUNT;
+# 开启回收站，删除oblog_db3
+set @@recyclebin = on;
+show variables like 'recyclebin';
+# 删除
+drop database oblog_db3;
+ob1.oblog.next;
+inc $DDL_COUNT;
+
+# 测试场景：
+# 1. 不删除oblog_db1情况
+# 2. 关闭回收站，删除oblog_db2情况，oblog_db2直接删除
+# 3. 开启回收站，删除oblog_db3情况，oblog_db3进入回收站
+#
+# 下面分情况讨论：（只针对2.2之后的版本讨论）
+# 1. 只执行了drop tenant DDL，租户的DDL数据没有回收，
+#    无论是上述哪种情况，刷新租户schema时都是指定版本全量刷新schema，
+#    因此都可以看到正确的租户名称和database名称
+#
+# 2. 执行了drop tenant force DDL，租户所有的DDL数据被删除，
+#    回拉数据时，看不到租户下任何一个版本的schema，租户所有的DDL操作都不能回放出来
+
+
+# 删除oblog_tt租户
+connection oblog_conn_sys;
+
+# drop tenant不计入总的DDL数量中
+# TODO 新方案实现中，DDL事务参与排序，这里执行后，后面回拉上述9条DDL, 可能因为DDL分区不服务，导致输出DDL不完整
+# 之后完整支持同步所有数据，再打开
+#drop tenant oblog_tt;
+#ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 从历史位置启动
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+# 只同步oblog_tt的DDL，防止sys租户的DDL不稳定输出，两个DDL流
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 不输出drop tenant oblog_tt
+let $count = $DDL_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next;
+  dec $count;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 真正的删除租户
+drop tenant oblog_tt force;
+
+# 从历史位置启动
+# 由于tenant已经被drop，因此拉不到该租户所有的数据，理论上只能拉到sys租户的DDL
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 输出drop tenant oblog_tt
+#ob1.oblog.next;
+# 输出drop tenant oblog_tt force
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# 最后清理数据
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;

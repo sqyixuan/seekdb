@@ -1,0 +1,443 @@
+#### test cases for gc test on shared-storage ###
+# author: 哈嗖
+# Storage QA Team 2
+
+ob1=OBI(cluster=2:2:2,proxy_num=1);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+SET GLOBAL recyclebin = 0;
+connection sys_conn;
+ob1.mysql alter system set _ss_deleted_tablet_gc_time = '5s' tenant sys;
+
+ob1.mysql CREATE RESOURCE UNIT gc_test_unit_1 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = '2G';
+ob1.mysql CREATE RESOURCE POOL gc_test_resource_pool_1 UNIT gc_test_unit_1, UNIT_NUM 2, ZONE_LIST = ('z1', 'z2');
+
+
+##---------------------------------------------------
+## test case 1: create a tenant and delete it (basic validation for small farm only)
+##---------------------------------------------------
+#ob1.mysql CREATE TENANT gc_tenant_1 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_1') set ob_tcp_invited_nodes = '%';
+#connect(tenant_conn, $proxy_ip, root@gc_tenant_1,,test, $proxy_port);
+#connection tenant_conn;
+#create table t_gc_1(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+#insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into t_gc_1 select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+#connection sys_conn;
+#let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_1', tenant_id, 1);
+#let $svr_ip = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', server_ip, 1);
+#let $svr_port = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', svr_port, 1);
+#let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+#let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+#let $tablet_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_1' and zone = 'z1', tablet_id, 1);
+#let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+#let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+#connection tenant_conn;
+#drop table t_gc_1;
+#sleep 30;
+#connection sys_conn;
+#ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+#ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+#DROP TENANT gc_tenant_1 FORCE;
+##check local private directory/whether a ls is gc-ed
+#sleep 45;
+#ob1.z1.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $local_dir, private;
+#ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, private;
+#ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, public;
+
+
+#---------------------------------------------------
+# test case 2: unit gc
+#---------------------------------------------------
+ob1.mysql ALTER SYSTEM SET enable_rebalance = false;
+ob1.mysql ALTER SYSTEM SET enable_transfer = false;
+ob1.mysql alter resource pool gc_test_resource_pool_1 unit_num 1;
+ob1.mysql CREATE TENANT gc_tenant_2 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_1') set ob_tcp_invited_nodes = '%';
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_2', tenant_id, 1);
+let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+let $origin_ip = query_get_value(select SVR_IP from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', svr_ip, 1);
+let $origin_port = query_get_value(select SVR_PORT from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$origin_ip' and svr_port = $origin_port, id, 1);
+let $dest_ip = query_get_value(select svr_ip from __all_server where zone = 'z1' and id != $server_id, svr_ip, 1);
+let $dest_port = query_get_value(select svr_port from __all_server where zone = 'z1' and id != $server_id, svr_port, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$origin_ip' and svr_port = $origin_port, value, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$origin_ip' and svr_port = $origin_port, endpoint, 1);
+connect(tenant_conn, $proxy_ip, root@gc_tenant_2,,test, $proxy_port);
+connection tenant_conn;
+create table unit_test(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into unit_test select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+connection sys_conn;
+# trigger gc by migrating a unit
+eval ALTER SYSTEM MIGRATE UNIT = $unit_id destination = '$dest_ip:$dest_port';
+ob1.check_until_timeout select JOB_STATUS status from DBA_OB_UNIT_JOBS where unit_id = $unit_id and JOB_TYPE = 'MIGRATE_UNIT', SUCCESS, 600;
+ob1.check_until_timeout select SVR_PORT from GV\$OB_UNITS where unit_id = $unit_id and svr_ip = '$dest_ip', $dest_port, 300;
+ob1.z1.obs0.check_tenant_dir_exists $origin_ip, $tenant_id, $server_id, $local_dir, private;
+sleep 30;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, private;
+
+
+#---------------------------------------------------
+#test case 3: partition split
+#---------------------------------------------------
+# to do
+
+#---------------------------------------------------
+#test case 4: delete/truncate partition 
+#---------------------------------------------------
+connection tenant_conn;
+--disable_warnings
+drop table if exists t1;
+CREATE TABLE t1 (id INT, dob DATE, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (2),
+        PARTITION p1 VALUES LESS THAN (5),
+        PARTITION p2 VALUES LESS THAN (10)
+    );
+insert into t1 values (1, '2021-01-15');
+insert into t1 values (2, '2022-01-15');
+insert into t1 values (3, '2023-01-15');
+insert into t1 values (4, '2024-01-15');
+
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_2', tenant_id, 1);
+let $p0_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't1' and zone = 'z1' and partition_name = 'p0', tablet_id, 1);
+let $p1_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't1' and zone = 'z1' and partition_name = 'p1', tablet_id, 1);
+let $p2_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't1' and zone = 'z1' and partition_name = 'p2', tablet_id, 1);
+let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+let $svr_ip = query_get_value(select svr_ip from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id=$unit_id, svr_ip, 1);
+let $svr_port = query_get_value(select svr_port from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id = $unit_id, svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1);
+sleep 60;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p0_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p1_id, $local_dir, private;
+connection tenant_conn;
+ALTER TABLE t1 DROP PARTITION p0;
+ALTER TABLE t1 DROP PARTITION p1;
+sleep 30;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p0_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p1_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p2_id, $local_dir, private;
+ALTER TABLE t1 TRUNCATE PARTITION p2;
+sleep 20;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $p2_id, $local_dir, private;
+
+connection sys_conn;
+drop tenant gc_tenant_2 force;
+ob1.mysql alter resource pool gc_test_resource_pool_1 unit_num 2;
+
+
+#---------------------------------------------------
+#test case 5: replica migration/deletion
+#---------------------------------------------------
+ob1.mysql CREATE TENANT gc_tenant_2 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_1') set ob_tcp_invited_nodes = '%';
+connect(tenant_conn, $proxy_ip, root@gc_tenant_2,,test, $proxy_port);
+connection tenant_conn;
+create table t_gc_2(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into t_gc_2 select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+connection tenant_conn;
+connection sys_conn;
+let $tablet_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', tablet_id, 1);
+let $svr_ip = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', server_ip, 1);
+let $svr_port = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', svr_port, 1);
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_2', tenant_id, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+alter resource pool gc_test_resource_pool_1 zone_list = ('z1', 'z2', 'z3');
+ALTER TENANT gc_tenant_2 locality = "F@z1,F@z2,F@z3";
+
+let $cnt = 150;
+--disable_all_result_log
+while($cnt > 0)
+{
+    let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+    if($job_status == SUCCESS || $job_status == FAILED)
+    {
+        let $cnt = 0;
+        --echo gonna break;
+    }
+    dec $cnt;
+    sleep 2;
+    --echo checking job_status:$job_status
+}
+let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+--enable_all_result_log
+--echo final job_status: $job_status
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1);
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, public;
+
+#decrease locality
+ALTER TENANT gc_tenant_2 locality = "F@z2,F@z3";
+--disable_all_result_log
+let $cnt = 30;
+while($cnt > 0)
+{
+    let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+    if($job_status == SUCCESS || $job_status == FAILED)
+    {
+    let $cnt = 0;
+    }
+    dec $cnt;
+    sleep 2;
+}
+--enable_all_result_log
+let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+--echo $job_status
+sleep 120;
+let $cnt = query_get_value(select count(*) as cnt from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1' and tablet_id = $tablet_id, cnt, 1);
+--echo $cnt
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, public;
+
+
+
+#---------------------------------------------------
+#test case 6: tenant shrink
+#---------------------------------------------------
+create resource pool gc_test_resource_pool_2 unit gc_test_unit_1, unit_num 2, zone_list = ('z1', 'z2');
+create tenant gc_tenant_3 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_2') set ob_tcp_invited_nodes = '%';
+connect(gc_conn_2, $proxy_ip, root@gc_tenant_3,,test, $proxy_port);
+connection gc_conn_2;
+create table t_gc_4(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into t_gc_4 select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(120000));
+
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_3',tenant_id,1);
+let $tablet_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_4' and zone = 'z1', tablet_id, 1);
+let $svr_ip = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_4' and zone = 'z1', server_ip, 1);
+let $svr_port = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_4' and zone = 'z1', svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id= $tenant_id and svr_ip = '$svr_ip' and svr_port = $svr_port, unit_id, 1);
+let $unit_group_id = query_get_value(select unit_group_id from __all_unit where unit_id = $unit_id, unit_group_id, 1);
+sleep 120;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, public;
+eval ALTER RESOURCE TENANT gc_tenant_3 UNIT_NUM = 1 DELETE UNIT_GROUP =($unit_group_id);
+ob1.check_mismatch_until_timeout select STATUS from GV\$OB_UNITS where unit_id = $unit_id, MARK DELETING, 120;
+ob1.check_mismatch_until_timeout select STATUS from GV\$OB_UNITS where unit_id = $unit_id, DELETING, 120;
+sleep 60;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, public;
+drop tenant gc_tenant_3 force;
+drop resource pool gc_test_resource_pool_2;
+
+
+
+#---------------------------------------------------
+#test case 7: restart cluster and gc should work properly
+#---------------------------------------------------
+create resource pool gc_test_resource_pool_3 unit gc_test_unit_1, unit_num 2, zone_list = ('z1', 'z2');
+create tenant gc_tenant_4 primary_zone = 'z1, z2', resource_pool_list=('gc_test_resource_pool_3') set ob_tcp_invited_nodes = '%';
+ob1.mysql alter system set _ss_deleted_tablet_gc_time = '1s' tenant sys;
+connect(gc_conn_3, $proxy_ip, root@gc_tenant_4,,test, $proxy_port);
+connection gc_conn_3;
+
+create table test_gc(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test_gc select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(50000));
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_4',tenant_id,1);
+alter system major freeze tenant = 'gc_tenant_4';
+sleep 60;
+connection gc_conn_3;
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test_gc select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(120000));
+connection sys_conn;
+let $svr_ip_1 = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 'test_gc' and zone='z1', svr_ip, 1);
+let $svr_ip_2 = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 'test_gc' and zone='z2', svr_ip, 1);
+let $svr_port_1 = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 'test_gc' and zone='z1', svr_port, 1);
+let $svr_port_2 = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 'test_gc' and zone='z2', svr_port, 1);
+let $server_id_1 = query_get_value(select id from __all_server where svr_ip = '$svr_ip_1' and svr_port = $svr_port_1, id, 1);
+let $server_id_2 = query_get_value(select id from __all_server where svr_ip = '$svr_ip_2' and svr_port = $svr_port_2, id, 1);
+let $local_dir_1 = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip_1' and svr_port = $svr_port_1, value, 1);
+let $local_dir_2 = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip_2' and svr_port = $svr_port_2, value, 1);
+let $oss_location_1 = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $oss_location_2 = query_get_value(select path from __all_zone_storage where zone = 'z2', path, 1);
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip_1' and svr_port = $svr_port_1, endpoint, 1);
+
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip_1, $tenant_id, $server_id_1, $local_dir_1, private;
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip_2, $tenant_id, $server_id_2, $local_dir_2, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_1, $oss_location_1, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_2, $oss_location_2, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_1, $oss_location_1, public;
+
+drop tenant gc_tenant_4 force;
+ob1.force_stop;
+sleep 10;
+ob1.start;
+sleep 600s;
+
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip_1, $tenant_id, $server_id_1, $local_dir_1, private;
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip_2, $tenant_id, $server_id_2, $local_dir_2, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_1, $oss_location_1, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_2, $oss_location_2, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_1, $oss_location_1, public;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id_2, $oss_location_2, public;
+
+drop resource pool gc_test_resource_pool_3;
+
+#---------------------------------------------------
+#test case 8: kill server and recover, gc should work properly
+#---------------------------------------------------
+#test passed manually, disable this case due to limitation of kill -9
+#create resource pool gc_test_resource_pool_4 unit gc_test_unit_1, unit_num 1, zone_list = ('z1', 'z2');
+#create tenant gc_tenant_5 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_4') set ob_tcp_invited_nodes = '%';
+#connect(gc_conn_4, $proxy_ip, root@gc_tenant_5,,test, $proxy_port);
+#connection gc_conn_4;
+#create table test(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+#insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(200000));
+
+#connection sys_conn;
+#let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_5',tenant_id,1);
+#let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+#let $svr_ip = query_get_value(select svr_ip from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id=$unit_id, svr_ip, 1);
+#let $svr_port = query_get_value(select svr_port from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id = $unit_id, svr_port, 1);
+#let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+#let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+#let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+
+#drop tenant gc_tenant_5 force;
+
+#ob1.z1.obs0.kill -9;
+#ob1.z1.obs0.start;
+#sleep 30;
+#ob1.z2.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $local_dir, private;
+#ob1.z2.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $oss_location, private;
+
+
+
+#---------------------------------------------------
+#test case 9: parameter check on _ss_deleted_tablet_gc_time
+#---------------------------------------------------
+#will not apply in farm since there is no need to validate in every farm task
+
+
+#---------------------------------------------------
+#test case 10: recyclebin purge
+#---------------------------------------------------
+SET GLOBAL recyclebin = 1;
+connection sys_conn;
+
+create resource pool gc_test_resource_pool_4 unit gc_test_unit_1, unit_num 1, zone_list = ('z1', 'z2');
+create tenant gc_tenant_7 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_4') set ob_tcp_invited_nodes = '%';
+connect(gc_conn_6, $proxy_ip, root@gc_tenant_7,,test, $proxy_port);
+connection gc_conn_6;
+create table test(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_7',tenant_id,1);
+let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+let $svr_ip = query_get_value(select svr_ip from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id=$unit_id, svr_ip, 1);
+let $svr_port = query_get_value(select svr_port from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id = $unit_id, svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+
+drop tenant gc_tenant_7;
+sleep 5;
+let $tenant_name = query_get_value(show recyclebin, original_name, 1);
+PURGE RECYCLEBIN;
+sleep 30;
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $local_dir, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, private;
+
+
+
+#---------------------------------------------------
+#test case 11: recyclebin expiration
+#---------------------------------------------------
+connection sys_conn;
+ob1.mysql alter system set recyclebin_object_expire_time = '5s';
+create tenant gc_tenant_8 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_4') set ob_tcp_invited_nodes = '%';
+connect(gc_conn_7, $proxy_ip, root@gc_tenant_8,,test, $proxy_port);
+connection gc_conn_7;
+create table test(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into test select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(100000));
+connection sys_conn;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_8',tenant_id,1);
+let $unit_id = query_get_value(select unit_id from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+let $svr_ip = query_get_value(select svr_ip from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id=$unit_id, svr_ip, 1);
+let $svr_port = query_get_value(select svr_port from GV\$OB_UNITS where tenant_id = $tenant_id and zone = 'z1' and unit_id = $unit_id, svr_port, 1);
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+
+drop tenant gc_tenant_8;
+sleep 60;
+ob1.z1.obs0.check_tenant_dir_exists $svr_ip, $tenant_id, $server_id, $local_dir, private;
+ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, private;
+#ob1.z1.obs0.check_tenant_dir_exists $endpoint, $tenant_id, $server_id, $oss_location, public;
+
+SET GLOBAL recyclebin = 0;
+connection sys_conn;
+
+
+#---------------------------------------------------
+#test case 12: drop tenant force while locality change is in progress(unit gc)
+#---------------------------------------------------
+ob1.mysql CREATE TENANT gc_tenant_2 primary_zone = 'z1', resource_pool_list=('gc_test_resource_pool_1') set ob_tcp_invited_nodes = '%';
+connect(tenant_conn, $proxy_ip, root@gc_tenant_2,,test, $proxy_port);
+connection tenant_conn;
+create table t_gc_2(c1 bigint, c2 longtext, c3 longtext, c4 varchar(1024));
+insert /*+ query_timeout(100000000000) parallel(32) enable_parallel_dml */ into t_gc_2 select random() c1, randstr(1024, random()) c2, randstr(1024,random()) c3, randstr(1024,random()) c4 from table(generator(120000));
+connection tenant_conn;
+connection sys_conn;
+let $tablet_id = query_get_value(select tablet_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', tablet_id, 1);
+let $table_id = query_get_value(select table_id from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'gc_tenant_2', tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from __all_virtual_tablet_to_ls where tablet_id = $tablet_id and table_id = $table_id and tenant_id = $tenant_id, ls_id, 1);
+let $svr_ip_1 = query_get_value(select svr_ip from __all_virtual_ls_meta_table where ls_id = $ls_id and tenant_id = $tenant_id and zone = 'z1', svr_ip, 1);
+let $svr_port_1 = query_get_value(select svr_port from __all_virtual_ls_meta_table where ls_id = $ls_id and tenant_id = $tenant_id and zone = 'z1', svr_port, 1);
+--echo $svr_ip_1;
+--echo $svr_port_1;
+let $svr_ip = query_get_value(select svr_ip from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', svr_ip, 1);
+let $svr_port = query_get_value(select svr_port from CDB_OB_TABLE_LOCATIONS where table_name = 't_gc_2' and zone = 'z1', svr_port, 1);
+let $oss_location = query_get_value(select path from __all_zone_storage where zone = 'z1', path, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1); 
+let $endpoint = query_get_value(select endpoint from __all_virtual_server_storage where svr_ip = '$svr_ip' and svr_port = $svr_port, endpoint, 1);
+alter resource pool gc_test_resource_pool_1 zone_list = ('z1', 'z2', 'z3');
+ALTER TENANT gc_tenant_2 locality = "F@z1,F@z2,F@z3";
+
+let $cnt = 150;
+--disable_all_result_log
+while($cnt > 0)
+{
+    let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+    if($job_status == SUCCESS || $job_status == FAILED)
+    {
+        let $cnt = 0;
+        --echo gonna break;
+    }
+    dec $cnt;
+    sleep 2;
+    --echo checking job_status:$job_status
+}
+let $job_status = query_get_value(select JOB_STATUS FROM oceanbase.DBA_OB_TENANT_JOBS WHERE JOB_TYPE = 'ALTER_TENANT_LOCALITY' AND TENANT_ID = $tenant_id, JOB_STATUS, 1);
+--enable_all_result_log
+--echo final job_status: $job_status
+let $server_id = query_get_value(select id from __all_server where svr_ip = '$svr_ip' and svr_port = $svr_port, id, 1);
+let $local_dir = query_get_value(show parameters where name = 'data_dir' and svr_ip = '$svr_ip' and svr_port = $svr_port, value, 1);
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+
+#decrease locality
+ALTER TENANT gc_tenant_2 locality = "F@z2,F@z3";
+sleep 5;
+drop tenant gc_tenant_2 force;
+ob1.z1.obs0.check_tablet_exists $svr_ip, $tenant_id, $server_id, $tablet_id, $local_dir, private;
+ob1.z1.obs0.check_tablet_exists $endpoint, $tenant_id, $server_id, $tablet_id, $oss_location, private;
+
+

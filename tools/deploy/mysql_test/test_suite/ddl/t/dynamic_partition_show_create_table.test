@@ -1,0 +1,71 @@
+# owner: zhaoziqian.zzq
+# owner group: rs
+# tags: ddl
+# description: test show create table for dynamic partition table in mysql mode
+
+connect (mysql,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connect (sys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection mysql;
+set recyclebin = off;
+--disable_warnings
+drop database if exists ziqian_dynamic_part;
+--enable_warnings
+create database ziqian_dynamic_part;
+use ziqian_dynamic_part;
+
+# turn off scheduled manage dynamic partition
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+
+let now = '2025-03-01 01:02:03';
+set time_zone = '+8:00';
+let mock_current_timestamp = query_get_value(select unix_timestamp($now) * 1000000 as ts, ts, 1);
+
+connection sys;
+eval alter system set_tp tp_name = ERRSIM_DYNAMIC_PARTITION_MOCK_TIME, error_code = $mock_current_timestamp, frequency = 1;
+connection mysql;
+
+# case 1: not dynamic partition table
+let $two_day_ago = query_get_value(SELECT $now - INTERVAL 2 DAY AS two_day_ago, two_day_ago, 1);
+eval create table t1 (c1 datetime) partition by range columns (c1) (partition p0 values less than ('$two_day_ago'));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# case 2: not compat mode
+set _show_ddl_in_compat_mode = 0;
+alter table t1 set dynamic_partition_policy (time_unit = 'day', precreate_time = '1week', expire_time = '1year');
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# case 3: compat mode
+set _show_ddl_in_compat_mode = 1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# case 4: check precreate partition name
+call dbms_partition.manage_dynamic_partition();
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# case 5: different dynamic_partition_policy
+set _show_ddl_in_compat_mode = 0;
+alter table t1 set dynamic_partition_policy (enable = false, precreate_time = '10day', expire_time = '1month');
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# case 6: check show create table execution
+set _show_ddl_in_compat_mode = 0;
+let $sql = query_get_value(show create table t1, 'Create Table', 1);
+drop table t1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+eval $sql;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+
+# recover & clear
+drop database ziqian_dynamic_part;
+purge recyclebin;
+CALL DBMS_SCHEDULER.ENABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.ENABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+connection sys;
+eval alter system set_tp tp_name = ERRSIM_DYNAMIC_PARTITION_MOCK_TIME, error_code = 0, frequency = 0;

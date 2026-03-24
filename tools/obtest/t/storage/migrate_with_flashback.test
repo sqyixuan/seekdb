@@ -1,0 +1,83 @@
+# owner: weixue.cx
+# owner group: storage
+# description: test logic migrate with flashback
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2, proxy_num=1, init_unit_cpu=2, init_unit_num =2);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set _mini_merge_concurrency = 6;
+ob1.mysql alter system set minor_compact_trigger = 10; 
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $port1=deploy_get_value(ob1.z2.obs0.port);
+let $sql_port1=deploy_get_value(ob1.z2.obs0.mysql_port);
+
+ob1.mysql create resource unit flashback_box max_cpu 2, max_memory 2073741824, max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY=2073741824, MIN_IOPS=128;
+ob1.mysql create resource pool flashback_pool unit = 'flashback_box', unit_num = 2;
+ob1.mysql create tenant oracle replica_num = 3, resource_pool_list=('flashback_pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+
+ob_connect(conn_oracle, ob1, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+
+ob_connect(conn1,ob1,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+connection conn1;
+
+create table t1 (c1 int primary key, c2 int, c3 int) primary_zone = 'z1';
+
+let $tid = deploy_get_value(ob1.select select table_id from  __all_virtual_table where table_name = 't1', table_id, 1);
+
+insert into t1 values (1,1,1);
+insert into t1 values (2,2,2);
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_id = $tid and table_type = 0 and is_active = 0, 0, 300;
+
+update t1 set c2 = 20 where c1 = 2;
+sleep 3;
+let $ts0 = deploy_get_value(ob1.select select time_to_usec(now(6)) as t from dual, t, 1);
+sleep 3;
+update t1 set c2 = 10 where c1 = 1;
+
+--disable_query_log
+eval flashback table t1 to scn $ts0;
+--enable_query_log
+
+update t1 set c3 = 10 where c1 = 1;
+
+sleep 30;
+
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z2' and table_id=$tid, host, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2' and svr_port != $src_port and svr_ip != 'src_ip', host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+
+$src.migrate_to $dst,oracle:obtest:t1;
+
+ob1.check_until_timeout select count(1) from __all_virtual_meta_table where svr_ip = '$dst_ip' and svr_port = $dst_port and table_id = $tid and member_list like "%$dst_host%", 1, 60;
+
+ob1.mysql alter system switch replica leader partition_id='0%0@$tid' server='$dst_ip:$dst_port';
+ob1.check_until_timeout select count(1) from __all_virtual_meta_table where svr_ip = '$dst_ip' and svr_port = $dst_port and table_id = $tid and member_list like "%$dst_host%" and role = 1, 1, 60;
+connection conn1;
+select * from t1;
+
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+ob1.check_until_timeout select value from oceanbase.__all_zone where name = 'is_merge_error', 0, 10;

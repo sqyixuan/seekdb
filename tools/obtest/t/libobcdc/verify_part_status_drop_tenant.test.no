@@ -1,0 +1,105 @@
+#
+# owner:shuning.tsn
+# description:
+# 测试点：测试"租户删除"场景，liboblog是否可以区分租户被删除还是分区是未来分区
+#
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+ob_connect(conn1, ob1.z1.obs0, root, , test, , USE_MYSQL_CONNECTOR);
+
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+--disable_warnings
+drop database if exists oblog_db;
+create database oblog_db;
+use oblog_db;
+
+# 关闭回收站
+set recyclebin=off;
+
+#创建表
+create table t1(a int);
+create table t2(a int);
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+#构建事务
+begin;
+insert into t1 values(1);
+insert into t1 values(1);
+commit;
+
+#设置测试模式
+#ob1.oblog.set_extra_argument -H oblog/heartbeat.log;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t*|sys.*.* sort_trans_participants=1 log_level=INFO test_mode_on=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+
+sleep 12;
+disconnect oblog_conn_tt;
+#sys连接drop tenant
+connection oblog_conn_sys;
+drop tenant oblog_tt force;
+
+ob1.oblog.stop;
+
+# verify ignore OB_TENANT_HAS_BEEN_DROPPED
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+sleep 12;
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (oblog_conn_tt,$ip,root@oblog_tt,,test,$port);
+connection oblog_conn_tt;
+create table t1(pk int primary key);
+create table t2(pk int primary key) partition by hash(pk) partitions 3;
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+# DDL事务
+alter table t2 add column a int default 0;
+# 单机事务
+insert into t2 values(1, 1);
+
+# 分布式事务
+set autocommit='OFF';
+begin;
+insert into t2 (pk, a) values (2,2), (3,3), (4,4);
+insert into t1 values (1);
+update t2 set a = 5 where pk = 1;
+commit;
+
+disconnect oblog_conn_tt;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* sort_trans_participants=1 log_level=INFO test_mode_on=1 test_mode_force_check_tenant_status=1 test_mode_block_verify_participants_time_sec=5 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+sleep 2;
+# expect to get 3 trans above
+ob1.oblog.next;
+ob1.oblog.next;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.test.* sort_trans_participants=1 log_level=DEBUG test_mode_on=1 test_mode_force_check_tenant_status=1 test_mode_block_verify_participants_time_sec=5 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+# wait for oblog inited test_mode_block_verify_participants_time_sec should > sleep time;
+sleep 8;
+ob1.oblog.check_log "launch all components end success";
+#sys连接drop tenant
+connection oblog_conn_sys;
+drop tenant oblog_tt force;
+
+ob1.oblog.stop;
+#verify log: verify liboblog found "tenant has been dropped" or not
+# 拉到分区日志，组装事务时查询分区状态，发现分区被删了，应依序打印下面三条日志
+
+# verify won't add tenant if already dropped
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* sort_trans_participants=1 log_level=INFO test_mode_on=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.stop;
+
+ob1.oblog.check_log "will not add tenant has been dropped";

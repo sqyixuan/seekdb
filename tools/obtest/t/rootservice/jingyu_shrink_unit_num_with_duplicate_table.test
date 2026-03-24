@@ -1,0 +1,98 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#   This case is aimed to test shrink unit_num with duplicate table and log stream
+#   We designed following steps to test this case:
+#
+#     1. create tenant with unit_num = 2, and locality with FFR
+#     2. create duplicate table under user tenant
+#     3. shrink unit_num from 2 to 1, deleting target unit_group with FFR
+#     4. check disaster recovery task generated
+#
+
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system SET enable_rebalance = 'false';
+ob1.mysql alter system SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant tenant_for_shrink_unit
+--echo ============================================================
+--echo              create tenant and duplicate table 
+--echo ============================================================
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_shrink_unit RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, R@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_shrink_unit", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_shrink_unit", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_shrink_unit, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table dup_t1(c1 int) duplicate_scope = 'cluster';
+
+--echo ============================================================
+--echo                   get unit related infos
+--echo ============================================================
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+# get tenant_for_shrink_unit's unit info in z1
+let $duplicate_ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and flag like "%DUPLICATE%", ls_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role = 1, unit_id, 1);
+let $unit_group_id = deploy_get_value(ob1.select select unit_group_id from oceanbase.DBA_OB_UNITS where tenant_id = $tenant_id and unit_id = $unit_id, unit_group_id, 1);
+let $z1_full_replica_ip = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_ip, 1);
+let $z1_full_replica_port = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_port, 1);
+let $z1_full_replica_dst = $z1_full_replica_ip:$z1_full_replica_port;
+
+# get servers' addr in z1, z2 and z3
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_ip1 = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst_port1 = deploy_get_value(ob1.z1.obs1.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z1_dst1 = $z1_dst_ip1:$z1_dst_port1;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_ip1 = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst_port1 = deploy_get_value(ob1.z2.obs1.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z2_dst1 = $z2_dst_ip1:$z2_dst_port1;
+
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+
+--echo ============================================================
+--echo                try shrink resource tenant
+--echo ============================================================
+ob1.mysql alter resource tenant tenant_for_shrink_unit UNIT_NUM = 1  delete unit_group ($unit_group_id);
+# check replica distribution in zone1, should have 1 full replica and server_ip/port is different from previous one
+if ($z1_dst0 != $z1_full_replica_dst)
+{
+  ob1.check_until_timeout select count(*) as z1_full_replica_cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z1_dst0%" and (learner_list not like "%$z1_dst0%" and learner_list not like "%$z1_dst1%"), 1, 120;
+}
+if ($z1_dst1 != $z1_full_replica_dst)
+{
+  ob1.check_until_timeout select count(*) as z1_full_replica_cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z1_dst1%" and (learner_list not like "%$z1_dst0%" and learner_list not like "%$z1_dst1%"), 1, 120;
+}
+
+# check replica distribution in zone3, should have 1 readonly replica
+ob1.check_until_timeout select count(*) as z3_readonly_replica from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and (learner_list like "%$z3_dst0%" or learner_list like "%$z3_dst1%"), 1, 20;
+

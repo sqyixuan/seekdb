@@ -1,0 +1,65 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test check member list for transfer
+#####################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='25G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+--echo # create mysql tenant
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+eval CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo # create table with lob and idx
+connection conn_mysql;
+create table t1 (c1 int primary key, c2 longtext) partition by hash(c1) partitions 6;
+create index idx_t1 on t1(c1);
+
+--echo ############################
+--echo # 1. test check member list comment by errsim
+--echo # errsim member_list not same
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4109, frequency = 1;
+
+--echo # primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+
+--echo # update comment when member_list is not same
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 1, 30;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_virtual_transfer_task where comment = 'Wait for member list to be same', 1, 30;
+
+--echo # update comment when inactive server in member_list
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4114, frequency = 1;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 0, 30;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 1, 30;
+
+--echo # cancel errsim
+ob1.mysql alter system set_tp tp_name = EN_TENANT_TRANSFER_CHECK_LS_MEMBER_LIST_NOT_SAME, error_code = 4114, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED', 1, 120;
+
+--echo #############################
+--echo # 2. test check member list with server inactive
+--echo # primary zone 2->1
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where status = 'INACTIVE', 1, 10;
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where comment = 'Unable to process task due to inactive server in member list', 1, 120;

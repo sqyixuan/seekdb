@@ -1,0 +1,43 @@
+# owner:yongle.xh
+# owner group:storage
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+ob_connect(conn1, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+# test8:
+
+# 1. generate data
+create table test1 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+
+# 2. migrate
+--enable_query_log
+let $src = deploy_get_value(ob1.get_leader obtest:test:test1:0);
+let $dst = deploy_get_value(ob1.get_another_obs_in_same_zone $src);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test1', table_id, 1);
+let $pkey = deploy_get_value(ob1.select select concat(tenant_id, ':', table_id, ':0') as pkey from oceanbase.__all_virtual_table where table_name='test1', pkey, 1);
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHANGE_MEMBER_LIST wait_for continue_signal execute 1000000';
+sleep 2;
+
+$src.migrate_to $dst,obtest:test:test1;
+
+$dst.check_log_until_success -c "execute action";
+
+ob1.mysql drop tenant obtest force;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id=$table_id and svr_ip='$src_ip' and svr_port=$src_port, 0, 180;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHANGE_MEMBER_LIST clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sys_task_status, 0, 30;
+ob1.mysql_p select value4 from oceanbase.__all_rootservice_event_history where module='balancer' and event like '%finish%' and value1 like "%$table_id%";
+

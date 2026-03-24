@@ -1,0 +1,163 @@
+# owner: dachuan.sdc
+# owner group: SQL
+# description: verify feature Rename Index
+# 1. positive/negative cases
+#   1). create tbl with idx|key, rename idx
+#   2). create tbl with idx|key, rename idx, rename idx2
+#   3). alter tbl add idx|key, rename idx
+#   4). rename idx on composite columns
+#   5). composite operation rename/drop/add idx
+#   6). rename a->b, rename b->a or rename a->b, rename b->c
+#   7). rename with other alter table operations
+#   
+#   8). length of new name is over the max length 64
+#   9). rename index with add/drop/alter index
+#
+# 2. check index
+#    SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS
+#
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+--disable_warnings
+drop table if exists my_t1;
+--enable_warnings
+create table my_t1(c1 varchar(20), c2 tinyint, c3 smallint, c4 timestamp, index idx_1(c1), index idx_2(c2));
+insert into my_t1 values('hello', 2, 3, '2017-01-01');
+insert into my_t1 values('ant', 22, 33, '2017-02-01');
+insert into my_t1 values('antfin', 23, 333, '2017-03-01');
+alter table my_t1 add index idx_3(c3);
+alter table my_t1 add index idx_12(c1, c2);
+alter table my_t1 add index idx_123(c1, c2, c3);
+--source mysql_test/include/check_all_idx_ok.inc
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1";
+
+#1
+alter table my_t1 rename index idx_1 to idx_11;
+--source mysql_test/include/check_all_idx_ok.inc
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idx_11" and Column_name="c1";
+
+#2
+alter table my_t1 rename index idx_11 to idx_111, rename index idx_2 to idx_22;
+--source mysql_test/include/check_all_idx_ok.inc
+--sorted_result
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idx_111" or Index_name="idx_22";
+
+#3 negative case
+#1176: Key doesn't exist
+--error 1176
+alter table my_t1 add index idx_4(c4), rename index idx_4 to idx_44;
+
+#4). rename idx on composite columns
+alter table my_t1 rename index idx_12 to idx_1122;
+--source mysql_test/include/check_all_idx_ok.inc
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idx_1122"; 
+
+#5). composite operation rename/drop/add/alter idx
+#5.1 [negative]rename + drop, keep the same behavior with MySQL that MySQL cann't support this scenario, TODO: we may support this behavior
+--error 1091 
+alter table my_t1 rename index idx_123 to idx_112233, drop index idx_112233; 
+#5.2 [negative]drop + rename, keep the same behavior with MySQL
+--error 1091 
+alter table my_t1 drop index idx_112233, rename index idx_123 to idx_112233; 
+
+#5.3 [negative]add + rename, keep the same behavior with MySQL
+alter table my_t1 rename index idx_22 to idx_222;
+
+#5.4 rename + add, keep the same behavior with MySQL
+--error 1176
+alter table my_t1 rename index idx_22 to idx_222, add index idx_22(c2);
+--source mysql_test/include/check_all_idx_ok.inc
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idx_222" or Index_name="idx_22"; 
+
+#6.1 rename a->b, rename b->a
+--error 1176
+alter table my_t1 rename index idx_3 to idx_33, rename index idx_33 to idx_3;
+#6.2 rename a->b, rename b->c
+--error 1176
+alter table my_t1 rename index idx_3 to idx_33, rename index idx_33 to idx_333;
+
+#7rename with other alter table operations
+alter table my_t1 rename index idx_123 to idx_112233, add column c5 decimal(7,3);
+alter table my_t1 add unique index idx_4(c4);
+alter table my_t1 modify c4 timestamp default now();
+#alter table my_t1 rename index idx_123 to idx_112233, add column c5 decimal(7,3), add unique index idx_4(c4), modify c4 timestamp default now();
+desc my_t1;
+
+#8max length of rename index name
+alter table my_t1 add index idx_max_length(c1,c2,c3,c4);
+alter table my_t1 rename index idx_max_length to idxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxidxxxxxxxxxxxxxxxxxxxxxxxxxxxx64;
+--source mysql_test/include/check_all_idx_ok.inc
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxidxxxxxxxxxxxxxxxxxxxxxxxxxxxx64";
+
+--error 1059 
+alter table my_t1 rename index idxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxidxxxxxxxxxxxxxxxxxxxxxxxxxxxx64 to idxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxidxxxxxxxxxxxxxxxxxxxxxxxxxxxxx65;
+
+#9 rename + add/drop/alter index
+### add + rename index
+#add ori_idx, rename ori_idx->new_idx
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1));
+alter table my_t1 add index idx_2(c1);
+alter table my_t1 rename index idx to idx_1;
+#add new_idx, rename ori_idx->new_idx
+--error 1176
+alter table my_t1 add index idx_1(c1), rename index idx to idx_1;
+
+### rename + add index
+#rename ori_idx->new_idx, add ori_idx
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1));
+alter table my_t1 rename index idx to idx_1;
+alter table my_t1 add index idx(c1);
+--source mysql_test/include/check_all_idx_ok.inc
+--sorted_result
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and (Index_name="idx" or Index_name="idx_1"); 
+#rename ori_idx->new_idx, add new_idx
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1));
+--error 1061
+alter table my_t1 rename index idx to idx_1, add index idx_1(c1);
+
+### drop + rename index
+#drop ori_idx, rename ori_idx->new_idx
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1), index idx_2(c2));
+--error 1176
+alter table my_t1 drop index idx, rename index idx to idx_1;
+#drop new_idx, rename ori_idx->new_idx
+alter table my_t1 drop index idx, rename index idx_2 to idx;
+SELECT distinct table_name, index_name, column_name, index_type FROM INFORMATION_SCHEMA.STATISTICS where table_name="my_t1" and Index_name="idx"; 
+#
+### rename + drop index
+#rename ori_idx->new_idx, drop ori_idx
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1), index idx_2(c2));
+--error 1176
+alter table my_t1 rename index idx to idx_1, drop index idx;
+#rename ori_idx->new_idx, drop new_idx
+--error 1091
+alter table my_t1 rename index idx to idx_1, drop index idx_1;
+
+### alter + rename index
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1), index idx_2(c2));
+#alter ori_idx, rename ori_idx to new_idx
+--error 1347
+alter table my_t1 alter index idx invisible, rename index idx to idx_1;
+#alter new_idx, rename ori_idx to new_idx
+--error 1176
+alter table my_t1 alter index idx_1 invisible, rename index idx to idx_1;
+
+### rename + alter index
+drop table if exists my_t1;
+create table my_t1(c1 int, c2 int, index idx(c1), index idx_2(c2));
+#rename ori_idx to new_idx, alter ori_idx
+--error 1176
+alter table my_t1 rename index idx to idx_1, alter index idx invisible;
+#rename ori_idx to new_idx, alter new_idx
+--error 1176
+alter table my_t1 rename index idx to idx_1, alter index idx_1 invisible;
+
+drop table if exists my_t1;
+--enable_warnings

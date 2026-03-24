@@ -1,0 +1,80 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试在pg中，如果缺失一个副本的话，RS调度replicate_enough_paxos_replica
+# 有问题；
+#（1）如果缺失的不是第一个ppr的副本的话，不会产生复制任务；
+#（2）如果缺失的是第一个ppr的副本，则会为整个pg产生复制任务；
+# (3) 永久下线一个SERVER.测试一个pg的复制任务会在一轮rereplicate中生成
+
+ob1=OBI(cluster=2:2:2, init_unit_cpu=2, proxy_num=0, ct_num = 0);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+#ob1.mysql alter system set enable_rebalance = 'false';
+#ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+sleep 4;
+
+ob1.mysql create resource unit box1 max_cpu 5, max_memory 1080000000, max_iops 100000, max_disk_size 1080000000, max_session_num 64, MIN_CPU 5, MIN_MEMORY=1080000000, MIN_IOPS=128;
+ob1.mysql create resource pool pool_large unit = 'box1', unit_num = 2, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant tt1 replica_num = 3, resource_pool_list=('pool_large'), locality = "f@z1,f@z2,f@z3" set ob_tcp_invited_nodes='%';
+
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt1", tenant_id, 1);
+ob1.create_client tenant=tt1,user=root,passwd=,database=test;
+create tablegroup tg1 partition by hash partitions 2;
+create table t1(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 2;
+create table t2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 2;
+create table t3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 2;
+
+#（1）如果缺失的不是第一个ppr的副本的话，不会产生复制任务；
+##修改内部表。让RS看到t2:0 不在成员列表中；触发复制；
+
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "t2" and tenant_id = $tenant_id, table_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id and partition_id = 0 and role = 2, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id and partition_id = 0 and role = 2 and svr_ip="$ip", svr_port, 1);
+ob1.mysql alter system drop replica partition_id="0%2@$table_id" server = "$ip:$port";
+
+##等待复制完成；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id and partition_id = 0 and role = 1 and member_list like '%$ip:$port%', 1, 120;
+
+#（2）如果缺失的是第一个ppr的副本，则会为整个pg产生复制任务；-->这是个BUG;
+#要改成只为单个partition生成副本；
+##让rs看到t1:0的副本不在成员列表中，触发复制，但是event表中不会有多余的复制任务
+
+let $table_id_2 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "t1" and tenant_id = $tenant_id, table_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id_2 and partition_id = 0 and role = 2, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id_2 and partition_id = 0 and role = 2 and svr_ip="$ip", svr_port, 1);
+ob1.mysql alter system drop replica partition_id="0%2@$table_id_2" server = "$ip:$port";
+##等待删除成功；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id_2 and partition_id = 0 and role = 1 and member_list like '%,%,%', 0, 60;
+#等待复制完成
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id_2 and partition_id = 0 and role = 1 and member_list like '%,%,%', 1, 60;
+#sleep 15;
+#本验证失效了， 晓楚把这个代码逻辑改错了。
+# 
+# ObRereplication::replicate_enough_paxos_replica 会为pg中不缺副本的partition也生成复制任务
+#检查all_rootservice_event 表中不会为pg生成任务；
+#let $count = deploy_get_value(ob1.select select count(*) c from __all_rootservice_event_history where event = "finish_add_replica" and value1 like "%table_id%" and value4 = -4552, c, 1);
+#if ($count == 0)
+#{
+#  echo "replicate only lost replica success";
+#}
+
+####(3) 永久下线一个server. 确认一个pg的表会在一个批次中生成切位置相同
+#
+##ob1.mysql set ob_global_debug_sync = 'BEFORE_REBALANCE_TASK_EXECUTE wait_for x timeout 1000000000000';
+#ob1.mysql set ob_global_debug_sync = 'END_PRODUCE_PG_REPLICATE_TASK wait_for y timeout 1000000000000';
+#ob1.mysql alter system set server_permanent_offline_time = "20s";
+#ob1.mysql alter system set server_temporary_offline_time= "15s";
+#
+#let $svr_host = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) as svr_host from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $table_id_2 and partition_id = 0 and role = 2, svr_host, 1);
+#let $rs = deploy_get_value(ob1.get_obs_by_addr $svr_host);
+#$rs.stop;
+#
+#ob1.check_until_timeout select count(*) from  __all_virtual_rebalance_task_stat, 230, 120;
+#

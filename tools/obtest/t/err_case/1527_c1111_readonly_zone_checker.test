@@ -1,0 +1,50 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证readonly zone checker报error的功能，目前该定时任务600s触发一次，故注释该case，避免无谓的等待
+#              
+#ob1=OBI(cluster=1:1:1:1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz:hz);
+#
+## disable 1 server
+#ob1.z3.obs0.set status=disable;
+#
+#ob1.reboot;
+#
+#ob1.z3.add;
+#ob1.z3.start_zone;
+#ob1.z3.obs0.set status=enable;
+#ob1.z3.obs0.start;
+#ob1.z3.obs0.add;
+#
+#sleep 30;
+#
+## 设置z3为只读zone，且关闭enable_monotonic_weak_read
+## sys租户在只读zone上没有副本
+#ob1.mysql alter system modify zone 'z3' zone_type 'ReadOnly';
+#ob1.mysql alter system set enable_monotonic_weak_read = "false";
+#
+## sys租户在只读zone(z3)上没有副本，故会报警
+#ob1.check_until_timeout select IF(count(*) > 0, 1, 0) as judge from oceanbase.__all_rootservice_event_history where module = "readonly_zone_checker" and event = "check_sys_tenant", 1, 120;
+## 置z3为只读zone，且关闭enable_monotonic_weak_read，故会报警
+#ob1.check_until_timeout select IF(count(*) > 0, 1, 0) as judge from oceanbase.__all_rootservice_event_history where module = "readonly_zone_checker" and event = "check_config", 1, 120;
+#
+## 开启enable_monotonic_weak_read
+#ob1.mysql alter system set enable_monotonic_weak_read = "true";
+#ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_monotonic_weak_read" and value = "True", 4, 10;
+## 获取配置生效时间
+#let $set_config_time = deploy_get_value(ob1.select select time_to_usec(now()) as time, time, 1);
+#
+## 补齐sys租户在z3上的副本
+#ob1.mysql CREATE RESOURCE POOL sys_pool_2 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z3');
+#ob1.mysql alter tenant sys resource_pool_list=('sys_pool', 'sys_pool_2'), primary_zone = 'z1;z2,z4,z3', locality = 'F{1}@z1,F{1}@z2,R{1}@z3,F{1}@z4';
+#let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+#ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 600;
+## 获取locality完成的时间
+#let $job_finish_time = deploy_get_value(ob1.select select time_to_usec(gmt_modified) as job_finish_time from oceanbase.__all_rootservice_job where job_id = $last_job_id, job_finish_time, 1);
+#
+## 等待一个大于定时检测的时间间隔(60s)
+#sleep 70;
+#
+## locality变更完成后无相关告警
+#ob1.check_until_timeout select IF(count(*) > 0, 1, 0) as judge from oceanbase.__all_rootservice_event_history where module = "readonly_zone_checker" and event = "check_sys_tenant" and time_to_usec(gmt_create) > $job_finish_time, 0, 10;
+## 配置生效后无相关告警
+#ob1.check_until_timeout select IF(count(*) > 0, 1, 0) as judge from oceanbase.__all_rootservice_event_history where module = "readonly_zone_checker" and event = "check_config" and time_to_usec(gmt_create) > $set_config_time, 0, 10;

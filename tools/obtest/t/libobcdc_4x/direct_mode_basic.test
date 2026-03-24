@@ -1,0 +1,280 @@
+#
+# owner: obcdc
+# owner group: libobcdc
+# description: test for synchronizing basic dml/ddl statements
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant.inc;
+#source include/liboblog/enable_data_dictionary.inc;
+source include/liboblog/enable_mysql_archive.inc;
+
+#ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant sys;
+#ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_user;
+#ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_meta;
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1006";
+
+sleep 10;
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG fetching_log_mode=direct archive_dest=$log_backup_dest;
+ob1.oblog.restart;
+
+let $dml_ddl_cnt=0;
+
+################################# ddl basic test ###############################
+# 创建database 1
+create database oblog_db1;
+# 输出create database DDL
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+use oblog_db1;
+
+create database oblog_db2;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+drop database oblog_db2;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+create table oblog_db1.t1 (pk int primary key);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# 创建表t2
+create table oblog_db1.t2 (pk int primary key);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# 创建带索引的表
+create table if not exists oblog_db1.t3 (c1 int primary key, c2 int, c3 int, c4 int, c5 int, key idx_1 (c1,c2,c3), key idx_2 (c2,c4), key idx_3 (c3,c2), unique key uk_test (c4,c2,c5),unique key uk_test1 (c2,c1));
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+# index create and drp
+DROP INDEX idx_2 on t3;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+# 逆序索引NOT_SUPPORT
+CREATE INDEX idx_2a on t3(c4,c2);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+DROP INDEX uk_test on t3;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+CREATE INDEX uk_testa on t3(c4,c2);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# 创建带生成列的表
+create table table_with_generate_column(c1 int, c2 int, c3 int as (c1 + c2));
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+insert into table_with_generate_column (c1, c2) VALUES(1, 2);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+insert into table_with_generate_column (c1, c2) VALUES(3, 4);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+drop table table_with_generate_column;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# 在oblog_tt租户下, drop table t1
+drop table oblog_db1.t1;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+alter table oblog_db1.t2  ADD COLUMN c1 int;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+alter table oblog_db1.t2  ADD COLUMN c2 int;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+alter table oblog_db1.t2 drop COLUMN c2;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+alter table oblog_db1.t2  RENAME to t200;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# rename table t2
+RENAME table oblog_db1.t200 to t300;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into oblog_db1.t300 VALUE(1, 1);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+######################################## dml basic test ################################
+create table t_dml (id int primary key auto_increment, col1 varchar(10), col2 decimal(10,2));
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_dml(col1, col2) values ('aaaaa', 9.15);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_dml(col1, col2) values ('bbbbb', 899.99);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+begin;
+insert into t_dml(col1, col2) values ('ccccc', 333.33);
+update t_dml set col2=300 where col1='ccccc';
+commit;
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+delete from t_dml where col1='aaaaa';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+######################################## datatype basic test ###########################
+
+create table t_type( id int primary key auto_increment, col_int8 tinyint default 1, col_int16 smallint, col_int24 mediumint default 2, col_int32 int, col_int64 bigint, col_uint8 tinyint unsigned, col_uint16 smallint unsigned, col_uint24 mediumint unsigned default 10000, col_uint32 int unsigned, col_uint64 bigint unsigned, col_float float, col_double double, col_ufloat float unsigned, col_udouble double unsigned, col_decimal decimal(20,2) default 11.11, col_udecimal decimal(20,4) unsigned, col_datetime datetime(2), col_timestamp timestamp(3) default '2020-01-01 00:00:00', col_date date, col_time time(4), col_year year(4), col_varchar varchar(6) default 'helo$', col_char char(5), col_varbinary varbinary(5) default 'word#', col_binary binary(4) );
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_int16) values (-32768), (32767);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_int32) values (-2147483648), (2147483647);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_int64) values (-9223372036854775808), (9223372036854775807);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_uint16) values (0), (65535);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_uint32) values (0), (4294967295);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_uint64) values (0), (18446744073709551615);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_float) values (1.1);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_double) values (2.22222);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_decimal) values (123456789012345678.12), (1234567890);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_datetime) values ('1001-01-01 00:00:00'),('2023-01-03 16:50:48.612369'),('9999-12-31 23:59:59');
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_timestamp) values ('2038-01-19 03:14:07');
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_varchar) values ('abcdef');
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_char) values ('abcde');
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_type(col_binary) values ('abcd');
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# bit type
+
+create table t_bit(c1 BIT(8));
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_bit set c1 = b'11111111';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_bit set c1 = b'1010';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_bit set c1 = b'1111';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+update t_bit set c1=b'11110000' where c1=b'1010';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+delete from t_bit where c1=b'1111';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# enum set type
+
+create table t_set_enum1(c1 set('a', 'b', 'c', 'd') primary key, c2 enum('a', 'b', 'c', 'd', 'e'), c3 int);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_set_enum1 values('a', 'a', 1);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_set_enum1 values('b', 5, 1);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+insert into t_set_enum1 values('a,b', null, 2);
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+update t_set_enum1 set c2='b' where c1='b';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+delete from t_set_enum1 where c1='a';
+ob1.oblog.next;
+inc $dml_ddl_cnt;
+
+# stop liboblog
+ob1.oblog.stop;
+
+################### fetch history using online schema ##############
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG fetching_log_mode=direct archive_dest=$log_backup_dest;
+ob1.oblog.restart;
+let $record_cnt = 0;
+while ($record_cnt < $dml_ddl_cnt)
+{
+  ob1.oblog.next;
+  inc $record_cnt;
+}
+ob1.oblog.stop;
+
+################### fetch history using datadict ##############
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG fetching_log_mode=direct meta_data_refresh_mode=data_dict archive_dest=$log_backup_dest;
+ob1.oblog.restart;
+let $record_cnt = 0;
+while ($record_cnt < $dml_ddl_cnt)
+{
+  ob1.oblog.next;
+  inc $record_cnt;
+}
+ob1.oblog.stop;

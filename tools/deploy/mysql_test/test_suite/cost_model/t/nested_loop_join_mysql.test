@@ -1,0 +1,154 @@
+# owner: zhenling.zzg
+# owner group: SQL1
+# tags: optimizer
+
+--result_format 1
+--explain_protocol 2
+
+--source cost_model_test_begin.inc
+let $op_id = -1;
+--source cost_model_change_op_id.inc
+
+--disable_warnings
+
+drop table if exists t1_nested_loop_join,t2_nested_loop_join,t3_nested_loop_join,t4_nested_loop_join;
+
+--enable_warnings
+
+create table t1_nested_loop_join(
+  c1 int,
+  c2 int,
+  c3 int,
+  c4 int);
+
+create table t2_nested_loop_join(
+  c1 int,
+  c2 int,
+  c3 int,
+  c4 int);
+
+create index i1 on t2_nested_loop_join(c2);
+
+create table t3_nested_loop_join(
+  c1 int,
+  c2 int,
+  c3 int,
+  c4 int)partition by hash(c1) partitions 4;
+create index i1 on t3_nested_loop_join(c1);
+
+create table t4_nested_loop_join(
+  c1 int,
+  c2 int,
+  c3 int,
+  c4 int);
+
+call dbms_stats.set_table_stats(
+  NULL,
+  't1_nested_loop_join',
+  numrows => 1000000,
+  avgrlen => 100,
+  nummicroblks => 6000
+  );
+
+call dbms_stats.set_table_stats(
+  NULL,
+  't2_nested_loop_join',
+  numrows => 10000000,
+  avgrlen => 1000,
+  nummicroblks => 60000
+  );
+
+call dbms_stats.set_table_stats(
+  NULL,
+  't3_nested_loop_join',
+  numrows => 1,
+  avgrlen => 10,
+  nummicroblks => 6
+  );
+
+call dbms_stats.set_table_stats(
+  NULL,
+  't4_nested_loop_join',
+  numrows => 1,
+  avgrlen => 10,
+  nummicroblks => 6
+  );
+
+--echo #########################
+--echo ###  normal NLJ
+--echo #########################
+explain select /*+leading(A B) NO_USE_NL_MATERIALIZATION(B)*/* from 
+t1_nested_loop_join A left join t2_nested_loop_join B on A.c1 != B.c1
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  DAS rescan
+--echo #########################
+explain select /*+leading(A B) use_nl(B) NO_USE_NL_MATERIALIZATION(B) parallel(B 2) pq_distribute(B local local) use_das(B)*/* from 
+t1_nested_loop_join A left join t3_nested_loop_join B on A.c1 = B.c1
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  normal NLJ PX 
+--echo #########################
+explain select /*+leading(A B) use_nl(B) NO_USE_NL_MATERIALIZATION(B) parallel(B 2) pq_distribute(B local local) no_use_das(B)*/* from 
+t1_nested_loop_join A left join t3_nested_loop_join B on A.c1 = B.c1
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  normal NLJ PX batch rescan
+--echo #########################
+explain select /*+leading(A B) use_nl(B) NO_USE_NL_MATERIALIZATION(B) parallel(B 1) pq_distribute(B local local) no_use_das(B)*/* from 
+t1_nested_loop_join A left join t3_nested_loop_join B on A.c1 = B.c1
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  normal NLJ with material
+--echo #########################
+explain select /*+leading(A B) USE_NL_MATERIALIZATION(B)*/* from 
+t4_nested_loop_join A left join t1_nested_loop_join B on A.c1 != B.c1
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  semi normal NLJ
+--echo #########################
+explain select /*+leading(A B) NO_USE_NL_MATERIALIZATION(B)*/* from 
+t1_nested_loop_join A 
+where exists(select 1 from t2_nested_loop_join B where A.c1 != B.c1);
+
+--echo #########################
+--echo ###  semi normal NLJ PX rescan
+--echo #########################
+explain select /*+leading(A B) use_nl(B) NO_USE_NL_MATERIALIZATION(B) parallel(B 2) pq_distribute(B local local) no_use_das(B)*/* from 
+t1_nested_loop_join A 
+where exists(select 1 from t3_nested_loop_join B where A.c1 = B.c1);
+
+--echo #########################
+--echo ###  semi normal NLJ PX batch rescan
+--echo #########################
+explain select /*+leading(A B) use_nl(B) NO_USE_NL_MATERIALIZATION(B) parallel(B 1) pq_distribute(B local local) no_use_das(B)*/* from 
+t1_nested_loop_join A 
+where exists(select 1 from t3_nested_loop_join B where A.c1 = B.c1);
+
+--echo #########################
+--echo ###  semi normal NLJ with material
+--echo #########################
+explain select /*+leading(A B) USE_NL_MATERIALIZATION(B)*/* from 
+t4_nested_loop_join A 
+where exists(select 1 from t1_nested_loop_join B where A.c1 != B.c1);
+
+--echo #########################
+--echo ###  inner NLJ 
+--echo #########################
+explain select /*+leading(A B) use_nl(B) opt_param('NLJ_BATCHING_ENABLED','false')*/* from 
+t1_nested_loop_join A left join t2_nested_loop_join B on A.c1 = B.c2
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--echo #########################
+--echo ###  inner NLJ with batch
+--echo #########################
+explain select /*+leading(A B) use_nl(B) opt_param('NLJ_BATCHING_ENABLED','true')*/* from 
+t1_nested_loop_join A left join t2_nested_loop_join B on A.c1 = B.c2
+where ifnull(A.c2,1) != ifnull(B.c2,1);
+
+--source cost_model_test_end.inc

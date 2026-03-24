@@ -1,0 +1,59 @@
+# owner: binifei.bnf 
+# owner group: major freeze
+# Finish one major freeze in a cluster with two zone_list.
+# Then add another zone into this cluster, and launch one new major freeze.
+# We need to ensure that this round major freeze should complete.
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, node_cpu_count=64, node_cpu_reserved=2);
+ob1.z3.obs0.set status=disable;
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+# Note: there may be unfinished major_merge, which are launched according to major_freeze_duty_time.
+# Therefore, we need to disable daily_merge and wait the launched major_merge to finish here.
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+ob1.check_until_timeout select frozen_scn=last_scn from CDB_OB_MAJOR_COMPACTION where tenant_id = 1, 1, 600;
+
+let $tenant_num = deploy_get_value(ob1.select select count(*) as cnt from __all_tenant where locality not like "%z3%" and tenant_name not like "META\$%", cnt, 1);
+let $resource_pool_num = deploy_get_value(ob1.select select count(*) as cnt from __all_resource_pool where zone_list not like "%z3%", cnt, 1);
+
+ob1.mysql alter system major freeze;
+let $frozen_scn = deploy_get_value(ob1.select select max(frozen_scn) as value from __all_freeze_info, value, 1);
+ob1.check_until_timeout select frozen_scn = last_scn from CDB_OB_MAJOR_COMPACTION where tenant_id = 1 and frozen_scn = $frozen_scn, 1, 600;
+
+# add zone, then modify zone_list of resource_pool and locality of tenant
+ob1.z3.add;
+ob1.z3.start_zone;
+ob1.z3.obs0.set status=enable;
+ob1.z3.obs0.start;
+ob1.z3.obs0.add;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time != 0, 3, 100;
+--disable_query_log
+let $__j__ = $resource_pool_num;
+while ($__j__ > 0)
+{
+    let $resource_pool_name = deploy_get_value(ob1.select select name from __all_resource_pool where zone_list not like "%z3%", name, $__j__);
+    eval alter resource pool $resource_pool_name zone_list = ('z1', 'z2', 'z3');
+    dec $__j__;
+}
+ob1.check_until_timeout select count(*) from __all_resource_pool where zone_list not like "%z3%", 0, 600;
+let $__i__ = $tenant_num;
+while ($__i__ > 0)
+{
+    let $tenant_name = deploy_get_value(ob1.select select tenant_name from __all_tenant where locality not like "%z3%" and tenant_name not like "META\$%", tenant_name, $__i__);
+    eval alter tenant $tenant_name locality = 'F@z1,F@z2,F@z3';
+    dec $__i__;
+}
+ob1.check_until_timeout select count(*) from __all_tenant where locality not like "%z3%", 0, 600;
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 600;
+--enable_query_log
+
+ob1.mysql alter system major freeze;
+let $frozen_scn = deploy_get_value(ob1.select select max(frozen_scn) as value from __all_freeze_info, value, 1);
+ob1.check_until_timeout select frozen_scn = last_scn from CDB_OB_MAJOR_COMPACTION where tenant_id = 1 and frozen_scn = $frozen_scn, 1, 600;

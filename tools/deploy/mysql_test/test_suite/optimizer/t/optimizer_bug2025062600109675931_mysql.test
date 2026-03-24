@@ -1,0 +1,75 @@
+#owner: dingjincheng.djc
+#owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop table if exists t1,t11,t12;
+drop table if exists t2;
+drop table if exists dup1;
+--enable_warnings
+
+--disable_query_log
+connect (sys,$OBMYSQL_MS0,root,"",oceanbase,$OBMYSQL_PORT);
+connection sys;
+let $saved_primary_zone=`select primary_zone from oceanbase.__all_tenant where tenant_name = 'sys'`;
+alter tenant sys set primary_zone = 'RANDOM';
+sleep 5;
+
+connection default;
+--enable_query_log
+
+create table t1 (c1 int, c2 int, c3 int) ;
+sleep 10;
+create table t2 (c1 int, c2 int, c3 int);
+create table dup1 (c1 int, c2 int , c3 int);
+
+connection sys;
+sleep 5;
+
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $database_id = query_get_value(select database_id from __all_virtual_database where database_name = 'TEST' and tenant_id = $tenant_id, database_id, 1);
+
+## get table id
+let $t1_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't1' and tenant_id = $tenant_id and database_id = $database_id, table_id, 1);
+let $t2_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't2' and tenant_id = $tenant_id and database_id = $database_id, table_id, 1);
+
+## get ls id
+let $t1_ls_id = query_get_value(select LS_ID from __all_virtual_tablet_to_ls  where table_id = $t1_table_id and tenant_id = $tenant_id, LS_ID, 1);
+let $t2_ls_id = query_get_value(select LS_ID from __all_virtual_tablet_to_ls  where table_id = $t2_table_id and tenant_id = $tenant_id, LS_ID, 1);
+
+##########################################
+## get the ip:port of dup table follower 
+let $zone1_ip = query_get_value(select svr_ip from __all_server where zone = 'zone1', svr_ip, 1);
+let $zone1_port = query_get_value(select svr_port from __all_server where zone = 'zone1', svr_port, 1);
+
+let $zone2_ip = query_get_value(select svr_ip from __all_server where zone = 'zone1', svr_ip, 1);
+let $zone2_port = query_get_value(select svr_port from __all_server where zone = 'zone1', svr_port, 1);
+
+--disable_query_log
+eval alter system switch replica leader ls=$t1_ls_id server='$zone1_ip:$zone1_port' tenant='sys';
+eval alter system switch replica leader ls=$t2_ls_id server='$zone2_ip:$zone2_port' tenant='sys';
+--enable_query_log
+
+connection default;
+sleep 15;
+
+explain select /*+ ordered */ * from t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1;
+select /*+ ordered */ * from t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1;
+select /*+ ordered */ * from t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1;
+
+select is_hit_plan from oceanbase.gv$ob_sql_audit where trace_id = last_trace_id() and length(query_sql) > 0;
+
+explain select /*+ no_rewrite leading(v2) */ * from (select /*+ ordered */ * from (select /*+ no_merge*/ t2.* from t2, dup1 where t2.c1 = dup1.c1) t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1) v1,     (select /*+ orderd no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v2 where v1.c1 = v2.t1c1;
+select /*+ no_rewrite leading(v2) */ * from (select /*+ ordered */ * from (select /*+ no_merge*/ t2.* from t2, dup1 where t2.c1 = dup1.c1) t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1) v1,     (select /*+ orderd no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v2 where v1.c1 = v2.t1c1;
+select /*+ no_rewrite leading(v2) */ * from (select /*+ ordered */ * from (select /*+ no_merge*/ t2.* from t2, dup1 where t2.c1 = dup1.c1) t2, (select /*+ no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v where t2.c1 = v.t1c1) v1,     (select /*+ orderd no_merge */ t1.c1 as t1c1, dup1.c1 as dc1 from t1, dup1 where t1.c1 = dup1.c1) v2 where v1.c1 = v2.t1c1;
+
+select is_hit_plan from oceanbase.gv$ob_sql_audit where trace_id = last_trace_id() and length(query_sql) > 0;
+
+drop table if exists t1,t11,t12;
+drop table if exists t2;
+drop table if exists dup1;
+
+--disable_query_log
+connection sys;
+eval alter tenant sys set primary_zone = "$saved_primary_zone";
+--enable_query_log

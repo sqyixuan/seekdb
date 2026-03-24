@@ -1,0 +1,69 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LOG_MINER_ANALYZER_H_
+#define OCEANBASE_LOG_MINER_ANALYZER_H_
+
+#include "ob_log_miner_error_handler.h"
+#include "ob_queue_thread.h"
+
+namespace oceanbase
+{
+namespace oblogminer
+{
+
+class ILogMinerBRProducer;
+class ILogMinerBRFilter;
+class ILogMinerBRConverter;
+class ILogMinerAnalysisWriter;
+class ILogMinerResourceCollector;
+class ILogMinerDataManager;
+class ILogMinerFileManager;
+class AnalyzerArgs;
+
+class ObLogMinerAnalyzer: public ILogMinerErrorHandler, lib::ThreadPool {
+public:
+  ObLogMinerAnalyzer();
+  virtual ~ObLogMinerAnalyzer();
+  int init(const AnalyzerArgs &args, ILogMinerFileManager *file_mgr);
+  int start();
+  void stop();
+  void wait();
+  void destroy();
+public:
+  void handle_error(int err_code, const char *fmt, ...);
+
+public:
+  virtual void run1();
+
+private:
+  bool is_inited_;
+  bool is_stopped_;
+  int64_t start_time_;
+  common::ObCond stop_cond_;
+  ILogMinerBRProducer         *producer_;
+  ILogMinerBRFilter           *data_filter_;
+  ILogMinerBRConverter        *data_converter_;
+  ILogMinerAnalysisWriter     *writer_;
+  ILogMinerDataManager        *data_manager_;
+  ILogMinerResourceCollector  *resource_collector_;
+  ILogMinerFileManager        *file_manager_;
+};
+
+}
+}
+
+#endif

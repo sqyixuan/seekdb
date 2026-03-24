@@ -1,0 +1,71 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',_hidden_sys_tenant_memory='1G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G',diag_syslog_per_error_limit=100000";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+sleep 3;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+eval CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%';
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.dba_ob_tenants where tenant_name = 'mysql', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.cdb_ob_ls_locations where tenant_id = $mysql_tenant_id and ls_id =  1 and role like '%LEADER%' limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+ob_connect(conn_mysql, $mysql_leader_obs, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+--echo # create user table 
+connection conn_mysql;
+create table if not exists t_will_lock(c1 int, c2 int) partition by hash(c1) partitions 2;
+create table if not exists t_will_not_exist(id int) partition by hash(id) partitions 2;
+
+--echo # debug_sync
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name = 'debug_sync_timeout' and value != '1000s', 0, 3;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_transfer_lock execute 10000';
+
+let $lock_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $mysql_tenant_id and table_name = 't_will_lock', table_id, 1);
+let $not_exist_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $mysql_tenant_id and table_name = 't_will_not_exist', table_id, 1);
+
+--echo # initiate transfer and verify if the task is created
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where tenant_id = $mysql_tenant_id and part_list like '%$lock_table_id%' and part_list like '%$not_exist_table_id%', 1, 20;
+
+--echo # delete the table and create a not exist tablet  
+connection conn_mysql;
+drop table t_will_not_exist;
+ob1.check_until_timeout select count(*) from __all_virtual_table where tenant_id = $mysql_tenant_id and table_name like 't_will_not_exist', 0, 20;
+
+--echo # apply a table lock to the corresponding table to enforce restrictions
+ob1.mysql set ob_global_debug_sync = 'TABLE_REDEFINITION_REPLICA_BUILD wait_for signal_ddl execute 10000';
+sleep 3;
+connection conn_mysql;
+send alter table t_will_lock modify c2 char(10);
+ob1.check_until_timeout select count (*) != 0 from __all_virtual_ddl_task_status where tenant_id = $mysql_tenant_id, 1, 5;
+
+--echo # change the retry interval for failures to 1 second to allow immediate retries and reduce the case's time consumption.
+ob1.mysql alter system set _transfer_task_retry_interval = '1s' tenant mysql;
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name = '_transfer_task_retry_interval' and tenant_id = $mysql_tenant_id and value != '1s', 0, 3;
+
+--echo # turn off the debug_sync for transfer
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_transfer_lock';
+
+--echo # verify if the table status is failed and add a corresponding comment
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where tenant_id = $mysql_tenant_id and status = 'FAILED' and lock_conflict_part_list like '%$lock_table_id%' and not_exist_part_list like '%$not_exist_table_id%' and comment like '%Unable to process task due to partitions being locked or non-existent%', 1, 300;
+
+--echo # turn off debug_sync
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_ddl';
+ob1.mysql alter system set debug_sync_timeout = 0;
+
+--echo # wait balance job finish
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where tenant_id = $mysql_tenant_id, 0, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where tenant_id = $mysql_tenant_id, 0, 30;
+
+--echo # change _transfer_task_retry_interval back to its default value.
+ob1.mysql alter system set _transfer_task_retry_interval = '1m' tenant mysql;
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name = '_transfer_task_retry_interval' and tenant_id = $mysql_tenant_id and value != '1m', 0, 3;

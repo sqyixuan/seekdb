@@ -1,0 +1,79 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: zhaoziqian.zzq 
+# owner group: SQL2
+# description: 本case是为了测试建索引
+## 在__all_table_history的data_table_id列上建索引idx_data_table_id
+# tags: optimizer, ddl
+
+connection default;
+let $tenant_id = query_get_value(select effective_tenant_id() as tenant_id, tenant_id, 1);
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set enable_sys_table_ddl=false;
+desc oceanbase.__all_table_history;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table oceanbase.__all_table_history;
+
+##索引表
+select table_name, table_id, data_table_id, index_status, index_type from oceanbase.__all_virtual_table where table_id=101001;
+select table_name, table_id, data_table_id, index_status, index_type from oceanbase.__all_virtual_table where data_table_id=114;
+##主表__all_table_history
+select table_name, table_id, data_table_id, index_status, index_type from oceanbase.__all_virtual_table where table_id=114;
+
+explain basic SELECT table_id, schema_version, table_type FROM (SELECT TABLE_ID, SCHEMA_VERSION, TABLE_TYPE, IS_DELETED, ROW_NUMBER() OVER (PARTITION BY TABLE_ID ORDER BY SCHEMA_VERSION DESC) AS RN FROM oceanbase.__all_table_history WHERE TENANT_ID = 1 AND DATA_TABLE_ID = 1 AND SCHEMA_VERSION <= 100) V WHERE RN = 1 and IS_DELETED = 0 ORDER BY TABLE_ID;
+
+## 租户级系统表索引
+eval alter system change tenant tenant_id = $tenant_id;
+explain basic SELECT table_id, schema_version, table_type FROM (SELECT TABLE_ID, SCHEMA_VERSION, TABLE_TYPE, IS_DELETED, ROW_NUMBER() OVER (PARTITION BY TABLE_ID ORDER BY SCHEMA_VERSION DESC) AS RN FROM oceanbase.__all_table_history WHERE TENANT_ID = 0 AND DATA_TABLE_ID = 1 AND SCHEMA_VERSION <= 100) V WHERE RN = 1 and IS_DELETED = 0 ORDER BY TABLE_ID;
+alter system change tenant tenant_id = 1;
+
+connection default;
+--disable_warnings
+drop database if exists jx_db;
+create database jx_db;
+use jx_db;
+--enable_warnings
+
+create table jx_t1(c1 int, c2 int, c3 int, index(c1));
+connection obsys;
+let $table_id = query_get_value(select * from oceanbase.__all_virtual_table where table_name = 'jx_t1' order by schema_version desc limit 1, table_id, 1);
+let $invalid_table_id = query_get_value(select ($table_id - 1) as invalid_table_id, invalid_table_id, 1);
+let $index_table_id = query_get_value(select ($table_id + 10) as index_table_id, index_table_id, 1);
+
+alter system set enable_sys_table_ddl=false;
+
+connection default;
+--disable_query_log
+--error 4179
+eval create index idx_1 on jx_t1(c2) data_table_id=$table_id;
+--error 4179
+eval create index idx_1 on jx_t1(c2) index_table_id=$index_table_id;
+--error 4179
+eval create index idx_1 on jx_t1(c2) data_table_id=$table_id index_table_id=$index_table_id;
+--enable_query_log
+
+connection obsys;
+alter system set enable_sys_table_ddl=true;
+--sleep 2
+
+connection default;
+--disable_query_log
+--error ER_WRONG_ARGUMENTS
+eval create index idx_1 on jx_t1(c2) data_table_id=$invalid_table_id;
+eval create index idx_1 on jx_t1(c2) data_table_id=$table_id;
+connection obsys;
+--replace_regex /__idx_[0-9]*/__idx_jx/g
+eval select table_name, index_status, index_type from oceanbase.__all_virtual_table where data_table_id=$table_id;
+connection default;
+eval create index idx_2 on jx_t1(c2) data_table_id=$table_id index_table_id=$index_table_id;
+connection obsys;
+--replace_regex /__idx_[0-9]*/__idx_jx/g
+eval select table_name, index_status, index_type from oceanbase.__all_virtual_table where data_table_id=$table_id;
+--enable_query_log
+
+alter system set enable_sys_table_ddl=true;
+connection default;
+drop database jx_db;

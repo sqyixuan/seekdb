@@ -1,0 +1,497 @@
+##
+# owner      : lisu.zxq
+# owner group: qa
+# description: 覆盖4.3.1.0-4.3.5.0升级
+##
+obdocker=OBI(cluster=2:2:2,proxy_num=2,ct_num=1,locality=SZ:SZ:SZ,asvr_num=1,version=4_3_2_X);
+obdocker.proxy0.set extra_config=enable_obproxy_rpc_service='false' -p 9292;
+obdocker.proxy1.set extra_config=enable_obproxy_rpc_service='false' -p 9293;
+obdocker.z1.obs0.sh cp bin/observer.master bin/observer && rm -rf admin && cp -r admin_master admin;
+obdocker.z1.obs0.sh rm -rf 4_3_2_X/admin/* && wget -P 4_3_2_X/admin/ http://11.166.86.153:8877/admin_pkg/admin.4_3_2_7u.tar.gz && tar -zxf 4_3_2_X/admin/admin.4_3_2_7u.tar.gz -C 4_3_2_X/admin/;
+obdocker.z1.obs0.sh rm -rf 4_3_2_X/etc/*;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/upgrade_checker.py.4_3_2_release-7u -O 4_3_2_X/etc/upgrade_checker.py;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/upgrade_pre.py.4_3_2_release-7u -O 4_3_2_X/etc/upgrade_pre.py;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/upgrade_post.py.4_3_2_release-7u -O 4_3_2_X/etc/upgrade_post.py;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/upgrade_post_checker.py.4_3_2_release-7u -O 4_3_2_X/etc/upgrade_post_checker.py;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/upgrade_health_checker.py.4_3_2_release-7u -O 4_3_2_X/etc/upgrade_health_checker.py;
+obdocker.z1.obs0.sh chmod +x 4_3_2_X/etc/*;
+obdocker.z1.obs0.sh rm -rf 4_3_2_X/bin/obproxy;
+obdocker.z1.obs0.sh wget http://11.166.86.153:8877/obproxy.support_4.0 -O 4_3_2_X/bin/obproxy;
+obdocker.z1.obs0.sh chmod +x 4_3_2_X/bin/*;
+let $starttime=deploy_get_value(obdocker.sh_p date +"%Y-%m-%d %H:%M:%S");
+obdocker.reboot;
+let $proxyip = deploy_get_value(obdocker.proxy0.ip);
+let $proxyport = deploy_get_value(obdocker.proxy0.port);
+let $z1_obs0ip = deploy_get_value(obdocker.z1.obs0.ip);
+let $z1_obs0port = deploy_get_value(obdocker.z1.obs0.port);
+let $z1_obs1ip = deploy_get_value(obdocker.z1.obs1.ip);
+let $z1_obs1port = deploy_get_value(obdocker.z1.obs1.port);
+let $z2_obs0ip = deploy_get_value(obdocker.z2.obs0.ip);
+let $z2_obs0port = deploy_get_value(obdocker.z2.obs0.port);
+let $z2_obs1ip = deploy_get_value(obdocker.z2.obs1.ip);
+let $z2_obs1port = deploy_get_value(obdocker.z2.obs1.port);
+let $z3_obs0ip = deploy_get_value(obdocker.z3.obs0.ip);
+let $z3_obs0port = deploy_get_value(obdocker.z3.obs0.port);
+let $z3_obs1ip = deploy_get_value(obdocker.z3.obs1.ip);
+let $z3_obs1port = deploy_get_value(obdocker.z3.obs1.port);
+let $unit1name = unit_mysql;
+let $pool1name = pool_mysql;
+let $tent1name = tent_mysql;
+let $tent1pw = tent1pw;
+let $unit2name = unit_oracle;
+let $pool2name = pool_oracle;
+let $tent2name = tent_oracle;
+let $unit3name = unit_svr;
+let $pool3name = pool_svr;
+let $tent3name = tent_svr;
+let $tent1pw = tent1pw;
+let $tent2pw = tent2pw;
+let $unit4name = unit_not_minor;
+let $pool4name = pool_not_minor;
+let $tent4name = tent_not_minor;
+let $tent4pw = tent4pw;
+let $tent3pw = tent3pw;
+let $server_permanent_offline_time=deploy_get_value(obdocker.select select distinct value from GV\$OB_PARAMETERS where name="server_permanent_offline_time",value,1);
+let $enable_rebalance=deploy_get_value(obdocker.select select distinct value from GV\$OB_PARAMETERS where name="enable_rebalance",value,1);
+let $enable_rereplication=deploy_get_value(obdocker.select select distinct value from GV\$OB_PARAMETERS where name="enable_rereplication",value,1);
+let $source_version = 4.3.2.1;
+let $dest_version = 4.3.5.0;
+ob_connect (proxy_conn,$proxyip,root@sys,,oceanbase,$proxyport);
+source t/compat/include_for_obtest/create_tent_obdocker.inc;
+
+obdocker.mysql ALTER SYSTEM SET ls_gc_delay_time='0s';
+obdocker.mysql ALTER SYSTEM SET ls_gc_delay_time='0s' TENANT =all_meta;
+obdocker.mysql ALTER SYSTEM SET ls_gc_delay_time='0s' TENANT =all_user;
+
+#创建数据库连接
+ob_connect (tentsql_conn,$proxyip,root@$tent1name,$tent1pw,,$proxyport);
+ob_connect (tentora_conn,$proxyip,sys@$tent2name,$tent2pw,,$proxyport);
+ob_connect (tentsvr_notminor,$proxyip,sys@$tent4name,$tent4pw,,$proxyport);
+obdocker.mysql alter tenant $tent1name set variables autocommit='on';
+obdocker.mysql alter tenant $tent2name set variables autocommit='on';
+obdocker.mysql alter tenant $tent4name set variables autocommit='on';
+#
+#1.升级前集群检查
+source t/compat/include_for_obtest/data_insert_obdocker.inc;
+source t/compat/include_for_obtest/data_insert_obdocker_tablegroup.inc;
+#1.2、转储合并
+#转储
+source t/compat/include_for_obtest/minor_obdocker.inc;
+sleep 3;
+#合并
+ALTER SYSTEM MAJOR FREEZE TENANT=ALL;
+obdocker.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where `GLOBAL_BROADCAST_SCN`!=`LAST_SCN` or STATUS!="IDLE",0,600;
+#
+#1.3、重启
+#集群重启
+source t/compat/include_for_obtest/cluster_restart_obdocker.inc;
+#1.4、迁移复制
+source t/compat/include_for_obtest/trans_obdocker.inc;
+#
+#1.5、扩缩容
+connection proxy_conn;
+source t/compat/include_for_obtest/unitreset_obdocker.inc;
+
+#1.6仲裁升降级
+source t/compat/include_for_obtest/abri_obdocker.inc;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+
+#2.升级
+#2.1仲裁节点升级
+obdocker.asvr0.force_stop;
+obdocker.asvr0.upgrade;
+obdocker.asvr0.nstart;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+#2.1.1仲裁重启
+obdocker.asvr0.force_stop;
+sleep 3;
+obdocker.asvr0.nstart;
+#2.1.2仲裁升降级
+source t/compat/include_for_obtest/abri_obdocker.inc;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+
+let $tent1_z1_ip= deploy_get_value(obdocker.z1.obs0.ip);
+let $tent1_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$mysql_tenant_id"),SQL_PORT,1);
+connect (tentsql_z1conn,$tent1_z1_ip,root@$tent1name,$tent1pw,,$tent1_z1_port);
+
+
+let $tent2_z1_ip=deploy_get_value(obdocker.z1.obs0.ip);
+let $tent2_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$oracle_tenant_id"),SQL_PORT,1);
+ob_connect (tentora_z1conn,$tent2_z1_ip,sys@$tent2name,$tent2pw,,$tent2_z1_port);
+
+#2.1.3、从z1写数据
+#mysql租户写入数据
+connection tentsql_z1conn;
+use testsql;
+insert into t1 values(50, 50),(60, 60) ;
+insert into t_part values(50, 50);
+insert into t_part values(60, 60);
+update t1 set c2=1010 where c1=10;
+update t_part set c2=1010 where c1=10;
+delete from t1 where c1=16;
+delete from t_part where c1=16;
+#
+##oracle租户插入数据
+connection tentora_z1conn;
+insert into t2 values (30,6,30),(31, 5, 31), (32, 4, 32);
+update t2 set c2=1515 where c1=15;
+delete from t2 where c1=18;
+############
+#仲裁租户插入数据
+connection tentsql_z1conn;
+use testsvr;
+insert into t3 (c1,c2,c3,c4) values(108,"a108","b108","c108"),(109,"a109","b109","c1009");
+update t3 set c2="c101" where c1=101;
+delete from t3 where c1=105;
+
+#2.1.4切换RS
+source t/compat/include_for_obtest/trans_rs_obdocker.inc;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+
+#执行升级前脚本
+obdocker.upgrade_check_before;
+obdocker.mysql alter system begin upgrade;
+obdocker.upgrade_commond_for_server pre;
+obdocker.upgrade_health_checker;
+#2.2.z2升级
+obdocker.mysql alter system stop zone "z2";
+obdocker.z2.force_stop;
+obdocker.z2.upgrade;
+obdocker.z2.start;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.upgrade_health_checker z2;
+obdocker.mysql alter system start zone "z2";
+obdocker.check_until_timeout select count(*) from __all_server where zone="z2" and build_version not like "$dest_version%",0,120;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+sleep 10;
+#2.2.1.混部测试写
+#从z1写数据
+
+let $tent1_z1_ip= deploy_get_value(obdocker.z1.obs0.ip);
+let $tent1_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$mysql_tenant_id"),SQL_PORT,1);
+connect (tentsql_z1conn,$tent1_z1_ip,root@$tent1name,$tent1pw,,$tent1_z1_port);
+
+#
+let $tent1_z2_ip=deploy_get_value(obdocker.z2.obs0.ip);
+let $tent1_z2_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z2" and TENANT_ID="$mysql_tenant_id"),SQL_PORT,1);
+connect (tentsql_z2conn,$tent1_z2_ip,root@$tent1name,$tent1pw,,$tent1_z2_port);
+
+let $tent2_z1_ip=deploy_get_value(obdocker.z1.obs0.ip);
+let $tent2_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$oracle_tenant_id"),SQL_PORT,1);
+ob_connect (tentora_z1conn,$tent2_z1_ip,sys@$tent2name,$tent2pw,,$tent2_z1_port);
+
+let $tent2_z2_ip=deploy_get_value(obdocker.z2.obs0.ip);
+let $tent2_z2_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z2" and TENANT_ID="$oracle_tenant_id"),SQL_PORT,1);
+ob_connect (tentora_z2conn,$tent2_z2_ip,sys@$tent2name,$tent2pw,,$tent2_z2_port);
+#
+#mysql租户写入数据
+connection tentsql_z1conn;
+use testsql;
+insert into t1 values(11, 11),(12, 12) ;
+insert into t_part values(11, 11);
+insert into t_part values(12, 12);
+update t1 set c2=77 where c1=7;
+update t_part set c2=77 where c1=7;
+delete from t1 where c1=6;
+delete from t_part where c1=6;
+
+#oracle租户插入数据
+connection tentora_z1conn;
+insert into t2 values (10,6,10),(11, 5, 11), (12, 4, 12);
+update t2 set c2=77 where c1=7;
+
+#仲裁租户插入数据
+connection tentsql_z1conn;
+use testsvr;
+insert into t3 (c1,c2,c3,c4) values(100,"a100","b100","c100"),(100,"a101","b101","c1001");
+update t3 set c2="c10" where c1=10;
+delete from t3 where c1=11;
+
+#从z2写入数据
+#sql租户写入数据
+connection tentsql_z2conn;
+use testsql;
+insert into t1 values(13, 13),(14, 14) ;
+insert into t_part values(13, 13);
+insert into t_part values(14, 14);
+update t1 set c2=111 where c1=11;
+update t_part set c2=111 where c1=11;
+delete from t1 where c1=12;
+delete from t_part where c1=12;
+
+#oracle租户插入数据
+connection tentora_z2conn;
+insert into t2 values (13,6,13),(15, 5, 13), (14, 4, 14);
+update t2 set c2=99 where c1=9;
+delete from t2 where c1=1;
+
+#仲裁租户插入数据
+connection tentsql_z2conn;
+use testsvr;
+insert into t3 (c1,c2,c3,c4) values(102,"a102","b102","c102"),(103,"a103","b103","c1003");
+update t3 set c2="c19" where c1=19;
+delete from t3 where c1=29;
+source t/compat/include_for_obtest/specical_sql_mix_obdocker.inc;
+
+#
+#2.2.2重启
+#集群重启
+source t/compat/include_for_obtest/cluster_restart_obdocker.inc;
+#2.2.3转储
+source t/compat/include_for_obtest/minor_obdocker.inc;
+##合并
+#ALTER SYSTEM MAJOR FREEZE TENANT=ALL;
+#obdocker.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where `GLOBAL_BROADCAST_SCN`!=`LAST_SCN` or STATUS!="IDLE",0,600;
+#sleep 10;
+#ALTER SYSTEM MAJOR FREEZE TENANT =all;
+
+
+#2.2.4、迁移复制
+source t/compat/include_for_obtest/trans_obdocker.inc;
+#2.2.5、扩缩容
+connection proxy_conn;
+source t/compat/include_for_obtest/unitreset_obdocker.inc;
+
+##2.2.6仲裁升降级
+source t/compat/include_for_obtest/abri_obdocker.inc;
+#2.2.7切换RS
+source t/compat/include_for_obtest/trans_rs_obdocker.inc;
+#2.3、z3升级
+obdocker.mysql alter system stop zone z3;
+obdocker.z3.force_stop;
+obdocker.z3.upgrade;
+obdocker.z3.start;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.upgrade_health_checker z3;
+obdocker.mysql alter system start zone z3;
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3" and build_version not like "$dest_version%",0,120;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+sleep 10;
+
+#检测其他配置项是否影响dataversion
+connection proxy_conn;
+ALTER SYSTEM SET query_response_time_stats=true;
+obdocker.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="true" and tenant_id=1,0,5;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+ALTER SYSTEM SET query_response_time_stats=false;
+obdocker.check_until_timeout SELECT count(*) FROM oceanbase.GV\$OB_PARAMETERS WHERE NAME LIKE "query_response_time_stats" and value!="false"and tenant_id=1,0,5;
+##增删节点检测dataversion是否正常
+connection proxy_conn;
+eval ALTER SYSTEM delete SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",1,120;
+obdocker.z3.obs0.sh ps -ef |grep observer |grep z3|grep obs0 |grep -v grep |awk '{print \$2}'|xargs kill -9  && echo "done" || echo "fail";
+obdocker.z3.obs0.sh rm -rf /data/1/lisu/obdocker.z3.obs0*/* && rm -rf /data/0/lisu/obdocker.z3.obs0.xiaoqizhang.zxq/*;
+obdocker.z3.obs0.reboot;
+eval ALTER SYSTEM add SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",2,120;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+
+obdocker.z1.obs0.sh rm -rf  4_3_2_X.bak && mv   4_3_2_X  4_3_2_X.bak && mkdir -p  4_3_2_X/lib;
+obdocker.z1.obs0.sh cp -r admin/  4_3_2_X/admin/;
+obdocker.z1.obs0.sh cp -r etc/  4_3_2_X/etc;
+obdocker.z1.obs0.sh cp -r bin/  4_3_2_X/bin;
+connection proxy_conn;
+eval ALTER SYSTEM delete SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",1,120;
+obdocker.z3.obs0.sh ps -ef |grep observer |grep z3|grep obs0 |grep -v grep |awk '{print \$2}'|xargs kill -9  && echo "done" || echo "fail";
+obdocker.z3.obs0.sh rm -rf /data/1/lisu/obdocker.z3.obs0*/* && rm -rf /data/0/lisu/obdocker.z3.obs0.xiaoqizhang.zxq/*;
+obdocker.z3.obs0.reboot;
+eval ALTER SYSTEM add SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",2,120;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+obdocker.z1.obs0.sh rm -rf  4_3_2_X && mv   4_3_2_X.bak  4_3_2_X;
+
+##
+#2.3.1、混部测试写
+let $tent1_z1_ip=deploy_get_value(obdocker.z1.obs1.ip);
+let $tent1_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$mysql_tenant_id"),SQL_PORT,1);
+connect (tentsql_z1conn,$tent1_z1_ip,root@$tent1name,$tent1pw,oceanbase,$tent1_z1_port);
+
+
+
+let $tent2_z1_ip=deploy_get_value(obdocker.z1.obs0.ip);
+let $tent2_z1_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z1" and TENANT_ID="$oracle_tenant_id"),SQL_PORT,1);
+ob_connect (tentora_z1conn,$tent2_z1_ip,sys@$tent2name,$tent2pw,,$tent2_z1_port);
+
+let $tent2_z3_ip=deploy_get_value(obdocker.z3.obs0.ip);
+let $tent2_z3_port=deploy_get_value(obdocker.select select SQL_PORT from DBA_OB_SERVERS where SVR_PORT=(select SVR_PORT from  DBA_OB_UNITS where ZONE="z3" and TENANT_ID="$oracle_tenant_id"),SQL_PORT,1);
+ob_connect (tentora_z3conn,$tent2_z3_ip,sys@$tent2name,$tent2pw,,$tent2_z3_port);
+
+
+###从z1写数据
+##mysql租户写入数据
+connection tentsql_z1conn;
+use testsql;
+insert into t1 values(15, 15),(16, 16) ;
+insert into t_part values(15, 15);
+insert into t_part values(16, 16);
+update t1 set c2=44 where c1=4;
+update t_part set c2=44 where c1=4;
+delete from t1 where c1=12;
+delete from t_part where c1=12;
+
+#oracle租户插入数据
+connection tentora_z1conn;
+insert into t2 values (16,6,16),(17, 5, 17), (18, 4, 18);
+update t2 set c2=1010 where c1=10;
+delete from t2 where c1=14;
+
+#仲裁租户插入数据
+connection tentsql_z1conn;
+use testsvr;
+insert into t3 (c1,c2,c3,c4) values(104,"a104","b104","c104"),(105,"a105","b105","c1005");
+update t3 set c2="c20" where c1=20;
+delete from t3 where c1=32;
+
+#从z3写入数据
+#sql租户写入数据
+connection tentsql_z1conn;
+use testsql;
+insert into t1 values(17, 17),(18, 18) ;
+insert into t_part values(17, 17);
+insert into t_part values(18, 18);
+update t1 set c2=131 where c1=3;
+update t_part set c2=131 where c1=3;
+delete from t1 where c1=8;
+delete from t_part where c1=8;
+
+#oracle租户插入数据
+connection tentora_z3conn;
+insert into t2 values (19,6,19),(20, 5, 20), (21, 4, 21);
+update t2 set c2=99 where c1=9;
+delete from t2 where c1=18;
+
+#2.3.2转储
+#转储
+source t/compat/include_for_obtest/minor_obdocker.inc;
+
+##2.3.3重启
+#集群重启
+source t/compat/include_for_obtest/cluster_restart_obdocker.inc;
+
+##2.3.4、迁移复制
+source t/compat/include_for_obtest/trans_obdocker.inc;
+#2.3.5、扩缩容
+connection proxy_conn;
+source t/compat/include_for_obtest/unitreset_obdocker.inc;
+
+##2.3.6仲裁升降级
+source t/compat/include_for_obtest/abri_obdocker.inc;
+
+##2.3.7切换RS
+source t/compat/include_for_obtest/trans_rs_obdocker.inc;
+
+###破坏etc文件不影响dataversion
+#obdocker.z3.obs0.sh chmod 000 /data/1/lisu/obdocker.z3.obs0/etc/observer.data_version*;
+#obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+#
+#2.4z1升级
+obdocker.mysql alter system stop zone 'z1';
+obdocker.z1.force_stop;
+obdocker.z1.upgrade;
+obdocker.z1.start;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.upgrade_health_checker z1;
+obdocker.mysql alter system start zone 'z1';
+obdocker.mysql alter tenant sys set primary_zone = "z1";
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+sleep 10;
+#破坏etc文件不影响dataversion
+obdocker.z3.obs0.sh rm -rf /data/1/lisu/obdocker.z3.obs0/etc/observer.data_version*;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$source_version",0,1;
+#3、升级后检查
+#3.1执行post脚本,还原配置项
+obdocker.upgrade_health_checker;
+obdocker.upgrade_commond_for_server post;
+let $cnt1=1;
+source t/compat/include_for_obtest/repost_obdocker.inc;
+obdocker.mysql alter system set server_permanent_offline_time = "$server_permanent_offline_time";
+obdocker.mysql alter system set enable_rebalance = "$enable_rebalance";
+obdocker.mysql alter system set enable_rereplication = "$enable_rereplication";
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,1;
+#source t/compat/include_for_obtest/master_special_obdocker.inc;
+connection proxy_conn;
+source ob_special_config/master/sys/config.sql;
+connection tentsql_conn;
+source ob_special_config/master/mysql/config.sql;
+connection tentora_conn;
+source ob_special_config/master/oracle/config.sql;
+#增删节点检测dataversion是否正常
+obdocker.z1.obs0.sh rm -rf  4_3_2_X.bak && mv   4_3_2_X  4_3_2_X.bak && mkdir -p  4_3_2_X/lib;
+obdocker.z1.obs0.sh cp -r admin/  4_3_2_X/admin/;
+obdocker.z1.obs0.sh cp -r etc/  4_3_2_X/etc;
+obdocker.z1.obs0.sh cp -r bin/  4_3_2_X/bin;
+connection proxy_conn;
+eval ALTER SYSTEM delete SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,1;
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",1,120;
+obdocker.z3.obs0.sh ps -ef |grep observer |grep z3|grep obs0 |grep -v grep |awk '{print \$2}'|xargs kill -9  && echo "done" || echo "fail";
+obdocker.z3.obs0.sh rm -rf /data/1/lisu/obdocker.z3.obs0*/* && rm -rf /data/0/lisu/obdocker.z3.obs0.xiaoqizhang.zxq/*;
+obdocker.z3.obs0.reboot;
+eval ALTER SYSTEM add SERVER '$z3_obs0ip:$z3_obs0port'  ZONE 'z3';
+obdocker.check_until_timeout select count(*) from __all_server where zone="z3",2,120;
+obdocker.check_until_timeout select count(*) from oceanbase.__all_server where (start_service_time is null  or status='INACTIVE'),0,300;
+source t/compat/include_for_obtest/check_schema_sync_for_restart_obdocker.inc;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,1;
+obdocker.z1.obs0.sh rm -rf  4_3_2_X && mv   4_3_2_X.bak  4_3_2_X;
+#破坏etc文件不影响dataversion
+obdocker.z3.obs0.sh rm -rf /data/1/lisu/obdocker.z3.obs0/etc/observer.data_version*;
+obdocker.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where name = 'compatible' and value!="$dest_version",0,1;
+#3.2、验证升级后环境
+#3.2.1、插入数据
+source t/compat/include_for_obtest/afetr_data_insert.inc;
+#不做转储的租户进行日志回放
+connection proxy_conn;
+sleep 30;
+obdocker.check_until_timeout select count(*) from dba_ob_unit_jobs where job_status!="success",0,600;
+obdocker.check_until_timeout select count(*) from GV\$OB_UNITS where STATUS!="NORMAL",0,1500;
+eval ALTER RESOURCE TENANT $tent4name UNIT_NUM = 2;
+sleep 30;
+obdocker.check_until_timeout select count(*) from dba_ob_unit_jobs where job_status!="success",0,600;
+obdocker.check_until_timeout select count(*) from GV\$OB_UNITS where STATUS!="NORMAL",0,1500;
+obdocker.check_until_timeout select unit_count from DBA_OB_RESOURCE_POOLS where name="$pool4name",2,120;
+eval ALTER RESOURCE TENANT $tent4name UNIT_NUM = 1;
+sleep 30;
+obdocker.check_until_timeout select count(*) from dba_ob_unit_jobs where job_status!="success",0,600;
+obdocker.check_until_timeout select count(*) from GV\$OB_UNITS where STATUS!="NORMAL",0,1500;
+obdocker.check_until_timeout select unit_count from DBA_OB_RESOURCE_POOLS where name="$pool4name",1,120;
+
+#3.2.3、重启
+#集群重启
+source t/compat/include_for_obtest/cluster_restart_obdocker.inc;
+#3.2.2、转储合并
+#转储
+connection proxy_conn;
+#eval alter system minor freeze tenant = $tent1name,$tent2name,$tent3name;
+eval alter system minor freeze tenant = all;
+obdocker.check_until_timeout select count(*) from GV\$OB_TABLET_COMPACTION_PROGRESS,0,60;
+#合并
+ALTER SYSTEM MAJOR FREEZE TENANT =all;
+obdocker.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where `GLOBAL_BROADCAST_SCN`!=`LAST_SCN` or STATUS!="IDLE",0,600;
+#3.2.4、迁移复制
+source t/compat/include_for_obtest/trans_obdocker.inc;
+#
+#3.2.5、扩缩容
+connection proxy_conn;
+source t/compat/include_for_obtest/unitreset_obdocker.inc;
+
+#3.2.6、仲裁升降级
+source t/compat/include_for_obtest/abri_obdocker.inc;
+
+#3.2.7、新增租户
+source t/compat/include_for_obtest/create_new_tent.inc;
+#mysql租户新增C副本
+source t/compat/include_for_obtest/repl_c_obdocker.inc;
+source t/compat/include_for_obtest/afetr_data_insert_tablegroup.inc;
+obdocker.sh sh t/compat/obguard_collect/obguard_check.sh upgrade_complete;
+obdocker.sh mv t/compat/obguard_collect/log_error.log t/compat/obguard_collect/log_error.log_4_3_2_release;

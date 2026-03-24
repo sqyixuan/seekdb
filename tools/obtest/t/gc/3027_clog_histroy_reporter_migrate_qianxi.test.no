@@ -1,0 +1,212 @@
+##
+# owner: <QianXi> madoll.tw
+# owner group: ob_clog_history_reprorter
+# description:
+# 测试功能点：大量partiiton发生迁移，__all_clog_history_info_v2表执行partition的下线和上线操作
+# 用例描述: 创建多张表-创建大量partition:
+#           1. 测试online操作的正确性
+#           2. 测试offline操作的正确性
+#           2. 测试结果总数以及字段的正确性
+##
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2,init_unit_num=2);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit = 500;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set enable_rereplication = false;
+# 关闭partiton leader自动迁移
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter resource pool sys_pool unit_num = 2;
+
+sleep 2;
+
+# zone1
+let $z1_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port1=deploy_get_value(ob1.z1.obs0.port);
+let $z1_sql_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_ip2=deploy_get_value(ob1.z1.obs1.ip);
+let $z1_port2=deploy_get_value(ob1.z1.obs1.port);
+
+# zone2
+let $z2_ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port1=deploy_get_value(ob1.z2.obs0.port);
+let $z2_ip2=deploy_get_value(ob1.z2.obs1.ip);
+let $z2_port2=deploy_get_value(ob1.z2.obs1.port);
+
+# zone3
+let $z3_ip1=deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port1=deploy_get_value(ob1.z3.obs0.port);
+let $z3_ip2=deploy_get_value(ob1.z3.obs1.ip);
+let $z3_port2=deploy_get_value(ob1.z3.obs1.port);
+
+connect(conn0,$z1_ip1,root@sys,,oceanbase,$z1_sql_port1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name ='obtest', tenant_id,1);
+let $resource_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id,resource_pool_id,1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_ip, 1);
+let $svr_port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port=$svr_port, inner_port, 1);
+connect(conn_obtest, $tt1ip, root@obtest,,test, $tt1port);
+
+
+## step 1. 变量声明
+# 创建表的个数
+let $TABLE_NUMBER = 1;
+
+# 返回结果
+let $TRUE = true;
+let $FALSE = false;
+
+# 每次查询最多重试10次
+let $retry_count = 10;
+
+# 记录查询结果
+let $offline_record_count = 0;
+let $online_record_count = 0;
+
+# param
+let $partition_idx = 0;
+# TODO
+let $partition_cnt = 100;
+#let $partition_cnt = 10;
+#
+let $PARTITION_CNT= 0;
+let $start_log_id = 0;
+let $UINT64_MAX = 18446744073709551615;
+echo $partition_idx;
+echo partition_count:$partition_cnt;
+echo $start_log_id;
+echo $UINT64_MAX;
+
+
+## step 2. 创建TABLE_NUMBER张表, 并且插入数据
+let $i = 1;
+while ($i <= $TABLE_NUMBER)
+{
+  eval create table t$i(pk int primary key, c1 int, c2 varchar(20)) PARTITION BY HASH(pk) PARTITIONS $partition_cnt;
+  inc $i;
+}
+sleep 5;
+
+# insert data
+let $cnt =1;
+while ($cnt < 50)
+{
+	eval insert into t1 values($cnt, $cnt, 'abc');
+	inc $cnt;
+}
+
+
+## step 3. major freeze
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+
+## step 4. 获取partition迁移源地址和目的地址, 然后迁移
+# 获取table_id
+connection conn0;
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+#echo $table_id;
+let $i = 0;
+while ($i < $partition_cnt)
+{
+	# tenant_name:database:table_id:partition_idx
+	let $src = deploy_get_value(ob1.get_follower obtest:test:t1:$i, 1);
+	let $src_ip = deploy_get_value($src.ip);
+	let $src_port = deploy_get_value($src.port);
+	let $src_zone = deploy_get_value($src.zone);
+
+	let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='$src_zone' and svr_port != $src_port, host, 1);
+	let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+	let $dst_ip = deploy_get_value($dst.ip);
+	let $dst_port = deploy_get_value($dst.port);
+
+	ob1.mysql alter system move replica partition_id = '$i%$PARTITION_CNT@$table_id' source = '$src_ip:$src_port' destination = '$dst_ip:$dst_port';
+
+	inc $i;
+}
+sleep 5;
+
+
+## step 5. 验证offline以及online的有效性
+# 同一个zone内，存在server A和server B, 发生server A ->  server B的迁移
+# 验证offline操作对__all_clog_history_info_v2表修改的正确性
+# 验证online操作对__all_clog_history_info_v2表修改的正确性
+
+# correct记录查询正确的个数
+let $correct = 0;
+let $partition_idx=0;
+while ($partition_idx < $partition_cnt)
+{
+  # init
+	let $retry_count = 10;
+  let $res = false;
+
+  # 分别查询offline以及online记录个数
+  connection conn_obtest;
+	while ($retry_count > 0)
+	{
+		dec $retry_count;
+
+    let $offline_record_count = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id' and partition_idx = '$partition_idx' and partition_cnt = '$PARTITION_CNT' and start_log_id = 0 and start_log_timestamp != -1 and end_log_id != '$UINT64_MAX' and end_log_timestamp != -1, count, 1);
+
+    let $online_record_count = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id' and partition_idx = '$partition_idx' and partition_cnt = '$PARTITION_CNT' and start_log_id != 0 and start_log_timestamp != -1 and end_log_id = '$UINT64_MAX' and end_log_timestamp = -1, count, 1);
+
+    if ($online_record_count == 1)
+    {
+      if ($offline_record_count == 1)
+      {
+        #echo succ_here;
+        let $res = true;
+        let $retry_count = 0;
+      }
+    }
+
+    # 未查到，sleep再次查询，异步任务可能未执行完成
+    if ($res != $TRUE)
+    {
+      sleep 2;
+    }
+	}
+
+  # 查询10次仍未查到结果，error
+  if ($res != $TRUE)
+  {
+    echo partition_idx:$table_id/$partition_idx/$PARTITION_CNT;
+    echo $offline_record_count/$online_record_count;
+  }
+
+  # 验证offline和online发生的server是同一个zone
+  if ($res == $TRUE)
+  {
+    let $offline_server = query_get_value(select svr_ip from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id' and partition_idx = '$partition_idx' and partition_cnt = '$PARTITION_CNT' and start_log_id = 0 and start_log_timestamp != -1 and end_log_id != '$UINT64_MAX' and end_log_timestamp != -1, svr_ip, 1);
+    let $online_server = query_get_value(select svr_ip from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id' and partition_idx = '$partition_idx' and partition_cnt = '$PARTITION_CNT' and start_log_id != 0 and start_log_timestamp != -1 and end_log_id = '$UINT64_MAX' and end_log_timestamp = -1, svr_ip, 1);
+
+    let $zone_record1 = query_get_value(select zone from __all_server where svr_ip = '$offline_server', zone, 1);
+    let $zone_record2 = query_get_value(select zone from __all_server where svr_ip = '$online_server', zone, 1);
+
+    if ($zone_record1 == $zone_record2)
+    {
+      inc $correct;
+    }
+    if ($zone_record1 != $zone_record2)
+    {
+      echo partition_idx:$table_id/$partition_idx/$partition_cnt;
+      echo $offline_server/$online_server/$zone_record1/$zone_record2;
+    }
+  }
+
+  inc $partition_idx;
+}
+
+if ($correct == $partition_cnt)
+{
+  echo $correct;
+  echo $TRUE;
+}
+if ($correct != $partition_cnt)
+{
+  echo $correct;
+  echo $FALSE;
+}

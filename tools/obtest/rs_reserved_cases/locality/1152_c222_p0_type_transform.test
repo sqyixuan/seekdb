@@ -1,0 +1,161 @@
+# owner: rongxuan.lc
+# description: 本case是为了验证在类型不匹配的情况下，RS会调度进行类型转换；
+# 分三个测试场景；
+#（1）alter system修改F的类型为L;
+#（2）alter system 修改F的类型为R; 
+#（3）alter system 修改L的类型为F;
+#(4) alter system 修改R为F；
+#（5) alter system 修改R为F，再为R; ==>不好验证；不做这个测试
+#（6）alter system 修改F为R，在为F;
+#####(4)考虑@region的情况==>重新开一个case；
+####暂时不支持修改L型副本；
+
+ob1=OBI(cluster=3:3:3, init_unit_cpu=0, proxy_num=0, ct_num = 0);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+ob1.mysql alter system set balance_blacklist_failure_threshold =0;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $case_index=2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), primary_zone='z1',locality='F@z1,L@z2,F@z3,R@z3' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_2", tenant_id, 1); 
+
+ob_connect(tt_conn, ob1.z1.obs0, root@tenant_2,,test,USE_OB_CONNECTOR);
+connection tt_conn;
+create tablegroup tg1 partition by hash partitions 21;
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 21;
+create table test3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 21;
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test2" and tenant_id = "$tenant_id", table_id, 1);
+let $t3_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test3" and tenant_id = "$tenant_id", table_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root,,oceanbase,USE_OB_CONNECTOR);
+connection sys_conn;
+#alter system set  __balance_controller='{"ENABLE_TYPE_TRANSFORM":"false"}';
+##（1）alter system修改F的类型为L;
+## 将test2的partition_id = 0的 备F类型转成L;
+#let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = 0 and role = 2 and tenant_id = $tenant_id and replica_type=0, addr, 1);
+#ob1.mysql alter system change replica partition_id='0%21@$t2_id' server='$dest_addr' change replica_type='L';
+###等待转换成功
+#ob1.check_until_timeout select replica_type from __all_virtual_meta_table where table_id = $t2_id and partition_id = 0 and tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr', 5, 120;
+#alter system set  __balance_controller='';
+###等待转换回来；
+#ob1.check_until_timeout select replica_type from __all_virtual_meta_table where table_id = $t2_id and partition_id = 0 and tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr', 0, 120;
+###切成主以后，写入；
+#ob1.mysql alter system switch replica leader partition_id='0%21@$t2_id' server='$dest_addr';
+#ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where  table_id = $t2_id and partition_id = 0 and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr' and role = 1, 1, 30;
+#insert into test2 values(1,1);
+#insert into test2 values(0,1);
+
+#（2）alter system 修改F的类型为R; 
+##等待coordinate
+sleep 10;
+ob1.mysql alter system set enable_rebalance = 'false';
+#（1）alter system 修改F的类型为R; 
+# 将test2的partition_id = 2的 备F类型转成R;
+let $partition_id = 2;
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and role = 2 and tenant_id = $tenant_id and replica_type=0 and zone='z3', addr, 1);
+let $delete_addr = deploy_get_value(ob1.select select  concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and tenant_id = $tenant_id and concat(svr_ip,":",svr_port)!='$dest_addr' and replica_type=16, addr, 1);
+ob1.mysql alter system change replica partition_id='$partition_id%21@$t2_id' server='$dest_addr' change replica_type='R';
+##等待切换成；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr' and replica_type=16, 1, 30;
+##等待删除多余R；
+let $zone = deploy_get_value(ob1.select select zone from __all_server where concat(svr_ip,":",svr_port)='$dest_addr', zone, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id  and zone='$zone' and replica_type = 16, 1, 180;
+##等待新的F出来；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id  and zone='$zone' and replica_type = 0, 1, 60;
+##等待删除多余R；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id  and zone='$zone' and replica_type = 16, 1, 60;
+
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+
+##（3）alter system 修改L的类型为F;
+##将test3的partition_id = 3的L改成F;
+#let $partition_id = 4;
+#let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t3_id and partition_id = $partition_id and role = 2 and tenant_id = $tenant_id and replica_type=5, addr, 1);
+#ob1.mysql alter system change replica partition_id='$partition_id%21@$t3_id' server='$dest_addr' change replica_type='F';
+###等待转换回来；
+#ob1.check_until_timeout select replica_type from __all_virtual_meta_table where table_id = $t3_id and partition_id = $partition_id and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr', 5, 120;
+
+#(4)
+#测试手动测试从r转成F 然后切成主；
+#在zone3先remove_member, 关掉复制；然后将R切成成F；然后切主；
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+connection tt_conn;
+create table test6(c1 int primary key, c2 int) locality="F@z1,R@z1,L@z2,R@z2,F@z3,R@z3" partition by hash(c1) partitions 5;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'test6', table_id, 1);
+let $partition_id = 2;
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 2 and tenant_id = $tenant_id and replica_type=0, addr, 1);
+ob1.mysql alter system drop replica partition_id='$partition_id%5@$table_id' server='$dest_addr';
+##等待从成员列表中踢出；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and tenant_id = $tenant_id and role = 1 and member_list like '%,%,%', 0, 30;
+let $zone = deploy_get_value(ob1.select select zone from __all_server where  concat(svr_ip,":",svr_port)='$dest_addr', zone, 1);
+let $readonly_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id =$table_id and tenant_id = $tenant_id and zone='$zone' and partition_id = $partition_id and replica_type=16, addr, 1);
+ob1.mysql alter system change replica partition_id = '$partition_id%5@$table_id' server='$readonly_addr' change replica_type='F';
+##等待切换成F成功；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and tenant_id = $tenant_id and  concat(svr_ip,":",svr_port)='$readonly_addr' and replica_type = 0, 1, 30;
+sleep 3;
+##切换成主；
+ob1.mysql alter system switch replica leader partition_id ='$partition_id%5@$table_id' server='$readonly_addr';
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where  table_id = $table_id and partition_id = $partition_id and tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$readonly_addr' and role = 1, 1, 30;
+insert into test6 values(1,2);
+insert into test6 values(2,2);
+insert into test6 values(3,2);
+insert into test6 values(4,2);
+insert into test6 values(5,2);
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+##(5) F-->R-->F
+#在zone3中找一个F转成R; partition_id = 5;
+let $partition_id = 5;
+#let $partition_id = deploy_get_value(ob1.select select partition_id from __all_virtual_meta_table where table_id = $t2_id and role = 2 and tenant_id = $tenant_id and replica_type = 0 and zone='z3', partition_id, 1);
+let $dest_addr = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and role = 2 and tenant_id = $tenant_id and replica_type=0 and zone='z3', addr, 1);
+ob1.mysql alter system change replica partition_id='$partition_id%21@$t2_id' server='$dest_addr' change replica_type='R';
+##旧的readonly
+let $delete_addr = deploy_get_value(ob1.select select  concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and tenant_id = $tenant_id and concat(svr_ip,":",svr_port)!='$dest_addr' and replica_type=16, addr, 1);
+##手动删除多余的R。 保留dest_addr上面的R；
+ob1.mysql alter system drop replica partition_id='$partition_id%21@$t2_id' server='$delete_addr';
+##等待切换成；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr' and replica_type=16, 1, 30;
+##等待新的F出来；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id  and zone='z3' and replica_type = 0, 1, 60;
+##等待F加入成员列表；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and role = 1 and member_list like '%,%,%', 1, 60;
+##找到新F；
+let $new_f = deploy_get_value(ob1.select select concat(svr_ip,":", svr_port) addr from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and tenant_id = $tenant_id and replica_type=0 and zone='z3', addr, 1);
+sleep 2;
+##删掉F;
+ob1.mysql alter system drop replica partition_id='$partition_id%21@$t2_id' server='$new_f';
+##将r-->f;
+ob1.mysql alter system change replica  partition_id='$partition_id%21@$t2_id' server='$dest_addr' change replica_type='F';
+##等待切换完成；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr' and replica_type=0, 1, 30;
+##等待加入成员列表；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and role = 1 and member_list like '%,%,%', 1, 30;
+##切成主以后，写入；
+sleep 3;
+ob1.mysql alter system switch replica leader partition_id='$partition_id%21@$t2_id' server='$dest_addr';
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where  table_id = $t2_id and partition_id = $partition_id and  tenant_id = $tenant_id and concat(svr_ip,":",svr_port)='$dest_addr' and role = 1, 1, 30;
+insert into test2 values(5,1);
+insert into test2 values(6,1);
+insert into test2 values(7,1);
+insert into test2 values(8,1);
+

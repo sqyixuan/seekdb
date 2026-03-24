@@ -1,0 +1,106 @@
+# owner: lixia.yq
+# owner group: storage
+# description: 本case是为了测试truncate分区后，数据在memtable的DML
+
+connect(sys_conn,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set _enable_defensive_check = 2;
+connection default;
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists t_range_int;
+--enable_warnings
+
+#
+# create table t_range_int
+#
+alter system set _ob_enable_truncate_partition_preserve_global_index = true;
+create table t_range_int(c1 int, c2 int, c3 int, primary key(c1, c2)) partition by range(c2)
+  (partition p0 values less than (100),
+   partition p1 values less than (200),
+   partition p2 values less than (300),
+   partition p3 values less than (400),
+   partition p4 values less than (MAXVALUE));
+create index idx1 on t_range_int(c1) storing(c3) global;
+create unique index idx2 on t_range_int(c1) storing(c3) global;
+
+connection conn1;
+insert into t_range_int values(1, 2, 9), (100, 101, 199), (200, 201, 299), (400, 401, 499);
+update t_range_int set c3 = 999 where c1 = 200;
+delete from t_range_int where c1 = 400;
+
+--error 1062
+insert into t_range_int values (100, 102, 199), (200, 202, 299), (400, 402, 499);
+
+connection conn1;
+# only remain (1,2,9)
+alter table t_range_int truncate partition p1, p2, p4;
+--echo ###print part info after truncate t_range_int###
+
+connection conn1;
+select * from t_range_int order by c1,c2 asc;
+
+connection conn1;
+insert into t_range_int values (100, 102, 199), (200, 202, 299), (400, 402, 499);
+
+connection conn1;
+--error 1062
+insert into t_range_int values (100, 103, 199), (200, 203, 399), (400, 403, 499);
+
+connection conn1;
+select * from t_range_int order by c1,c2 asc;
+
+connection conn1;
+let $__table_name__ = 't_range_int';
+let $__tenant_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tenant_id from oceanbase.__all_virtual_table where table_name= $__table_name__, tenant_id, 1);
+
+alter system major freeze;
+
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/compaction/check_major_history_after_truncate.inc
+
+connection conn1;
+select * from t_range_int order by c1,c2 asc;
+
+#
+# insert row in sstable, memtable only have update row
+#
+connection conn1;
+update t_range_int set c3 = 100 where c1 = 200;
+select * from t_range_int order by c1,c2 asc;
+
+connection conn1;
+# only remain (1,2,9)
+alter table t_range_int truncate partition p1, p2, p4;
+
+connection conn1;
+# INSERT(200	202	299) is in major, UPDATE(200 NOP 100) is in memtable, but all truncated
+insert into t_range_int values (200, 204, 499);
+
+connection conn1;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection conn1;
+# INSERT(200	204	499) is in major, UPDATE(200 NOP 800) is in memtable, not truncated
+update t_range_int set c3 = 800 where c2 = 204;
+select * from t_range_int order by c1,c2 asc;
+
+--error 1062
+insert into t_range_int values (200, 202, 299);
+select * from t_range_int order by c1,c2 asc;
+
+connection conn1;
+drop table t_range_int;
+
+connection sys_conn;
+alter system set _enable_defensive_check = 1;
+connection default;

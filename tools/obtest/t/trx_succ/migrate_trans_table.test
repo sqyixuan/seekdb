@@ -1,0 +1,73 @@
+# owner: yanyuan.cxf
+# owner group: transaction
+# description: 宕机重启恢复事务状态表
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2, proxy_num=1, init_unit_cpu=1);
+
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+#ob1.mysql alter system set syslog_level='debug';
+
+let $cpu = 2;
+let $memory = 5368709120;
+
+ob1.mysql CREATE RESOURCE UNIT unit_obtest MAX_CPU $cpu, MEMORY_SIZE $memory;
+ob1.mysql CREATE RESOURCE POOL pool_obtest UNIT = 'unit_obtest', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT bobtest RESOURCE_POOL_LIST = ('pool_obtest'),primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "bobtest", tenant_id, 1);
+
+
+
+ob_connect(sys_conn, ob1.proxy0, root,,test,USE_OB_CONNECTOR);
+ob_connect(conn_obtest, ob1.proxy0, root@bobtest,,test,USE_OB_CONNECTOR);
+connection conn_obtest;
+set global ob_query_timeout = 1000000000;
+set global ob_trx_timeout = 1000000000;
+set global ob_trx_idle_timeout = 1000000000;
+sleep 2;
+
+
+connection conn_obtest;
+create table t1(a int primary key, b int);
+
+#确定leader的位置
+let $ls_id=deploy_get_value(ob1.select select ls_id  from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', ls_id, 1);
+let $leader_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', host, 1);
+let $leader=deploy_get_value(ob1.get_obs_by_addr $leader_host);
+let $follower_host=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='FOLLOWER' and table_name='t1' limit 1, host, 1);
+let $follower_ip=deploy_get_value(ob1.select select svr_ip  from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='FOLLOWER' and table_name='t1' limit 1, svr_ip, 1);
+let $follower_port=deploy_get_value(ob1.select select svr_port  from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='FOLLOWER' and table_name='t1' limit 1, svr_port, 1);
+let $follower=deploy_get_value(ob1.get_obs_by_addr $follower_host);
+
+insert into t1 (a, b) values (1, 1), (2, 2), (3, 3);
+
+# <----------------------- 事务执行 -------------------------->
+
+sleep 2;
+
+connection conn_obtest;
+begin;
+insert into t1 value(6, 6);
+insert into t1 values(7, 7);
+# <----------------------- 冻结并转储 -------------------------->
+
+connection sys_conn;
+alter system minor freeze tenant bobtest;
+let $tid = deploy_get_value(ob1.select select tablet_id v from oceanbase.__all_virtual_table where table_name='t1', v, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tablet_id=$tid and table_type=0 and is_active='NO', 0, 200;
+
+# <----------------------- 事务提交前，另一个事务查 -------------------------->
+
+
+connection conn_obtest;
+commit;
+
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+$follower.force_stop;
+ob1.check_until_timeout select count(*) = 0 as cnt from oceanbase.CDB_OB_LS_LOCATIONS where (tenant_id = $tenant_id or tenant_id = $meta_tenant_id) and role = "LEADER" and member_list like '%$follower_host%', 0, 60;
+
+ob1.mysql alter tenant bobtest set primary_zone='z2';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t1' and zone='z2', 1, 100;
+

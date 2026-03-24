@@ -1,0 +1,75 @@
+ob1=OBI(cluster=2,init_unit_cpu=5);
+ob1.z1.obs0.set extra_config=_private_buffer_size='1B';
+ob1.z1.obs1.set extra_config=_private_buffer_size='1B';
+ob1.reboot;
+ob1.create_client;
+
+#source include/liboblog/create_tenant_with_gts.inc;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+CREATE TENANT oblog_tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone=RANDOM set ob_tcp_invited_nodes='%';
+ob_connect(conn_tt, ob1.z1.obs0, root@oblog_tt, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+#connection conn_sys;
+#alter tenant oblog_tt set primary_zone ='RANDOM';
+connection conn_tt;
+set ob_query_timeout = 10000000000;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=ALL.*:INFO;TLOG.PARSER:DEBUG;TLOG.FETCHER:DEBUG skip_ob_version_compat_check=1 enable_output_trans_order_by_sql_operation=0 enable_output_by_table_def=1;
+ob1.oblog.restart;
+
+create database obcdc_db;
+ob1.oblog.next;
+
+use obcdc_db;
+
+create table branch_sp_tbl_src(id int primary key, v int) partition by key(id) partitions 2;
+ob1.oblog.next;
+
+create table branch_sp_tbl_tmp like branch_sp_tbl_src;
+ob1.oblog.next;
+
+create table branch_sp_tbl_dest like branch_sp_tbl_src;
+ob1.oblog.next;
+
+# insert rows into src table
+#insert into branch_sp_tbl_src values(1,1);
+#ob1.oblog.next;
+let $i = 256;
+while($i)
+{
+# should not use insert into select in case of row operation not by order
+#  insert into branch_sp_tbl_src select (select count(1) from branch_sp_tbl_src) + id, v from branch_sp_tbl_src;
+  eval insert into branch_sp_tbl_src values($i,$i);
+  ob1.oblog.next;
+  dec $i;
+}
+
+# insert src table rows into dest table
+insert into branch_sp_tbl_dest select id, v from branch_sp_tbl_src order by id;
+ob1.oblog.next;
+# delete some rows from dest table
+delete from branch_sp_tbl_dest where id % 7 = 0;
+ob1.oblog.next;
+# run insert on duplicate
+explain basic insert into branch_sp_tbl_dest select id, v from branch_sp_tbl_src on duplicate key update v = v + 1;
+insert into branch_sp_tbl_dest select id, v from branch_sp_tbl_src on duplicate key update v = v + 1;
+ob1.oblog.next;
+# run replace into
+# delete some rows from dest table
+delete from branch_sp_tbl_dest where id % 19 = 0;
+ob1.oblog.next;
+delete from branch_sp_tbl_dest where id % 23 = 0;
+ob1.oblog.next;
+delete from branch_sp_tbl_dest where id % 71 = 0;
+ob1.oblog.next;
+delete from branch_sp_tbl_dest where id % 113 = 0;
+ob1.oblog.next;
+explain basic replace into branch_sp_tbl_dest select id, v from branch_sp_tbl_src;
+replace into branch_sp_tbl_dest select id, v from branch_sp_tbl_src;
+ob1.oblog.next;
+ob1.oblog.stop;
+ob1.oblog.stat_check_log_cnt "is_branch_rollback=true";

@@ -1,0 +1,188 @@
+###############################################################################
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test bugfix
+#    Bug: consider two cluster with RS1 and RS2,
+#         1. create user under tenant_A in RS1
+#         2. switchover tenant_A from RS1 to RS2, to raise RS2 to primary
+#         3. create user under tenant_A in RS2
+#         4. switchover tenant_A back to RS1
+#         5. create user under tenant_A in RS1 will fail
+#         Because ddl_epoch is not cleaned after switch over back to RS1
+#
+###############################################################################
+ob1=OBI(cluster=1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+
+--echo ===========================
+--echo         bootstrap
+--echo ===========================
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob2.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+let $rs1_mysql_tenant = rs1_mysql_tenant;
+let $rs2_mysql_tenant = rs2_mysql_tenant;
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob2.reboot;
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+
+--echo ============================
+--echo        create tenant
+--echo ============================
+ob_connect(sys_conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn1;
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G', LOG_DISK_SIZE='2G';
+CREATE RESOURCE POOL small_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+
+ob_connect(sys_conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G', LOG_DISK_SIZE='2G';
+CREATE RESOURCE POOL small_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+
+ob_connect(sys_conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn1;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+# create  rs1_mysql_tenant tenant
+ob1.mysql CREATE TENANT $rs1_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $rs1_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$rs1_mysql_tenant', tenant_id, 1);
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $rs1_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+
+ob_connect(mysql_conn1, ob1.z1.obs0,root@$rs1_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection mysql_conn1;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+--echo ===========================
+--echo        do DDL in RS1
+--echo ===========================
+# rs1_mysql_tenant is primary now
+ob_connect(rs1_mysql_conn, ob1.z1.obs0,root@$rs1_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs1_mysql_conn;
+create user test_user identified by "test_user";
+create table t1(a int, b int);
+insert into t1(a, b) values(1, 1);
+
+--echo ===================================
+--echo      create net standby tenant
+--echo ===================================
+ob_connect(sys_conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+--disable_all_result_log
+eval CREATE STANDBY TENANT IF NOT EXISTS rs2_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@rs1_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1', comment='aaaaaaaa';
+--enable_all_result_log
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'rs2_mysql_tenant', NORMAL, 10;
+let $rs2_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$rs2_mysql_tenant', tenant_id, 1);
+let $server_ip_port_2 = deploy_get_value(ob2.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $rs2_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+
+--echo ========================================
+--echo     check standby tenant can read t1
+--echo ========================================
+# rs1_mysql_tenant is primary now
+# rs2_mysql_tenant is standby now
+ob_connect(rs2_mysql_conn_ob, ob2.z1.obs0, root@$rs2_mysql_tenant, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection rs2_mysql_conn_ob;
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t1", 1, 60;
+sleep 5;
+ob_connect(rs2_mysql_conn, ob2.z1.obs0,root@$rs2_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs2_mysql_conn;
+--echo expect (1,1)
+select * from t1;
+
+--echo ========================================================
+--echo     set log_restore_source for rs1_mysql_tenant
+--echo ========================================================
+# rs1_mysql_tenant is primary now
+# rs2_mysql_tenant is standby now
+ob_connect(sys_conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn1;
+--disable_all_result_log
+eval alter system set LOG_RESTORE_SOURCE = 'service=$server_ip_port_2 USER=mytest@rs2_mysql_tenant PASSWORD=test' tenant = 'rs1_mysql_tenant';
+--enable_all_result_log
+
+--echo =====================================================
+--echo      switch over backup tenant and standby tenant
+--echo =====================================================
+ob_connect(sys_conn1, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn1;
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT rs1_mysql_tenant;
+
+ob_connect(sys_conn2, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT rs2_mysql_tenant;
+
+--echo ==============================
+--echo        do DDL in RS2
+--echo ==============================
+# rs1_mysql_tenant is standby now
+# rs2_mysql_tenant is primary now
+ob_connect(rs2_mysql_conn, ob2.z1.obs0,root@$rs2_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs2_mysql_conn;
+create user test_user2 identified by "test_user";
+create table t2(c1 int, c2 int);
+insert into t2 values(2,2);
+
+--echo ========================================
+--echo     check standby tenant can read t2
+--echo ========================================
+# rs1_mysql_tenant is standby now
+# rs2_mysql_tenant is primary now
+ob_connect(rs1_mysql_conn_ob, ob1.z1.obs0, root@$rs1_mysql_tenant, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection rs1_mysql_conn_ob;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t2", 1, 60;
+sleep 5;
+ob_connect(rs1_mysql_conn, ob1.z1.obs0,root@$rs1_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs1_mysql_conn;
+--echo expect (2,2)
+select * from t2;
+
+--echo ===========================================================
+--echo      switch over backup tenant and standby tenant again
+--echo ===========================================================
+ob_connect(sys_conn2, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT rs2_mysql_tenant;
+
+ob_connect(sys_conn1, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn1;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT rs1_mysql_tenant;
+
+--echo ================================
+--echo        do DDL in RS1 again
+--echo ================================
+# rs1_mysql_tenant is standby now
+# rs2_mysql_tenant is primary now
+ob_connect(rs1_mysql_conn, ob1.z1.obs0,root@$rs1_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs1_mysql_conn;
+create user test_user3 identified by "test_user";
+create table t3(c1 int, c2 int);
+insert into t3 values(3,3);
+
+--echo ========================================
+--echo     check standby tenant can read t3
+--echo ========================================
+# rs1_mysql_tenant is standby now
+# rs2_mysql_tenant is primary now
+ob_connect(rs2_mysql_conn_ob, ob2.z1.obs0, root@$rs2_mysql_tenant, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection rs2_mysql_conn_ob;
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t3", 1, 60;
+sleep 5;
+ob_connect(rs2_mysql_conn, ob2.z1.obs0,root@$rs2_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection rs2_mysql_conn;
+--echo expect (3,3)
+select * from t3;
+

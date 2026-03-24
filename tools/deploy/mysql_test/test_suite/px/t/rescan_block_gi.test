@@ -1,0 +1,53 @@
+#owner: dachuan.sdc
+#owner group: SQL2
+#tags: optimizer,px
+
+--disable_query_log
+connect (conn_sys,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+connection conn_sys;
+alter system set px_task_size = '1K';
+
+connection default;
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+--enable_warnings
+
+
+create table t1(c1 int);
+create table t2(c1 bigint, c2 varchar(100)) compression = 'none';
+insert into t2 select random(), randstr(100, random()) from table(generator(100000));
+
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+
+select
+ /*+
+	MONITOR
+	LEADING(@"SEL$1" ("a"@"SEL$1" "b"@"SEL$1"))
+	USE_NL(@"SEL$1" "b"@"SEL$1")
+	PQ_DISTRIBUTE(@"SEL$1" "b"@"SEL$1" BROADCAST NONE)
+	GBY_PUSHDOWN(@"SEL$2")
+	PQ_GBY(@"SEL$2"  HASH)
+	FULL(@"SEL$2" "test"."t1"@"SEL$2")
+	FULL(@"SEL$1" "b"@"SEL$1")
+	PARALLEL(17)
+*/
+* from (select count(*) cnt from t1) a, t2 b where a.cnt = b.c1;
+
+--enable_query_log
+select max_rescans - min_rescans <= 2
+from
+(
+	select plan_line_id, plan_operation,  max(starts) max_rescans, min(starts) min_rescans
+	from oceanbase.gv$sql_plan_monitor where trace_id = last_trace_id()
+	group by plan_line_id, plan_operation
+	order by plan_line_id desc
+	limit 1
+);
+
+connection conn_sys;
+alter system set px_task_size = '2MB';
+
+connection default;
+--sleep 1

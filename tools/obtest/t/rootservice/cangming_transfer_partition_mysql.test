@@ -1,0 +1,229 @@
+ob1=OBI(cluster=2,proxy_num=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql CREATE RESOURCE UNIT 2c4g MAX_CPU 2, MEMORY_SIZE '4G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='2c4g',UNIT_NUM=2,ZONE_LIST=('z1');
+ob1.mysql CREATE RESOURCE POOL pool2 UNIT='2c4g',UNIT_NUM=2,ZONE_LIST=('z1');
+CREATE TENANT IF NOT EXISTS test_tenant_mysql ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+CREATE TENANT IF NOT EXISTS test_tenant_2 ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool2') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+
+connect(test_mysql_conn, $proxy_ip, root@test_tenant_mysql,,oceanbase, $proxy_port);
+connection test_mysql_conn;
+use test;
+let $test_cnt = 6;
+while ($test_cnt > 0)
+{
+  eval create table tt_$test_cnt (c1 INT PRIMARY KEY, c2 INT) PARTITION BY HASH(c1) PARTITIONS 4;
+  eval insert into tt_$test_cnt(c1, c2) values(1, 1);
+  eval insert into tt_$test_cnt(c1, c2) values(2, 2);
+  eval insert into tt_$test_cnt(c1, c2) values(3, 3);
+  eval insert into tt_$test_cnt(c1, c2) values(4, 4);
+  eval insert into tt_$test_cnt(c1, c2) values(5, 5);
+  sleep 1;
+  dec $test_cnt;
+}
+#局部索引表
+create index il on tt_1(c1) local;
+#lob 表
+create table t_lob(c1 int, c2 char(10), c3 longtext) partition by hash(c1) partitions 4;
+#复制表
+create table dup_t1(c1 int, c2 int) duplicate_scope = 'cluster';
+insert into dup_t1 value (1, 123), (2,456), (3,789), (4,1), (5, 2);
+#二级分区表
+create table t_sub (c1 int, c2 int) partition by range(c1) subpartition by hash(c2) (partition p0 values less than(100) (subpartition sp0),partition p1 values less than(200) (subpartition sp2, subpartition sp3));
+#########不允许系统租户下不填写租户名做transfer partition#########
+--echo 不允许系统租户下不填写租户名做transfer partition
+connection sys_conn;
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'tt_1' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+--error 1235
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1002;
+
+#########允许系统租户下填写租户名做transfer partition#########
+--echo 允许系统租户下填写租户名做transfer partition
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许sys/meta租户做transfer partition#########
+--echo 不允许sys/meta租户做transfer partition
+--error 1235
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 11111, OBJECT_ID  11111 TO LS 1002 tenant=META$1002;
+--error 1235
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 11111, OBJECT_ID  11111 TO LS 1002 tenant=sys;
+
+#########不允许不存在的租户做transfer partition#########
+--echo 不允许不存在的租户做transfer partition
+--error 5157
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 11111, OBJECT_ID  11111 TO LS 1002 tenant=test;
+
+#########不允许用户租户下不填写和自己不一致租户名做transfer partition#########
+--echo 不允许用户租户下不填写和自己不一致租户名做transfer partition
+connection test_mysql_conn;
+--error 1227
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 11111, OBJECT_ID  11111 TO LS 1002 tenant=test_tenant_2;
+
+#########不允许没有alter system权限的用户做transfer partition#######
+create user usr_test;
+grant select on test.* to usr_test;
+connect(test_mysql_conn_usr, $proxy_ip, usr_test@test_tenant_mysql,,, $proxy_port);
+connection test_mysql_conn_usr;
+--error 1227
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 1, OBJECT_ID 1 TO LS 1002;
+connection test_mysql_conn;
+grant alter system on *.* to usr_test;
+connect(test_mysql_conn_usr1, $proxy_ip, usr_test@test_tenant_mysql,,, $proxy_port);
+connection test_mysql_conn_usr1;
+--error 4179
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 1, OBJECT_ID 1 TO LS 1002;
+connection test_mysql_conn;
+#########允许用户租户下不填写租户名做transfer partition#########
+--echo 允许用户租户下不填写租户名做transfer partition
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'tt_2' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002;
+
+#########不允许重复做transfer partition#########
+--echo 不允许重复做transfer partition
+--error 4017
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002;
+
+#########不允许非primary normal租户做transfer partition#########
+--echo 不允许非primary normal租户做transfer partition
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'tt_3' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+connection sys_conn;
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT test_tenant_mysql;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT test_tenant_mysql;
+alter system change tenant tenant_id = 1001;
+UPDATE oceanbase.__all_tenant_info SET switchover_status = 'SWITCHING TO STANDBY' where tenant_id=1002;
+alter system change tenant tenant_id = 1;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+alter system change tenant tenant_id = 1001;
+UPDATE oceanbase.__all_tenant_info SET switchover_status = 'PREPARE SWITCHING TO STANDBY' where tenant_id=1002;
+alter system change tenant tenant_id = 1;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+alter system change tenant tenant_id = 1001;
+UPDATE oceanbase.__all_tenant_info SET switchover_status = 'NORMAL' where tenant_id=1002;
+
+#########不允许非NORMAL租户做transfer partition#########
+--echo 不允许非NORMAL租户做transfer partition
+alter system change tenant tenant_id = 1;
+UPDATE oceanbase.__all_tenant SET status='RESTORE' where tenant_id=1002;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+UPDATE oceanbase.__all_tenant SET status='CREATING' where tenant_id=1002;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+UPDATE oceanbase.__all_tenant SET status='CREATING_STANDBY' where tenant_id=1002;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+UPDATE oceanbase.__all_tenant SET status='NORMAL' where tenant_id=1002;
+
+#########不允许enable_transfer为false的租户做transfer partition#########
+--echo 不允许enable_transfer为false的租户做transfer partition
+ob1.mysql alter system set enable_transfer = 'false' tenant='test_tenant_mysql';
+ob1.check_until_timeout select count(*) = 0 from __all_virtual_tenant_parameter_stat where tenant_id = 1002 and name = 'enable_transfer' and value = 'true', 1, 5;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+ob1.mysql alter system set enable_transfer = 'true' tenant='test_tenant_mysql';
+ob1.check_until_timeout select count(*) = 0 from __all_virtual_tenant_parameter_stat where tenant_id = 1002 and name = 'enable_transfer' and value = 'false', 1, 5;
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许系统表partition做transfer partition#########
+--echo 不允许系统表partition做transfer partition
+--error 4179
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 1, OBJECT_ID 1 TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许复制表partition往普通LS上transfer partition#########
+--echo ### 不允许复制表partition往普通LS上transfer partition
+let $1003_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'dup_t1' and ls_id=1003 order by object_id limit 1, table_id, 1);
+let $1003_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1003_t_id order by object_id limit 1, object_id, 1);
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1003_t_id, OBJECT_ID $1003_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许局部索引表partition做transfer partition#########
+--echo 不允许局部索引表partition做transfer partition
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and table_type = "index" and index_name='il' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许lob表partition做transfer partition#########
+--echo 不允许lob表partition做transfer partition
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 't_lob' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_dt_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where data_table_id=$1001_t_id and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_dt_id order by object_id limit 1, object_id, 1);
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_dt_id, OBJECT_ID $1001_o_id TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许不存在的分区做transfer partition#########
+--echo 不允许不存在的分区做transfer partition
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'tt_4' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+--error 4018
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID 1111111 TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许不存在的表做transfer partition#########
+--echo 不允许不存在的表做transfer partition
+--error 4018
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID 654651432165, OBJECT_ID 1111111 TO LS 1002 tenant=test_tenant_mysql;
+
+#########不允许有二级分区的表的一级分区做transfer partition#########
+--echo 不允许有二级分区的表的一级分区做transfer partition
+connection test_mysql_conn;
+use oceanbase;
+let $table_id = query_get_value(select object_id from oceanbase.DBA_OBJECTS where owner='test' and object_name='t_sub' and object_type='TABLE' limit 1, object_id, 1);
+let $part_id = query_get_value(select object_id from oceanbase.DBA_OBJECTS where owner='test' and object_name='t_sub' and object_type='TABLE PARTITION' limit 1, object_id, 1);
+--error 4018
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $table_id, OBJECT_ID $part_id TO LS 1002;
+
+#########不允许目标端为不存在的ls的时候做transfer partition#########
+--echo 不允许目标端为不存在的ls的时候做transfer partition
+connection sys_conn;
+use oceanbase;
+let $1001_t_id = deploy_get_value(ob1.select select table_id from oceanbase.cdb_ob_table_locations where tenant_id=1002 and database_name='test' and table_name = 'tt_4' and ls_id=1001 order by object_id limit 1, table_id, 1);
+let $1001_o_id = deploy_get_value(ob1.select select object_id from oceanbase.cdb_ob_table_locations where table_id=$1001_t_id order by object_id limit 1, object_id, 1);
+--error 4018
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 10000 tenant=test_tenant_mysql;
+
+#########不允许目标端为sys ls的时候做transfer partition#########
+--echo 不允许目标端为sys ls的时候做transfer partition
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1 tenant=test_tenant_mysql;
+
+#########不允许普通表往duplicate ls上transfer partition#########
+--echo ### 不允许普通表往duplicate ls上transfer partition
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1003 tenant=test_tenant_mysql;
+
+#########不允许目标端为block tablet in的时候做transfer partition#########
+--echo 不允许目标端为block tablet in的时候做transfer partition
+connection sys_conn;
+alter system change tenant test_tenant_mysql;
+UPDATE oceanbase.__all_ls SET flag='BLOCK_TABLET_IN' where ls_id=1002;
+connection test_mysql_conn;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1002;
+
+#########不允许目标端为非normal ls的时候做transfer partition#########
+--echo 不允许目标端为非normal ls的时候做transfer partition
+connection sys_conn;
+alter system change tenant test_tenant_mysql;
+UPDATE oceanbase.__all_ls SET status='CREATING', flag='' where ls_id=1002;
+connection test_mysql_conn;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1002;
+connection sys_conn;
+alter system change tenant test_tenant_mysql;
+UPDATE oceanbase.__all_ls SET status='DROPPING' where ls_id=1002;
+connection test_mysql_conn;
+--error 4179
+eval ALTER SYSTEM TRANSFER PARTITION TABLE_ID $1001_t_id, OBJECT_ID  $1001_o_id TO LS 1002;

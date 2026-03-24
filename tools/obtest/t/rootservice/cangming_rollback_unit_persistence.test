@@ -1,0 +1,81 @@
+# CASE_OWNER:
+#    @linqiucen.lqc
+# CASE_DESC:
+#    In the following situations, units will be persistent.
+#     1. create a tenant
+#     2. enlarge a tenant’s resource pool
+#     3. migrate unit
+#    However, if there are some failures, these persistent units will be rolled back after 15 min.
+#    We add the func. rollback_persistent_unit to reduce the waiting time.
+#    In this case, we test whether the above situations can immediately roll back persistent unit
+#    when error appears
+#    Also, we test if there is no error, whether these operations can executed be successfully
+
+ob1=OBI(cluster=2,proxy_num=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# **************************************************************************************************
+# ** create tenant with ERRSIM_UNIT_PERSISTENCE_ERROR， to rollback persistent unit
+# **************************************************************************************************
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_unit, c, 1);
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1');
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 1;
+--error 4016
+CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool1');
+ob1.check_until_timeout select count(*) from __all_virtual_unit, $count, 180;
+
+# **************************************************************************************************
+# ** create tenant
+# **************************************************************************************************
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 0;
+CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool1');
+# **************************************************************************************************
+# ** alter tenant resource with ERRSIM_UNIT_PERSISTENCE_ERROR， to rollback persistent unit
+# **************************************************************************************************
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 1;
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_unit, c, 1);
+--error 4016
+ALTER RESOURCE TENANT test_tenant  UNIT_NUM=2;
+ob1.check_until_timeout select count(*) from __all_virtual_unit, $count, 180;
+
+# **************************************************************************************************
+# ** alter tenant resource
+# **************************************************************************************************
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 0;
+ob1.mysql ALTER RESOURCE TENANT test_tenant UNIT_NUM=2;
+
+# **************************************************************************************************
+# ** drop tenant and create a new tenant
+# **************************************************************************************************
+let $dest_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $dest_port = deploy_get_value(ob1.z1.obs1.port);
+
+ob1.mysql DROP TENANT test_tenant FORCE;
+ob1.z1.obs1.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$dest_ip' and svr_port=$dest_port and status='INACTIVE',1,15;
+ob1.mysql CREATE RESOURCE POOL pool2 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1');
+CREATE TENANT IF NOT EXISTS test_tenant2 ZONE_LIST=('z1'), RESOURCE_POOL_LIST=('pool2');
+ob1.z1.obs1.start;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$dest_ip' and svr_port=$dest_port and status='ACTIVE' and start_service_time > 0,1,120;
+# **************************************************************************************************
+# ** migrate unit with ERRSIM_UNIT_PERSISTENCE_ERROR， to rollback persistent unit
+# **************************************************************************************************
+let $tid = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'test_tenant2', tenant_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_unit where TENANT_ID = $tid, 1, 240;
+let $uid = deploy_get_value(ob1.select select UNIT_ID from __all_virtual_unit where TENANT_ID = $tid, UNIT_ID, 1);
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 1;
+--disable_query_log
+--error 4016
+eval ALTER SYSTEM MIGRATE UNIT $uid DESTINATION '$dest_ip:$dest_port';
+--enable_query_log
+ob1.check_until_timeout select count(*) from __all_virtual_unit where svr_ip='$dest_ip' and svr_port=$dest_port, 0, 180;
+# **************************************************************************************************
+# ** migrate unit
+# **************************************************************************************************
+ob1.mysql alter system set_tp tp_name = ERRSIM_UNIT_PERSISTENCE_ERROR, error_code = 4016, frequency = 0;
+ob1.mysql alter system migrate unit $uid destination '$dest_ip:$dest_port';

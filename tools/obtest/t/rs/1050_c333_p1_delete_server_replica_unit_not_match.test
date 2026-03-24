@@ -1,0 +1,84 @@
+#owner: rongxuan.lc
+#owner group: storage
+#description: delete server with replica whose address mismatch with unit address
+#bug: 
+
+ob1=OBI(cluster=3,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z1.obs1.ip);
+let $port1=deploy_get_value(ob1.z1.obs1.port);
+let $sql_port1=deploy_get_value(ob1.z1.obs1.mysql_port);
+let $ip2=deploy_get_value(ob1.z1.obs2.ip);
+let $port2=deploy_get_value(ob1.z1.obs2.port);
+let $sql_port2=deploy_get_value(ob1.z1.obs2.mysql_port);
+
+connect(conn0,$ip0,root@sys,,oceanbase,$sql_port0);
+connection conn0;
+
+alter system set debug_sync_timeout = '1000s';
+alter system set balancer_idle_time = '10s';
+alter system set enable_rereplication = 'false';
+
+let $cpu = 1;
+let $memory = 1073741824;
+
+eval CREATE RESOURCE UNIT test MAX_CPU $cpu, MEMORY_SIZE $memory;
+eval CREATE RESOURCE POOL pool1 UNIT = 'test', UNIT_NUM = 1;
+eval CREATE TENANT obtest1 RESOURCE_POOL_LIST = ('pool1') set ob_tcp_invited_nodes='%';
+ob_connect(conn1, ob1.z1.obs1, root@obtest1, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# login as new tenant
+connection conn1;
+CREATE DATABASE obtest;
+use obtest;
+
+let $table_id = 1;
+let $table_num = 3;
+while ($table_id <= $table_num)
+{
+  eval CREATE TABLE obtest$table_id (pk int, value int, primary key(pk));
+  inc $table_id;
+}
+
+# delete server
+connect(conn2,$ip0,root@sys,,oceanbase,$sql_port0);
+connection conn2;
+
+--disable_query_log
+eval alter system delete server '$ip1:$port1';
+--enable_query_log
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where svr_ip = '$ip2' and svr_port = '$port2', 1, 50;
+# mark server block_migrate_in
+alter system set migration_disable_time = '1h';
+sleep 2;
+let $block_time = query_get_value(select time_to_usec(now(6)) - (1800 * 1000000) as block_time, block_time, 1);
+--disable_query_log
+eval update __all_server set block_migrate_in_time = $block_time where svr_ip = '$ip2' and svr_port = '$port2';
+--enable_query_log
+alter system reload server;
+--disable_query_log
+eval alter system migrate unit 1001 destination '$ip0:$port0';
+--enable_query_log
+let $count = query_get_value(select count(*) as count from __all_server where svr_ip = '$ip1' and svr_port = '$port1', count, 1);
+if ($count == 1)
+{
+  echo pass;
+}
+
+# go on doing balance
+alter system set enable_rebalance = "true";
+alter system set enable_rereplication = 'true';
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+let $count = query_get_value(select count(*) as count from __all_server where svr_ip = '$ip1' and svr_port = '$port1', count, 1);
+if ($count == 0)
+{
+  echo pass;
+}
+
+

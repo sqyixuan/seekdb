@@ -1,0 +1,150 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: for transfer mixed 
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+--echo ===============================================================
+--echo ========  Step 0: prepare env   ===============================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo ========  Step 1: create tenant   =============================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create TENANT tenant1 resource_pool_list=('cs_replica_pool'), locality = "F@z1, F@z2, C@z3", primary_zone = "z1, z2" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DISABLE_CONVERT_CO", error_code = 4016, frequency = 1;
+ob1.mysql alter system set_tp tp_name = "EN_LS_NOT_SEE_CS_REPLICA", error_code = 4016, frequency = 1;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant1", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo =======  Step 2: create table   ===============================
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(z4_obs0, ob1.z3.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+create table t1    (k int primary key, v1 int, v2 int, v3 int) partition by hash(k) partitions 8;
+create table t2    (k int primary key, v1 int, v2 int, v3 int) partition by hash(k) partitions 8;
+# t3 ~ t7 are tables that make schema service refresh schema
+create table t3    (k int primary key, v1 int, v2 int, v3 int);
+create table t4    (k int primary key, v1 int, v2 int, v3 int);
+create table t5    (k int primary key, v1 int, v2 int, v3 int);
+create table t6    (k int primary key, v1 int, v2 int, v3 int);
+create table t7    (k int primary key, v1 int, v2 int, v3 int);
+create table tload (k int primary key, v1 int, v2 int, v3 int) partition by hash(k) partitions 8;
+create sequence seq cache 100000 noorder;
+insert into tload select seq.nextval + 10, seq.nextval + 11, seq.nextval + 12, seq.nextval + 13 from table(generator(100000));
+
+create table tskip (
+  v0 float,
+  k1 varchar(100),
+  g1 decimal(10, 2) as (v0/10) virtual,
+  v1 int, 
+  v2 timestamp(5),
+  g2 bigint as (v1/100) stored,
+  k2 decimal(10, 2),
+  g3 decimal(10, 3) as (k2*100) stored,
+  g4 double as (v0+v1) virtual,
+  k3 bigint,
+  g5 int as (v0+v1+1) virtual,
+  g6 double as (v0+v1+2) virtual,
+  primary key (k3, k1, k2)) partition by hash(k3) partitions 4;
+--echo ======================================================================
+--echo ===  Step 3: do full direct load and let major in C be row store  ====
+--echo ======================================================================
+set ob_query_timeout = 100000000;
+insert /*+ enable_parallel_dml parallel(7) append*/ into t1 select * from tload;
+--disable_result_log
+--disable_warnings
+insert into tskip (k1, k2, k3, v0, v1, v2) select repeat('k1', seq.nextval % 3 + 1), seq.nextval / 3, seq.nextval, seq.nextval / 2, seq.nextval, '2025-01-15 10:00:00.000' from table(generator(1000));
+--enable_warnings
+--enable_result_log
+alter table t1 add column v4 int;
+alter table t1 add column v5 int;
+alter table t2 add column v4 int;
+alter table t2 add column v5 int;
+alter table tskip modify column v1 decimal(10, 1);
+alter table tskip modify column v0 float skip_index(sum);
+alter table tskip modify column k2 decimal(10, 2) skip_index(sum);
+alter table tskip add column v3 int skip_index(sum);
+alter table tskip add column c0 int skip_index(sum) before v0;
+alter table tskip add column c1 int skip_index(sum) after k1;
+
+# do not insert data, no memtable, make storage schema inited from table schema when transfer with column_info_simplified = 0 
+
+alter table t3 add column v4 int;
+alter table t3 add column v5 int;
+alter table t4 add column v4 int;
+alter table t4 add column v5 int;
+alter table t5 add column v4 int;
+alter table t5 add column v5 int;
+alter table t6 add column v4 int;
+alter table t6 add column v5 int;
+alter table t7 add column v4 int;
+alter table t7 add column v5 int;
+sleep 180;
+
+--echo ===============================================================
+--echo =======  Step 4: do transfer and allow convert co merge  ======
+--echo ===============================================================
+connection sys_conn;
+ob1.mysql alter system set syslog_level = 'TRACE';
+ob1.mysql alter TENANT tenant1 primary_zone = "z1";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id != 1 and zone = 'z3', 1, 180;
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DISABLE_CONVERT_CO", error_code = 4016, frequency = 0;
+sleep 120;
+ob1.mysql alter system set syslog_level = 'WDIAG';
+ob1.z3.obs0.check_log_until_success -c "truncate column array for convert co merge";
+ob1.z3.obs0.check_log_until_success -c "finish truncate skip idx array.*skip_idx_attr_array=\[{col_idx:0.*col_idx:6";
+
+connection sys_conn;
+select count(*) from GV$OB_SSTABLES 
+where svr_port = (select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = 1004 and replica_type = 'COLUMNSTORE') 
+  and tablet_id in (select tablet_id from CDB_OB_TABLE_LOCATIONS where table_id = (select table_id from __all_virtual_table where table_name = 't1')) 
+  and table_type = 'CO_MAJOR'
+  and end_log_scn > 0;
+
+select count(*) from GV$OB_SSTABLES 
+where svr_port = (select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = 1004 and replica_type = 'COLUMNSTORE') 
+  and tablet_id in (select tablet_id from CDB_OB_TABLE_LOCATIONS where table_id = (select table_id from __all_virtual_table where table_name = 'tskip')) 
+  and table_type = 'CO_MAJOR'
+  and end_log_scn > 0;
+
+connection sys_conn;
+ob1.mysql alter system major freeze tenant tenant1;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+select count(*) from GV$OB_SSTABLES 
+where svr_port = (select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = 1004 and replica_type = 'COLUMNSTORE') 
+  and tablet_id in (select tablet_id from CDB_OB_TABLE_LOCATIONS where table_id = (select table_id from __all_virtual_table where table_name = 't1')) 
+  and table_type = 'CO_MAJOR'
+  and end_log_scn > 0;
+
+select count(*) from GV$OB_SSTABLES 
+where svr_port = (select svr_port from CDB_OB_LS_LOCATIONS where tenant_id = 1004 and replica_type = 'COLUMNSTORE') 
+  and tablet_id in (select tablet_id from CDB_OB_TABLE_LOCATIONS where table_id = (select table_id from __all_virtual_table where table_name = 'tskip')) 
+  and table_type = 'CO_MAJOR'
+  and end_log_scn > 0;

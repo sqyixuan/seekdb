@@ -1,0 +1,60 @@
+# owner: ly435438
+# owner group: storage
+# description: this case is use for testing split partition recovery
+#
+
+
+connect (obsys1,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (obsys2,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+connection obsys1;
+alter system set debug_sync_timeout = '9999999s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+
+connection conn1;
+set ob_query_timeout=100000000000000;
+CREATE TABLE t1 (id bigint not null auto_increment, dob bigint, primary key(id))
+    PARTITION BY RANGE(id) (
+        PARTITION p0 VALUES LESS THAN (3000),
+        PARTITION p1 VALUES LESS THAN (4000),
+        PARTITION p2 VALUES LESS THAN (5000)
+    );
+insert /*+ append parallel(8) enable_parallel_dml */ into t1(dob) select random() from table(generator(4500));
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 1000';
+
+connection conn1;
+send ALTER TABLE t1 REORGANIZE PARTITION p0 INTO (PARTITION p0_1 VALUES LESS THAN (1000), PARTITION p0_2 VALUES LESS THAN (2000), PARTITION p0_3 VALUES LESS THAN (3000));
+
+connection obsys2;
+sleep 2;
+let $table_id  = `select table_id from oceanbase.__all_virtual_table where table_name='t1'`;
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status where object_id = $table_id order by gmt_create, trace_id, 1);
+--disable_query_log
+eval alter system cancel task '$trace_id';
+--enable_query_log
+
+connection obsys1;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+
+connection conn1;
+--error 4072
+reap;
+
+connection conn2;
+select count(*) from t1 partition(p0_1);
+select count(*) from t1 partition(p0_2);
+select count(*) from t1 partition(p0_3);
+select count(*) from t1 partition(p1);
+
+drop table t1;

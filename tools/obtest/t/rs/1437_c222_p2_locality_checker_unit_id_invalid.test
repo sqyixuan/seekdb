@@ -1,0 +1,181 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试unit_id=-1的副本在locality检查过程中的处理；
+# case1: R副本unit_id = -1； locality里面没有R;
+# case2: R副本unit_id = -1; locality为readonly@all
+# case3: R副本unit_id = -1, locality中有R;
+# caser4: F副本unit_id = -1; locality里面没有F;
+# case5: F副本unit_id = -1, locality里面有F;
+# case6: R副本处于迁移过程中，发现locality变更；
+# case7: F副本处于迁移过程中，发现locality变更；
+# case8: locality 变更过程中，发生R副本UNIT迁移；
+# case9: locality变更中，发生F副本unit迁移；
+ob1=OBI(cluster=2:2:2,  proxy_num=0, ct_num = 0, locality=hz:hz:hz);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+#ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 2;
+ob1.mysql alter system set server_data_copy_out_concurrency = 2;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 2;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+sleep 5;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name like '%tt2%', table_id, 1);
+
+##case 3:R副本unit_id = -1, locality中有R;
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_port, 1);
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', addr, 1);
+let $obs = deploy_get_value(ob1.get_obs_by_addr $addr);
+$obs.force_stop;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 set locality%F@z1,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.mysql delete from oceanbase.__all_root_table where svr_ip='$src_ip' and svr_port=$src_port;
+$obs.start;
+ob1.mysql alter tenant tenant_1 set locality='F@z1,F@z2,R@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 set locality%F@z1,F@z2,R@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select count(*) c from __all_root_table where unit_id = -1, 0, 60;
+
+# case2: R副本unit_id = -1; locality为readonly@all
+# 没有这种场景；unit无处迁移；重启以后还在；
+ob1.mysql drop tenant tenant_1 force;
+ob1.mysql drop resource pool pool_1;
+let $case_index = 2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 2;
+ob1.create_client tenant=tenant_2,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+sleep 5;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_2', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name like '%tt2%', table_id, 1);
+
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $tenant_id and zone = 'z3' and svr_ip='$src_ip', svr_port, 1);
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', addr, 1);
+let $obs = deploy_get_value(ob1.get_obs_by_addr $addr);
+$obs.force_stop;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set replica_safe_remove_time = '1m';
+ob1.mysql alter tenant tenant_2 set locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_2 set locality%F@z1,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+$obs.start;
+ob1.mysql alter tenant tenant_2 set locality='F@z1,F@z2,R{all_server}@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_2 set locality%F@z1,F@z2,R{all_server}@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where unit_id = -1, 0, 60;
+ob1.mysql drop tenant tenant_2 force;
+ob1.mysql drop resource pool pool_2;
+
+## case1: R副本unit_id = -1； locality里面没有R;
+let $case_index=3;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_3,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+sleep 5;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set replica_safe_remove_time = '1m';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_3', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name like '%tt2%', table_id, 1);
+
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_port, 1);
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', addr, 1);
+let $obs = deploy_get_value(ob1.get_obs_by_addr $addr);
+$obs.force_stop;
+ob1.mysql alter tenant tenant_3 set locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_3 set locality%F@z1,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+$obs.start;
+ob1.check_until_timeout select count(*)>0 from __all_virtual_meta_table where unit_id = -1, 1, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where unit_id = -1, 0, 120;
+ob1.mysql drop tenant tenant_3 force;
+ob1.mysql drop resource pool pool_3;
+
+## caser4: F副本unit_id = -1; locality里面没有F;
+###做一次unit迁移，同时将unit源端的一个副本的unit_id改成-1；
+let $case_index=4;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_4,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+sleep 5;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set replica_safe_remove_time = '1m';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_4', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name like '%tt2%', table_id, 1);
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_port, 1);
+let $dest_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone= 'z3' and svr_ip != '$src_ip' and svr_port != $src_port, svr_ip, 1);
+let $dest_port = deploy_get_value(ob1.select select svr_port from __all_server where zone= 'z3' and svr_ip != '$src_ip' and svr_port != $src_port, svr_port, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', unit_id, 1);
+--disable_query_log
+ob1.mysql alter system migrate unit $unit_id destination '$dest_ip:$dest_port';
+--enable_query_log
+sleep 10;
+ob1.mysql update oceanbase.__all_root_table set unit_id = -1 where svr_ip = '$src_ip' and svr_port=$src_port;
+ob1.check_until_timeout select count(*) from __all_root_table where unit_id = -1, 0, 60;
+ob1.mysql drop tenant tenant_4 force;
+ob1.mysql drop resource pool pool_4;
+
+
+## case6: R副本处于迁移过程中，发现locality变更；
+let $case_index = 5;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_5,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+sleep 5;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_5', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name like '%tt2%', table_id, 1);
+let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_ip, 1);
+let $src_port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', svr_port, 1);
+let $dest_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone= 'z3' and svr_ip != '$src_ip' and svr_port != $src_port, svr_ip, 1);
+let $dest_port = deploy_get_value(ob1.select select svr_port from __all_server where zone= 'z3' and svr_ip != '$src_ip' and svr_port != $src_port, svr_port, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $tenant_id and zone = 'z3', unit_id, 1);
+ob1.mysql alter system set enable_rebalance = 'true';
+--disable_query_log
+ob1.mysql alter system migrate unit $unit_id destination '$dest_ip:$dest_port';
+--enable_query_log
+ob1.mysql alter tenant tenant_5 set locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_5 set locality%F@z1,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 60;
+ob1.mysql drop tenant tenant_5 force;
+ob1.mysql drop resource pool pool_5;
+
+

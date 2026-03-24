@@ -1,0 +1,1445 @@
+# owner: sean.yyj
+# owner group: sql-sql4
+# description: mysql分区裁剪-二级分区，多个分区表之间join连接
+# tags: ddl,dml,delete,group_by,order_by,join, optimizer
+# author: whh01047778
+
+
+purge recyclebin;
+let $char_charset = 'utf8';
+--disable_warnings
+drop database if exists whhtest;
+--enable_warnings
+create database whhtest;
+use whhtest;
+set timestamp = 1600000000;
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+set @@session.explicit_defaults_for_timestamp=off;
+--result_format 4
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-二级分区 --------------------------------------------------
+--echo ### 用例：二级分区，分区裁剪sql语句，查询条件/二级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-2，partition_key_type，partition_fn-1，partition_fn-2，partition_pruning_dml，partition_where-2，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+--disable_warnings
+drop table if exists t_testdata;
+--enable_warnings
+create table t_testdata (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp);
+
+insert into t_testdata values('2022-12-01','12:00:00.1000','2020','2022-12-01 12:00:00.1000','2022-12-01 12:00:00.1000');
+insert into t_testdata values('2022-12-02','13:00:00.1000','2021','2022-12-02 13:00:00.1000','2022-12-02 12:00:00.1001');
+
+--echo ######################## Range + Hash 分区 ########################
+--disable_warnings
+drop table if exists t_part_sub;
+--enable_warnings
+create table t_part_sub (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp)
+partition by range (YEAR(c4))
+  subpartition by hash( to_days(c1) )
+  subpartitions 3 
+  (partition p0 values less than (2000),
+   partition p1 values less than (2010),
+   partition p2 values less than maxvalue);
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_part_sub where c1 = '1994-06-01' group by c1;
+explain select c1,c2 from t_part_sub where c4 = '1994-06-01 12:00:00' group by c4;
+explain select c1,c2 from t_part_sub where c1 = '1994-06-01' and c4 = '1994-06-01 12:00:00';
+explain select c1,c2 from t_part_sub where c1 in ('2000-05-31','2020-01-01') and c4 in ('2000-05-31','2020-01-01') order by c2;
+explain select c1,c2 from t_part_sub where to_days(c1) = to_days('2000-06-01') and year(c4) = year('2000-06-01');
+explain select c1,c2 from t_part_sub where to_days(c1)= to_days('2000-06-01') and to_days(c4)= to_days('2000-06-01');
+explain select c1,c2 from t_part_sub group by c1,c4 having c1 = '2021-02-01'and c4 = '1994-06-01 12:00:00';
+explain select c1,c2 from t_part_sub where c1 < '2000-02-10' and c4 < '2000-02-10';
+explain select c1,c2 from t_part_sub where c1 between '2021-02-10' and '2021-02-11' and c4 between '2021-02-10' and '2021-02-11';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_sub set c2 = '2021-12-29' where c1 = '2021-02-15' limit 2;
+explain update t_part_sub set c2 = '2021-12-29' where c4 in ('2022-05-31','2020-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_sub where  c1 = '2021-04-04' and c4 = '2022-04-08';
+explain delete from t_part_sub where (c1 >= '2000-06-01' and c1 < '2020-01-01') and (c4 >= '2021-03-11' and c4 <= '2021-03-15');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_sub(c1) values (NULL);
+explain insert into t_part_sub(c4) values (NULL);
+explain insert into t_part_sub(c1,c4) values (NULL,NULL);
+explain insert into t_part_sub(c1,c4) values ('2021-02-12','2021-02-12 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15');
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15' and t2.c4 = '2002-02-15');
+
+
+--echo ######################## Range + Hash 分区 ########################
+drop table t_part_sub;
+create table t_part_sub (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp)
+partition by range (YEAR(c1))
+subpartition by hash( to_days(c1))(
+   partition p0 values less than (2000)(
+     subpartition s0, 
+	 subpartition s1),
+   partition p1 values less than (2010)(
+     subpartition s2, 
+	 subpartition s3),
+   partition p2 values less than maxvalue(
+     subpartition s4, 
+     subpartition s5));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+--echo # issue: 39138304 bug13: 复合分区时，显式定义子分区名字，ob分区裁剪显示的还是默认子分区名。
+explain select c1,c2 from t_part_sub where c1 = '2022-01-13' group by c1;
+explain select c1,c2 from t_part_sub where c1 in ('1994-05-31','2020-01-01') order by c2;
+explain select c1,c2 from t_part_sub where year(c1) = year('2000-06-01');
+explain select c1,c2 from t_part_sub where to_days(c1)= to_days('2000-06-01');
+explain select c1,c2 from t_part_sub group by c1 having c1 = '2021-02-01';
+explain select c1,c2 from t_part_sub where c1 < '2000-02-10';
+explain select c1,c2 from t_part_sub where c1 between '2021-02-10' and '2021-02-11';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_sub set c2 = '2021-12-29' where c1 = '2021-02-15' limit 2;
+explain update t_part_sub set c2 = '2021-12-29' where c1 in ('2000-05-31','2020-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_sub where  c1 >= '2021-04-04' and c1 <= '2022-04-08';
+explain delete from t_part_sub where (c1 >= '2000-06-01' and c1 < '2020-01-01') or (c1 >= '2021-03-11' and c1 <= '2021-03-15');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_sub(c1) values (NULL);
+explain insert into t_part_sub(c1) values ('2021-02-12');
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15');
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 between '2001-02-10' and '2002-02-15');
+
+
+--echo ######################## Range Columns + Key 分区 ########################
+drop table t_part_sub;
+create table t_part_sub (c1 date, c2 time, c3 year, c4 datetime not null, c5 timestamp)
+partition by range columns (c1)
+  subpartition by key(c4)
+  subpartitions 3 
+  (partition p0 values less than ('2000-01-01'),
+   partition p1 values less than ('2020-01-01'),
+   partition p2 values less than maxvalue);
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_part_sub where c1 = '1994-06-01' group by c1;
+explain select c1,c2 from t_part_sub where c4 = '1994-06-01 12:00:00' group by c1;
+explain select c1,c2 from t_part_sub where c1 = '1994-06-01' and c4 = '1994-06-01 12:00:00' group by c1;
+explain select c1,c2 from t_part_sub where c1 in ('2000-05-31','2010-01-01') and c4 in ('2000-05-31 12:00:00','2010-01-01 12:00:00')order by c2;
+explain select c1,c2 from t_part_sub where year(c1) = year('2020-01-01') and year(c4) = year('2020-01-01');
+explain select c1,c2 from t_part_sub group by c1,c4 having c1 = '2021-02-01' and c4 = '1994-06-01 12:00:00';
+explain select c1,c2 from t_part_sub where c1 < '2000-02-10' and c4 < '2000-02-10';
+explain select c1,c2 from t_part_sub where (c1 between '1999-02-10' and '1999-06-01') and  (c4 between '1999-02-10' and '1999-11-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_sub set c2 = '2021-12-29' where c1 = '2021-02-15';
+explain update t_part_sub set c2 = '2021-12-29' where c1 = '2021-02-15' and c4 = '1994-06-01 12:00:00' limit 2;
+explain update t_part_sub set c2 = '2021-12-29' where c1 in ('2021-05-31','2022-01-01') and c4 in ('2000-05-31 12:00:00','2001-01-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_sub where  (c1 >= '2021-04-04' and c1 <= '2022-04-08');
+explain delete from t_part_sub where  (c1 >= '2021-04-04' and c1 <= '2022-04-08') and (c4 >= '2001-03-11' and c4 <= '2002-03-15');
+explain delete from t_part_sub where  c1 = '1994-06-01' and c4 in ('1994-06-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_sub(c4) values (NULL);
+explain insert into t_part_sub(c1,c4) values (NULL,NULL);
+explain insert into t_part_sub(c1,c4) values ('2021-02-12','1994-06-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15' and t2.c4 = '2022-01-15');
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_sub t2 where t1.c1 > t2.c1 and t2.c1 in ('2021-05-31','2022-01-01') and t2.c4 in ('2000-05-31 12:00:00','2001-01-01 12:00:00'));
+
+
+--echo ######################## List + Hash 分区 ########################
+drop table t_part_sub;
+create table t_part_sub (empno varchar(20),empname varchar(20) ,deptno int,birthdate date not null,salary int)
+partition by list (deptno)
+subpartition by hash(year(birthdate))
+subpartitions 3
+ (partition p0 values in (null,10,15),
+  partition p1 values in (20,25),
+  partition p2 values in (30,35));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select empno,deptno from t_part_sub where deptno = 10 and birthdate = '1994-06-01' group by deptno;
+explain select empno,deptno from t_part_sub where deptno in (20,25) and birthdate in ('2000-05-31','2010-01-01') order by deptno;
+explain select empno,deptno from t_part_sub where abs(deptno) = 30 and year(birthdate) = year('2020-01-01');
+explain select empno,deptno from t_part_sub group by deptno,birthdate having deptno = 25 and birthdate = '1994-06-01';
+explain select empno,deptno from t_part_sub where deptno >= 20 and deptno <= 25 and birthdate >= '2000-01-01' and birthdate <= '2000-02-10';
+explain select empno,deptno from t_part_sub where (deptno between 20 and 25) and  (birthdate between '1999-02-10' and '1999-11-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_sub set birthdate = '2021-12-29' where deptno = 15 and birthdate = '1994-06-01' limit 2;
+explain update t_part_sub set birthdate = '2021-12-29' where deptno in (30,35) and birthdate in ('2000-05-31','2001-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_sub where (deptno >= 29 and deptno <= 30) and (birthdate >= '2002-03-11' and birthdate <= '2002-03-15');
+explain delete from t_part_sub where deptno = 25 and birthdate in ('1994-06-01');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_sub(deptno,birthdate) values (NULL,NULL);
+explain insert into t_part_sub(deptno,birthdate) values (30,'1994-06-01');
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c1 > (select t2.birthdate from t_part_sub t2 where t1.c1 = t2.birthdate and t2.deptno = 10 and t2.birthdate = '1994-06-01');
+explain select * from t_testdata t1 where c1 > (select t2.birthdate from t_part_sub t2 where t1.c1 = t2.birthdate and t2.deptno in (20,25) and t2.birthdate in ('2000-05-31','2001-01-01'));
+
+
+--echo ######################## List + Key 分区 ########################
+drop table t_part_sub;
+CREATE TABLE t_part_sub (empno varchar(20),empname varchar(20) ,deptno int,birthdate date NOT NULL,salary int)
+PARTITION BY list (deptno)
+subpartition by key(birthdate)
+subpartitions 3
+ (PARTITION p0 VALUES in (null,10,15),
+  PARTITION p1 VALUES in (20,25),
+  PARTITION p2 VALUES in (30,35));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select empno,deptno from t_part_sub where deptno = 10 and birthdate = '1994-06-01' group by deptno;
+explain select empno,deptno from t_part_sub where deptno in (20,25) and birthdate in ('2000-05-31','2010-01-01') order by deptno;
+explain select empno,deptno from t_part_sub where abs(deptno) = 30 and year(birthdate) = year('2020-01-01');
+explain select empno,deptno from t_part_sub group by deptno,birthdate having deptno = 25 and birthdate = '1994-06-01';
+explain select empno,deptno from t_part_sub where deptno >= 20 and deptno <= 25 and birthdate >= '2000-01-01' and birthdate <= '2000-02-10';
+explain select empno,deptno from t_part_sub where (deptno between 20 and 25) and  (birthdate between '1999-02-10' and '1999-11-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_sub set birthdate = '2021-12-29' where deptno = 15 and birthdate = '1994-06-01' limit 2;
+explain update t_part_sub set birthdate = '2021-12-29' where deptno in (30,35) and birthdate in ('2000-05-31','2001-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_sub where (deptno >= 29 and deptno <= 30) and (birthdate >= '2002-03-11' and birthdate <= '2002-03-15');
+explain delete from t_part_sub where deptno = 25 and birthdate in ('1994-06-01');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_sub(deptno,birthdate) values (NULL,NULL);
+explain insert into t_part_sub(deptno,birthdate) values (30,'1994-06-01');
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c1 > (select t2.birthdate from t_part_sub t2 where t1.c1 = t2.birthdate and t2.deptno = 10 and t2.birthdate = '1994-06-01');
+explain select * from t_testdata t1 where c1 > (select t2.birthdate from t_part_sub t2 where t1.c1 = t2.birthdate and t2.deptno in (20,25) and t2.birthdate in ('2000-05-31','2001-01-01'));
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区 --------------------------------------------------
+--echo ### 用例：一级分区，分区裁剪sql语句，查询条件/多个分区表之间join连接
+--echo ### 标签：partition_type-1，partition_pruning_dml，partition_where-3
+--echo -----------------------------------------------------------------------------------------------------------------
+
+--echo ######################## 标签：partition_where-3-1（inner join）########################
+--echo ######################## Rang分区 / left outer join ########################
+--disable_warnings
+drop table if exists t_left;
+--enable_warnings
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+
+--disable_warnings
+drop table if exists t_right;
+--enable_warnings
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含左边表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含右边表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+
+--echo ######################## List分区 / inner join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n0, t_left.n1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+
+--echo ######################## RANGE COLUMNS 分区 / inner join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13' ;
+
+
+--echo ######################## LIST COLUMNS 分区 / inner join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01' and t_right.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2020-06-01' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01' and t_right.c1 = '2010-12-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01';
+
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2010-12-01';
+
+
+--echo ######################## Hash分区 / inner join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n0, t_left.n1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+
+--echo ######################## Key分区 / inner join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+drop table t_right;
+create table t_right (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+explain 
+select t_left.n1, t_left.c1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  inner join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left inner join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13' ;
+
+
+--echo ######################## 标签：partition_where-3-2（left outer join）########################
+--echo ######################## Rang分区 / left outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+
+--echo ######################## List分区 / left outer join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表 v   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+
+--echo ######################## RANGE COLUMNS 分区 / left outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13' ;
+
+
+--echo ######################## LIST COLUMNS 分区 / left outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01' and t_right.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2020-06-01' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01' and t_right.c1 = '2010-12-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2010-12-01';
+
+
+--echo ######################## Hash分区 / left outer join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表 v   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+
+--echo ######################## Key分区 / left outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+drop table t_right;
+create table t_right (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  left outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13' ;
+
+
+--echo ######################## 标签：partition_where-3-3 （right outer join）########################
+--echo ######################## Rang分区 / right outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表(右侧的表) x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+
+--echo ######################## List分区 / right outer join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表 v   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+
+--echo ######################## RANGE COLUMNS 分区 / right outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' ;
+
+
+--echo ######################## LIST COLUMNS 分区 / right outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01' and t_right.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2020-06-01' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01' and t_right.c1 = '2010-12-01';
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2010-12-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2010-12-01';
+
+
+--echo ######################## Hash分区 / right outer join ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.n0 = 14;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (主表 v   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24 and t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n0, t_left.n1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.n0 = 24;
+
+
+--echo ######################## Key分区 / right outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+drop table t_right;
+create table t_right (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (主表x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含主表分区键 (主表 x   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含副表分区键 (主表 x   副表 v)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  mysql(主表 v   副表 v)  ob(主表 v   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含主/副表分区键 ,mysql两张表都走分区裁剪,ob主表走分区裁剪，而副表不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含主表分区键 (主表 v   副表 x)
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件包含副表分区键 mysql(主表 x   副表 v)  ob(主表 x   副表 x)
+--echo # bug14: 两个Rang分区表left outer join，分区剪裁条件放在where中,分区裁剪条件包含副表分区键,mysql副表走分区裁剪,ob主副表都不走分区裁剪.
+explain 
+select t_left.n1, t_left.c1 from t_left  right outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' ;
+
+
+--echo ######################## 标签：partition_where-3-4 （full outer join）########################
+--echo ######################## Rang分区 / full outer join ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+ 
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left full outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left  full outer join t_right 
+on t_left.n1 = t_right.n1 and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left  full outer join t_right 
+on t_left.n1 = t_right.n1 and t_left.c1 = '2022-01-13' ;
+
+
+--echo ****** 标签partition_where-3-2-1 (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left full outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13' and t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含主表分区键 
+explain 
+select t_left.n1, t_left.c1 from t_left  full outer join t_right on t_left.n1 = t_right.n1 
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含副表分区键 
+explain 
+select t_left.n1, t_left.c1 from t_left  full outer join t_right on t_left.n1 = t_right.n1 
+where t_left.c1 = '2022-01-13';
+
+
+--echo ######################## 标签：partition_where-3-5 （union [all | distinct]）########################
+--echo ######################## Rang分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range (year(c1))
+(partition p0 values less than (2000),
+ partition p1 values less than (2020),
+ partition p2 values less than maxvalue);
+ 
+
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2022-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2022-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13';
+
+
+--echo ######################## List分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by list (abs(n0))
+(partition p0 values in (0,4,8),
+ partition p1 values in (10,14,18),
+ partition p2 values in (20,24,28));
+ 
+
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+where t_left.n0 = 14
+union distinct 
+select t_right.n1, t_right.n0 from t_right
+where t_right.n0 = 14;
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+where t_left.n0 = 14 
+union distinct 
+select t_right.n1, t_right.n0 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+union distinct 
+select t_right.n1, t_right.n0 from t_right
+where t_right.n0 = 14;
+
+
+--echo ######################## RANGE COLUMNS 分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2000-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2000-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13';
+
+
+--echo ######################## LIST COLUMNS 分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+drop table t_right;
+create table t_right (n1 int, c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2020-12-01'));
+
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2000-06-01' 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2020-06-01';
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2000-06-01' 
+union all 
+select t_right.n1, t_right.c1 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2020-06-01';
+
+
+--echo ######################## Hash分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+
+drop table t_right;
+create table t_right (n0 tinyint, n1 smallint,n2 mediumint, n3 int, n4 integer,n5 bigint)
+partition by hash (abs(n0)) partitions 4;
+ 
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+where t_left.n0 = 14
+union distinct 
+select t_right.n1, t_right.n0 from t_right
+where t_right.n0 = 24;
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+where t_left.n0 = 14 
+union distinct 
+select t_right.n1, t_right.n0 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.n0 from t_left 
+union distinct 
+select t_right.n1, t_right.n0 from t_right
+where t_right.n0 = 24;
+
+
+--echo ######################## Key分区 / union [all | distinct] ########################
+drop table t_left;
+create table t_left (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+drop table t_right;
+create table t_right (n1 int, c1 date  NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 分区裁剪条件包含两个表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2021-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13';
+
+--echo ****** 分区裁剪条件只包含左边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+where t_left.c1 = '2021-01-13' 
+union all 
+select t_right.n1, t_right.c1 from t_right;
+
+--echo ****** 分区裁剪条件只包含右边表分区键
+explain 
+select t_left.n1, t_left.c1 from t_left 
+union all 
+select t_right.n1, t_right.c1 from t_right
+where t_right.c1 = '2022-01-13'
+order by n1;
+
+
+--echo ----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-补充用例 --------------------------------------------------
+--echo ----------------------------------------------------------------------------------------------------------------
+
+--echo ######################## RANGE分区 ########################
+--disable_warnings
+drop table if exists t_table;
+--enable_warnings
+CREATE TABLE t_table (a int, b varchar(255))
+PARTITION BY RANGE (a)
+(PARTITION p0 VALUES LESS THAN (1),
+ PARTITION p1 VALUES LESS THAN (2),
+ partition p2 values less than maxvalue);
+
+--echo ###查询条件(如 not in /!= )
+--echo # issue:39271748 bug18: 创建Rang/list分区，查询条件是NOT IN 或 != ，mysql进行分区裁剪，ob没有进行分区裁剪。
+explain select * from t_table where a != 1;
+explain select * from t_table where a not in (-1,1);
+
+
+--echo ###区间比较的查询条件(如 between...and, >, <,  >=, <= ))
+EXPLAIN select * from t_table where t_table.a between 1 and 2;
+EXPLAIN select * from t_table where t_table.a>= 1 and t_table.a<= 2;
+
+
+--echo ######################## LIST分区 ########################
+drop table t_table;
+create table t_table (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by list (n0)
+(partition p0 values in (0),
+ partition p1 values in (1),
+ partition p2 values in (2));
+
+--echo ###查询条件(如 not in /!= )
+--echo # issue:39271748 bug18: 创建Rang/list分区，查询条件是NOT IN 或 != ，mysql进行分区裁剪，ob没有进行分区裁剪。
+EXPLAIN SELECT * FROM t_table WHERE n0 != 1;
+EXPLAIN SELECT * FROM t_table WHERE n0 NOT IN (-1,1);
+
+
+--echo ###区间比较的查询条件(如 between...and, >, <,  >=, <= ))
+EXPLAIN select * from t_table where t_table.n0 between 1 and 2;
+EXPLAIN select * from t_table where t_table.n0>= 1 and t_table.n0<= 2;
+
+
+--echo ######################## Hash分区 ########################
+drop table t_table;
+create table t_table (a int, b bigint) 
+partition by hash(a) partitions 10;
+
+--echo ###查询条件(如 not in /!= )
+EXPLAIN SELECT * FROM t_table WHERE a != 1;
+EXPLAIN SELECT * FROM t_table WHERE a NOT IN (-1,1);
+
+
+--echo ###区间比较的查询条件(如 between...and, >, <,  >=, <= ))
+--echo # 在 ob 的分区裁剪实现中，list/hash 分区是无法使用非 single value range 做分区裁剪的
+EXPLAIN select * from t_table where t_table.a between 10 and 15;
+EXPLAIN select * from t_table where t_table.a>= 10 and t_table.a<= 15;
+
+
+--echo ######## 清空回收站，删除测试数据，表等 ########
+--disable_warnings
+--error 0,1051
+drop table t_testdata;
+--error 0,1051
+drop table t_part_sub;
+--error 0,1051
+drop table t_left;
+--error 0,1051
+drop table t_right;
+--error 0,1051
+drop table t_table;
+drop database if exists whhtest;
+--enable_warnings
+purge recyclebin;
+

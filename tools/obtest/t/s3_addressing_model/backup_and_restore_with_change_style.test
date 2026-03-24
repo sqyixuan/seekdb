@@ -1,0 +1,164 @@
+# owner: buduo.jyh
+# owner group: opensource
+# Testing Case: 备份恢复场景中，备份和恢复使用不同的addressing_model
+
+ob1=OBI(cluster=1:1:1, proxy_num=1);
+
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $restore_oracle_tenant_new = restore_oracle_tenant_new;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $log_backup_dest_basic = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest_basic = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+let $restore_log_archive_dest = deploy_get_value(ob1.get_log_backup_dest $restore_oracle_tenant);
+
+let $data_backup_dest =$data_backup_dest_basic&addressing_model=virtual_hosted_style;
+let $log_backup_dest =$log_backup_dest_basic&addressing_model=virtual_hosted_style; 
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT backup_oracle_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+source include/check_schema_sync.inc;
+connection backup_sys_conn;
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $backup_oracle_tenant_id, resource_pool_id, 1);
+let $src_ls_id = 1001;
+--echo create tenant finished
+
+--echo ===============================================================
+--echo ==================     create table T1  =======================
+--echo ===============================================================
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';
+ob1.set_piece_switch_interval $backup_oracle_tenant_id 0 2m;
+--enable_all_result_log
+
+
+
+connection sys_conn_oracle;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A"));
+insert into t1(a, b) values(1, 1);
+insert into t1(a, b) values(2, 2);
+
+
+--echo ===============================================================
+--echo ==================     start archive   ========================
+--echo ===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+
+--echo ===============================================================
+--echo ==================     start backup data   ====================
+--echo ===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+
+
+# write some data after data backup
+begin;
+insert into t1(a, b) values(3, 3);
+insert into t1(a, b) values(4, 4);
+let $count_before = deploy_get_value(ob1.select select count(*) as mini_num from __all_virtual_tablet_compaction_history where tenant_id=$backup_oracle_tenant_id and ls_id=$src_ls_id and type = 'MINI_MERGE',mini_num,1);
+let $freeze_ts = `select to_char(sysdate, 'yyyy-mm-dd hh24:mi:ss') from dual`;
+ob1.mysql alter system minor freeze tenant='$backup_oracle_tenant';
+update t1 set c=1;
+update t1 set b=b+1;
+commit;
+begin;
+update t1 set c=2;
+delete from t1 where a=1;
+commit;
+
+create table t2(a int, b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A"));
+insert into t2(a, b) values(1, 1);
+insert into t2(a, b) values(2, 2);
+begin;
+insert into t2(a, b) values(3, 3);
+insert into t2(a, b) values(4, 4);
+update t2 set c=1;
+update t2 set b=b+1;
+commit;
+
+
+sleep 20;
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+let $data_backup_dest_new = $data_backup_dest_basic&addressing_model=path_style;
+let $log_backup_dest_new = $log_backup_dest_basic&addressing_model=path_style;
+let $restore_path = $data_backup_dest_new,$log_backup_dest_new;
+
+--echo ===============================================================
+--echo ===============  CALC RESTORE POINT  ==========================
+--echo ===============================================================
+let $restore_checkpoint_ts = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint_ts' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+
+--echo ===============================================================
+--echo ===============  START RESTORE  ===============================
+--echo ===============================================================
+ob1.mysql alter system restore $restore_oracle_tenant from '$restore_path'  with 'pool_list=small_pool_1&primary_zone=z1,z2';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 9, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+
+# 校验恢复进度统计信息
+select (tablet_count-inner_table_cnt) as tablet_count,(finish_tablet_count-inner_table_cnt) as finish_tablet_count from cdb_ob_restore_history a inner join (select tenant_id, count(1) as inner_table_cnt from CDB_OB_TABLET_TO_LS where tenant_id=1004 and ls_id=1) b on a.tenant_id=b.tenant_id;
+select ls_id, tablet_count as total_tablet_count, finish_tablet_count from __all_virtual_ls_restore_history where tenant_id=1004 and ls_id!=1 order by ls_id;
+
+
+
+ob_connect(restore_oracle_conn, ob1.z1.obs0, SYS@$restore_oracle_tenant, ,TEST, , USE_OB_CONNECTOR);
+connection restore_oracle_conn;
+select * from t1;
+select * from t2;
+

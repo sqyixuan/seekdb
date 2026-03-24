@@ -1,0 +1,233 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  测试hbase
+#
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+--disable_warnings
+drop tenant if exists oblog_tt;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+--disable_warnings
+drop database if exists oblog_db1;
+
+# create tenant, 创建oblog_tt租户
+create resource unit oblog_box max_cpu=2, memory_size='10G';
+create resource pool oblog_pool unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+# TODO test
+#create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* enable_hbase_mode=1 enable_white_black_list=0  log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+use oblog_db1;
+
+# T为毫秒
+# 模拟hbase table
+create table t1$cfhbase (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1048576) NOT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+insert into t1$cfhbase values(1, 2, -1546953841000, 3);
+ob1.oblog.next;
+insert into t1$cfhbase values(1, 2, 1546953841000, 3);
+ob1.oblog.next;
+insert into t1$cfhbase values(1, 2, 0, 3);
+ob1.oblog.next;
+
+let $restart_ts_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $stmt_count = 0;
+
+# 模拟hbase table 带生成列varbinary
+create table t2$cfhbase (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1048576), K_PREFIX varbinary(1024) generated always as (substring(K, 1, 4)), primary key(K, Q, T)) partition by range columns (K) (PARTITION p0 VALUES LESS THAN ('a'), PARTITION p1 VALUES LESS THAN ('w'), PARTITION p2 VALUES LESS THAN MAXVALUE);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t2$cfhbase(K, Q, T, V) values ('abcdefg', 2, -1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t2$cfhbase(K, Q, T, V) values ('abcdefg', 2, 1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# 模拟hbase table 带生成列bigint
+create table t3$cfhbase (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1048576), K_PREFIX bigint as (T), primary key(K, Q, T)) partition by range columns (K) (PARTITION p0 VALUES LESS THAN ('a'), PARTITION p1 VALUES LESS THAN ('w'), PARTITION p2 VALUES LESS THAN MAXVALUE);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t3$cfhbase(K, Q, T, V) values ('abcdefg', 2, -1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t3$cfhbase(K, Q, T, V) values ('abcdefg', 2, 1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# 非hbase tabel
+# T 为int
+create table t1$cf1 (K varbinary(1024), Q varbinary(256), T int, V varbinary(1048576) NOT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+inc $stmt_count;
+ob1.oblog.next;
+insert into t1$cf1 values(1, 2, -1546953841, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t1$cf1 values(1, 2, 1546953841, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t1$cf1 values(1, 2, 0, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# T 为varbinary
+create table t2$cf1 (K varbinary(1024), Q varbinary(256), T varbinary(256), V varbinary(1048576) NOT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t2$cf1 values(1, 2, -1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t2$cf1 values(1, 2, 1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t2$cf1 values(1, 2, 0, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# 少V列
+create table t3$cf1 (K varbinary(1024), Q varbinary(256), T bigint, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t3$cf1 values(1, 2, -1546953841000);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t3$cf1 values(1, 2, 1546953841000);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t3$cf1 values(1, 2, 0);
+ob1.oblog.next;
+inc $stmt_count;
+
+# 少K, Q列
+create table t4$cf1 (T bigint, V varbinary(1048576), primary key(T)) partition by key(T) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t4$cf1 values(-1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t4$cf1 values(1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t4$cf1 values(0, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# K, T均为bigint
+create table t5$cf1 (K bigint, Q varbinary(256), T bigint, V varbinary(1048576) NOT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t5$cf1 values(-1546953841000, 2, -1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t5$cf1 values(1546953841000, 2, -1546953841000, 3);
+ob1.oblog.next;
+inc $stmt_count;
+
+# K, Q, T, V均为bigint
+create table t6$cf1 (K bigint, Q bigint, T bigint, V bigint NOT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t6$cf1 values(-1546953841000, -1546953841000, -1546953841000, -1546953841000);
+ob1.oblog.next;
+inc $stmt_count;
+insert into t6$cf1 values(-1546953841000, 1546953841000, -1546953841000, 1546953841000);
+ob1.oblog.next;
+inc $stmt_count;
+
+# 新增TTL列
+create table t7$cf1 (K varbinary(1024), Q varbinary(256), T bigint, V bigint NOT NULL, TTL bigint(20) DEFAULT NULL, primary key(K, Q, T)) partition by key(K) partitions 97;
+ob1.oblog.next;
+inc $stmt_count;
+insert into t7$cf1 values('avcdefg', 'column1', -1546953841000, -1546953841000, 100000);
+ob1.oblog.next;
+inc $stmt_count;
+update t7$cf1 set TTL = 100 where K = 'avcdefg' and Q = 'column1';
+ob1.oblog.next;
+inc $stmt_count;
+delete from t7$cf1 where TTL = 100;
+ob1.oblog.next;
+inc $stmt_count;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 以数据字典模式启动libobcdc
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* enable_hbase_mode=1 meta_data_refresh_mode=data_dict enable_white_black_list=0 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.restart;
+
+# output
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+# 以数据字典模式启动libobcdc
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* enable_hbase_mode=1 meta_data_refresh_mode=data_dict enable_white_black_list=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.restart;
+
+# output
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+###### 验证备份T同步出去负值
+# 模拟hbase table 带生成列bigint
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* enable_hbase_mode=1 enable_backup_mode=1 enable_white_black_list=0 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table t8$cfhbase (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1048576), K_PREFIX bigint as (T), primary key(K, Q, T)) partition by range columns (K) (PARTITION p0 VALUES LESS THAN ('a'), PARTITION p1 VALUES LESS THAN ('w'), PARTITION p2 VALUES LESS THAN MAXVALUE);
+ob1.oblog.next;
+insert into t8$cfhbase(K, Q, T, V) values ('abcdefg', 2, -1546953841000, 3);
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+###### 验证备份T同步出去负值
+# 模拟hbase table 带生成列bigint
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* enable_hbase_mode=1 meta_data_refresh_mode=data_dict enable_backup_mode=1 enable_white_black_list=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table t9$cfhbase (K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1048576), K_PREFIX bigint as (T), primary key(K, Q, T)) partition by range columns (K) (PARTITION p0 VALUES LESS THAN ('a'), PARTITION p1 VALUES LESS THAN ('w'), PARTITION p2 VALUES LESS THAN MAXVALUE);
+ob1.oblog.next;
+insert into t9$cfhbase(K, Q, T, V) values ('abcdefg', 2, -1546953841000, 3);
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
