@@ -16,7 +16,6 @@
 
 #ifndef OCEANBASE_OBSERVER_OB_PLUGIN_VECTOR_INDEX_SERVICE_DEFINE_H_
 #define OCEANBASE_OBSERVER_OB_PLUGIN_VECTOR_INDEX_SERVICE_DEFINE_H_
-#include <type_traits> // For std::invoke_result
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "share/ob_ls_id.h"
 #include "logservice/ob_log_base_type.h"
@@ -96,13 +95,13 @@ public:
 struct ObAdapterMapKeyValue
 {
 public:
-  ObAdapterMapKeyValue(ObTabletID tablet_id, ObPluginVectorIndexAdaptor *adapter)
-      : tablet_id_(tablet_id),
-        adapter_(adapter)
+  ObAdapterMapKeyValue(ObTabletID tablet_id, ObPluginVectorIndexAdaptor *adapter) 
+      : tablet_id_(tablet_id), 
+        adapter_(adapter) 
   {}
-  ObAdapterMapKeyValue()
-      : tablet_id_(),
-        adapter_(nullptr)
+  ObAdapterMapKeyValue() 
+      : tablet_id_(), 
+        adapter_(nullptr) 
   {}
   TO_STRING_KV(K_(tablet_id), K_(adapter));
 
@@ -179,6 +178,8 @@ public:
                                     ObVecIdxSharedTableInfoMap &info_map,
                                     ObIAllocator &allocator);
   int replace_old_adapter(ObPluginVectorIndexAdaptor *new_adapter);
+  // Replace old adapter with replace scn check (optimistic lock)
+  int replace_old_adapter_with_scn_check(ObPluginVectorIndexAdaptor *new_adapter, bool &has_replace);
   common::RWLock& get_adapter_map_lock() { return adapter_map_rwlock_; }
   int replace_with_full_partial_adapter(ObVectorIndexAcquireCtx &ctx,
                                         ObIAllocator &allocator,
@@ -507,7 +508,7 @@ int ObPluginVectorIndexService::process_ivf_aux_info(
   int ret = OB_SUCCESS;
   bool is_hidden_table = false;
   ObSqlString sql_string;
-  static_assert(std::is_same<typename std::invoke_result<CallbackFunc, int64_t, float*>::type, int>::value,
+  static_assert(std::is_same<typename std::result_of<CallbackFunc(int64_t, float*)>::type, int>::value,
         "process_ivf_aux_info callback format error");
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
