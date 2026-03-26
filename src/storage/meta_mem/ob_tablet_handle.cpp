@@ -269,6 +269,25 @@ const ObTableStoreIterator *ObTabletTableIterator::table_iter() const
   return &table_store_iter_;
 }
 
+const ObTabletHandle *ObTabletTableIterator::get_fork_tablet_handle_ptr(const common::ObTabletID &tablet_id) const
+{
+  static constexpr int ret = OB_ERR_UNEXPECTED;
+  const ObTabletHandle *tablet_handle = nullptr;
+  if (nullptr == fork_ctx_) {
+    // nothing
+  } else if (OB_UNLIKELY(fork_ctx_->fork_infos_.count() != fork_ctx_->fork_tablet_handles_.count())) {
+    LOG_WARN("fork tablet iterator ctx is inconsistent",
+        K(fork_ctx_->fork_infos_.count()), K(fork_ctx_->fork_tablet_handles_.count()), K(tablet_id));
+  } else {
+    for (int64_t i = 0; nullptr == tablet_handle && i < fork_ctx_->fork_infos_.count(); ++i) {
+      if (fork_ctx_->fork_infos_.at(i).get_fork_src_tablet_id() == tablet_id) {
+        tablet_handle = &fork_ctx_->fork_tablet_handles_.at(i);
+      }
+    }
+  }
+  return tablet_handle;
+}
+
 int ObTabletTableIterator::set_tablet_handle(const ObTabletHandle &tablet_handle)
 {
   int ret = OB_SUCCESS;

@@ -417,7 +417,7 @@ int ObTableAccessContext::init_for_fork(ObTableAccessContext &other,
   cached_iter_node_ = other.cached_iter_node_;
   range_allocator_ = other.range_allocator_;
   ls_id_ = other.ls_id_;
-  tablet_id_ = other.tablet_id_;
+  tablet_id_ = fork_info.get_fork_src_tablet_id();
   query_flag_ = other.query_flag_;
   // disable row cache for fork
   query_flag_.set_not_use_row_cache();

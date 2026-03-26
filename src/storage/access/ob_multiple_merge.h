@@ -98,7 +98,7 @@ protected:
   virtual int64_t generate_read_tables_version() const;
   virtual bool check_table_need_read(const ObITable &table, int64_t &major_version) const;
   virtual int alloc_row_store(ObTableAccessContext &context, const ObTableAccessParam &param);
-  const ObTableIterParam * get_actual_iter_param(const ObITable *table) const;
+  const ObTableIterParam * get_actual_iter_param(const ObITable *table);
   int project_row(const blocksstable::ObDatumRow &unprojected_row,
       const common::ObIArray<int32_t> *projector,
       const int64_t range_idx_delta,
@@ -164,6 +164,7 @@ protected:
   ObTableAccessParam *access_param_;
   ObTableAccessContext *access_ctx_;
   hash::ObHashMap<ObTabletID, ObTableAccessContext*> extra_access_ctx_;
+  hash::ObHashMap<ObTabletID, ObTableIterParam*> extra_iter_param_;
   common::ObSEArray<storage::ObITable *, common::DEFAULT_STORE_CNT_IN_STORAGE> tables_;
   blocksstable::ObDatumRow cur_row_;
   blocksstable::ObDatumRow unprojected_row_;

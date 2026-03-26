@@ -35,6 +35,68 @@ using namespace share::schema;
 using namespace sql;
 namespace storage
 {
+namespace
+{
+void fill_fork_iter_param(
+    const ObTableIterParam &src_iter_param,
+    const ObTabletID &fork_src_tablet_id,
+    const ObTabletHandle *fork_src_tablet_handle,
+    ObTableIterParam &dst_iter_param)
+{
+  dst_iter_param.table_id_ = src_iter_param.table_id_;
+  dst_iter_param.tablet_id_ = fork_src_tablet_id;
+  dst_iter_param.ls_id_ = src_iter_param.ls_id_;
+  dst_iter_param.cg_idx_ = src_iter_param.cg_idx_;
+  dst_iter_param.read_info_ = src_iter_param.read_info_;
+  dst_iter_param.rowkey_read_info_ = src_iter_param.rowkey_read_info_;
+  dst_iter_param.tablet_handle_ = fork_src_tablet_handle;
+  dst_iter_param.cg_read_info_handle_.reset();
+  dst_iter_param.cg_col_param_ = src_iter_param.cg_col_param_;
+  dst_iter_param.cg_read_infos_ = src_iter_param.cg_read_infos_;
+  dst_iter_param.out_cols_project_ = src_iter_param.out_cols_project_;
+  dst_iter_param.agg_cols_project_ = src_iter_param.agg_cols_project_;
+  dst_iter_param.group_by_cols_project_ = src_iter_param.group_by_cols_project_;
+  dst_iter_param.pushdown_filter_ = src_iter_param.pushdown_filter_;
+  dst_iter_param.op_ = src_iter_param.op_;
+  dst_iter_param.sstable_index_filter_ = src_iter_param.sstable_index_filter_;
+  dst_iter_param.output_exprs_ = src_iter_param.output_exprs_;
+  dst_iter_param.aggregate_exprs_ = src_iter_param.aggregate_exprs_;
+  dst_iter_param.output_sel_mask_ = src_iter_param.output_sel_mask_;
+  dst_iter_param.is_multi_version_minor_merge_ = src_iter_param.is_multi_version_minor_merge_;
+  dst_iter_param.need_scn_ = src_iter_param.need_scn_;
+  dst_iter_param.need_trans_info_ = src_iter_param.need_trans_info_;
+  dst_iter_param.is_same_schema_column_ = src_iter_param.is_same_schema_column_;
+  dst_iter_param.vectorized_enabled_ = src_iter_param.vectorized_enabled_;
+  dst_iter_param.has_virtual_columns_ = src_iter_param.has_virtual_columns_;
+  dst_iter_param.has_lob_column_out_ = src_iter_param.has_lob_column_out_;
+  dst_iter_param.is_for_foreign_check_ = src_iter_param.is_for_foreign_check_;
+  dst_iter_param.limit_prefetch_ = src_iter_param.limit_prefetch_;
+  dst_iter_param.is_mds_query_ = src_iter_param.is_mds_query_;
+  dst_iter_param.is_non_unique_local_index_ = src_iter_param.is_non_unique_local_index_;
+  dst_iter_param.is_advance_skip_scan_ = src_iter_param.is_advance_skip_scan_;
+  dst_iter_param.ss_rowkey_prefix_cnt_ = src_iter_param.ss_rowkey_prefix_cnt_;
+  dst_iter_param.pd_storage_flag_ = src_iter_param.pd_storage_flag_;
+  dst_iter_param.table_scan_opt_ = src_iter_param.table_scan_opt_;
+  dst_iter_param.auto_split_filter_type_ = src_iter_param.auto_split_filter_type_;
+  dst_iter_param.auto_split_filter_ = src_iter_param.auto_split_filter_;
+  dst_iter_param.auto_split_params_ = src_iter_param.auto_split_params_;
+  dst_iter_param.is_tablet_spliting_ = src_iter_param.is_tablet_spliting_;
+  dst_iter_param.is_column_replica_table_ = src_iter_param.is_column_replica_table_;
+  dst_iter_param.is_delete_insert_ = src_iter_param.is_delete_insert_;
+  dst_iter_param.need_update_tablet_param_ = src_iter_param.need_update_tablet_param_;
+}
+
+void destroy_extra_iter_param(ObTableIterParam *iter_param)
+{
+  if (OB_NOT_NULL(iter_param)) {
+    iter_param->pushdown_filter_ = nullptr;
+    iter_param->sstable_index_filter_ = nullptr;
+    iter_param->tablet_handle_ = nullptr;
+    iter_param->~ObTableIterParam();
+  }
+}
+} // namespace
+
 
 ObMultipleMerge::ObMultipleMerge()
     : padding_allocator_("MULTI_MERGE_PAD"),
@@ -42,6 +104,8 @@ ObMultipleMerge::ObMultipleMerge()
       di_base_iters_(),
       access_param_(NULL),
       access_ctx_(NULL),
+      extra_access_ctx_(),
+      extra_iter_param_(),
       tables_(),
       cur_row_(),
       unprojected_row_(),
@@ -226,12 +290,17 @@ int ObMultipleMerge::build_extra_access_ctx()
       LOG_DEBUG("skip build_extra_access_ctx", K(total_cnt), K(access_ctx_->tablet_id_));
     } else if (!extra_access_ctx_.created() && OB_FAIL(extra_access_ctx_.create(total_cnt * 2, "EAccessCtx"))) {
       LOG_WARN("failed to create extra_access_ctx map", KR(ret), K(total_cnt));
+    } else if (OB_NOT_NULL(fork_infos) && !fork_infos->empty()
+        && !extra_iter_param_.created() && OB_FAIL(extra_iter_param_.create(fork_infos->count() * 2, "EIterParam"))) {
+      LOG_WARN("failed to create extra_iter_param map", KR(ret), K(fork_infos->count()));
     } else {
       for (int64_t i = 0; OB_NOT_NULL(fork_infos) && OB_SUCC(ret) && i < fork_infos->count(); i++) {
         const ObForkTabletInfo &fork_info = fork_infos->at(i);
         const ObTabletID fork_src_tablet_id = fork_info.get_fork_src_tablet_id();
+        const ObTabletHandle *fork_src_tablet_handle = get_table_param_->tablet_iter_.get_fork_tablet_handle_ptr(fork_src_tablet_id);
         ObTableAccessContext *fork_ctx = nullptr;
         ObStoreCtx *fork_store_ctx = nullptr;
+        ObTableIterParam *fork_iter_param = nullptr;
         share::SCN fork_snapshot_scn;
         int tmp_ret = extra_access_ctx_.get_refactored(fork_src_tablet_id, fork_ctx);
         if (OB_HASH_NOT_EXIST == tmp_ret) {
@@ -240,6 +309,19 @@ int ObMultipleMerge::build_extra_access_ctx()
         } else if (OB_SUCCESS != tmp_ret) {
           ret = tmp_ret;
           LOG_WARN("fail to get fork access ctx", KR(ret), K(fork_info));
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_ISNULL(fork_src_tablet_handle)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("fork source tablet handle is null", KR(ret), K(fork_info));
+        } else if (OB_SUCCESS == (tmp_ret = extra_iter_param_.get_refactored(fork_src_tablet_id, fork_iter_param))) {
+          fill_fork_iter_param(access_param_->iter_param_, fork_src_tablet_id, fork_src_tablet_handle, *fork_iter_param);
+        } else if (OB_HASH_NOT_EXIST == tmp_ret) {
+          fork_iter_param = nullptr;
+          tmp_ret = OB_SUCCESS;
+        } else {
+          ret = tmp_ret;
+          LOG_WARN("fail to get fork iter param", KR(ret), K(fork_info));
         }
 
         if (OB_FAIL(ret)) {
@@ -274,6 +356,26 @@ int ObMultipleMerge::build_extra_access_ctx()
           if (OB_FAIL(ret) && (OB_NOT_NULL(fork_store_ctx) || OB_NOT_NULL(fork_ctx))) {
             access_ctx_->stmt_allocator_->free(fork_store_ctx);
             access_ctx_->stmt_allocator_->free(fork_ctx);
+          }
+        }
+
+        if (OB_FAIL(ret)) {
+        } else if (OB_NOT_NULL(fork_iter_param)) {
+          // refreshed above
+        } else if (OB_ISNULL(fork_iter_param = static_cast<ObTableIterParam *>(
+                       access_ctx_->stmt_allocator_->alloc(sizeof(ObTableIterParam))))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("fail to alloc memory for fork iter param", KR(ret), K(i), K(fork_info));
+        } else {
+          new (fork_iter_param) ObTableIterParam();
+          fill_fork_iter_param(access_param_->iter_param_, fork_src_tablet_id, fork_src_tablet_handle, *fork_iter_param);
+          if (OB_FAIL(extra_iter_param_.set_refactored(fork_src_tablet_id, fork_iter_param, true))) {
+            LOG_WARN("fail to set fork iter param", KR(ret), K(fork_info));
+          }
+          if (OB_FAIL(ret)) {
+            destroy_extra_iter_param(fork_iter_param);
+            access_ctx_->stmt_allocator_->free(fork_iter_param);
+            fork_iter_param = nullptr;
           }
         }
       }
@@ -1305,9 +1407,9 @@ void ObMultipleMerge::inner_reset()
     access_ctx_->truncate_part_filter_->uncombined_from_pd_filter();
   }
   padding_allocator_.reset();
+  reset_extra_access_ctx();
   access_param_ = NULL;
   access_ctx_ = NULL;
-  reset_extra_access_ctx();
   nop_pos_.reset();
   scan_cnt_ = 0;
   need_padding_ = false;
@@ -1330,6 +1432,27 @@ void ObMultipleMerge::inner_reset()
 void ObMultipleMerge::reset_extra_access_ctx()
 {
   int ret = OB_SUCCESS;
+  if (!extra_iter_param_.created()) {
+    // nothing
+  } else if (OB_ISNULL(access_ctx_) || OB_ISNULL(access_ctx_->stmt_allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid main access ctx when reset extra iter param", K(ret), KP_(access_ctx),
+        KP(access_ctx_ ? access_ctx_->stmt_allocator_ : nullptr), K(extra_iter_param_.size()));
+  } else {
+    for (hash::ObHashMap<ObTabletID, ObTableIterParam*>::iterator it = extra_iter_param_.begin();
+         it != extra_iter_param_.end();
+         ++it) {
+      ObTableIterParam *iter_param = it->second;
+      if (OB_ISNULL(iter_param)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("extra iter param is null", K(ret), K(it->first));
+      } else {
+        destroy_extra_iter_param(iter_param);
+        access_ctx_->stmt_allocator_->free(iter_param);
+      }
+    }
+    extra_iter_param_.clear();
+  }
   if (!extra_access_ctx_.created()) {
     // nothing
   } else {
@@ -1743,13 +1866,28 @@ int ObMultipleMerge::refresh_filter_params_on_demand(const bool is_open)
 }
 
 
-const ObTableIterParam * ObMultipleMerge::get_actual_iter_param(const ObITable *table) const
+const ObTableIterParam * ObMultipleMerge::get_actual_iter_param(const ObITable *table)
 {
   const ObTableIterParam *ptr = NULL;
   if (OB_ISNULL(table)) {
     STORAGE_LOG_RET(WARN, OB_INVALID_ARGUMENT, "input table is NULL", KP(table));
-  } else{
+  } else if (table->get_key().get_tablet_id() == access_param_->iter_param_.tablet_id_) {
     ptr = &access_param_->iter_param_;
+  } else if (!extra_iter_param_.created()) {
+    ptr = &access_param_->iter_param_;
+  } else {
+    ObTableIterParam *fork_iter_param = nullptr;
+    const ObTabletID &tablet_id = table->get_key().get_tablet_id();
+    const int tmp_ret = extra_iter_param_.get_refactored(tablet_id, fork_iter_param);
+    if (OB_SUCCESS == tmp_ret && OB_NOT_NULL(fork_iter_param)) {
+      ptr = fork_iter_param;
+    } else if (OB_SUCCESS == tmp_ret || OB_HASH_NOT_EXIST == tmp_ret) {
+      ptr = &access_param_->iter_param_;
+    } else {
+      const int ret = tmp_ret;
+      STORAGE_LOG(WARN, "get extra iter_param failed", KR(tmp_ret), K(tablet_id),
+          K(access_param_->iter_param_.tablet_id_), K(extra_iter_param_.size()));
+    }
   }
   return ptr;
 }

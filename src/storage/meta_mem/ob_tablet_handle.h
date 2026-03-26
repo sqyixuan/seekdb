@@ -130,6 +130,7 @@ public:
   ObTablet *get_tablet() { return tablet_handle_.get_obj(); }
   const ObTabletHandle &get_tablet_handle() { return tablet_handle_; }
   const ObTabletHandle *get_tablet_handle_ptr() const { return &tablet_handle_; }
+  const ObTabletHandle *get_fork_tablet_handle_ptr(const common::ObTabletID &tablet_id) const;
   const ObIArray<ObTabletHandle> *get_split_extra_tablet_handles_ptr() const { return split_extra_tablet_handles_.empty() ? nullptr : &split_extra_tablet_handles_; }
   const ObIArray<share::ObForkTabletInfo> *get_fork_infos() const
   {

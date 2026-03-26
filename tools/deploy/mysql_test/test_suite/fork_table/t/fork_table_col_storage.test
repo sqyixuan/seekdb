@@ -1,0 +1,427 @@
+##owner: fanxingkun.fxk
+##owner group: 底层引擎部-轻量版
+##description: Fork Table列存功能测试（WITH COLUMN GROUP(each column)）
+##tags: fork_table column_store co_sstable
+##author: fanxingkun.fxk
+
+--disable_warnings
+drop database if exists db_fork_col_storage;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_col_storage;
+use db_fork_col_storage;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+connection obsys;
+alter system set debug_sync_timeout = '120s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--source mysql_test/test_suite/fork_table/include/quick_major.inc
+
+--echo ============================================
+--echo Case 1: 基本列存 Fork - memtable 数据
+--echo ============================================
+
+drop table if exists t_col_basic;
+drop table if exists t_col_basic_fork;
+
+create table t_col_basic (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+--echo # 验证源表为列存
+--replace_regex /WITH COLUMN GROUP\([^)]*\)/WITH COLUMN GROUP(column_group_type)/g
+show create table t_col_basic;
+
+--echo # 插入初始数据（仅在 memtable）
+insert into t_col_basic values (1, 'Col1', 100, 'Data1');
+insert into t_col_basic values (101, 'Col2', 200, 'Data2');
+insert into t_col_basic values (50, 'Col3', 300, 'Data3');
+
+select count(*) as cnt from t_col_basic;
+select * from t_col_basic order by id;
+
+--echo # Fork 列存表
+fork table t_col_basic to t_col_basic_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证 fork 表也是列存
+--replace_regex /WITH COLUMN GROUP\([^)]*\)/WITH COLUMN GROUP(column_group_type)/g
+show create table t_col_basic_fork;
+
+--echo # 验证数据完整性
+select count(*) as cnt from t_col_basic_fork;
+select * from t_col_basic_fork order by id;
+
+--echo # 验证数据一致性
+select (select count(*) from t_col_basic) = (select count(*) from t_col_basic_fork) as data_consistent;
+
+--echo # 验证数据隔离：向源表和目标表分别写入不同数据
+insert into t_col_basic values (2, 'Src_New', 150, 'Src_Data');
+insert into t_col_basic_fork values (2, 'Fork_New', 250, 'Fork_Data');
+select id, name, value from t_col_basic where id = 2;
+select id, name, value from t_col_basic_fork where id = 2;
+
+--echo # 验证更新隔离
+update t_col_basic set value = 999 where id = 1;
+select id, value from t_col_basic where id = 1;
+select id, value from t_col_basic_fork where id = 1;
+
+--echo # 验证删除隔离
+delete from t_col_basic where id = 50;
+select count(*) as src_cnt from t_col_basic;
+select count(*) as fork_cnt from t_col_basic_fork;
+
+drop table t_col_basic;
+drop table t_col_basic_fork;
+
+--echo ============================================
+--echo Case 2: 列存 Fork - Major SSTable 数据（CO SSTable 重用）
+--echo ============================================
+
+drop table if exists t_col_major;
+drop table if exists t_col_major_fork;
+
+create table t_col_major (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(100)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+--echo # 插入数据并触发 major freeze，产生 CO SSTable
+insert into t_col_major values (1, 'Major_Col1', 100, 'Data1');
+insert into t_col_major values (101, 'Major_Col2', 200, 'Data2');
+insert into t_col_major values (50, 'Major_Col3', 300, 'Data3');
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+select count(*) as cnt from t_col_major;
+select * from t_col_major order by id;
+
+--echo # Fork 含有 CO SSTable 的列存表
+fork table t_col_major to t_col_major_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证 fork 表也是列存
+--replace_regex /WITH COLUMN GROUP\([^)]*\)/WITH COLUMN GROUP(column_group_type)/g
+show create table t_col_major_fork;
+
+--echo # 验证数据完整性
+select count(*) as cnt from t_col_major_fork;
+select * from t_col_major_fork order by id;
+
+--echo # 验证数据内容与源表一致
+select a.id, a.name = b.name as name_eq, a.value = b.value as val_eq
+from t_col_major a join t_col_major_fork b on a.id = b.id
+order by a.id;
+
+--echo # 验证数据隔离
+insert into t_col_major values (2, 'Src_After', 111, 'Src');
+insert into t_col_major_fork values (2, 'Fork_After', 222, 'Fork');
+select id, name, value from t_col_major where id = 2;
+select id, name, value from t_col_major_fork where id = 2;
+
+drop table t_col_major;
+drop table t_col_major_fork;
+
+--echo ============================================
+--echo Case 3: 列存 Fork - 混合 SSTable（Major + Minor + Memtable）
+--echo ============================================
+
+drop table if exists t_col_mixed;
+drop table if exists t_col_mixed_fork;
+
+create table t_col_mixed (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+--echo # Step 1: Major SSTable
+insert into t_col_mixed values (1, 'Major1', 10), (101, 'Major2', 20);
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # Step 2: Minor SSTable
+insert into t_col_mixed values (2, 'Minor1', 30), (102, 'Minor2', 40);
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 3: Memtable
+insert into t_col_mixed values (3, 'Mem1', 50), (103, 'Mem2', 60);
+
+select count(*) as cnt from t_col_mixed;
+select * from t_col_mixed order by id;
+
+--echo # Fork 含多种 SSTable 的列存表
+fork table t_col_mixed to t_col_mixed_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证 fork 表是列存
+--replace_regex /WITH COLUMN GROUP\([^)]*\)/WITH COLUMN GROUP(column_group_type)/g
+show create table t_col_mixed_fork;
+
+--echo # 验证所有数据（来自 Major、Minor、Memtable）均被正确 fork
+select count(*) as cnt from t_col_mixed_fork;
+select * from t_col_mixed_fork order by id;
+
+--echo # 验证数据一致性（行数相同）
+select (select count(*) from t_col_mixed) = (select count(*) from t_col_mixed_fork) as data_consistent;
+
+drop table t_col_mixed;
+drop table t_col_mixed_fork;
+
+--echo ============================================
+--echo Case 4: 列存 Fork - 分区表各分区数据验证
+--echo ============================================
+
+drop table if exists t_col_partition;
+drop table if exists t_col_partition_fork;
+
+create table t_col_partition (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (50),
+    partition p1 values less than (100),
+    partition p2 values less than (150),
+    partition p3 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+insert into t_col_partition values (10, 'P0_1', 1), (20, 'P0_2', 2);
+insert into t_col_partition values (60, 'P1_1', 3), (70, 'P1_2', 4);
+insert into t_col_partition values (110, 'P2_1', 5), (120, 'P2_2', 6);
+insert into t_col_partition values (160, 'P3_1', 7), (170, 'P3_2', 8);
+
+--echo # 落盘触发 CO SSTable
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+select count(*) as cnt from t_col_partition;
+select * from t_col_partition order by id;
+
+fork table t_col_partition to t_col_partition_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证各分区数据完整
+select count(*) as cnt from t_col_partition_fork;
+select * from t_col_partition_fork order by id;
+
+--echo # 验证分区级别数据一致性
+select a.id, a.name = b.name as name_eq, a.value = b.value as val_eq
+from t_col_partition a join t_col_partition_fork b on a.id = b.id
+order by a.id;
+
+drop table t_col_partition;
+drop table t_col_partition_fork;
+
+--echo ============================================
+--echo Case 5: 列存 Fork - Fork 后 DDL 操作
+--echo ============================================
+
+drop table if exists t_col_ddl;
+drop table if exists t_col_ddl_fork;
+
+create table t_col_ddl (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+insert into t_col_ddl values (1, 'DDL1', 100), (101, 'DDL2', 200), (50, 'DDL3', 300);
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+fork table t_col_ddl to t_col_ddl_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在源表添加列，不影响 fork 表
+alter table t_col_ddl add column extra_src varchar(30) default 'src_default';
+show create table t_col_ddl;
+show create table t_col_ddl_fork;
+
+--echo # 在 fork 表添加列，不影响源表
+alter table t_col_ddl_fork add column extra_fork int default 0;
+show create table t_col_ddl;
+show create table t_col_ddl_fork;
+
+--echo # 验证两表数据独立
+select id, name, value, extra_src from t_col_ddl order by id;
+select id, name, value, extra_fork from t_col_ddl_fork order by id;
+
+drop table t_col_ddl;
+drop table t_col_ddl_fork;
+
+--echo ============================================
+--echo Case 6: 列存 Fork - Build_Data 阶段写入验证
+--echo ============================================
+
+drop table if exists t_col_cow;
+drop table if exists t_col_cow_fork;
+
+create table t_col_cow (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+) WITH COLUMN GROUP(each column);
+
+insert into t_col_cow values (1, 'COW1', 10), (101, 'COW2', 20), (50, 'COW3', 30);
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 卡在 BUILD_DATA 阶段
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for signal_col_cow execute 10000';
+sleep 1;
+connection default;
+
+fork table t_col_cow to t_col_cow_fork;
+
+--echo # 等待 fork 任务到达 BUILD_DATA 阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 在 BUILD_DATA 阶段向 fork 表插入全新的行（不依赖原有 CO SSTable 数据的读操作）
+insert into t_col_cow_fork values (2, 'Fork_During_Build', 99);
+insert into t_col_cow_fork values (3, 'Fork_During_Build2', 88);
+
+--echo # 向源表也插入新行，验证互不影响
+insert into t_col_cow values (4, 'Src_During_Build', 77);
+insert into t_col_cow values (5, 'Src_During_Build2', 66);
+
+--echo # 放开 BUILD_DATA 卡点，等待 fork 完成
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal signal_col_cow';
+connection default;
+
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证 BUILD_DATA 期间写入的新行在 fork 完成后仍然存在
+select * from t_col_cow order by id;
+select * from t_col_cow_fork order by id;
+
+--echo # fork 完成后验证：对原有行的 update/delete 隔离
+update t_col_cow set value = 999 where id = 1;
+update t_col_cow_fork set value = 888 where id = 1;
+select id, value from t_col_cow where id = 1;
+select id, value from t_col_cow_fork where id = 1;
+
+delete from t_col_cow where id = 50;
+select count(*) as src_cnt from t_col_cow;
+select count(*) as fork_cnt from t_col_cow_fork;
+
+--echo # 验证源表和 fork 表的新插入行互不影响
+select id, name from t_col_cow where id in (2, 3, 4, 5) order by id;
+select id, name from t_col_cow_fork where id in (2, 3, 4, 5) order by id;
+
+drop table t_col_cow;
+drop table t_col_cow_fork;
+
+--echo ============================================
+--echo Case 7: 列存索引表在 BUILD_DATA 阶段读取
+--echo ============================================
+
+drop table if exists t_col_idx;
+drop table if exists t_col_idx_fork;
+
+create table t_col_idx (
+    id int primary key,
+    c1 int,
+    c2 int,
+    pad varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+) WITH COLUMN GROUP(each column);
+
+create index idx_c2_cs on t_col_idx(c2) with column group(each column);
+
+insert into t_col_idx values
+    (1, 11, 10, 'a'),
+    (50, 22, 20, 'b'),
+    (101, 33, 30, 'c'),
+    (150, 44, 40, 'd'),
+    (201, 55, 50, 'e');
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+connection obsys;
+--disable_query_log
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for col_build_data_signal execute 10000';
+--enable_query_log
+sleep 1;
+connection default;
+
+--disable_query_log
+fork table t_col_idx to t_col_idx_fork;
+--enable_query_log
+
+let $wait_timeout= 60;
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+connect (conn_query,$OBMYSQL_MS0,root@sys,,db_fork_col_storage,$OBMYSQL_PORT);
+connection conn_query;
+--send select /*+index(A idx_c2_cs)*/ c2 from t_col_idx_fork A where c2 = 20;
+
+sleep 1;
+
+--echo # 当前分支这里会在读取 fork 表局部索引的 CO SSTable 时触发 4015
+--echo # 当前坏版本这里应失败；修复后这里应正常返回结果并继续执行
+connection obsys;
+--disable_query_log
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal col_build_data_signal';
+--enable_query_log
+connection conn_query;
+--reap
+disconnect conn_query;
+connection default;
+
+let $wait_timeout= 60;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # fork 完成后同一条查询恢复正常
+select /*+index(A idx_c2_cs)*/ c2 from t_col_idx_fork A where c2 = 20;
+
+drop table t_col_idx;
+drop table t_col_idx_fork;
+
+--echo ============================================
+--echo 清理
+--echo ============================================
+
+connection obsys;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+drop database if exists db_fork_col_storage;
