@@ -116,6 +116,18 @@ int64_t ObINodeWithChild::get_indegree() const
   return indegree_;
 }
 
+int ObINodeWithChild::copy_child_nodes(common::ObIArray<ObINodeWithChild*> &child_nodes)
+{
+  int ret = OB_SUCCESS;
+  ObMutexGuard guard(lock_);
+  if (OB_FAIL(guard.get_ret())) {
+    COMMON_LOG(WARN, "failed to get lock", K(ret));
+  } else if (OB_FAIL(child_nodes.assign(children_))) {
+    COMMON_LOG(WARN, "failed to assign child nodes", K(ret));
+  }
+  return ret;
+}
+
 int ObINodeWithChild::add_parent_node(ObINodeWithChild &parent)
 {
   int ret = OB_SUCCESS;
@@ -394,16 +406,16 @@ const char *ObITask::ObITaskTypeStr[] = {
   "DIRECT_LOAD_WRITE_CHANNEL_FLUSH",
   "DIRECT_LOAD_WRITE_CHANNEL_FINISH",
   "DIRECT_LOAD_WRITE_CLOSE",
-  "DDL_WRITE_PIPELINE",
-  "DDL_WRITE_USING_TMP_FILE_PIPELINE",
-  "DDL_VECTOR_INDEX_APPEND_PIPELINE",
-  "DDL_VECTOR_INDEX_BUILD_AND_WRITE_PIPELINE",
+  "DDL_WRITE_PIPELINE", 
+  "DDL_WRITE_USING_TMP_FILE_PIPELINE", 
+  "DDL_VECTOR_INDEX_APPEND_PIPELINE", 
+  "DDL_VECTOR_INDEX_BUILD_AND_WRITE_PIPELINE", 
   "DIRECT_LOAD_START_MERGE",
-  "DDL_MERGE_PREPARE",
-  "DDL_MERGE_CG_SLICE",
-  "DDL_MERGE_ASSEMBLE",
-  "DDL_MERGE_GUARD",
-  "DIRECT_LOAD_WRITE_MACRO_BLOCK_PIPELINE",
+  "DDL_MERGE_PREPARE", 
+  "DDL_MERGE_CG_SLICE", 
+  "DDL_MERGE_ASSEMBLE", 
+  "DDL_MERGE_GUARD", 
+  "DIRECT_LOAD_WRITE_MACRO_BLOCK_PIPELINE", 
   "DDL_GROUP_WRITE_TASK",
   "DDL_CG_GROUP_WRITE_TASK",
   "DIRECT_LOAD_FINISH_OP",
@@ -445,10 +457,6 @@ const char *ObITask::ObITaskTypeStr[] = {
   "DIRECT_LOAD_COMPACT_SSTABLE_CLEAR",
   "DIRECT_LOAD_INC_MAJOR_UPDATE_SS_INC_MAJOR",
   "SS_INC_MAJOR_TRANSFER_BACKFILL_TX",
-  "DDL_FORK_PREPARE",
-  "DDL_FORK_REUSE",
-  "DDL_FORK_REWRITE",
-  "DDL_FORK_MERGE",
   "MAX"
 };
 
@@ -725,6 +733,16 @@ ObIDag::~ObIDag()
   reset();
 }
 
+OB_INLINE bool ObIDag::inner_check_can_retry()
+{
+  bool bret = false;
+  if (running_times_ < max_retry_times_) {
+    running_times_++;
+    bret = true;
+  }
+  return bret;
+}
+
 bool ObIDag::check_can_retry()
 {
   bool bret = false;
@@ -757,7 +775,7 @@ void ObIDag::inner_clear_task_list(TaskList &task_list)
 }
 
 bool ObIDag::inner_add_task_into_list(ObITask *task)
-{
+{ 
   task->set_list_idx(ObITask::READY_TASK_LIST);
   return task_list_.add_last(task);
 }
@@ -817,7 +835,7 @@ int ObIDag::check_task_status()
   } else if (OB_FAIL(check_cycle())) {
     COMMON_LOG(WARN, "check_cycle failed, set dag stop", K(ret), K_(id), K_(is_stop));
     int tmp_ret = OB_SUCCESS;
-    // set dag stop and do not allow new task to add
+    // set dag stop and do not allow new task to add 
     if (OB_TMP_FAIL(set_stop_without_lock())) {
       LOG_WARN("failed to set stop", K(tmp_ret), K_(id));
     }

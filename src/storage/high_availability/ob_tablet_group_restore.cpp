@@ -917,7 +917,7 @@ int ObInitialTabletGroupRestoreTask::check_local_tablets_restore_status_()
       } else if (action_restore_status == tablet_restore_status) {
         LOG_INFO("tablet restore status is equal to restore action, skip restore it", K(tablet_id),
             K(action_restore_status), K(tablet_restore_status), K(ctx_->arg_));
-      } else if (OB_FAIL(logic_tablet_id.init(tablet_id, tablet->get_tablet_meta().transfer_info_.transfer_seq_))) {
+      } else if (OB_FAIL(logic_tablet_id.init(tablet_id, 0))) {
         LOG_WARN("failed to init logic tablet id", K(ret), K(tablet_id), KPC(tablet));
       } else if (OB_FAIL(ctx_->tablet_id_array_.push_back(logic_tablet_id))) {
         LOG_WARN("failed to push tablet id into array", K(ret), K(tablet_id), KPC(ctx_));
@@ -2336,80 +2336,9 @@ int ObTabletRestoreTask::generate_physical_restore_task_(
     ObITask *parent_task,
     ObITask *child_task)
 {
-  int ret = OB_SUCCESS;
-  ObPhysicalCopyTask *copy_task = NULL;
-  ObSSTableCopyFinishTask *finish_task = NULL;
-  const int64_t task_idx = 0;
-  ObPhysicalCopyTaskInitParam init_param;
-  bool need_copy = true;
-
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("tablet restore task do not init", K(ret));
-  } else if (!copy_table_key.is_valid() || OB_ISNULL(tablet_copy_finish_task) || OB_ISNULL(parent_task) || OB_ISNULL(child_task)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("generate physical copy task get invalid argument", K(ret), K(copy_table_key), KP(tablet_copy_finish_task),
-        KP(parent_task), KP(child_task));
-  } else if (FALSE_IT(init_param.tenant_id_ = tablet_restore_ctx_->tenant_id_)) {
-  } else if (FALSE_IT(init_param.ls_id_ = tablet_restore_ctx_->ls_id_)) {
-  } else if (FALSE_IT(init_param.tablet_id_ = tablet_restore_ctx_->tablet_id_)) {
-  } else if (FALSE_IT(init_param.src_info_ = src_info_)) {
-  } else if (FALSE_IT(init_param.tablet_copy_finish_task_ = tablet_copy_finish_task)) {
-  } else if (FALSE_IT(init_param.ls_ = ls_)) {
-  } else if (FALSE_IT(init_param.is_leader_restore_ = tablet_restore_ctx_->is_leader_)) {
-  } else if (FALSE_IT(init_param.restore_action_ = tablet_restore_ctx_->action_)) {
-  } else if (FALSE_IT(init_param.restore_base_info_ = tablet_restore_ctx_->restore_base_info_)) {
-  } else if (FALSE_IT(init_param.meta_index_store_ = tablet_restore_ctx_->meta_index_store_)) {
-  } else if (FALSE_IT(init_param.second_meta_index_store_ = tablet_restore_ctx_->second_meta_index_store_)) {
-  } else if (FALSE_IT(init_param.need_sort_macro_meta_ = !copy_table_key.is_normal_cg_sstable())) {
-  } else if (FALSE_IT(init_param.need_check_seq_ = tablet_restore_ctx_->need_check_seq_)) {
-  } else if (FALSE_IT(init_param.ls_rebuild_seq_ = tablet_restore_ctx_->ls_rebuild_seq_)) {
-  } else if (FALSE_IT(init_param.macro_block_reuse_mgr_ = ObITable::is_major_sstable(copy_table_key.table_type_) ? &tablet_restore_ctx_->macro_block_reuse_mgr_ : nullptr)) {
-  } else if (FALSE_IT(init_param.extra_info_ = &tablet_restore_ctx_->extra_info_)) {
-  } else if (OB_FAIL(tablet_restore_ctx_->ha_table_info_mgr_->get_table_info(tablet_restore_ctx_->tablet_id_,
-      copy_table_key, init_param.sstable_param_))) {
-    LOG_WARN("failed to get table info", K(ret), KPC(tablet_restore_ctx_), K(copy_table_key));
-  } else if (OB_FAIL(copy_sstable_info_mgr_.get_copy_sstable_maro_range_info(copy_table_key, init_param.sstable_macro_range_info_))) {
-    LOG_WARN("failed to get copy sstable macro range info", K(ret), K(copy_table_key));
-  } else if (!init_param.is_valid()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("physical copy task init param not valid", K(ret), K(init_param), KPC(tablet_restore_ctx_));
-  } else if (OB_FAIL(dag_->alloc_task(finish_task))) {
-    LOG_WARN("failed to alloc finish task", K(ret));
-  } else if (OB_FAIL(finish_task->init(init_param))) {
-    LOG_WARN("failed to init finish task", K(ret), K(init_param), K(copy_table_key), KPC(tablet_restore_ctx_));
-  } else if (OB_FAIL(finish_task->add_child(*child_task))) {
-    LOG_WARN("failed to add child", K(ret));
-  } else if (OB_FAIL(check_need_copy_macro_blocks_(*init_param.sstable_param_, 
-                                                   need_copy))) {
-    LOG_WARN("failed to check need copy macro blocks", K(ret), K(init_param), KPC(tablet_restore_ctx_));
-  } else if (need_copy) {
-    // parent->copy->finish->child
-    if (OB_FAIL(dag_->alloc_task(copy_task))) {
-      LOG_WARN("failed to alloc copy task", K(ret));
-    } else if (OB_FAIL(copy_task->init(finish_task->get_copy_ctx(), finish_task))) {
-      LOG_WARN("failed to init copy task", K(ret));
-    } else if (OB_FAIL(parent_task->add_child(*copy_task))) {
-      LOG_WARN("failed to add child copy task", K(ret));
-    } else if (OB_FAIL(copy_task->add_child(*finish_task))) {
-      LOG_WARN("failed to add child finish task", K(ret));
-    } else if (OB_FAIL(dag_->add_task(*copy_task))) {
-      LOG_WARN("failed to add copy task to dag", K(ret));
-    }
-  } else {
-    if (OB_FAIL(parent_task->add_child(*finish_task))) {
-      LOG_WARN("failed to add child finish_task for parent", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(dag_->add_task(*finish_task))) {
-      LOG_WARN("failed to add finish task to dag", K(ret));
-    } else {
-      FLOG_INFO("succeed to generate physical copy task",
-          K(copy_table_key), K(src_info_), KPC(copy_task), KPC(finish_task));
-    }
-  }
+  int ret = OB_NOT_SUPPORTED;
+  LOG_WARN("tablet group restore physical task is not supported in this branch (standby restore uses restore dag net helper path)",
+      K(ret), K(copy_table_key), KP(tablet_copy_finish_task), KP(parent_task), KP(child_task));
   return ret;
 }
 
@@ -2538,43 +2467,12 @@ int ObTabletRestoreTask::build_copy_table_key_info_()
 
 int ObTabletRestoreTask::build_copy_sstable_info_mgr_()
 {
-  int ret = OB_SUCCESS;
-  ObStorageHACopySSTableParam param;
-  bool is_tablet_exist = true;
-
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("tablet restore task do not init", K(ret));
-  } else if (OB_FAIL(param.copy_table_key_array_.assign(copy_table_key_array_))) {
-    LOG_WARN("failed to assign copy table key info array", K(ret), K(copy_table_key_array_));
-  } else {
-    param.tenant_id_ = tablet_restore_ctx_->tenant_id_;
-    param.ls_id_ = tablet_restore_ctx_->ls_id_;
-    param.tablet_id_ = tablet_restore_ctx_->tablet_id_;
-    param.is_leader_restore_ = tablet_restore_ctx_->is_leader_;
-    param.restore_action_ = tablet_restore_ctx_->action_;
-    param.src_ls_rebuild_seq_ = ls_rebuild_seq_;
-    param.need_check_seq_ = need_check_seq_;
-    param.meta_index_store_ = tablet_restore_ctx_->meta_index_store_;
-    param.second_meta_index_store_ = tablet_restore_ctx_->second_meta_index_store_;
-    param.restore_base_info_ = tablet_restore_ctx_->restore_base_info_;
-    param.src_info_ = src_info_;
-    param.storage_rpc_ = storage_rpc_;
-    param.svr_rpc_proxy_ = svr_rpc_proxy_;
-    param.bandwidth_throttle_ = bandwidth_throttle_;
-
-    if (OB_FAIL(copy_sstable_info_mgr_.init(param))) {
-      LOG_WARN("failed to init copy sstable info mgr", K(ret), K(param), KPC(tablet_restore_ctx_));
-    } else if (OB_FAIL(copy_sstable_info_mgr_.check_src_tablet_exist(is_tablet_exist))) {
-      LOG_WARN("failed to check src tablet exist", K(ret), KPC(tablet_restore_ctx_));
-    } else if (is_tablet_exist) {
-      // do nothing
-    } else if (OB_FAIL(tablet_restore_ctx_->set_copy_tablet_status(ObCopyTabletStatus::TABLET_NOT_EXIST))) {
-      LOG_WARN("failed to set copy tablet status", K(ret), KPC(tablet_restore_ctx_));
-    } else {
-      LOG_INFO("copy tablet not exist when build sstable macro range info", KPC(tablet_restore_ctx_));
-    }
-  }
+  // NOTE: This file implements backup/restore-based tablet group restore in upstream.
+  // In this branch, copy chain is switched to primary-source helper and backup restore path is not needed.
+  // Keep this function as a stub to avoid pulling backup-restore dependencies into the copy chain.
+  int ret = OB_NOT_SUPPORTED;
+  LOG_WARN("tablet group restore path is not supported in this branch, should use restore dag net helper path",
+      K(ret), K(copy_table_key_array_));
   return ret;
 }
 
@@ -2583,7 +2481,6 @@ int ObTabletRestoreTask::generate_tablet_copy_finish_task_(
 {
   int ret = OB_SUCCESS;
   tablet_copy_finish_task = nullptr;
-  observer::ObIMetaReport *reporter = GCTX.ob_service_;
   const ObMigrationTabletParam *src_tablet_meta = nullptr;
 
   if (!is_inited_) {
@@ -2599,7 +2496,6 @@ int ObTabletRestoreTask::generate_tablet_copy_finish_task_(
     param.ls_ = ls_;
     param.tablet_id_ = tablet_restore_ctx_->tablet_id_;
     param.copy_tablet_ctx_ = tablet_restore_ctx_;
-    param.reporter_ = reporter;
     param.restore_action_ = tablet_restore_ctx_->action_;
     param.src_tablet_meta_ = src_tablet_meta;
     param.is_leader_restore_ = tablet_restore_ctx_->is_leader_;
