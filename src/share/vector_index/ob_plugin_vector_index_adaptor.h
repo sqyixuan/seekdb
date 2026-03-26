@@ -242,9 +242,9 @@ public:
   {}
 
   std::string Name() override { return "ObVsagSearchAlloc"; }
-  void* Allocate(uint64_t size) override;
+  void* Allocate(size_t size) override;
   void Deallocate(void* p) override { alloc_.free(p); };
-  void* Reallocate(void* p, uint64_t size) override;
+  void* Reallocate(void* p, size_t size) override;
   int64_t hold() { return alloc_.total(); }
   int64_t used() { return alloc_.used(); }
   void reset() { alloc_.reset(); }
@@ -766,8 +766,8 @@ public:
     need_be_optimized_ = false;   // single thread modify need_be_optimized_
   }
 
-  void vector_embedding_task_finish()
-  {
+  void vector_embedding_task_finish() 
+  { 
     common::ObSpinLockGuard ctx_guard(opt_task_lock_);
     is_in_opt_task_ = false;  // multiple thread modify is_in_opt_task_
   }
@@ -776,6 +776,9 @@ public:
   int set_snapshot_key_prefix(const ObString &key_prefix);
   int set_snapshot_key_prefix(uint64_t tablet_id, uint64_t scn, uint64_t max_length);
   int copy_meta_info(ObPluginVectorIndexAdaptor &other);
+
+  int set_replace_scn(const SCN &replace_scn);
+  SCN get_replace_scn();
 
   void set_reload_finish(const bool value) { reload_finish_ = value; };
   bool get_reload_finish() { return reload_finish_; };
@@ -832,7 +835,7 @@ public:
               K_(inc_table_id),  K_(vbitmap_table_id), K_(snapshot_table_id), K_(embedded_table_id),
               K_(ref_cnt), K_(idle_cnt), KP_(allocator),
               K_(index_identity), K_(follower_sync_statistics), 
-              K_(mem_check_cnt), K_(is_mem_limited), K_(is_need_vid));
+              K_(mem_check_cnt), K_(is_mem_limited), K_(is_need_vid), K_(snapshot_key_prefix), K_(replace_scn));
 
 private:
   void *get_incr_index();
@@ -917,6 +920,7 @@ private:
   bool need_be_optimized_;
   int64_t extra_info_column_count_;
   ObString snapshot_key_prefix_; // name rule: TabletID_SCN
+
   common::ObSpinLock opt_task_lock_;
   common::ObSpinLock reload_lock_;  // lock for reload from table
   RWLock query_lock_;// lock for async task and query
@@ -927,6 +931,11 @@ private:
   bool is_need_vid_;
   int64_t last_embedding_time_;
 
+  /* 
+   * record scn for replace_old_adapter to deal with task conflict between memdata sync and async task.
+   * we can't get scn from snapshot_key_prefix_ because it is invaild in some cases like BQ
+   */
+  SCN replace_scn_;
   constexpr static uint32_t VEC_INDEX_INCR_DATA_SYNC_THRESHOLD = 100;
   constexpr static uint32_t VEC_INDEX_VBITMAP_SYNC_THRESHOLD = 100;
   constexpr static uint32_t VEC_INDEX_SNAP_DATA_SYNC_THRESHOLD = 1;
