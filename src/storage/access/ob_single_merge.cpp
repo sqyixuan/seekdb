@@ -125,20 +125,14 @@ int ObSingleMerge::get_table_row(const int64_t table_idx,
   const ObTableIterParam *iter_param = nullptr;
   ObITable *table = nullptr;
   const ObDatumRow *prow = nullptr;
-  ObTableAccessContext *access_ctx = nullptr;
   if (OB_FAIL(tables.at(table_idx, table))) {
     STORAGE_LOG(WARN, "fail to get table", K(ret));
   } else if (OB_ISNULL(iter_param = get_actual_iter_param(table))) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Fail to get access param", K(table_idx), K(ret), K(*table));
-  } else if (OB_FAIL(get_access_ctx(table->get_key().get_tablet_id(), access_ctx))) {
-    STORAGE_LOG(WARN, "Fail to get access_ctx", KR(ret), K(table->get_key().get_tablet_id()));
-  } else if (OB_ISNULL(access_ctx)) {
-    ret = OB_ERR_UNEXPECTED;
-    STORAGE_LOG(WARN, "access_ctx is null", K(ret), K(table->get_key().get_tablet_id()));
   } else if (iters_.count() < tables.count() - table_idx) {
     // this table has not been accessed before
-    if (OB_FAIL(table->get(*iter_param, *access_ctx, *rowkey_, iter))) {
+    if (OB_FAIL(table->get(*iter_param, *access_ctx_, *rowkey_, iter))) {
       STORAGE_LOG(WARN, "Fail to get row, ", K(ret), K(table_idx),
           K(iters_.count()), K(tables.count()));
     } else if (OB_FAIL(iters_.push_back(iter))) {
@@ -148,7 +142,7 @@ int ObSingleMerge::get_table_row(const int64_t table_idx,
     }
   } else {
     iter = iters_.at(tables.count() - table_idx - 1);
-    if (OB_FAIL(iter->init(*iter_param, *access_ctx, table, rowkey_))) {
+    if (OB_FAIL(iter->init(*iter_param, *access_ctx_, table, rowkey_))) {
       STORAGE_LOG(WARN, "failed to init get iter", K(ret), K(table_idx),
           K(iters_.count()), K(tables.count()));
     }
@@ -213,7 +207,8 @@ int ObSingleMerge::get_and_fuse_cache_row(const int64_t read_snapshot_version,
         STORAGE_LOG(WARN, "Unexpected null table", K(ret), K(i), K(tables_));
       } else if (table->is_memtable()) {
         break;
-      } else if (handle_.value_->get_read_snapshot_version() < table->get_upper_trans_version()) {
+      } else if ((table->is_major_sstable() && handle_.value_->get_read_snapshot_version() < table->get_snapshot_version()) 
+		 || (!table->is_major_sstable() && handle_.value_->get_read_snapshot_version() < table->get_upper_trans_version())) {
         end_table_idx = i;
         need_update_fuse_cache = true;
         break;
@@ -268,7 +263,6 @@ int ObSingleMerge::inner_get_next_row(ObDatumRow &row)
                                         read_snapshot_version >= tablet_meta.snapshot_version_) &&
                                        (!table->is_co_sstable() || static_cast<ObCOSSTableV2 *>(table)->is_all_cg_base()) &&
                                        OB_ISNULL(get_table_param_->tablet_iter_.get_split_extra_tablet_handles_ptr()) &&
-                                       OB_ISNULL(get_table_param_->tablet_iter_.get_fork_infos()) &&
                                        !(!tablet_meta.table_store_flag_.with_major_sstable() && tablet_meta.split_info_.get_split_src_tablet_id().is_valid()) && // not split dst tablet
                                        !tablet_meta.has_transfer_table(); // The query in the transfer scenario does not enable fuse row cache
     bool need_update_fuse_cache = false;
