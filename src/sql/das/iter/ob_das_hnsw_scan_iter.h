@@ -297,7 +297,6 @@ public:
       distance_calc_(nullptr),
       is_primary_pre_with_rowkey_with_filter_(false),
       go_brute_force_(false),
-      only_complete_data_(false),
       extra_column_count_(0),
       simple_cmp_info_(),
       vec_index_type_(ObVecIndexType::VEC_INDEX_INVALID),
@@ -471,7 +470,7 @@ private:
                                 vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_ITERATIVE_FILTER));
   }
   inline bool check_if_can_retry() { return is_adaptive_filter() && (vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_ITERATIVE_FILTER 
-                                                                 || vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER)
+                                                                 || vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER) 
                                                                  && vec_aux_ctdef_->relevance_col_cnt_ == 0;}
   bool is_parallel_with_block_granule();
   bool check_need_force_switch_run_path();
@@ -581,7 +580,6 @@ private:
   ObExpr* distance_calc_;
   bool is_primary_pre_with_rowkey_with_filter_;
   bool go_brute_force_;
-  bool only_complete_data_;
   int64_t extra_column_count_;
   ObHnswSimpleCmpInfo simple_cmp_info_;
   // extra_info idx to rowkey idx, because of extra_info is sort by column id
