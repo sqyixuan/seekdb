@@ -24,27 +24,27 @@ namespace common
 template<typename T, int64_t LOCAL_ARRAY_SIZE, typename BlockAllocatorT, bool auto_free>
 typename ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::iterator ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::begin()
 {
-  return iterator(this, 0);
+  return iterator(data_);
 }
 
 template<typename T, int64_t LOCAL_ARRAY_SIZE, typename BlockAllocatorT, bool auto_free>
 typename ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::iterator ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::end()
 {
-  return iterator(this, count_);
+  return iterator(data_ + count_);
 }
 
 template<typename T, int64_t LOCAL_ARRAY_SIZE, typename BlockAllocatorT, bool auto_free>
 typename ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::const_iterator
 ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::begin() const
 {
-  return const_iterator(this, 0);
+  return const_iterator(data_);
 }
 
 template<typename T, int64_t LOCAL_ARRAY_SIZE, typename BlockAllocatorT, bool auto_free>
 typename ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::const_iterator
 ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>::end() const
 {
-  return const_iterator(this, count_);
+  return const_iterator(data_ + count_);
 }
 
 namespace array
@@ -58,115 +58,89 @@ class ObSEArrayIterator
 public:
   typedef T value_type;
   typedef int64_t difference_type;
+  typedef T *value_ptr_t;
   typedef T *pointer;
   typedef T &reference;
   typedef std::random_access_iterator_tag iterator_category;
 
 public:
-  ObSEArrayIterator() : arr_(NULL), index_(0) {}
-  explicit ObSEArrayIterator(ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free> *arr, int64_t index)
+  ObSEArrayIterator() : value_ptr_(NULL) {}
+  explicit ObSEArrayIterator(value_ptr_t value_ptr) : value_ptr_(value_ptr) {}
+  inline reference operator*() const
   {
-    arr_ = arr;
-    index_ = index;
+    return *value_ptr_;
   }
-  ObSEArrayIterator(const ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free> *arr, int64_t index)
+  inline value_ptr_t operator->() const
   {
-    arr_ = const_cast<ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free>*>(arr);
-    index_ = index;
-  };
-  inline T &operator*()
-  {
-    OB_ASSERT(arr_ != NULL);
-    return arr_->at(index_);
-  }
-  inline T *operator->() const
-  {
-    OB_ASSERT(arr_ != NULL);
-    return &arr_->at(index_);
+    return value_ptr_;
   }
 
-  operator pointer() const
-  {
-    return &arr_->at(index_);
-  }
+  operator value_ptr_t() const { return value_ptr_; }
 
-  inline ObSEArrayIterator operator++(int)// ObSEArrayIterator++
+  inline ObSEArrayIterator operator++(int) // ObSEArrayIterator++
   {
-    OB_ASSERT(arr_ != NULL);
-    return ObSEArrayIterator(arr_, index_++);
+    return ObSEArrayIterator(value_ptr_++);
   }
-  inline ObSEArrayIterator operator++()
+  inline ObSEArrayIterator &operator++()
   {
-    OB_ASSERT(arr_ != NULL);
-    index_++;
+    value_ptr_++;
     return *this;
   }
   inline ObSEArrayIterator operator--(int)
   {
-    OB_ASSERT(arr_ != NULL);
-    return ObSEArrayIterator(arr_, index_--);
+    return ObSEArrayIterator(value_ptr_--);
   }
-  inline ObSEArrayIterator operator--()
+  inline ObSEArrayIterator &operator--()
   {
-    OB_ASSERT(arr_ != NULL);
-    index_--;
+    value_ptr_--;
     return *this;
   }
   inline ObSEArrayIterator operator+(int64_t off) const
   {
-    OB_ASSERT(arr_ != NULL);
-    return ObSEArrayIterator(arr_, index_ + off);
+    return ObSEArrayIterator(value_ptr_ + off);
   }
   inline ObSEArrayIterator &operator+=(int64_t off)
   {
-    OB_ASSERT(arr_ != NULL);
-    index_ += off;
+    value_ptr_ += off;
     return *this;
   }
   inline difference_type operator-(const ObSEArrayIterator &rhs) const
   {
-    OB_ASSERT(arr_ == rhs.arr_);
-    return index_ - rhs.index_;
+    return value_ptr_ - rhs.value_ptr_;
   }
-  inline ObSEArrayIterator operator-(int64_t index) const
+  inline ObSEArrayIterator operator-(int64_t off) const
   {
-    OB_ASSERT(arr_ != NULL);
-    return ObSEArrayIterator(arr_, this->index_ - index);
+    return ObSEArrayIterator(value_ptr_ - off);
   }
   inline ObSEArrayIterator &operator-=(int64_t off)
   {
-    OB_ASSERT(arr_ != NULL);
-    index_ -= off;
+    value_ptr_ -= off;
     return *this;
   }
   inline bool operator==(const ObSEArrayIterator &rhs) const
   {
-    OB_ASSERT(arr_ == rhs.arr_);
-    return (this->index_ == rhs.index_);
+    return (value_ptr_ == rhs.value_ptr_);
   }
   inline bool operator==(const long &value) const
   {
-    return (arr_ == NULL);
+    UNUSED(value);
+    return (value_ptr_ == NULL);
   }
   inline bool operator!=(const ObSEArrayIterator &rhs) const
   {
-    OB_ASSERT(arr_ == rhs.arr_);
-    return (this->index_ != rhs.index_);
+    return (value_ptr_ != rhs.value_ptr_);
   }
   inline bool operator<(const ObSEArrayIterator &rhs) const
   {
-    OB_ASSERT(arr_ == rhs.arr_);
-    return (index_ < rhs.index_);
+    return (value_ptr_ < rhs.value_ptr_);
   }
 
   inline bool operator<=(const ObSEArrayIterator &rhs) const
   {
-    OB_ASSERT(arr_ == rhs.arr_);
-    return (index_ <= rhs.index_);
+    return (value_ptr_ <= rhs.value_ptr_);
   }
 private:
-  ObSEArrayImpl<T, LOCAL_ARRAY_SIZE, BlockAllocatorT, auto_free> *arr_;
-  int64_t index_;
+  value_ptr_t value_ptr_;
 };
 
 template <typename T, int64_t LOCAL_ARRAY_SIZE,
