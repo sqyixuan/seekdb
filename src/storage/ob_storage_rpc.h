@@ -123,12 +123,32 @@ public:
   DISALLOW_COPY_AND_ASSIGN(ObCopyMacroBlockRangeArg);
 };
 
+// Simplified version for single-replica scenario (no tenant_id/ls_id needed)
+struct ObStandbyCopyMacroBlockRangeArg final
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObStandbyCopyMacroBlockRangeArg();
+  ~ObStandbyCopyMacroBlockRangeArg() {}
+
+  bool is_valid() const;
+  TO_STRING_KV(K_(table_key), K_(data_version), K_(backfill_tx_scn), K_(copy_macro_range_info), "standby_single_replica", true);
+
+  storage::ObITable::TableKey table_key_;
+  int64_t data_version_;
+  share::SCN backfill_tx_scn_;
+  storage::ObCopyMacroRangeInfo copy_macro_range_info_;
+  ObSArray<ObCopyMacroBlockInfo> copy_macro_block_infos_;
+  DISALLOW_COPY_AND_ASSIGN(ObStandbyCopyMacroBlockRangeArg);
+};
+
 struct ObCopyMacroBlockHeader
 {
   OB_UNIS_VERSION(2);
 public:
   ObCopyMacroBlockHeader();
   virtual ~ObCopyMacroBlockHeader() {}
+  void reset();
 
   TO_STRING_KV(K_(is_reuse_macro_block), K_(occupy_size), K_(data_type));
   bool is_reuse_macro_block_;
@@ -152,6 +172,19 @@ public:
   int64_t ls_rebuild_seq_;
   bool is_only_copy_major_;
   uint64_t version_;
+};
+
+// Simplified version for single-replica scenario (no tenant_id/ls_id needed)
+struct ObStandbyCopyTabletInfoArg
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObStandbyCopyTabletInfoArg();
+  virtual ~ObStandbyCopyTabletInfoArg() {}
+
+  bool is_valid() const { return true; }
+  TO_STRING_KV(K_(tablet_id_list), "standby_single_replica", true);
+  common::ObSArray<common::ObTabletID> tablet_id_list_;
 };
 
 struct ObCopyTabletInfo
@@ -293,6 +326,33 @@ public:
   share::ObLSID ls_id_;
 };
 
+struct ObCheckRestorePreconditionArg
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObCheckRestorePreconditionArg();
+  virtual ~ObCheckRestorePreconditionArg() {}
+
+  bool is_valid() const;
+
+  TO_STRING_KV(K_(tenant_id), K_(ls_id));
+  uint64_t tenant_id_;
+  share::ObLSID ls_id_;
+};
+
+struct ObCheckRestorePreconditionResult
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObCheckRestorePreconditionResult();
+  virtual ~ObCheckRestorePreconditionResult() {}
+
+  TO_STRING_KV(K_(required_disk_size), K_(total_tablet_size), K_(cluster_version));
+  int64_t required_disk_size_;  // From ls_info.required_data_disk_size_
+  int64_t total_tablet_size_;    // Sum of all tablet sizes
+  uint64_t cluster_version_;
+};
+
 struct ObFetchLSMemberListInfo
 {
   OB_UNIS_VERSION(2);
@@ -348,12 +408,31 @@ public:
   DISALLOW_COPY_AND_ASSIGN(ObCopySSTableMacroRangeInfoArg);
 };
 
+// Simplified version for single-replica scenario (no tenant_id/ls_id needed)
+struct ObStandbyCopySSTableMacroRangeInfoArg final
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObStandbyCopySSTableMacroRangeInfoArg();
+  ~ObStandbyCopySSTableMacroRangeInfoArg();
+  bool is_valid() const;
+  int assign(const ObStandbyCopySSTableMacroRangeInfoArg &arg);
+
+  TO_STRING_KV(K_(tablet_id), K_(copy_table_key_array), K_(macro_range_max_marco_count), "standby_single_replica", true);
+  common::ObTabletID tablet_id_;
+  common::ObSArray<ObITable::TableKey> copy_table_key_array_;
+  int64_t macro_range_max_marco_count_;
+  DISALLOW_COPY_AND_ASSIGN(ObStandbyCopySSTableMacroRangeInfoArg);
+};
+
 struct ObCopySSTableMacroRangeInfoHeader final
 {
   OB_UNIS_VERSION(2);
 public:
   ObCopySSTableMacroRangeInfoHeader();
   ~ObCopySSTableMacroRangeInfoHeader();
+  bool is_valid() const;
+  void reset();
   TO_STRING_KV(K_(copy_table_key), K_(macro_range_count));
 
   ObITable::TableKey copy_table_key_;
@@ -404,7 +483,7 @@ public:
   TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(restore_status));
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
-  share::ObLSRestoreStatus restore_status_; // restore status
+  ObRestoreStatus restore_status_; // restore status
 };
 
 
@@ -419,7 +498,7 @@ public:
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
   bool is_leader_;
-  share::ObLSRestoreStatus restore_status_; // leader restore status
+  ObRestoreStatus restore_status_; // leader restore status
 };
 
 struct ObInquireRestoreArg
@@ -501,22 +580,6 @@ public:
   TO_STRING_KV(K_(tenant_id), K_(ls_id));
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
-};
-
-struct ObUpdateTransferMetaInfoArg final
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObUpdateTransferMetaInfoArg();
-  ~ObUpdateTransferMetaInfoArg() {}
-  bool is_valid() const;
-
-  TO_STRING_KV(K_(tenant_id), K_(dest_ls_id), K_(transfer_meta_info));
-  uint64_t tenant_id_;
-  share::ObLSID dest_ls_id_;
-  ObLSTransferMetaInfo transfer_meta_info_;
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObUpdateTransferMetaInfoArg);
 };
 
 #ifdef OB_BUILD_SHARED_STORAGE

@@ -67,6 +67,7 @@ public:
     BACKFILL_TX = 5,
     TRANSFER_BACKFILL_TX = 6,
     REBUILD_TABLET = 7,
+    RESTORE_COMPLETE = 8,
     MAX
   };
 
