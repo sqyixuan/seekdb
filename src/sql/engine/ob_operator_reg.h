@@ -762,6 +762,12 @@ class ObTableDirectInsertOp;
 class ObTableDirectInsertOpInput;
 REGISTER_OPERATOR(ObLogInsert, PHY_TABLE_DIRECT_INSERT, ObTableDirectInsertSpec, ObTableDirectInsertOp, ObTableDirectInsertOpInput, VECTORIZED_OP, 0 /*version*/, SUPPORT_RICH_FORMAT, "PHY_TABLE_DIRECT_INSERT");
 
+class ObLogAiSplitDocument;
+class ObAiSplitDocumentSpec;
+class ObAiSplitDocumentOp;
+REGISTER_OPERATOR(ObLogAiSplitDocument, PHY_AI_SPLIT_DOCUMENT, ObAiSplitDocumentSpec,
+                  ObAiSplitDocumentOp, NOINPUT);
+
 #undef REGISTER_OPERATOR
 #undef REGISTER_OPERATOR_FULL
 #undef CHECK_IS_CHAR

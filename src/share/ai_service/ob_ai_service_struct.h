@@ -158,6 +158,36 @@ private:
   ObString response_transform_fn_;
 };
 
+struct ParseDocumentParam
+{
+  ParseDocumentParam() : dpi_(144), save_png_(false), output_format_(MARKDOWN), input_format_(BINARY) {}
+  int parse_from_json_base(const common::ObIJsonBase &params_jbase);
+  enum OUTPUT_FORMAT_TYPE
+  {
+    OUTPUT_MIN = 0,
+    MARKDOWN = 1,
+    TEXT = 2,
+    OUTPUT_MAX = 3,
+  };
+  enum INPUT_FORMAT_TYPE
+  {
+    INPUT_MIN = 0,
+    BINARY = 1,
+    URL_OR_PATH = 2,
+    INPUT_MAX = 3,
+  };
+
+  TO_STRING_KV(K_(dpi),
+               K_(save_png),
+               K_(input_format),
+               K_(output_format));
+public:
+  int64_t dpi_;
+  bool save_png_;
+  OUTPUT_FORMAT_TYPE output_format_;
+  INPUT_FORMAT_TYPE input_format_;
+};
+
 } // namespace share
 } // namespace oceanbase
 

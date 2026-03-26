@@ -415,6 +415,7 @@
 #include "sql/engine/expr/ob_expr_array_remove.h"
 #include "sql/engine/expr/ob_expr_array_map.h"
 #include "sql/engine/expr/ob_expr_array_range.h"
+#include "sql/engine/expr/ob_expr_calc_odps_size.h"
 #include "sql/engine/expr/ob_expr_array_first.h"
 #include "sql/engine/expr/ob_expr_mysql_proc_info.h"
 #include "sql/engine/expr/ob_expr_get_mysql_routine_parameter_type_str.h"
@@ -446,6 +447,8 @@
 #include "sql/engine/expr/ob_expr_ai/ob_expr_ai_prompt.h"
 #include "sql/engine/expr/ob_expr_vector_similarity.h"
 #include "sql/engine/expr/ob_expr_check_location_access.h"
+#include "sql/engine/expr/ob_expr_ai/ob_expr_ai_parse_document.h"
+#include "sql/engine/expr/ob_expr_load_file.h"
 
 
 #include "sql/engine/expr/ob_expr_lock_func.h"
@@ -1135,6 +1138,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprArrayIntersect);
     REG_OP(ObExprArrayUnion);
     REG_OP(ObExprGetMySQLRoutineParameterTypeStr);
+    REG_OP(ObExprCalcOdpsSize);
     REG_OP(ObExprToPinyin);
     REG_OP(ObExprURLEncode);
     REG_OP(ObExprURLDecode);
@@ -1158,6 +1162,8 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprAIRerank);
     REG_OP(ObExprAIPrompt);
     REG_OP(ObExprCheckLocationAccess);
+    REG_OP(ObExprAIParseDocument);
+    REG_OP(ObExprLoadFile);
   }();
 }
 

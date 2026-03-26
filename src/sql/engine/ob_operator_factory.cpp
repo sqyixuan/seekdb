@@ -158,6 +158,8 @@
 #include "sql/engine/subquery/ob_subplan_filter_vec_op.h"
 #include "sql/engine/direct_load/ob_table_direct_insert_op.h"
 #include "sql/engine/table/ob_ddl_block_sample_scan_op.h"
+#include "sql/optimizer/ob_log_ai_split_document.h"
+#include "sql/engine/basic/ob_ai_split_document_op.h"
 
 namespace oceanbase
 {

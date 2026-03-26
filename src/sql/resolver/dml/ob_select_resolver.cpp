@@ -1988,6 +1988,10 @@ int ObSelectResolver::expand_target_list(
     } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
       LOG_WARN("failed to append", K(ret));
     }
+  } else if (table_item.is_ai_split_document_table()) {
+    if (OB_FAIL(resolve_all_ai_split_document_columns(table_item, &column_items))) {
+      LOG_WARN("resolve all ai split document columns failed", K(ret));
+    }
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected table type", K_(table_item.type), K(ret));
@@ -2234,6 +2238,15 @@ int ObSelectResolver::resolve_all_function_table_columns(
   int ret = OB_SUCCESS;
   CK (OB_NOT_NULL(column_items));
   OZ (resolve_function_table_column_item(table_item, *column_items));
+  return ret;
+}
+
+int ObSelectResolver::resolve_all_ai_split_document_columns(
+  const TableItem &table_item, ObIArray<ColumnItem> *column_items)
+{
+  int ret = OB_SUCCESS;
+  CK (OB_NOT_NULL(column_items));
+  OZ (resolve_ai_split_document_column_items(table_item, *column_items));
   return ret;
 }
 

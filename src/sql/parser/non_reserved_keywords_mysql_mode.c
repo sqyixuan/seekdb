@@ -355,7 +355,6 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"foreign", FOREIGN},
   {"format", FORMAT},
   {"found", FOUND},
-  {"fork", FORK},
   {"fragmentation", FRAGMENTATION},
   {"freeze", FREEZE},
   {"frequency", FREQUENCY},
@@ -499,6 +498,7 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"list", BISON_LIST},
   {"listagg", LISTAGG},
   {"load", LOAD},
+  {"load_file", LOAD_FILE},
   {"ln", LN},
   {"lob_inrow_threshold", LOB_INROW_THRESHOLD},
   {"local", LOCAL},
@@ -1176,6 +1176,7 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"INCONSISTENT", INCONSISTENT},
   {"INDIVIDUAL", INDIVIDUAL},
   {"hybrid_search", HYBRID_SEARCH},
+  {"ai_split_document", AI_SPLIT_DOCUMENT},
 };
 
 /** https://dev.mysql.com/doc/refman/5.7/en/sql-syntax-prepared-statements.html

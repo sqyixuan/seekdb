@@ -601,7 +601,7 @@ int ObQueryDriver::convert_text_value_charset(ObObj& value,
       LOG_DEBUG("Lob: get empty or null obj without header or not lob", K(value));
     } else {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("Lob: get  empty or null lob obj with header", K(ret), K(value));
+      LOG_WARN("Lob: get empty or null lob obj with header", K(ret), K(value));
     }
   } else if (ObCharset::is_valid_charset(charset_type) && CHARSET_BINARY != charset_type) {
     ObCollationType to_collation_type = ObCharset::get_default_collation(charset_type);

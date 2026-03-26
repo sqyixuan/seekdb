@@ -168,6 +168,27 @@ int TableItem::deep_copy_json_table_def(const ObJsonTableDef& jt_def, ObIRawExpr
   return ret;
 }
 
+int TableItem::deep_copy_ai_split_document_def(const ObAiSplitDocumentDef& ai_split_document_def, ObIRawExprCopier &expr_copier, ObIAllocator* allocator)
+{
+  int ret = OB_SUCCESS;
+  ObAiSplitDocumentDef* tmp_ai_split_document_def = nullptr;
+  if (OB_ISNULL(allocator)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected param, invalid param.", K(ret));
+  } else if (OB_ISNULL(tmp_ai_split_document_def = static_cast<ObAiSplitDocumentDef*>(allocator->alloc(sizeof(ObAiSplitDocumentDef))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate memory ai split document def failed.", K(ret));
+  } else {
+    tmp_ai_split_document_def = new (tmp_ai_split_document_def) ObAiSplitDocumentDef();
+    if (OB_FAIL(tmp_ai_split_document_def->deep_copy(ai_split_document_def, expr_copier, allocator))) {
+      LOG_WARN("deep copy ai split document def failed.", K(ret));
+    } else {
+      ai_split_document_def_ = tmp_ai_split_document_def;
+    }
+  }
+  return ret;
+}
+
 int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
                          const TableItem &other,
                          ObIAllocator* allocator)
@@ -224,6 +245,9 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   } else if (is_values_table() &&
              OB_FAIL(deep_copy_values_table_def(*other.values_table_def_, expr_copier, allocator))) {
     LOG_WARN("failed to deep copy values table def", K(ret));
+  } else if (is_ai_split_document_table() &&
+              OB_FAIL(deep_copy_ai_split_document_def(*other.ai_split_document_def_, expr_copier, allocator))) {
+    LOG_WARN("failed to deep copy ai split document def", K(ret));
   } else { /* do nothing */ }
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(other.sample_info_)) {
@@ -859,6 +883,14 @@ int ObDMLStmt::iterate_stmt_expr(ObStmtExprVisitor &visitor)
           LOG_WARN("failed to add lateral ref expr", K(ret));
         }
       }
+    } else if (table_items_.at(i)->is_ai_split_document_table() &&
+               NULL != table_items_.at(i)->ai_split_document_def_) {
+      TableItem *table_item = table_items_.at(i);
+      if (OB_FAIL(visitor.visit(table_item->ai_split_document_def_->option_expr_, SCOPE_FROM))) {
+        LOG_WARN("failed to visit ai split document option expr", K(ret));
+      } else if (OB_FAIL(visitor.visit(table_item->ai_split_document_def_->context_expr_, SCOPE_FROM))) {
+        LOG_WARN("failed to visit ai split document context expr", K(ret));
+      }
     } else { /*do nothing*/ }
   }
 
@@ -1492,6 +1524,24 @@ int ObDMLStmt::get_json_table_exprs(ObIArray<ObRawExpr *> &json_table_exprs) con
   return ret;
 }
 
+int ObDMLStmt::get_ai_split_document_exprs(ObIArray<ObRawExpr *> &ai_split_document_exprs) const
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < table_items_.count(); ++i) {
+    if (OB_ISNULL(table_items_.at(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table item is null", K(ret));
+    } else if (!table_items_.at(i)->is_ai_split_document_table()) {
+      // do nothing
+    } else if (OB_FAIL(ai_split_document_exprs.push_back(table_items_.at(i)->ai_split_document_def_->option_expr_))) {
+      LOG_WARN("failed to push back ai split document option expr", K(ret));
+    } else if (OB_FAIL(ai_split_document_exprs.push_back(table_items_.at(i)->ai_split_document_def_->context_expr_))) {
+      LOG_WARN("failed to push back ai split document context expr", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObDMLStmt::remove_part_expr_items(ObIArray<uint64_t> &table_ids)
 {
   int ret = OB_SUCCESS;
@@ -1847,7 +1897,8 @@ int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
       } else if (table_item->is_function_table() ||
                  table_item->is_json_table() ||
                  table_item->for_update_ ||
-                 table_item->is_values_table()) {
+                 table_item->is_values_table() ||
+                 table_item->is_ai_split_document_table()) {
         if (OB_FAIL(set_sharable_expr_reference(*column_item.expr_, ExplicitedRefType::REF_BY_NORMAL))) {
           LOG_WARN("failed to set sharable exprs reference", K(ret));
         } else if (table_item->is_json_table()) {
@@ -5069,24 +5120,6 @@ int ObDMLStmt::get_match_expr_on_table(uint64_t table_id, ObIArray<ObRawExpr *> 
   return ret;
 }
 
-int ObDMLStmt::has_match_expr_on_table(uint64_t table_id, bool &has_match_expr) const
-{
-  int ret = OB_SUCCESS;
-  has_match_expr = false;
-  for (int64_t i = 0; OB_SUCC(ret) && !has_match_expr && i < get_match_exprs().count(); i++) {
-    uint64_t cur_tid = OB_INVALID_ID;
-    if (OB_ISNULL(get_match_exprs().at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected null", K(ret));
-    } else if (OB_FAIL(get_match_exprs().at(i)->get_table_id(cur_tid))) {
-      LOG_WARN("failed to get fulltext search exprs", K(ret));
-    } else if (cur_tid == table_id) {
-      has_match_expr = true;
-    }
-  }
-  return ret;
-}
-
 ObJtColBaseInfo::ObJtColBaseInfo()
   : col_type_(0),
     truncate_(0),
@@ -5311,6 +5344,28 @@ int ObValuesTableDef::deep_copy(const ObValuesTableDef &other,
   return ret;
 }
 
+int ObAiSplitDocumentDef::deep_copy(const ObAiSplitDocumentDef& src, ObIRawExprCopier &expr_copier, ObIAllocator* allocator)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(allocator)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected param, invalid param.", K(ret));
+  } else if (OB_ISNULL(option_expr_ = static_cast<ObRawExpr*>(allocator->alloc(sizeof(ObRawExpr))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate memory option expr failed.", K(ret));
+  } else if (OB_FAIL(expr_copier.copy(src.option_expr_, option_expr_))) {
+    LOG_WARN("failed to copy option expr", K(ret));
+  } else if (OB_ISNULL(context_expr_ = static_cast<ObRawExpr*>(allocator->alloc(sizeof(ObRawExpr))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("allocate memory context expr failed.", K(ret));
+  } else if (OB_FAIL(expr_copier.copy(src.context_expr_, context_expr_))) {
+    LOG_WARN("failed to copy context expr", K(ret));
+  }
+
+  return ret;
+}
+
 /**
  * Get the partition column/partition generation column at the specified index
  * e.g. create table (c1 int, c2 int generated always as (c1 + 1)) partition by hash (c2)
@@ -5362,7 +5417,7 @@ bool ObDMLStmt::is_contain_vector_origin_distance_calc() const
         LOG_WARN("select item expr is null", K(ret));
       } else if (OB_FAIL(ObRawExprUtils::find_expr(si.expr_, vector_expr, bool_ret))) {
         LOG_WARN("failed to find expr", K(ret));
-      }
+      } 
     }
   }
   return bool_ret;

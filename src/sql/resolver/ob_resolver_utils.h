@@ -140,6 +140,10 @@ public:
                                            ObResolverParams &params,
                                            const ObString &column_name,
                                            bool& exists);
+  static int check_ai_split_document_column_exists(const TableItem &table_item,
+                                                    ObResolverParams &params,
+                                                    const ObString &column_name,
+                                                    bool& exists);
 
   static int collect_schema_version(share::schema::ObSchemaGetterGuard &schema_guard,
                                     const ObSQLSessionInfo *session_info,
@@ -301,10 +305,6 @@ public:
                                share::schema::ObSchemaGetterGuard &schema_guard,
                                ObRawExpr &expr,
                                ObQueryCtx &ctx);
-
-  // Wait for sys package to be loaded if not ready yet
-  // Returns OB_SCHEMA_EAGAIN if waiting succeeded and retry is needed, OB_SUCCESS if no waiting needed or already ready
-  static int wait_for_sys_package_ready(ObSQLSessionInfo &session_info);
 
   static int resolve_external_symbol(common::ObIAllocator &allocator,
                                      sql::ObRawExprFactory &expr_factory,

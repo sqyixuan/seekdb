@@ -25,29 +25,29 @@
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 
-namespace oceanbase
+namespace oceanbase 
 {
-namespace sql
+namespace sql 
 {
 
 ObExprAIPrompt::ObExprAIPrompt(common::ObIAllocator &alloc)
-    : ObFuncExprOperator(alloc,
-                    T_FUN_SYS_AI_PROMPT,
-                    N_AI_PROMPT,
+    : ObFuncExprOperator(alloc, 
+                    T_FUN_SYS_AI_PROMPT, 
+                    N_AI_PROMPT, 
                     MORE_THAN_ZERO,
-                    VALID_FOR_GENERATED_COL,
-                    NOT_ROW_DIMENSION)
+                    VALID_FOR_GENERATED_COL, 
+                    NOT_ROW_DIMENSION) 
 {
 }
 
-ObExprAIPrompt::~ObExprAIPrompt()
+ObExprAIPrompt::~ObExprAIPrompt() 
 {
 }
 
 int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
                                     ObExprResType *types_stack,
                                     int64_t param_num,
-                                    common::ObExprTypeCtx &type_ctx) const
+                                    common::ObExprTypeCtx &type_ctx) const 
 {
   int ret = OB_SUCCESS;
   bool is_null_res = false;
@@ -61,16 +61,13 @@ int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
   }
 
   for (int64_t i = 1; i < param_num && OB_SUCC(ret); i++) {
-    if (ob_is_string_tc(types_stack[i].get_type())) {
-      types_stack[i].set_calc_type(ObVarcharType);
-      types_stack[i].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
-    } else if (ob_is_json(types_stack[i].get_type())) {
+    if (ob_is_json(types_stack[i].get_type())) {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("json type is not supported", K(ret));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "json type is not supported");
-    } else {
-      ret = OB_ERR_INVALID_TYPE_FOR_OP;
-      LOG_WARN("invalid data type", K(ret), K(types_stack[i].get_type()));
+    } else if (!ob_is_string_type(types_stack[i].get_type())) {
+      types_stack[i].set_calc_type(ObVarcharType);
+      types_stack[i].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
     }
   }
 
@@ -81,7 +78,7 @@ int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
   return ret;
 }
 
-int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res) 
 {
   INIT_SUCC(ret);
   ObDatum *template_datum = NULL;
@@ -114,9 +111,10 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
       ObJsonString *arg_json_str = NULL;
       if (OB_FAIL(tmp_allocator.eval_arg(arg, ctx, datum))) {
         LOG_WARN("fail to eval arg", K(ret), K(arg->datum_meta_));
-      } else if (ob_is_string_tc(arg->datum_meta_.type_)) {
-        arg_str = datum->get_string();
-        if (OB_FAIL(ObAIFuncJsonUtils::get_json_string(tmp_allocator, arg_str, arg_json_str))) {
+      } else if (ob_is_string_type(arg->datum_meta_.type_)) {
+        if (OB_FAIL(ObTextStringHelper::read_real_string_data(tmp_allocator, *datum, arg->datum_meta_, arg->obj_meta_.has_lob_header(), arg_str))) {
+          LOG_WARN("fail to get real string data", K(ret), K(arg_str));
+        } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_string(tmp_allocator, arg_str, arg_json_str))) {
           LOG_WARN("fail to get json string", K(ret), K(arg_str));
         } else if (OB_FAIL(args_array->append(arg_json_str))) {
           LOG_WARN("fail to add item", K(ret), K(arg_str));
@@ -148,9 +146,9 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
 
 
 
-int ObExprAIPrompt::cg_expr(ObExprCGCtx &expr_cg_ctx,
+int ObExprAIPrompt::cg_expr(ObExprCGCtx &expr_cg_ctx, 
                         const ObRawExpr &raw_expr,
-                        ObExpr &rt_expr) const
+                        ObExpr &rt_expr) const 
 {
   UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);

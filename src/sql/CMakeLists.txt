@@ -247,6 +247,7 @@ ob_set_subtarget(ob_sql engine_basic
   engine/basic/ob_hp_infrastructure_manager.ipp
   engine/basic/ob_hp_infras_vec_mgr.cpp
   engine/basic/ob_truncate_filter_struct.cpp
+  engine/basic/ob_ai_split_document_op.cpp
 )
 
 ob_set_subtarget(ob_sql engine_cmd
@@ -306,6 +307,15 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_ccl_rule_executor.cpp
 )
 
+ob_set_subtarget(ob_sql engine_connector
+  engine/connector/ob_java_native_method.cpp
+  engine/connector/ob_java_env.cpp
+  engine/connector/ob_java_helper.cpp
+  engine/connector/ob_jni_connector.cpp
+  engine/connector/ob_jni_scanner.cpp
+  engine/connector/ob_jni_writer.cpp
+)
+
 ob_set_subtarget(ob_sql engine_dml
   engine/dml/ob_conflict_checker.cpp
   engine/dml/ob_dml_ctx_define.cpp
@@ -356,6 +366,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_char_length.cpp
   engine/expr/ob_expr_check_catalog_access.cpp
   engine/expr/ob_expr_check_location_access.cpp
+  engine/expr/ob_expr_load_file.cpp
   engine/expr/ob_expr_cast.cpp
   engine/expr/ob_expr_coalesce.cpp
   engine/expr/ob_expr_coll_pred.cpp
@@ -769,6 +780,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_func_ceil.cpp
   engine/expr/ob_expr_eval_functions.cpp
   engine/expr/ob_expr_in.cpp
+  engine/expr/ob_expr_calc_odps_size.cpp
   engine/expr/ob_expr_to_pinyin_tab.cpp
   engine/expr/ob_expr_to_pinyin.cpp
   engine/expr/ob_expr_url_codec.cpp
@@ -805,6 +817,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_ai/ob_expr_ai_embed.cpp
   engine/expr/ob_expr_ai/ob_expr_ai_rerank.cpp
   engine/expr/ob_expr_ai/ob_expr_ai_prompt.cpp
+  engine/expr/ob_expr_ai/ob_expr_ai_parse_document.cpp
 )
 
 ob_set_subtarget(ob_sql_extra ALONE
@@ -977,7 +990,10 @@ ob_set_subtarget(ob_sql engine_table
   engine/table/ob_csv_table_row_iter.cpp
   engine/table/ob_orc_table_row_iter.cpp
   engine/table/ob_parquet_table_row_iter.cpp
+  engine/table/ob_odps_table_row_iter.cpp
   engine/table/ob_file_prefetch_buffer.cpp
+  engine/table/ob_odps_jni_table_row_iter.cpp
+  engine/table/ob_odps_table_utils.cpp
   engine/table/ob_ddl_block_sample_scan_op.cpp
 )
 
@@ -1114,6 +1130,7 @@ ob_set_subtarget(ob_sql optimizer
   optimizer/ob_log_values_table_access.cpp
   optimizer/ob_direct_load_optimizer_ctx.cpp
   optimizer/ob_log_expand.cpp
+  optimizer/ob_log_ai_split_document.cpp
 )
 
 ob_set_subtarget(ob_sql plan_cache
@@ -1303,8 +1320,6 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_explain_stmt.cpp
   resolver/ddl/ob_external_file_ddl_resolver.cpp
   resolver/ddl/ob_flashback_resolver.cpp
-  resolver/ddl/ob_fork_table_resolver.cpp
-  resolver/ddl/ob_fork_table_stmt.cpp
   resolver/ddl/ob_lock_table_resolver.cpp
   resolver/ddl/ob_lock_table_stmt.cpp
   resolver/ddl/ob_lock_tenant_resolver.cpp
@@ -1464,6 +1479,8 @@ ob_set_subtarget(ob_sql udr
   udr/ob_udr_utils.cpp
 )
 
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+
 ob_add_new_object_target(ob_sql ob_sql)
 ob_add_new_object_target(ob_sql_extra ob_sql_extra)
 
@@ -1488,7 +1505,24 @@ if (${ARCHITECTURE} STREQUAL "x86_64")
 	)
 endif()
 
-target_link_libraries(ob_sql PUBLIC ob_base)
+# 添加 PDFium 和 stb_image_write 头文件路径
+target_include_directories(ob_sql PUBLIC
+  ${DEP_DIR}/include/pdfium
+  ${DEP_DIR}/include
+)
+
+# 链接 PDFium 库
+target_link_libraries(ob_sql PUBLIC 
+  ob_base
+  ${DEP_DIR}/lib/libpdfium.so
+)
+
+# 设置 RPATH，确保运行时能找到 pdfium 动态库
+set_target_properties(ob_sql PROPERTIES
+  INSTALL_RPATH "${DEP_DIR}/lib"
+  BUILD_RPATH "${DEP_DIR}/lib"
+)
+
 target_link_libraries(ob_sql_extra PUBLIC ob_base_without_pass)
 
 add_library(ob_sql_static

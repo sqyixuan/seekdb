@@ -123,6 +123,7 @@ void ObExprExtraInfoFactory::register_expr_extra_infos()
   REG_EXTRA_INFO(T_FUN_SYS_AI_COMPLETE, ObAIFuncExprInfo);
   REG_EXTRA_INFO(T_FUN_SYS_AI_EMBED, ObAIFuncExprInfo);
   REG_EXTRA_INFO(T_FUN_SYS_AI_RERANK, ObAIFuncExprInfo);
+  REG_EXTRA_INFO(T_FUN_SYS_AI_PARSE_DOCUMENT, ObAIFuncExprInfo);
 }
 
 } // end namespace sql

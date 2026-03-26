@@ -980,6 +980,12 @@ int ObRawExprResolverImpl::do_recursive_resolve(const ParseNode *node,
         }
         break;
       }
+      case T_LOAD_FILE_EXPRESSION: {
+        if (OB_FAIL(process_load_file(node, expr))) {
+          LOG_WARN("process load_file expression failed", K(ret), K(node));
+        }
+        break;
+      }
       case T_WINDOW_FUNCTION: {
         const int64_t orig_win_func_cnt = ctx_.win_exprs_->count();
         if (OB_FAIL(process_window_function_node(node, expr))) {
@@ -8089,6 +8095,50 @@ int ObRawExprResolverImpl::process_dml_event_node(const ParseNode *node, ObRawEx
         OZ (f_expr->set_param_expr(c_expr));
       }
       OX (expr = f_expr);
+    }
+  }
+  return ret;
+}
+
+int ObRawExprResolverImpl::process_load_file(const ParseNode *node, ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+  ObLoadFileRawExpr *load_file_expr = NULL;
+  if (OB_ISNULL(node) || OB_ISNULL(ctx_.session_info_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(node), KP(ctx_.session_info_));
+  } else if (OB_UNLIKELY(2 != node->num_child_) || OB_ISNULL(node->children_) || OB_ISNULL(node->children_[1])) {
+    ret = OB_ERR_PARSER_SYNTAX;
+    LOG_WARN("invalid node children for load_file", K(ret), "node", SJ(ObParserResultPrintWrapper(*node)));
+  } else if (OB_FAIL(ctx_.expr_factory_.create_raw_expr(T_LOAD_FILE_EXPRESSION, load_file_expr))) {
+    LOG_WARN("fail to create raw expr", K(ret));
+  } else if (OB_ISNULL(load_file_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("load_file_expr is null", K(ret));
+  } else {
+    if (OB_UNLIKELY(T_EXPR_LIST != node->children_[1]->type_)) {
+      ret = OB_ERR_PARSER_SYNTAX;
+      LOG_WARN("invalid node children", K(ret), K(node->children_));
+    } else {
+      ObRawExpr *para_expr = NULL;
+      int32_t num = node->children_[1]->num_child_;
+      if (OB_FAIL(load_file_expr->init_param_exprs(num))) {
+        LOG_WARN("failed to init param exprs", K(ret));
+      } else {
+        for (int32_t i = 0; OB_SUCC(ret) && i < num; i++) {
+          if (OB_ISNULL(node->children_[1]->children_[i])) {
+            ret = OB_ERR_PARSER_SYNTAX;
+            LOG_WARN("invalid parse tree", K(ret));
+          } else if (OB_FAIL(SMART_CALL(recursive_resolve(node->children_[1]->children_[i], para_expr)))) {
+            LOG_WARN("fail to recursive resolve", K(ret), K(node->children_[1]->children_[i]));
+          } else if (OB_FAIL(load_file_expr->add_param_expr(para_expr))) {
+            LOG_WARN("fail to add param expr", K(ret), K(para_expr));
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        expr = load_file_expr;
+      }
     }
   }
   return ret;

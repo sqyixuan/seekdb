@@ -148,6 +148,7 @@ private:
   int process_match_against(const ParseNode *node, ObRawExpr *&expr);
   int process_match(const ParseNode *node, ObRawExpr *&expr);
   int process_match_score(const ParseNode *node, ObRawExpr *&expr);
+  int process_load_file(const ParseNode *node, ObRawExpr *&expr);
   int process_window_function_node(const ParseNode *node, ObRawExpr *&expr);
   int process_sort_list_node(const ParseNode *node, common::ObIArray<OrderItem> &order_items);
   int process_frame_node(const ParseNode *node,

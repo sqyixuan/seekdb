@@ -1878,6 +1878,7 @@ public:
     EXPR_EXEC_PARAM,
     EXPR_PL_QUERY_REF,
     EXPR_MATCH_AGAINST,
+    EXPR_LOAD_FILE,
     EXPR_UNPIVOT
   };
 
@@ -5337,6 +5338,52 @@ private:
   ObRawExpr *param_text_expr_; // param text expr for should_match_expr_
 };
 
+class ObLoadFileRawExpr : public ObRawExpr
+{
+public:
+  ObLoadFileRawExpr()
+    : ObRawExpr(),
+      param_exprs_()
+  {
+    set_expr_class(EXPR_LOAD_FILE);
+  }
+
+  ObLoadFileRawExpr(common::ObIAllocator &alloc)
+    : ObRawExpr(alloc),
+      param_exprs_()
+  {
+    set_expr_class(EXPR_LOAD_FILE);
+  }
+
+  virtual ~ObLoadFileRawExpr() {}
+  int assign(const ObRawExpr &other) override;
+  virtual int replace_expr(const common::ObIArray<ObRawExpr *> &other_exprs,
+                           const common::ObIArray<ObRawExpr *> &new_exprs) override;
+  virtual int do_visit(ObRawExprVisitor &visitor) override;
+  virtual uint64_t hash_internal(uint64_t seed) const;
+  int get_name_internal(char *buf, const int64_t buf_len, int64_t &pos, ExplainType type) const override;
+  virtual bool inner_same_as(const ObRawExpr &expr, ObExprEqualCheckContext *check_context) const override;
+  virtual void inner_calc_hash() override;
+  virtual void clear_child() override;
+  virtual void reset();
+  virtual int64_t get_param_count() const;
+  virtual const ObRawExpr *get_param_expr(int64_t index) const;
+  virtual ObRawExpr *&get_param_expr(int64_t index);
+  int init_param_exprs(int32_t num);
+  int add_param_expr(ObRawExpr *expr);
+  int replace_param_expr(int64_t index, ObRawExpr *expr);
+  VIRTUAL_TO_STRING_KVP(
+      N_ITEM_TYPE, type_,
+      N_RESULT_TYPE, result_type_,
+      N_EXPR_INFO, info_,
+      N_REL_ID, rel_ids_,
+      K_(param_exprs));
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObLoadFileRawExpr);
+  ObSEArray<ObRawExpr*, 2, ModulePageAllocator, true> param_exprs_; // file_path and file_name
+};
+
 /// visitor interface
 class ObRawExprVisitor
 {
@@ -5374,6 +5421,7 @@ public:
   virtual int visit(ObWinFunRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual int visit(ObPseudoColumnRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual int visit(ObMatchFunRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
+  virtual int visit(ObLoadFileRawExpr &expr) { UNUSED(expr); return common::OB_SUCCESS; }
   virtual bool skip_child(ObRawExpr &expr) { UNUSED(expr); return false; }
 private:
   // disallow copy

@@ -92,6 +92,7 @@ class ObSelectLogPlan;
 class ObThreeStageAggrInfo;
 struct ObTextRetrievalInfo;
 class ObHashRollupInfo;
+class AiSplitDocumentPath;
 
 struct TableDependInfo {
   TO_STRING_KV(
@@ -607,6 +608,9 @@ public:
 
   int allocate_json_table_path(JsonTablePath *json_table_path,
                                    ObLogicalOperator *&out_access_path_op);
+
+  int allocate_ai_split_document_path(AiSplitDocumentPath *ai_split_document_path,
+                                      ObLogicalOperator *&out_access_path_op);
 
   //store index column ids including storing column.
   int store_index_column_ids(ObSqlSchemaGuard &schema_guard,

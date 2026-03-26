@@ -47,7 +47,7 @@
 #include "share/vector_index/ob_vector_index_util.h"
 #include "sql/optimizer/ob_log_expand.h"
 #include "share/ob_fts_index_builder_util.h"
-#include "sql/optimizer/ob_log_insert.h"
+#include "sql/optimizer/ob_log_ai_split_document.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -3099,6 +3099,43 @@ int ObLogPlan::allocate_cte_table_path(CteTablePath *cte_table_path,
   return ret;
 }
 
+int ObLogPlan::allocate_ai_split_document_path(AiSplitDocumentPath *ai_split_document_path,
+                                               ObLogicalOperator *&out_access_path_op)
+{
+  int ret = OB_SUCCESS;
+  ObLogAiSplitDocument *op = NULL;
+  TableItem *table_item = NULL;
+  if (OB_ISNULL(ai_split_document_path) || OB_ISNULL(get_stmt()) ||
+      OB_ISNULL(table_item = get_stmt()->get_table_item_by_id(ai_split_document_path->table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ai_split_document_path), K(get_stmt()), K(ret));
+  } else if (OB_ISNULL(op = static_cast<ObLogAiSplitDocument*>(get_log_op_factory().
+                                        allocate(*this, LOG_AI_SPLIT_DOCUMENT)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate ai split document path", K(ret));
+  } else if (OB_FAIL(append(op->get_filter_exprs(), ai_split_document_path->filter_))) {
+    LOG_WARN("failed to append expr", K(ret));
+  } else if (OB_FAIL(op->compute_property(ai_split_document_path))) {
+    LOG_WARN("failed to compute property", K(ret));
+  } else if (OB_FAIL(op->pick_out_startup_filters())) {
+    LOG_WARN("failed to pick out startup filters", K(ret));
+  } else {
+    ObRawExpr *context_expr = ai_split_document_path->context_expr_;
+    ObRawExpr *option_expr = ai_split_document_path->option_expr_;
+    if (OB_ISNULL(context_expr) || OB_ISNULL(option_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(context_expr), K(option_expr), K(ret));
+    } else {
+      op->set_context_expr(context_expr);
+      op->set_option_expr(option_expr);
+      op->set_table_id(ai_split_document_path->table_id_);
+      op->set_table_name(table_item->get_table_name());
+      out_access_path_op = op;
+    }
+  }
+  return ret;
+}
+
 int ObLogPlan::allocate_access_path(AccessPath *ap,
                                     ObLogicalOperator *&out_access_path_op)
 {
@@ -3877,7 +3914,7 @@ int ObLogPlan::get_popular_values_hash(ObIAllocator &allocator,
     const ObHistogram &histogram = handle.stat_->get_histogram();
     // get total value count via last bucket by it's cumulative endpoint num
     const ObHistBucket &last_bucket = histogram.get(histogram.get_bucket_size() - 1);
-    int64_t total_cnt = std::max(static_cast<int64_t>(1), last_bucket.endpoint_num_); // avoid zero div
+    int64_t total_cnt = std::max(1L, last_bucket.endpoint_num_); // avoid zero div
     int64_t min_freq = optimizer_context_.get_session_info()->get_px_join_skew_minfreq();
     for (int64_t i = 0; OB_SUCC(ret) && i < histogram.get_bucket_size(); ++i) {
       const ObHistBucket &bucket = histogram.get(i);
@@ -4445,6 +4482,11 @@ int ObLogPlan::create_plan_tree_from_path(Path *path,
       ValuesTablePath *values_table_path = static_cast<ValuesTablePath *>(path);
       if (OB_FAIL(allocate_values_table_path(values_table_path, op))) {
         LOG_WARN("failed to allocate values table path", K(ret));
+      } else { /* Do nothing */ }
+    } else if (path->is_ai_split_document_path()) {
+      AiSplitDocumentPath *ai_split_document_path = static_cast<AiSplitDocumentPath *>(path);
+      if (OB_FAIL(allocate_ai_split_document_path(ai_split_document_path, op))) {
+        LOG_WARN("failed to allocate ai split document table path", K(ret));
       } else { /* Do nothing */ }
     } else {
       ret = OB_ERR_UNEXPECTED;
@@ -6080,7 +6122,7 @@ int ObLogPlan::inner_compute_three_stage_groupby_dop_by_auto_dop(const ObIArray<
     LOG_WARN("failed to get three stage groupby number of copies", K(ret), K(non_distinct_aggrs), K(distinct_aggrs));
   } else {
     const ObOptimizerContext &opt_ctx = get_optimizer_context();
-    const double cost_threshold_us = 1000.0 * std::max(static_cast<int64_t>(10), opt_ctx.get_parallel_min_scan_time_threshold());
+    const double cost_threshold_us = 1000.0 * std::max(10L, opt_ctx.get_parallel_min_scan_time_threshold());
     const int64_t calc_dop_limit = opt_ctx.get_parallel_degree_limit(server_cnt);
     const double op_cost = ObOptEstCost::cost_hash_group(child->get_card() * number_of_copies,
                                                          0, // do not consider grouop by result

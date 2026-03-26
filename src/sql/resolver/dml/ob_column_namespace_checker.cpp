@@ -377,6 +377,13 @@ int ObColumnNamespaceChecker::check_column_exists(const TableItem &table_item, c
         }
       }
     }
+  } else if (table_item.is_ai_split_document_table()) {
+    if (OB_FAIL(ObResolverUtils::check_ai_split_document_column_exists(table_item,
+                                                                       params_,
+                                                                       col_name,
+                                                                       is_exist))) {
+      LOG_WARN("failed to check ai split document column exist", K(ret), K(col_name));
+    }
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected table type", K_(table_item.type));

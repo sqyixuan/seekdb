@@ -2858,6 +2858,58 @@ int ObRawExprDeduceType::visit(ObMatchFunRawExpr &expr)
   return ret;
 }
 
+int ObRawExprDeduceType::visit(ObLoadFileRawExpr &expr)
+{
+  int ret = OB_SUCCESS;
+  ObRawExprResType result_type;
+  // Set result type to LongTextType (BLOB)
+  result_type.set_type(ObLongTextType);
+  result_type.set_collation_type(CS_TYPE_BINARY);
+  result_type.set_length(OB_MAX_LONGTEXT_LENGTH);
+  result_type.set_length_semantics(LS_BYTE);
+  expr.set_result_type(result_type);
+  // Set calc types for parameters (both should be VARCHAR)
+  // Parameters will be converted to VARCHAR during execution if needed
+  ObCastMode def_cast_mode = CM_NONE;
+  if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false, 0, my_session_, def_cast_mode))) {
+    LOG_WARN("get_default_cast_mode failed", K(ret));
+  } else {
+    ObExprResType param_type;
+    param_type.set_varchar();
+    param_type.set_length(OB_MAX_MYSQL_VARCHAR_LENGTH);
+    param_type.set_collation_type(ObCharset::get_system_collation());
+    param_type.set_collation_level(CS_LEVEL_IMPLICIT);
+    param_type.set_calc_meta(param_type.get_obj_meta());
+    // Cast first parameter (location_name) to VARCHAR if needed
+    if (OB_SUCC(ret) && expr.get_param_count() > 0 && OB_NOT_NULL(expr.get_param_expr(0))) {
+      if (expr.get_param_expr(0)->get_result_type().get_type() != ObVarcharType) {
+        ObRawExpr *new_expr = NULL;
+        if (OB_FAIL(try_add_cast_expr_above_for_deduce_type(*expr.get_param_expr(0), new_expr, param_type, def_cast_mode))) {
+          LOG_WARN("add_implicit_cast failed for location_name", K(ret));
+        } else if (OB_NOT_NULL(new_expr) && new_expr != expr.get_param_expr(0)) {
+          if (OB_FAIL(expr.replace_param_expr(0, new_expr))) {
+            LOG_WARN("replace_param_expr failed", K(ret));
+          }
+        }
+      }
+    }
+    // Cast second parameter (filename) to VARCHAR if needed
+    if (OB_SUCC(ret) && expr.get_param_count() > 1 && OB_NOT_NULL(expr.get_param_expr(1))) {
+      if (expr.get_param_expr(1)->get_result_type().get_type() != ObVarcharType) {
+        ObRawExpr *new_expr = NULL;
+        if (OB_FAIL(try_add_cast_expr_above_for_deduce_type(*expr.get_param_expr(1), new_expr, param_type, def_cast_mode))) {
+          LOG_WARN("add_implicit_cast failed for filename", K(ret));
+        } else if (OB_NOT_NULL(new_expr) && new_expr != expr.get_param_expr(1)) {
+          if (OB_FAIL(expr.replace_param_expr(1, new_expr))) {
+            LOG_WARN("replace_param_expr failed", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObRawExprDeduceType::init_normal_udf_expr(ObNonTerminalRawExpr &expr, ObExprOperator *op)
 {
   int ret = OB_SUCCESS;

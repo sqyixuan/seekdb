@@ -21,15 +21,15 @@
 #include "share/vector_index/ob_json_helper.h"
 #include "lib/encode/ob_base64_encode.h"
 
-namespace oceanbase
+namespace oceanbase 
 {
-namespace common
+namespace common 
 {
 
-class ObOpenAIUtils
+class ObOpenAIUtils 
 {
 public:
-  class ObOpenAIComplete : public ObAIFuncIComplete
+  class ObOpenAIComplete : public ObAIFuncIComplete 
   {
   public:
     ObOpenAIComplete() {}
@@ -38,7 +38,7 @@ public:
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
     virtual int get_body(common::ObIAllocator &allocator,
-                         common::ObString &model,
+                         common::ObString &model, 
                          common::ObString &prompt,
                          common::ObString &content,
                          common::ObJsonObject *config,
@@ -53,7 +53,7 @@ public:
     DISALLOW_COPY_AND_ASSIGN(ObOpenAIComplete);
   };
 
-  class ObOpenAIEmbed : public ObAIFuncIEmbed
+  class ObOpenAIEmbed : public ObAIFuncIEmbed 
   {
   public:
     ObOpenAIEmbed() {}
@@ -62,7 +62,7 @@ public:
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
     virtual int get_body(common::ObIAllocator &allocator,
-                         common::ObString &model,
+                         common::ObString &model, 
                          common::ObArray<ObString> &contents,
                          common::ObJsonObject *config,
                          common::ObJsonObject *&body) override;
@@ -79,10 +79,43 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObOpenAIUtils);
 };
 
-class ObOllamaUtils
+class ObDeepSeekUtils 
 {
 public:
-  class ObOllamaComplete : public ObAIFuncIComplete
+  class ObDeepSeekParseDocument : public ObAIFuncIParseDocument 
+  {
+  public:
+    ObDeepSeekParseDocument() {}
+    virtual ~ObDeepSeekParseDocument() {}
+    virtual int get_header(common::ObIAllocator &allocator,
+                           common::ObString &api_key,
+                           common::ObArray<ObString> &headers) override;
+    virtual int get_body(common::ObIAllocator &allocator,
+                         common::ObString &model, 
+                         common::ObString &image,
+                         bool is_base64_encoded,
+                         bool is_markdown,
+                         common::ObJsonObject *config,
+                         common::ObJsonObject *&body) override;
+    virtual int parse_output(common::ObIAllocator &allocator,
+                             common::ObJsonObject *http_response,
+                             common::ObIJsonBase *&result) override;
+    static int construct_messages_array(ObIAllocator &allocator, ObString &image, bool is_base64_encoded, bool is_markdown, ObJsonArray *&messages_array);
+    static int construct_content_array(ObIAllocator &allocator, ObString &image, bool is_base64_encoded, ObString &text, ObJsonArray *&content_json_array);
+    static int construct_image_obj(ObIAllocator &allocator, ObString &image, bool is_base64_encoded, ObJsonObject *&image_obj);
+    static int construct_text_obj(ObIAllocator &allocator, ObString &text, ObJsonObject *&text_obj);
+    static int get_image_url_string(ObIAllocator &allocator, ObString &image, bool is_base64_encoded, ObString &image_url_str);
+  private:
+    DISALLOW_COPY_AND_ASSIGN(ObDeepSeekParseDocument);
+  };
+  private:
+    DISALLOW_COPY_AND_ASSIGN(ObDeepSeekUtils);
+};
+
+class ObOllamaUtils 
+{
+public:
+  class ObOllamaComplete : public ObAIFuncIComplete 
   {
   public:
     ObOllamaComplete() {}
@@ -91,7 +124,7 @@ public:
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
     virtual int get_body(common::ObIAllocator &allocator,
-                         common::ObString &model,
+                         common::ObString &model, 
                          common::ObString &prompt,
                          common::ObString &content,
                          common::ObJsonObject *config,
@@ -104,7 +137,7 @@ public:
     DISALLOW_COPY_AND_ASSIGN(ObOllamaComplete);
   };
 
-  class ObOllamaEmbed : public ObAIFuncIEmbed
+  class ObOllamaEmbed : public ObAIFuncIEmbed 
   {
   public:
     ObOllamaEmbed() {}
@@ -127,10 +160,10 @@ public:
   DISALLOW_COPY_AND_ASSIGN(ObOllamaUtils);
 };
 
-class ObDashscopeUtils
+class ObDashscopeUtils 
 {
 public:
-  class ObDashscopeComplete : public ObAIFuncIComplete
+  class ObDashscopeComplete : public ObAIFuncIComplete 
   {
   public:
     ObDashscopeComplete() {}
@@ -139,7 +172,7 @@ public:
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
     virtual int get_body(common::ObIAllocator &allocator,
-                         common::ObString &model,
+                         common::ObString &model, 
                          common::ObString &prompt,
                          common::ObString &content,
                          common::ObJsonObject *config,
@@ -153,7 +186,7 @@ public:
   private:
     DISALLOW_COPY_AND_ASSIGN(ObDashscopeComplete);
   };
-  class ObDashscopeEmbed : public ObAIFuncIEmbed
+  class ObDashscopeEmbed : public ObAIFuncIEmbed 
   {
   public:
     ObDashscopeEmbed() {}
@@ -162,7 +195,7 @@ public:
                            common::ObString &api_key,
                            common::ObArray<ObString> &headers) override;
     virtual int get_body(common::ObIAllocator &allocator,
-                         common::ObString &model,
+                         common::ObString &model, 
                          common::ObArray<ObString> &contents,
                          common::ObJsonObject *config,
                          common::ObJsonObject *&body) override;
@@ -172,7 +205,7 @@ public:
   private:
     DISALLOW_COPY_AND_ASSIGN(ObDashscopeEmbed);
   };
-  class ObDashscopeRerank : public ObAIFuncIRerank
+  class ObDashscopeRerank : public ObAIFuncIRerank 
   {
   public:
     ObDashscopeRerank() {}
@@ -201,10 +234,10 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObDashscopeUtils);
 };
 
-class ObSiliconflowUtils
+class ObSiliconflowUtils 
 {
 public:
-  class ObSiliconflowRerank : public ObAIFuncIRerank
+  class ObSiliconflowRerank : public ObAIFuncIRerank 
   {
   public:
     ObSiliconflowRerank() {}
@@ -230,7 +263,7 @@ public:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSiliconflowUtils);
 };
-class ObAIFuncJsonUtils
+class ObAIFuncJsonUtils 
 {
 public:
   ObAIFuncJsonUtils() {}
@@ -282,7 +315,7 @@ public:
     return ret;
   }
   static int inner_pack_raw_str_to_res(ObString &raw_str, const ObExpr &expr, ObEvalCtx &ctx,
-                              ObIVector *res_vec, int64_t batch_idx)
+                              ObIVector *res_vec, int64_t batch_idx) 
   {
     int ret = OB_SUCCESS;
     VectorFormat res_format = expr.get_format(ctx);
@@ -316,7 +349,7 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncJsonUtils);
 };
 
-class ObAIFuncPromptUtils
+class ObAIFuncPromptUtils 
 {
 public:
   ObAIFuncPromptUtils() {}
@@ -325,7 +358,7 @@ public:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncPromptUtils);
 };
 
-class ObAIFuncProviderUtils
+class ObAIFuncProviderUtils 
 {
 public:
   ObAIFuncProviderUtils() {}
@@ -342,7 +375,7 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncProviderUtils);
 };
 
-class ObAIFuncUtils
+class ObAIFuncUtils 
 {
 public:
   ObAIFuncUtils() {}
@@ -353,44 +386,46 @@ public:
   static int check_info_type_completion(const ObAIFuncExprInfo *info);
   static int check_info_type_dense_embedding(const ObAIFuncExprInfo *info);
   static int check_info_type_rerank(const ObAIFuncExprInfo *info);
-  static bool ob_provider_check(const ObString &provider, const char *str_const) { return provider.case_compare(str_const) == 0; }
+  static bool ob_provider_check(const ObString &provider, const char *str_const) {return ob_check_string_equal_char(provider, str_const);}
+  static bool ob_check_string_equal_char(const ObString &str, const char *str_const) {return str.case_compare(str_const) == 0;}
   static int get_complete_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIComplete *&complete_provider);
   static int get_embed_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIEmbed *&embed_provider);
   static int get_rerank_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIRerank *&rerank_provider);
+  static int get_parse_document_provider(ObIAllocator &allocator, const ObString &provider, ObAIFuncIParseDocument *&parse_document_provider);
   static int get_header(ObIAllocator &allocator,
                         const ObAIFuncExprInfo &info,
                         const ObAiModelEndpointInfo &endpoint_info,
                         ObArray<ObString> &headers);
-  static int get_complete_body(ObIAllocator &allocator,
+  static int get_complete_body(ObIAllocator &allocator, 
                                const ObAIFuncExprInfo &info,
                                const ObAiModelEndpointInfo &endpoint_info,
                                ObString &prompt,
-                               ObString &content,
+                               ObString &content, 
                                ObJsonObject *config,
                                ObJsonObject *&body);
   static int set_json_format_config(ObIAllocator &allocator, const ObString &provider, ObJsonObject *config);
-  static int get_embed_body(ObIAllocator &allocator,
+  static int get_embed_body(ObIAllocator &allocator, 
                             const ObAIFuncExprInfo &info,
                             const ObAiModelEndpointInfo &endpoint_info,
                             ObArray<ObString> &contents,
                             ObJsonObject *config,
                             ObJsonObject *&body);
-  static int get_rerank_body(ObIAllocator &allocator,
+  static int get_rerank_body(ObIAllocator &allocator, 
                              const ObAIFuncExprInfo &info,
                              const ObAiModelEndpointInfo &endpoint_info,
                              ObString &query,
                              ObJsonArray *document_array,
                              ObJsonObject *config,
                              ObJsonObject *&body);
-  static int parse_complete_output(ObIAllocator &allocator,
+  static int parse_complete_output(ObIAllocator &allocator, 
                                    const ObAiModelEndpointInfo &endpoint_info,
                                    ObJsonObject *http_response,
                                    ObIJsonBase *&result);
-  static int parse_embed_output(ObIAllocator &allocator,
+  static int parse_embed_output(ObIAllocator &allocator, 
                                 const ObAiModelEndpointInfo &endpoint_info,
                                 ObJsonObject *http_response,
                                 ObIJsonBase *&result);
-  static int parse_rerank_output(ObIAllocator &allocator,
+  static int parse_rerank_output(ObIAllocator &allocator, 
                                  const ObAiModelEndpointInfo &endpoint_info,
                                  ObJsonObject *http_response,
                                  ObIJsonBase *&result);
@@ -400,6 +435,7 @@ public:
                                            const int64_t dimension, float *&vector);
   static int decode_float_embedding_array(const ObIJsonBase &embedding_jbase, ObIAllocator &allocator,
                                           ObJsonReaderHelper &json_reader, const int64_t dimension, float *&vector);
+  static bool is_http_url(const ObString &url);
   static int get_ai_func_info(ObIAllocator &allocator, const ObString &model_id,
                               share::schema::ObSchemaGetterGuard &guard, ObAIFuncExprInfo *&info);
   static int get_ai_func_info(ObIAllocator &allocator, const ObString &model_id, ObAIFuncExprInfo *&info);
@@ -449,6 +485,38 @@ public:
   static constexpr char prompt_args_key[20] = "args";
 private:
   DISALLOW_COPY_AND_ASSIGN(ObAIFuncPromptObjectUtils);
+};
+
+class ObAIFuncDocumentUtils
+{
+public:
+  // Image format enumeration
+  enum ImageFormat {
+    IMAGE_FORMAT_UNKNOWN = 0,  // Unknown or unsupported format
+    IMAGE_FORMAT_PNG     = 1,  // PNG format (Portable Network Graphics)
+    IMAGE_FORMAT_JPEG    = 2,  // JPEG format (Joint Photographic Experts Group)
+    IMAGE_FORMAT_BMP     = 3,  // BMP format (Windows Bitmap)
+    IMAGE_FORMAT_GIF     = 4,  // GIF format (Graphics Interchange Format)
+    IMAGE_FORMAT_WEBP    = 5,  // WebP format (Google)
+    IMAGE_FORMAT_TIFF    = 6,  // TIFF format (Tagged Image File Format)
+    IMAGE_FORMAT_SVG     = 7,  // SVG format (Scalable Vector Graphics)
+    IMAGE_FORMAT_MAX
+  };
+
+  ObAIFuncDocumentUtils() {}
+  virtual ~ObAIFuncDocumentUtils() {}
+  static int convert_pdf_to_images(ObIAllocator &allocator, ObString &pdf, ObArray<ObString> &images, double dpi = 150.0);
+  static int encode_image_to_base64(ObIAllocator &allocator, ObString &image, ObString &base64);
+  static int save_image_to_file(ObIAllocator &allocator, ObString &image, const char* filename);
+  
+  // Helper function to get format name string
+  static const char* get_image_format_name(ImageFormat format);
+  
+  // Helper function to detect image format from data
+  static ImageFormat detect_image_format(const char* data, size_t size);
+  
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObAIFuncDocumentUtils);
 };
 
 } // namespace common

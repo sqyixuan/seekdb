@@ -47,6 +47,7 @@
 #include "ob_del_upd_log_plan.h"
 #include "ob_log_values_table_access.h"
 #include "ob_log_expand.h"
+#include "ob_log_ai_split_document.h"
 using namespace oceanbase;
 using namespace oceanbase::sql;
 using namespace oceanbase::sql::log_op_def;
@@ -321,6 +322,13 @@ ObLogicalOperator *ObLogOperatorFactory::allocate(ObLogPlan &plan, ObLogOpType t
     if (NULL != ptr) {
       ret_op = new (ptr) ObLogExpand(plan);
     }
+    break;
+  }
+  case LOG_AI_SPLIT_DOCUMENT: {
+    ptr = allocator_.alloc(sizeof(ObLogAiSplitDocument));
+    if (NULL != ptr) {
+      ret_op = new (ptr) ObLogAiSplitDocument(plan);
+    } else { /* do nothing */ }
     break;
   }
   default: {

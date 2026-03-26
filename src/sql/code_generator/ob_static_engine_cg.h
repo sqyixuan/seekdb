@@ -150,6 +150,7 @@ class HashRollupRTInfo;
 class ObMergeGroupByVecSpec;
 class ObNestedLoopJoinVecSpec;
 class ObTableDirectInsertSpec;
+class ObAiSplitDocumentSpec;
 
 typedef common::ObList<uint64_t, common::ObIAllocator> DASTableIdList;
 typedef common::ObSEArray<common::ObSEArray<int64_t, 8, common::ModulePageAllocator, true>,
@@ -450,7 +451,7 @@ private:
   int generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec, const bool in_root_job);
   int generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec &spec, const bool in_root_job);
   int generate_spec(ObLogJsonTable &op, ObJsonTableSpec &spec, const bool in_root_job);
-
+  int generate_spec(ObLogAiSplitDocument &op, ObAiSplitDocumentSpec &spec, const bool in_root_job);
   // online optimizer stats gathering
   int generate_spec(ObLogOptimizerStatsGathering &op, ObOptimizerStatsGatheringSpec &spec, const bool in_root_job);
 

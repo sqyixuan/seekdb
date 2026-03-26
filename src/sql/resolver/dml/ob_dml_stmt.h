@@ -128,6 +128,15 @@ struct ObValuesTableDef {
                        K(access_type_), K(is_const_), K(column_types_));
 };
 
+struct ObAiSplitDocumentDef
+{
+  ObAiSplitDocumentDef() : option_expr_(NULL), context_expr_(NULL) {}
+  ObRawExpr *option_expr_;
+  ObRawExpr *context_expr_;
+  int deep_copy(const ObAiSplitDocumentDef& src, ObIRawExprCopier &expr_copier, ObIAllocator* allocator);
+  virtual TO_STRING_KV(K(option_expr_), K(context_expr_));
+};
+
 struct TableItem
 {
   TableItem()
@@ -160,6 +169,7 @@ struct TableItem
     table_type_ = MAX_TABLE_TYPE;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
+    ai_split_document_def_ = nullptr;
     // assign default value for compatibility
     catalog_name_ = OB_INTERNAL_CATALOG_NAME;
     external_location_id_ = common::OB_INVALID_ID;
@@ -202,6 +212,7 @@ struct TableItem
     JSON_TABLE,
     VALUES_TABLE,
     LATERAL_TABLE,
+    AI_SPLIT_DOCUMENT_TABLE,
   };
 
   /**
@@ -239,7 +250,7 @@ struct TableItem
   bool is_link_type() const { return LINK_TABLE == type_; } // after dblink transformer, LINK_TABLE will be BASE_TABLE, BASE_TABLE will be LINK_TABLE
   bool is_json_table() const { return JSON_TABLE == type_; }  // json_table_def_->table_type_ == MulModeTableType::OB_ORA_JSON_TABLE_TYPE
   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
-
+  bool is_ai_split_document_table() const { return AI_SPLIT_DOCUMENT_TABLE == type_; }
   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
   bool is_synonym() const { return !synonym_name_.empty(); }
   bool is_oracle_all_or_user_sys_view() const
@@ -279,6 +290,9 @@ struct TableItem
   int deep_copy_values_table_def(const ObValuesTableDef& table_def,
                                  ObIRawExprCopier &expr_copier,
                                  ObIAllocator* allocator);
+  ObAiSplitDocumentDef* get_ai_split_document_def() { return ai_split_document_def_; }
+  int deep_copy_ai_split_document_def(const ObAiSplitDocumentDef& ai_split_document_def, ObIRawExprCopier &expr_copier, ObIAllocator* allocator);
+
   virtual bool has_for_update() const { return for_update_; }
   // if real table id, it is valid for all threads,
   // else if generated id, it is unique just during the thread session
@@ -336,6 +350,8 @@ struct TableItem
   SampleInfo *sample_info_;
   // external location
   uint64_t external_location_id_;
+  // ai split document
+  ObAiSplitDocumentDef *ai_split_document_def_;
 };
 
 struct ColumnItem
@@ -687,6 +703,7 @@ public:
 
   int get_table_function_exprs(ObIArray<ObRawExpr *> &table_func_exprs) const;
   int get_json_table_exprs(ObIArray<ObRawExpr *> &json_table_exprs) const;
+  int get_ai_split_document_exprs(ObIArray<ObRawExpr *> &ai_split_document_exprs) const;
 
   int reset_from_item(const common::ObIArray<FromItem> &from_items);
   void clear_from_item() { from_items_.reset(); }
@@ -906,7 +923,6 @@ public:
   { return match_exprs_; }
   bool has_es_match() const { return match_exprs_.count() > 0 && match_exprs_.at(0) != nullptr && match_exprs_.at(0)->is_es_match(); }
   int get_match_expr_on_table(uint64_t table_id, ObIArray<ObRawExpr *> &match_exprs) const;
-  int has_match_expr_on_table(uint64_t table_id, bool &has_match_expr) const;
   int get_table_pseudo_column_like_exprs(uint64_t table_id, ObIArray<ObRawExpr *> &pseudo_columns);
   int get_table_pseudo_column_like_exprs(ObIArray<uint64_t> &table_id, ObIArray<ObRawExpr *> &pseudo_columns);
   int rebuild_tables_hash();

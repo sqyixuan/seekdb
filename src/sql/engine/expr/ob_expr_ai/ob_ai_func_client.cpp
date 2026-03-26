@@ -17,15 +17,15 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_ai_func_client.h"
 
-namespace oceanbase
+namespace oceanbase 
 {
-namespace common
+namespace common 
 {
 
 const int64_t ObAIFuncClient::CURL_MAX_TIMEOUT_SEC = INT_MAX/1000;
 ObAIFuncClient::ObAIFuncClient()
     : allocator_(nullptr), url_(nullptr), header_list_(nullptr),
-      curlm_(nullptr), curl_(nullptr), curl_handles_(), response_buffers_()
+      curlm_(nullptr), curl_(nullptr), curl_handles_(), response_buffers_() 
 {
   is_finished_.store(false);
   abs_timeout_ts_ = 0;
@@ -33,7 +33,7 @@ ObAIFuncClient::ObAIFuncClient()
   timeout_sec_ = 60; // default timeout 1 minute
 }
 
-void ObAIFuncClient::reset()
+void ObAIFuncClient::reset() 
 {
   if (url_ != nullptr && allocator_ != nullptr) {
     allocator_->free(url_);
@@ -42,7 +42,7 @@ void ObAIFuncClient::reset()
     int ret = OB_ERR_UNEXPECTED;
     LOG_WARN("url_ is not null but allocator_ is null", K(ret));
     LOG_USER_ERROR(OB_ERR_UNEXPECTED, "can not free url_");
-  }
+  } 
   allocator_ = nullptr;
   if (OB_NOT_NULL(header_list_)) {
     curl_slist_free_all(header_list_);
@@ -52,7 +52,7 @@ void ObAIFuncClient::reset()
   clean_up();
 }
 
-ObAIFuncClient::~ObAIFuncClient()
+ObAIFuncClient::~ObAIFuncClient() 
 {
   if (OB_NOT_NULL(header_list_)) {
     curl_slist_free_all(header_list_);
@@ -74,7 +74,7 @@ ObAIFuncClient::~ObAIFuncClient()
   }
 }
 
-int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString &url, ObArray<ObString> &headers)
+int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString &url, ObArray<ObString> &headers) 
 {
   int ret = OB_SUCCESS;
   int64_t remain_timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : timeout_sec_ * 1000000;
@@ -89,9 +89,8 @@ int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString
       LOG_WARN("failed to convert url to cstring", K(ret));
     } else {
       url_ = url_str.ptr();
-      LOG_DEBUG("ai_function, url_", K(url_str));
-    }
-    timeout_sec_ = std::min(std::max(static_cast<int64_t>(1), remain_timeout_us / 1000000), static_cast<int64_t>(CURL_MAX_TIMEOUT_SEC));
+    } 
+    timeout_sec_ = std::min(std::max(1L, remain_timeout_us / 1000000), CURL_MAX_TIMEOUT_SEC);
     abs_timeout_ts_ = remain_timeout_us + ObTimeUtility::current_time();
     if (OB_SUCC(ret)){
       const uint32_t num_headers = headers.count();
@@ -102,8 +101,6 @@ int ObAIFuncClient::init(common::ObIAllocator &allocator, const common::ObString
         } else if (OB_ISNULL(header_list_ = curl_slist_append(header_list_, header_c_str.ptr()))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("failed to append header", K(ret), K(i));
-        } else {
-          LOG_DEBUG("ai_function, header:", K(headers.at(i)));
         }
       }
     }
@@ -124,17 +121,14 @@ int ObAIFuncClient::error_handle(CURLcode res)
     }
     default:{
       ret = OB_CURL_ERROR;
-      LOG_WARN("curl error, error code is ", K(res));
-      char http_code_str[1024] = "curl error, curl error code is ";
-      snprintf(http_code_str, sizeof(http_code_str), "curl error, curlerror code is %d", res);
-      FORWARD_USER_ERROR(ret, http_code_str);
+      LOG_WARN("curl error", K(res));
       break;
     }
   }
   return ret;
 }
 
-int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
+int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response) 
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(data)) {
@@ -153,15 +147,15 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
     int64_t http_code = 0;
     if (OB_FAIL(init_easy_handle(curl_, data, response_buf))) {
       LOG_WARN("fail to init easy handle", K(ret));
-    }
+    } 
     // retry if need
-    for (int64_t i = 0; OB_SUCC(ret) && i <= max_retry_times_; ++i) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < max_retry_times_; ++i) {
       http_code = 0;
       if (CURLE_OK != (res = curl_easy_perform(curl_))) {
         LOG_WARN("perform curl failed", K(res));
       } else if (CURLE_OK != (res = curl_easy_getinfo(curl_, CURLINFO_RESPONSE_CODE, &http_code))) {
         LOG_WARN("curl get response code failed", K(res));
-      }
+      } 
       if (is_timeout()) {
         ret = OB_TIMEOUT;
         LOG_WARN("timeout", K(ret));
@@ -205,10 +199,10 @@ int ObAIFuncClient::send_post(ObJsonObject *data, ObJsonObject *&response)
 }
 
 int ObAIFuncClient::send_post(common::ObIAllocator &allocator,
-                              const common::ObString &url,
+                              const common::ObString &url, 
                               ObArray<ObString> &headers,
-                              ObJsonObject *data,
-                              ObJsonObject *&response)
+                              ObJsonObject *data, 
+                              ObJsonObject *&response) 
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(data)) {
@@ -223,10 +217,11 @@ int ObAIFuncClient::send_post(common::ObIAllocator &allocator,
       LOG_WARN("fail to send post", K(ret));
     }
   }
+  FLOG_INFO("send post", K(ret), K(url), K(headers), KPC(data), KPC(response));
   return ret;
 }
 
-int ObAIFuncClient::send_post_batch(ObArray<ObJsonObject *> &data_array, ObArray<ObJsonObject *> &responses)
+int ObAIFuncClient::send_post_batch(ObArray<ObJsonObject *> &data_array, ObArray<ObJsonObject *> &responses) 
 {
   int ret = OB_SUCCESS;
   if (data_array.empty() || OB_ISNULL(url_) || OB_ISNULL(header_list_)) {
@@ -237,7 +232,7 @@ int ObAIFuncClient::send_post_batch(ObArray<ObJsonObject *> &data_array, ObArray
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("fail to init curl multi", K(ret));
     }
-  }
+  } 
   if (OB_SUCC(ret)) {
     const int64_t num_data = data_array.count();
     for (int64_t i = 0; OB_SUCC(ret) && i < num_data; ++i) {
@@ -294,10 +289,10 @@ int ObAIFuncClient::send_post_batch(ObArray<ObJsonObject *> &data_array, ObArray
 }
 
 int ObAIFuncClient::send_post_batch(common::ObIAllocator &allocator,
-                                    const common::ObString &url,
+                                    const common::ObString &url, 
                                     ObArray<ObString> &headers,
                                     ObArray<ObJsonObject *> &data_array,
-                                    ObArray<ObJsonObject *> &responses)
+                                    ObArray<ObJsonObject *> &responses) 
 {
   int ret = OB_SUCCESS;
   if (data_array.empty()) {
@@ -322,12 +317,12 @@ int ObAIFuncClient::send_post_batch(common::ObIAllocator &allocator,
       } else if (OB_SUCC(ret)) {
         break;
       }
-    }
+    } 
   }
   return ret;
 }
 
-int ObAIFuncClient::send_post_batch_no_wait(ObArray<ObJsonObject *> &data_array)
+int ObAIFuncClient::send_post_batch_no_wait(ObArray<ObJsonObject *> &data_array) 
 {
   int ret = OB_SUCCESS;
   if (data_array.empty() || OB_ISNULL(url_) || OB_ISNULL(header_list_)) {
@@ -338,7 +333,7 @@ int ObAIFuncClient::send_post_batch_no_wait(ObArray<ObJsonObject *> &data_array)
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("fail to init curl multi", K(ret));
     }
-  }
+  } 
   if (OB_SUCC(ret)) {
     const int64_t num_data = data_array.count();
     for (int64_t i = 0; OB_SUCC(ret) && i < num_data; ++i) {
@@ -375,7 +370,7 @@ int ObAIFuncClient::send_post_batch_no_wait(ObArray<ObJsonObject *> &data_array)
   return ret;
 }
 
-bool ObAIFuncClient::check_batch_finished()
+bool ObAIFuncClient::check_batch_finished() 
 {
   int running_handles = 0;
   CURLMcode mc = curl_multi_perform(curlm_, &running_handles);
@@ -385,7 +380,7 @@ bool ObAIFuncClient::check_batch_finished()
   return is_finished_.load();
 }
 
-int ObAIFuncClient::get_batch_result(ObArray<ObJsonObject *> &responses)
+int ObAIFuncClient::get_batch_result(ObArray<ObJsonObject *> &responses) 
 {
   int ret = OB_SUCCESS;
   if (is_finished_.load()) {
@@ -430,7 +425,7 @@ int ObAIFuncClient::get_batch_result(ObArray<ObJsonObject *> &responses)
   return ret;
 }
 
-int ObAIFuncClient::init_easy_handle(CURL *curl, ObJsonObject *body, ObStringBuffer &response_buf)
+int ObAIFuncClient::init_easy_handle(CURL *curl, ObJsonObject *body, ObStringBuffer &response_buf) 
 {
   int ret = OB_SUCCESS;
   ObJsonBuffer j_buf(allocator_);
@@ -441,13 +436,12 @@ int ObAIFuncClient::init_easy_handle(CURL *curl, ObJsonObject *body, ObStringBuf
     LOG_WARN("fail to init curl", K(ret));
   }
   ObString body_str = j_buf.string();
-  LOG_DEBUG("ai_function, body_str", K(body_str));
   CURLcode res;
   const int64_t no_delay = 1;
   const int64_t no_signal = 1;
   if (OB_SUCC(ret)) {
     if (CURLE_OK != (res = curl_easy_setopt(curl, CURLOPT_URL, url_))) {
-      LOG_WARN("set url failed", K(res), K(url_));
+      LOG_WARN("set url failed", K(res));
     } else if (CURLE_OK !=(res = curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, ObAIFuncClient::write_callback))) {
       LOG_WARN("set write function failed", K(res));
     } else if (CURLE_OK !=(res = curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buf))) {
@@ -459,25 +453,25 @@ int ObAIFuncClient::init_easy_handle(CURL *curl, ObJsonObject *body, ObStringBuf
     } else if (CURLE_OK !=(res = curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000))) {
       LOG_WARN("set connection timeout ms failed", K(res));
     } else if (CURLE_OK != (res = curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec_))) {
-      LOG_WARN("set timeout failed", K(res), K(timeout_sec_));
+      LOG_WARN("set timeout failed", K(res));
     } else if (CURLE_OK !=(res = curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list_))) {
       LOG_WARN("set headers failed", K(res));
     } else if (CURLE_OK !=(res = curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.ptr()))) {
-      LOG_WARN("set post failed", K(res), K(body_str.ptr()));
+      LOG_WARN("set post failed", K(res));
     } else if (CURLE_OK != (res = curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,body_str.length()))) {
-      LOG_WARN("set post failed", K(res), K(body_str.length()));
+      LOG_WARN("set post failed", K(res));
     } else if (CURLE_OK != (res = curl_easy_setopt(curl, CURLOPT_POST, 1))) {
       LOG_WARN("set post method failed", K(res));
     }
     if (CURLE_OK != res) {
       ret = OB_CURL_ERROR;
-      LOG_WARN("fail to set curl options", K(ret), K(res), K(body_str.ptr()), K(timeout_sec_));
+      LOG_WARN("fail to set curl options", K(res), K(res));
     }
   }
   return ret;
 }
 
-void ObAIFuncClient::clean_up()
+void ObAIFuncClient::clean_up() 
 {
   for (int64_t i = 0; i < curl_handles_.count(); ++i) {
     CURL *curl_handle = curl_handles_.at(i);
@@ -499,7 +493,7 @@ void ObAIFuncClient::clean_up()
   is_finished_.store(false);
 }
 
-size_t ObAIFuncClient::write_callback(void *contents, size_t size, size_t nmemb, void *userp)
+size_t ObAIFuncClient::write_callback(void *contents, size_t size, size_t nmemb, void *userp) 
 {
   int ret = OB_SUCCESS;
   size_t total_size = size * nmemb;
@@ -511,8 +505,6 @@ size_t ObAIFuncClient::write_callback(void *contents, size_t size, size_t nmemb,
     result.reserve(total_size);
     if (OB_FAIL(result.append(static_cast<const char *>(contents), total_size, 0))) {
       LOG_WARN("failed to append to result", K(ret));
-    } else {
-      LOG_DEBUG("ai_function, http response", K(result.string()));
     }
   }
   return OB_SUCC(ret) ? total_size : 0;

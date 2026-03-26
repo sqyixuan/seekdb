@@ -412,6 +412,7 @@ class Path
     bool is_join_path() const;
     bool is_subquery_path() const;
     bool is_values_table_path() const;
+    bool is_ai_split_document_path() const;
     int check_is_base_table(bool &is_base_table);
     inline const common::ObIArray<OrderItem> &get_ordering() const { return ordering_; }
     inline common::ObIArray<OrderItem> &get_ordering() { return ordering_; }
@@ -583,12 +584,6 @@ class Path
 
   enum OptSkipScanState
   {
-#ifdef __APPLE__
-    // macOS defines SS_DISABLE in sys/signal.h, undefine it first
-    #ifdef SS_DISABLE
-    #undef SS_DISABLE
-    #endif
-#endif
     SS_DISABLE = 0,
     SS_UNSET,
     SS_HINT_ENABLE,
@@ -1317,6 +1312,33 @@ class Path
       DISALLOW_COPY_AND_ASSIGN(ValuesTablePath);
   };
 
+  class AiSplitDocumentPath : public Path
+  {
+  public:
+    AiSplitDocumentPath()
+      : Path(NULL),
+        table_id_(OB_INVALID_ID),
+        context_expr_(NULL),
+        option_expr_(NULL) {}
+    virtual ~AiSplitDocumentPath() { }
+    int assign(const AiSplitDocumentPath &other, common::ObIAllocator *allocator);
+    virtual int estimate_cost() override;
+    virtual int get_name_internal(char *buf, const int64_t buf_len, int64_t &pos) const
+    {
+      int ret = OB_SUCCESS;
+      if (OB_FAIL(BUF_PRINTF("@ai_split_document_"))) {
+      } else if (OB_FAIL(BUF_PRINTF("%lu", table_id_))) {
+      }
+      return ret;
+    }
+  public:
+    uint64_t table_id_;
+    ObRawExpr* context_expr_;
+    ObRawExpr* option_expr_;
+  private:
+    DISALLOW_COPY_AND_ASSIGN(AiSplitDocumentPath);
+  };
+
   struct ObRowCountEstTask
   {
     ObRowCountEstTask() : est_arg_(NULL)
@@ -1556,9 +1578,9 @@ struct NullAwareAntiJoinInfo {
     int get_matched_inv_index_tid(ObMatchFunRawExpr *match_expr, 
                                   uint64_t ref_table_id,
                                   uint64_t &inv_idx_tid);
-    int get_matched_inv_index_tids(ObMatchFunRawExpr *match_expr,
+    int get_matched_inv_index_tids(ObMatchFunRawExpr *match_expr, 
                                    uint64_t ref_table_id,
-                                   ObIArray<uint64_t> &inv_idx_tids);
+                                   ObIArray<uint64_t> &inv_idx_tids); 
     int get_vector_index_tid_from_expr(ObSqlSchemaGuard *schema_guard,
                                       ObRawExpr *vector_expr,
                                       const uint64_t table_id,
@@ -2143,6 +2165,7 @@ struct NullAwareAntiJoinInfo {
     int generate_json_table_paths();
     int generate_values_table_paths();
     int generate_temp_table_paths();
+    int generate_ai_split_document_paths();
 
     int compute_sharding_info_for_base_paths(ObIArray<AccessPath *> &access_paths);
 
@@ -2793,8 +2816,7 @@ struct NullAwareAntiJoinInfo {
     static double calc_single_parallel_rows(double rows, int64_t parallel);
     int init_basic_text_retrieval_info(uint64_t table_id,
                                        uint64_t ref_table_id,
-                                       PathHelper &helper,
-                                       bool &is_es_match);
+                                       PathHelper &helper);
     int extract_fts_preliminary_query_range(const ObIArray<ColumnItem> &range_columns,
                                             const ObIArray<ObRawExpr*> &predicates,
                                             const ObTableSchema *table_schema,
@@ -2823,9 +2845,9 @@ struct NullAwareAntiJoinInfo {
     int add_valid_fts_index_ids_for_dml(const PathHelper &helper, 
                                         const uint64_t table_id,
                                         ObIArray<uint64_t> &valid_index_ids);
-    int add_valid_fts_index_ids_for_dml_and_es_match(const PathHelper &helper,
+    int add_valid_fts_index_ids_for_dml_and_es_match(const PathHelper &helper, 
                                          const uint64_t table_id,
-                                         ObIArray<uint64_t> &valid_index_ids);
+                                         ObIArray<uint64_t> &valid_index_ids);                   
     int add_valid_vec_index_ids(const ObDMLStmt &stmt,
                                 ObSqlSchemaGuard *schema_guard,
                                 const uint64_t table_id,

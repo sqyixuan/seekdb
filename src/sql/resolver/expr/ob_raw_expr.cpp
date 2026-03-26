@@ -999,7 +999,8 @@ int ObRawExpr::is_const_inherit_expr(bool &is_const_inherit,
       || T_FUN_SYS_IS_USED_LOCK == type_
       || T_FUN_SYS_RELEASE_LOCK == type_
       || T_FUN_SYS_RELEASE_ALL_LOCKS == type_
-      || T_FUN_ES_MATCH == type_) {
+      || T_FUN_ES_MATCH == type_
+      || T_LOAD_FILE_EXPRESSION == type_) {
      is_const_inherit = false;
   }
   if (is_const_inherit && T_OP_GET_USER_VAR == type_) {
@@ -7102,6 +7103,15 @@ int ObRawExprFactory::create_raw_expr(ObRawExpr::ExprClass expr_class,
     ret = OB_ERR_UNEXPECTED;
     break;
   }
+  case ObRawExpr::EXPR_LOAD_FILE: {
+    ObLoadFileRawExpr *dest_load_file_expr = NULL;
+    if (OB_FAIL(create_raw_expr(expr_type, dest_load_file_expr))) {
+      LOG_WARN("failed to allocate raw expr", KPC(dest_load_file_expr), K(ret));
+    } else {
+      dest = dest_load_file_expr;
+    }
+    break;
+  }
   case ObRawExpr::EXPR_INVALID_CLASS: {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("does not implement expr type copy", K(ret), K(expr_type), K(expr_class));
@@ -7561,6 +7571,184 @@ ObExprOperator *ObUDTConstructorRawExpr::get_op()
     OX (object_op->set_attribute_pos(attr_pos_));
   }
   return OB_SUCCESS == ret ? expr_op : NULL;
+}
+
+int ObLoadFileRawExpr::assign(const ObRawExpr &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_LIKELY(this != &other)) {
+    if (OB_UNLIKELY(get_expr_class() != other.get_expr_class() ||
+                    get_expr_type() != other.get_expr_type())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid input expr", K(ret), K(other.get_expr_type()));
+    } else if (OB_FAIL(ObRawExpr::assign(other))) {
+      LOG_WARN("copy in Base class ObRawExpr failed", K(ret));
+    } else {
+      const ObLoadFileRawExpr &tmp = static_cast<const ObLoadFileRawExpr &>(other);
+      if (OB_FAIL(param_exprs_.assign(tmp.param_exprs_))) {
+        LOG_WARN("failed to assign param exprs", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObLoadFileRawExpr::replace_expr(const common::ObIArray<ObRawExpr *> &other_exprs,
+                                    const common::ObIArray<ObRawExpr *> &new_exprs)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObRawExpr::replace_expr(other_exprs, new_exprs))) {
+    LOG_WARN("failed to replace expr", K(ret));
+  } else if (OB_FAIL(ObTransformUtils::replace_exprs(other_exprs,
+                                                     new_exprs,
+                                                     param_exprs_))) {
+    LOG_WARN("failed to replace expr", K(ret));
+  }
+  return ret;
+}
+
+int ObLoadFileRawExpr::do_visit(ObRawExprVisitor &visitor)
+{
+  return visitor.visit(*this);
+}
+
+uint64_t ObLoadFileRawExpr::hash_internal(uint64_t seed) const
+{
+  uint64_t hash_value = seed;
+  for (int64_t i = 0; i < get_param_count(); ++i) {
+    if (NULL != get_param_expr(i)) {
+      hash_value = do_hash(*get_param_expr(i), hash_value);
+    }
+  }
+  return hash_value;
+}
+
+int ObLoadFileRawExpr::get_name_internal(char *buf, const int64_t buf_len, int64_t &pos, ExplainType type) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(BUF_PRINTF("load_file("))) {
+    LOG_WARN("fail to BUF_PRINTF", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < param_exprs_.count(); ++i) {
+      if (OB_ISNULL(param_exprs_.at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null", K(ret));
+      } else if (OB_FAIL(param_exprs_.at(i)->get_name(buf, buf_len, pos, type))) {
+        LOG_WARN("fail to get name", K(ret));
+      } else if (i < param_exprs_.count() - 1) {
+        if (OB_FAIL(BUF_PRINTF(", "))) {
+          LOG_WARN("fail to BUF_PRINTF", K(ret));
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(BUF_PRINTF(")"))) {
+        LOG_WARN("fail to BUF_PRINTF", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+bool ObLoadFileRawExpr::inner_same_as(const ObRawExpr &expr, ObExprEqualCheckContext *check_context) const
+{
+  bool bret = false;
+  if (get_expr_type() == expr.get_expr_type() &&
+      get_expr_class() == expr.get_expr_class()) {
+    bret = true;
+    const ObLoadFileRawExpr &load_file_expr = static_cast<const ObLoadFileRawExpr&>(expr);
+    if (param_exprs_.count() != load_file_expr.param_exprs_.count()) {
+      bret = false;
+    } else {
+      for (int64_t i = 0; bret && i < param_exprs_.count(); i++) {
+        if (OB_ISNULL(param_exprs_.at(i)) || OB_ISNULL(load_file_expr.param_exprs_.at(i)) ||
+            !param_exprs_.at(i)->same_as(*load_file_expr.param_exprs_.at(i), check_context)) {
+          bret = false;
+        }
+      }
+    }
+  }
+  return bret;
+}
+
+void ObLoadFileRawExpr::inner_calc_hash()
+{
+  expr_hash_ = common::do_hash(get_expr_type(), expr_hash_);
+  for (int64_t i = 0; i < param_exprs_.count(); ++i) {
+    if (param_exprs_.at(i) != NULL) {
+      expr_hash_ = common::do_hash(param_exprs_.at(i)->get_expr_hash(), expr_hash_);
+    }
+  }
+}
+
+void ObLoadFileRawExpr::clear_child()
+{
+  param_exprs_.reset();
+}
+
+void ObLoadFileRawExpr::reset()
+{
+  ObRawExpr::reset();
+  clear_child();
+}
+
+int64_t ObLoadFileRawExpr::get_param_count() const
+{
+  return param_exprs_.count();
+}
+
+const ObRawExpr *ObLoadFileRawExpr::get_param_expr(int64_t index) const
+{
+  const ObRawExpr *ptr_ret = NULL;
+  if (0 <= index && index < param_exprs_.count()) {
+    ptr_ret = param_exprs_.at(index);
+  }
+  return ptr_ret;
+}
+
+ObRawExpr *&ObLoadFileRawExpr::get_param_expr(int64_t index)
+{
+  if (0 <= index && index < param_exprs_.count()) {
+    return param_exprs_.at(index);
+  } else {
+    return USELESS_POINTER;
+  }
+}
+
+int ObLoadFileRawExpr::init_param_exprs(int32_t num)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(param_exprs_.reserve(num))) {
+    LOG_WARN("failed to reserve param exprs", K(ret), K(num));
+  }
+  return ret;
+}
+
+int ObLoadFileRawExpr::add_param_expr(ObRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret));
+  } else if (OB_FAIL(param_exprs_.push_back(expr))) {
+    LOG_WARN("failed to push back param expr", K(ret));
+  }
+  return ret;
+}
+
+int ObLoadFileRawExpr::replace_param_expr(int64_t index, ObRawExpr *expr)
+{
+  int ret = common::OB_SUCCESS;
+  if (OB_UNLIKELY(index < 0 || index >= param_exprs_.count())) {
+    ret = common::OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(index), K(param_exprs_.count()));
+  } else if (OB_UNLIKELY(NULL == expr)) {
+    ret = common::OB_INVALID_ARGUMENT;
+    LOG_WARN("unexpected null expr", K(ret));
+  } else {
+    param_exprs_.at(index) = expr;
+  }
+  return ret;
 }
 
 }//namespace sql

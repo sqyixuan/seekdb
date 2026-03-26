@@ -275,6 +275,7 @@ END_P SET_VAR DELIMITER
         APPID APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
         ARBITRATION ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_MODE AUTO_INCREMENT_CACHE_SIZE
         AVG AVG_ROW_LENGTH ACTIVATE AVAILABILITY ARCHIVELOG ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY 
+        AI_SPLIT_DOCUMENT
 
         BACKUP BACKUP_COPIES BALANCE BANDWIDTH BASE BASELINE BASELINE_ID BASIC BEGI BINDING SHARDING BINARY_FORMAT BINLOG BIT BIT_AND
         BIT_OR BIT_XOR BLOCK BLOCK_INDEX BLOCK_SIZE BLOOM_FILTER BOOL BOOLEAN BTREE BYTE
@@ -298,7 +299,7 @@ END_P SET_VAR DELIMITER
         EXTENDED_NOADDR EXTENT_SIZE EXTRACT EXCEPT EXPIRED ENCODING EMPTY_FIELD_AS_NULL EUCLIDEAN EXTERNAL EXTERNAL_STORAGE_DEST EXPIRE_TIME
 
         FAILOVER FAST FAULTS FILE_BLOCK_SIZE FIELDS FILEX FINAL_COUNT FIRST FIRST_VALUE FIXED FLUSH FOLLOWER FORMAT
-        FOUND FORK FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FROZEN FILE_ID FILTER
+        FOUND FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FROZEN FILE_ID FILTER
         FIELD_OPTIONALLY_ENCLOSED_BY FIELD_DELIMITER FIELD_ENCLOSED_BY FILE_EXTENSION
 
         GENERAL GEOMETRY GEOMCOLLECTION GEOMETRYCOLLECTION GET_FORMAT GLOBAL GRANTS GRANULARITY GROUP_CONCAT GROUPING GTS
@@ -315,7 +316,7 @@ END_P SET_VAR DELIMITER
         KEYWORD KEY_BLOCK_SIZE KEY_VERSION KEYTAB KRB5CONF KVCACHE KV_ATTRIBUTES
 
         LAG LANGUAGE LAST LAST_REFRESH_SCN LAST_VALUE LATERAL LEAD LEADER LEAVES LESS LEAK LEAK_MOD LEAK_RATE LIB LINESTRING LIST_
-        LISTAGG LOB_INROW_THRESHOLD LOCAL LOCALITY LOCATION LOCKED LOCKS LOGFILE LOGONLY_REPLICA_NUM LOGS LOCK_ LOGICAL_READS
+        LISTAGG LOB_INROW_THRESHOLD LOAD_FILE LOCAL LOCALITY LOCATION LOCKED LOCKS LOGFILE LOGONLY_REPLICA_NUM LOGS LOCK_ LOGICAL_READS
         LEVEL LN LOG LS LINK LOG_RESTORE_SOURCE LINE_DELIMITER LICENSE LOCATIONS
 
         MAJOR MAP MANHATTAN MANUAL MASTER MASTER_AUTO_POSITION MASTER_CONNECT_RETRY MASTER_DELAY MASTER_HEARTBEAT_PERIOD
@@ -389,7 +390,7 @@ END_P SET_VAR DELIMITER
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
-%type <node> create_table_stmt create_table_like_stmt fork_table_stmt fork_database_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
+%type <node> create_table_stmt create_table_like_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> opt_force
 %type <node> index_or_heap
 %type <node> create_sequence_stmt alter_sequence_stmt drop_sequence_stmt opt_sequence_option_list sequence_option_list sequence_option simple_num
@@ -579,6 +580,7 @@ END_P SET_VAR DELIMITER
 %type <node> operator_list
 %type <node> hybrid_search_expr hybrid_search_param
 %type <node> create_location_stmt alter_location_stmt drop_location_stmt location_name location_url opt_sub_path credential_option_list credential_option opt_credential location_utils_stmt
+%type <node> ai_split_document_expr
 
 %type <node> vector_similarity_expr vector_similarity_metric
 %start sql_stmt
@@ -638,8 +640,6 @@ stmt:
   | create_function_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_function_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_table_like_stmt  { $$ = $1; check_question_mark($$, result); }
-  | fork_table_stmt         { $$ = $1; check_question_mark($$, result); }
-  | fork_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_database_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | alter_database_stmt     { $$ = $1; check_question_mark($$, result); }
@@ -1928,6 +1928,12 @@ simple_expr collation %prec NEG
 | SCORE'(' ')'
 {
   malloc_terminal_node($$, result->malloc_pool_, T_FUN_ES_SCORE);
+}
+| LOAD_FILE '(' expr ',' expr ')'
+{
+  ParseNode *params = NULL;
+  malloc_non_terminal_node(params, result->malloc_pool_, T_EXPR_LIST, 2, $3, $5);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LOAD_FILE_EXPRESSION, 2, NULL, params);
 }
 | case_expr
 {
@@ -5555,26 +5561,6 @@ create_with_opt_hint special_table_type TABLE opt_if_not_exists relation_factor 
 {
   (void)($1);
   malloc_non_terminal_node($$, result->malloc_pool_, T_CREATE_TABLE_LIKE, 4, $2, $4, $5, $8);
-}
-;
-
-/*****************************************************************************
- *
- *	FORK TABLE grammar
- *
- *****************************************************************************/
-
-fork_table_stmt:
-FORK TABLE relation_factor TO relation_factor
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FORK_TABLE, 2, $5, $3);
-}
-;
-
-fork_database_stmt:
-FORK DATABASE database_factor TO database_factor
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FORK_DATABASE, 2, $5, $3);
 }
 ;
 
@@ -11289,8 +11275,11 @@ with_param_column_ref { $$ = $1}
 with_param_column_ref:
 no_param_column_ref '^' literal
 {
+  ParseNode *node = NULL;
+  malloc_non_terminal_node(node, result->malloc_pool_, T_COLUMN_REF, 3, NULL, NULL, $1);
+  dup_node_string($1, node, result->malloc_pool_);
   ParseNode *list_node = NULL;
-  malloc_non_terminal_node(list_node, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+  malloc_non_terminal_node(list_node, result->malloc_pool_, T_LINK_NODE, 2, node, $3);
   merge_nodes($$, result, T_MATCH_COLUMN_LIST, list_node);
 }
 ;
@@ -14014,6 +14003,10 @@ tbl_name
   $$ = $1;
 }
 | hybrid_search_expr
+{
+  $$ = $1;
+}
+| ai_split_document_expr
 {
   $$ = $1;
 }
@@ -25061,6 +25054,25 @@ DROP CONCURRENT_LIMITING_RULE opt_if_exists relation_factor
 }
 ;
 
+/*===========================================================
+*
+*  AI_SPLIT_DOCUMENT
+*============================================================*/
+ai_split_document_expr:
+AI_SPLIT_DOCUMENT '(' simple_expr ','  simple_expr')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_SPLIT_DOCUMENT, 2, $3, $5);
+}
+| AI_SPLIT_DOCUMENT '(' simple_expr ')'
+{
+  ParseNode *node = NULL;
+  malloc_terminal_node(node, result->malloc_pool_, T_VARCHAR);
+  node->str_value_ = "";
+  node->str_len_ = 0;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_SPLIT_DOCUMENT, 2, $3, node);
+}
+
+
 unreserved_keyword:
 unreserved_keyword_for_role_name { $$=$1;}
 | unreserved_keyword_ambiguous_roles { $$=$1;}
@@ -25437,6 +25449,7 @@ ACCESS_INFO
 |       LISTAGG
 |       LN
 |       LOB_INROW_THRESHOLD
+|       LOAD_FILE
 |       LOCAL
 |       LOCALITY
 |       LOCKED
@@ -25974,6 +25987,7 @@ ACCESS_INFO
 |       INCONSISTENT 
 |       INDIVIDUAL
 |       HYBRID_SEARCH
+|       AI_SPLIT_DOCUMENT
 ;
 
 unreserved_keyword_special:

@@ -980,6 +980,7 @@ typedef enum ObItemType
   T_FUN_SYS_EMBEDDED_VEC = 1928,
   T_FUN_SYS_AI_PROMPT = 1929,
   T_FUN_SYS_VEC_VISIBLE = 1930, // vector index table 5
+  T_FUN_SYS_AI_PARSE_DOCUMENT = 1931,
 
   ///< @note add new sys function type before this line
   T_FUN_SYS_END = 2000,
@@ -2950,8 +2951,8 @@ typedef enum ObItemType
   T_FUN_ES_SCORE = 4913, // fulltext index for ES SQL
   T_FUN_ES_MATCH = 4914, // fulltext index for ES SQL
   T_HYBRID_SEARCH_EXPRESSION = 4915,
-  T_FORK_TABLE = 4916,
-  T_FORK_DATABASE = 4917,
+  T_AI_SPLIT_DOCUMENT = 4916,
+  T_LOAD_FILE_EXPRESSION = 4917,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

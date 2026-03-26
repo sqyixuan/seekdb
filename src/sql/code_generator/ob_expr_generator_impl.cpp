@@ -45,6 +45,7 @@
 #include "sql/engine/expr/ob_expr_cast.h"
 #include "sql/engine/expr/ob_pl_expr_subquery.h"
 #include "sql/engine/expr/ob_expr_sql_udt_construct.h"
+#include "sql/engine/expr/ob_expr_load_file.h"
 
 namespace oceanbase
 {
@@ -1919,6 +1920,50 @@ int ObExprGeneratorImpl::visit(ObMatchFunRawExpr &expr)
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("all match expr should have been generated", K(expr), K(&expr));
+  }
+  return ret;
+}
+
+int ObExprGeneratorImpl::visit(ObLoadFileRawExpr &expr)
+{
+  int ret = OB_SUCCESS;
+  ObPostExprItem item;
+  item.set_accuracy(expr.get_accuracy());
+  if (OB_ISNULL(sql_expr_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("sql_expr_ is NULL");
+  } else if (expr.has_flag(IS_COLUMNLIZED)) {
+    int64_t idx = OB_INVALID_INDEX;
+    if (OB_FAIL(column_idx_provider_.get_idx(&expr, idx))) {
+      LOG_WARN("get index failed", K(ret));
+    } else if (OB_FAIL(item.set_column(idx))) {
+      LOG_WARN("failed to set column", K(ret), K(expr));
+    } else if (OB_FAIL(sql_expr_->add_expr_item(item, &expr))) {
+      LOG_WARN("failed to add expr item", K(ret));
+    }
+  } else {
+    ObExprLoadFile *load_file_op = NULL;
+    void *ptr = NULL;
+    if (OB_ISNULL(ptr = inner_alloc_.alloc(sizeof(ObExprLoadFile)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc memory for ObExprLoadFile", K(ret));
+    } else {
+      load_file_op = new(ptr) ObExprLoadFile(inner_alloc_);
+      if (OB_ISNULL(load_file_op)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to create ObExprLoadFile object", K(ret));
+      } else {
+        ObExprOperator *op = static_cast<ObExprOperator *>(load_file_op);
+        op->set_real_param_num(static_cast<int32_t>(expr.get_param_count()));
+        op->set_row_dimension(ObExprOperator::NOT_ROW_DIMENSION);
+        op->set_result_type(expr.get_result_type());
+        if (OB_FAIL(item.assign(op))) {
+          LOG_WARN("failed to assign", K(ret));
+        } else if (OB_FAIL(sql_expr_->add_expr_item(item, &expr))) {
+          LOG_WARN("failed to add expr item", K(ret));
+        }
+      }
+    }
   }
   return ret;
 }

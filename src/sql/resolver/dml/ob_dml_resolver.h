@@ -26,6 +26,9 @@
 #include "sql/resolver/expr/ob_shared_expr_resolver.h"
 #include <orc/Common.hh>
 #include "parquet/schema.h"
+#ifdef OB_BUILD_CPP_ODPS
+#include "sql/engine/table/ob_odps_table_row_iter.h"
+#endif
 namespace oceanbase
 {
 namespace sql
@@ -348,6 +351,16 @@ public:
   void set_upper_insert_resolver(ObInsertResolver *insert_resolver) {
     upper_insert_resolver_ = insert_resolver; }
   int estimate_values_table_stats(ObValuesTableDef &table_def);
+
+  // ai split document
+  int resolve_ai_split_document_item(const ParseNode &parse_tree, TableItem *&tbl_item);
+  int resolve_ai_split_document_column_items(const TableItem &table_item, common::ObIArray<ColumnItem> &col_items);
+  int resolve_ai_split_document_column_item(const TableItem &table_item,
+                                            const ObObjMeta &meta,
+                                            const ObAccuracy &accuracy,
+                                            const common::ObString &column_name,
+                                            uint64_t column_id,
+                                            ColumnItem *&col_item);
 protected:
   int generate_pl_data_type(ObRawExpr *expr, pl::ObPLDataType &pl_data_type);
   int resolve_into_variables(const ParseNode *node,
@@ -508,7 +521,6 @@ protected:
                          TableItem &table_item);
   int resolve_sample_clause(const ParseNode *part_node,
                             TableItem &table_item);
-  int generate_ddl_sample_info_if_needed(TableItem &table_item);
 
 protected:
   int check_basic_column_generated(const ObColumnRefRawExpr *col_expr,
@@ -909,6 +921,13 @@ private:
 public:
   static int resolve_direct_load_hint(const ParseNode &hint_node, ObDirectLoadHint &hint);
   //////////end of functions for sql hint/////////////
+#ifdef OB_BUILD_CPP_ODPS
+  static int build_column_schemas_for_odps(const common::ObIArray<oceanbase::sql::ObODPSTableRowIterator::OdpsColumn> &column_list,
+                                           const common::ObIArray<ObString> &part_col_names,
+                                           ObTableSchema& table_schema);
+  static int set_partition_info_for_odps(ObTableSchema &table_schema,
+                                         const common::ObIArray<ObString> &part_col_names);
+#endif
 
 private:
   int resolve_table_check_constraint_items(const TableItem *table_item,

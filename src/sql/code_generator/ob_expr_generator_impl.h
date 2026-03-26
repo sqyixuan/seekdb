@@ -100,6 +100,7 @@ private:
   virtual int visit(ObPseudoColumnRawExpr &expr);
   virtual int visit(ObPlQueryRefRawExpr &expr);
   virtual int visit(ObMatchFunRawExpr &expr);
+  virtual int visit(ObLoadFileRawExpr &expr);
   virtual bool skip_child(ObRawExpr &expr);
 private:
   // types and constants

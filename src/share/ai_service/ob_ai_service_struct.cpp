@@ -56,6 +56,21 @@ const char *VALID_PROVIDERS[] = {
         } \
       } else
 
+#define EXTRACT_JSON_ELEM_INT(json_key, member) \
+  EXTRACT_JSON_ELEM_INT_WITH_PROCESS(json_key, member, "void")
+
+#define EXTRACT_JSON_ELEM_INT_WITH_PROCESS(json_key, member, post_process) \
+      if (elem.first.case_compare(json_key) == 0) { \
+        if (elem.second->json_type() != ObJsonNodeType::J_INT) { \
+          ret = OB_AI_FUNC_PARAM_VALUE_INVALID; \
+          LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, elem.first.length(), elem.first.ptr()); \
+          LOG_WARN("invalid json type", K(ret), K(elem.first), K(elem.second->json_type())); \
+        } else { \
+          member = elem.second->get_int(); \
+          post_process; \
+        } \
+      } else
+
 #define EXTRACT_JSON_ELEM_END() \
   { \
     ret = OB_AI_FUNC_PARAM_INVALID; \
@@ -159,7 +174,7 @@ bool ObAiModelEndpointInfo::is_valid_ai_model_name(const ObString &ai_model_name
     LOG_WARN("fail to get ai model schema", KR(ret), K(tenant_id), K(ai_model_name));
   } else if (OB_NOT_NULL(ai_model_schema)) {
     is_valid = true;
-  }
+  } 
   return is_valid;
 }
 
@@ -300,6 +315,40 @@ int ObAiServiceModelInfo::check_valid() const
 }
 
 OB_SERIALIZE_MEMBER(ObAiServiceModelInfo, name_, type_, model_name_);
+
+int ParseDocumentParam::parse_from_json_base(const common::ObIJsonBase &params_jbase)
+{
+  int ret = OB_SUCCESS;
+  JsonObjectIterator iter = params_jbase.object_iterator();
+  int64_t output_format = -1;
+  int64_t input_format = -1;
+  ObString save_png_str;
+  while (!iter.end() && OB_SUCC(ret)) {
+    ObJsonObjPair elem;
+    if (OB_FAIL(iter.get_elem(elem))) {
+      LOG_WARN("failed to get elem", K(ret));
+    } else {
+      EXTRACT_JSON_ELEM_INT("dpi", dpi_)
+      EXTRACT_JSON_ELEM_STR_WITH_PROCESS("save_png", save_png_str, save_png_ = (save_png_str.case_compare("true") == 0))
+      EXTRACT_JSON_ELEM_INT_WITH_PROCESS("output_format", output_format, output_format_ = static_cast<OUTPUT_FORMAT_TYPE>(output_format))
+      EXTRACT_JSON_ELEM_INT_WITH_PROCESS("input_format", input_format, input_format_ = static_cast<INPUT_FORMAT_TYPE>(input_format))
+      EXTRACT_JSON_ELEM_END()
+    }
+    iter.next();
+  }
+
+  if (OB_SUCC(ret) && input_format != -1 && !(input_format > INPUT_MIN && input_format < INPUT_MAX)) {
+    LOG_WARN("invalid input format", K(ret), K(input_format));
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("input_format"), "input_format");
+  } else if (OB_SUCC(ret) && output_format != -1 && !(output_format > OUTPUT_MIN && output_format < OUTPUT_MAX)) {
+    LOG_WARN("invalid output format", K(ret), K(output_format));
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("output_format"), "output_format");
+  }
+
+  return ret;
+}
 
 } // namespace share
 } // namespace oceanbase

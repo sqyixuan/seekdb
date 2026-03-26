@@ -31,10 +31,6 @@
 #include "lib/allocator/ob_malloc.h"
 #include "common/ob_clock_generator.h"
 
-#ifdef __APPLE__
-#include <sys/types.h>  // includes BSD type definitions
-using uint = unsigned int;
-#endif
 #define FALSE_IT(stmt) ({ (stmt); false; })
 #define OB_FALSE_IT(stmt) ({ (stmt); false; })
 
@@ -650,17 +646,10 @@ int str_cmp(const void *v1, const void *v2);
 
 inline void bind_self_to_core(uint64_t id)
 {
-#ifdef __linux__
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(id, &cpuset);
   pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-#elif defined(__APPLE__)
-  // macOS doesn't support CPU affinity binding in the same way
-  // pthread_setaffinity_np is not available on macOS
-  // This is a no-op on macOS
-  (void)id;
-#endif
 }
 inline void bind_core()
 {
@@ -689,7 +678,7 @@ int load_file_to_string(const char *path, Allocator &allocator, ObString &str)
   } else if (0 != ::fstat(fd, &st)) {
     _OB_LOG(WARN, "fstat %s failed, errno %d", path, errno);
     ret = OB_ERROR;
-  } else if (NULL == (buf = allocator.alloc(st.st_size + 1))) {
+  } else if (NULL == (buf = static_cast<char*>(allocator.alloc(st.st_size + 1)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
   } else if ((size = static_cast<int64_t>(::read(fd, buf, st.st_size))) < 0) {
     _OB_LOG(WARN, "read %s failed, errno %d", path, errno);
@@ -1399,9 +1388,6 @@ const char *get_transparent_hugepage_status();
 int read_one_int(const char *file_name, int64_t &value);
 
 int64_t calculate_scaled_value_by_memory(int64_t min_value, int64_t max_value);
-
-int get_os_info(char *name, int64_t name_size, char *release, int64_t release_size);
-int get_cpu_model(char *buf, int64_t buf_size);
 
 } // end namespace common
 } // end namespace oceanbase

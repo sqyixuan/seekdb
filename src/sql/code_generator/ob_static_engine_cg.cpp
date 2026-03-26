@@ -130,6 +130,8 @@
 #include "sql/optimizer/ob_log_values_table_access.h"
 #include "sql/engine/basic/ob_values_table_access_op.h"
 #include "sql/engine/direct_load/ob_table_direct_insert_op.h"
+#include "sql/optimizer/ob_log_ai_split_document.h"
+#include "sql/engine/basic/ob_ai_split_document_op.h"
 
 namespace oceanbase
 {
@@ -967,7 +969,10 @@ int ObStaticEngineCG::generate_spec_final(ObLogicalOperator &op, ObOpSpec &spec)
     }
   }
 
-  if (PHY_TABLE_SCAN == spec.type_ || IS_SAMPLE_SCAN(spec.type_)) {
+  if (PHY_TABLE_SCAN == spec.type_ ||
+      PHY_ROW_SAMPLE_SCAN == spec.type_ ||
+      PHY_BLOCK_SAMPLE_SCAN == spec.type_ ||
+      PHY_DDL_BLOCK_SAMPLE_SCAN == spec.type_) {
     ObTableScanSpec &tsc_spec = static_cast<ObTableScanSpec&>(spec);
     ObDASScanCtDef &scan_ctdef = tsc_spec.tsc_ctdef_.scan_ctdef_;
     ObDASScanCtDef *lookup_ctdef = tsc_spec.tsc_ctdef_.lookup_ctdef_;
@@ -3955,7 +3960,8 @@ int ObStaticEngineCG::generate_dml_tsc_ids(const ObOpSpec &spec, const ObLogical
         LOG_WARN("push back failed", K(ret));
       }
     }
-  } else if (PHY_TABLE_SCAN == spec.type_ || IS_SAMPLE_SCAN(spec.type_)) {
+  } else if (PHY_TABLE_SCAN == spec.type_ || PHY_ROW_SAMPLE_SCAN == spec.type_
+                         || PHY_BLOCK_SAMPLE_SCAN == spec.type_) {
     if (static_cast<const ObTableScanSpec&>(spec).use_dist_das()) {
       // avoid das tsc collected and processed by gi
     } else if (OB_UNLIKELY(!op.is_table_scan())) {
@@ -8142,6 +8148,63 @@ int ObStaticEngineCG::generate_spec(ObLogJsonTable &op, ObJsonTableSpec &spec,
   return ret;
 }
 
+int ObStaticEngineCG::generate_spec(ObLogAiSplitDocument &op, ObAiSplitDocumentSpec &spec,
+    const bool in_root_job)
+{
+  UNUSED(in_root_job);
+  ObIAllocator &alloc = phy_plan_->get_allocator();
+  ObRawExpr *context_raw_expr = nullptr;
+  ObRawExpr *option_raw_expr = nullptr;
+  ObRawExpr *type_raw_expr = nullptr;
+  ObExpr *context_expr = nullptr; 
+  ObExpr *option_expr = nullptr;
+  ObExpr *type_expr = nullptr;
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(op.get_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get stmt", K(ret));
+  } else if (OB_FAIL(spec.column_exprs_.init(op.get_stmt()->get_column_size()))) {
+    LOG_WARN("failed to init array", K(ret));
+  } else if (OB_UNLIKELY(op.get_num_of_child() > 1)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected count of children", K(ret), K(op.get_num_of_child()));
+  } else if (OB_ISNULL(context_raw_expr = op.get_context_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get value raw expr", K(ret));
+  } else if (OB_FAIL(generate_rt_expr(*context_raw_expr, context_expr))) {
+    LOG_WARN("failed to generate rt expr", K(ret));
+  } else if (OB_ISNULL(option_raw_expr = op.get_option_expr())) { 
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to get option raw expr", K(ret));
+  } else if (OB_FAIL(generate_rt_expr(*option_raw_expr, option_expr))) {
+    LOG_WARN("failed to generate rt expr", K(ret));
+  } else {
+    // todo@dazhi: has_correlated_expr_
+    spec.has_correlated_expr_ = context_raw_expr->has_flag(CNT_DYNAMIC_PARAM);
+    spec.context_expr_ = context_expr;
+    spec.option_expr_ = option_expr;
+    for (int64_t i = 0; OB_SUCC(ret) && i < op.get_output_exprs().count(); ++i) {
+      if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs().at(i)))) {
+        LOG_WARN("failed to mark expr self produced", K(ret));
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < op.get_stmt()->get_column_size(); ++i) {
+      ObExpr *rt_expr = nullptr;
+      const ColumnItem *col_item = op.get_stmt()->get_column_item(i);
+      CK (OB_NOT_NULL(col_item));
+      CK (OB_NOT_NULL(col_item->expr_));
+      if (OB_SUCC(ret)
+          && col_item->table_id_ == op.get_table_id()
+          && col_item->expr_->is_explicited_reference()) {
+        OZ (mark_expr_self_produced(col_item->expr_));
+        OZ (generate_rt_expr(*col_item->expr_, rt_expr));
+        OZ (spec.column_exprs_.push_back(rt_expr));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObStaticEngineCG::generate_spec(ObLogStatCollector &op,
     ObStatCollectorSpec &spec, const bool in_root_job)
 {
@@ -9013,6 +9076,10 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
     }
     case log_op_def::LOG_EXPAND: {
       type = PHY_EXPAND;
+      break;
+    }
+    case log_op_def::LOG_AI_SPLIT_DOCUMENT: {
+      type = PHY_AI_SPLIT_DOCUMENT;
       break;
     }
     default:
