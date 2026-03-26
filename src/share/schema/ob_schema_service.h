@@ -940,6 +940,10 @@ public:
   virtual int get_core_version(common::ObISQLClient &sql_client,
                                const ObRefreshSchemaStatus &schema_status,
                                int64_t &core_schema_version) = 0;
+  virtual int get_core_and_sys_version(common::ObISQLClient &sql_client,
+                               const uint64_t &tenant_id,
+                               int64_t &core_schema_version,
+                               int64_t &sys_schema_version) = 0;
   virtual int get_baseline_schema_version(common::ObISQLClient &sql_client,
                                           const ObRefreshSchemaStatus &schema_status,
                                           int64_t &baseline_schema_version) = 0;
@@ -973,7 +977,7 @@ public:
   virtual int fetch_new_trigger_id(const uint64_t tenant_id, uint64_t &new_trigger_id) = 0;
 
   virtual int fetch_new_directory_id(const uint64_t tenant_id, uint64_t &new_directory_id) = 0;
-  virtual int fetch_new_location_id(const uint64_t tenant_id, uint64_t &new_location_id) = 0;
+  virtual int fetch_new_location_id(const uint64_t tenant_id, uint64_t &new_location_id) = 0; 
   virtual int fetch_new_context_id(const uint64_t tenant_id, uint64_t &new_context_id) = 0;
   virtual int fetch_new_priv_id(const uint64_t tenant_id, uint64_t &new_priv_id) = 0;
   virtual int fetch_new_catalog_id(const uint64_t tenant_id, uint64_t &new_catalog_id) = 0;
@@ -1294,7 +1298,10 @@ public:
               common::ObIArray<ObString> &table_names,
               common::ObIArray<uint64_t> &table_ids) = 0;
   /*----------- interfaces for latest schema end -------------*/
-
+  static bool in_parallel_ddl_thread()
+  {
+    return 0 == STRCASECMP(PARALLEL_DDL_THREAD_NAME, ob_get_origin_thread_name());
+  }
 };
 }//namespace schema
 }//namespace share

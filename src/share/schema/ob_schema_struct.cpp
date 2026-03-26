@@ -116,7 +116,11 @@ int ObSchemaIdVersion::init(
   return ret;
 }
 
-
+void ObSchemaIdVersion::reset()
+{
+  schema_id_ = OB_INVALID_ID;
+  schema_version_ = OB_INVALID_VERSION;
+}
 
 int ObSchemaVersionGenerator::init(
     const int64_t start_version,

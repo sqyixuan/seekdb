@@ -1,0 +1,137 @@
+#owner : yangjiali.yjl
+#owner group: storage
+#description: ddl inner sql
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+let $saved_primary_zone=`select primary_zone from __all_tenant where tenant_name = 'sys'`;
+alter system set debug_sync_timeout = '600s';
+sleep 3;
+
+set ob_global_debug_sync = 'reset';
+
+connection default;
+let $tenant_id = query_get_value(select effective_tenant_id() as id, id, 1);
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+--echo
+--echo # test cancel ddl
+
+connection obsys;
+set ob_global_debug_sync = 'END_DDL_IN_PX_SUBCOORD wait_for continue_signal execute 10000';
+
+connection default;
+create table t1(c1 int);
+# when we create index on empty table, we don't submit ddl_task. So we need to insert a row.
+insert into t1 values(1);
+send create index i1 on t1(c1);
+sleep 10;
+
+connection obsys;
+let $sys_task_id = query_get_value(select task_id from oceanbase.__all_virtual_sys_task_status, task_id, 1);
+let $ddl_task_id = query_get_value(select task_id from oceanbase.__all_virtual_ddl_task_status, task_id, 1);
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status, trace_id, 1);
+
+--disable_query_log
+eval alter system cancel task '$sys_task_id';
+--enable_query_log
+
+let $tenant_name = `select tenant_name from __all_tenant where tenant_id = $tenant_id`;
+
+connection default;
+--error 4072
+reap;
+
+connection obsys;
+let $inner_sql_cnt = `select count(*) from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name' and state != 'SESSION_KILLED'`;
+if ($inner_sql_cnt != 0) {
+    --echo error: unexpected inner sql cnt
+    eval select * from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name';
+}
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+drop table t1;
+
+--echo
+--echo # test rs swich
+connection obsys;
+alter tenant sys set primary_zone = 'zone1';
+sleep 10;
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'END_DDL_IN_PX_SUBCOORD wait_for continue_signal execute 10000';
+
+connection default;
+create table t1(c1 int);
+# when we create index on empty table, we don't submit ddl_task. So we need to insert a row.
+insert into t1 values(1);
+send create index i1 on t1(c1);
+sleep 10;
+
+connection obsys;
+let $sys_task_id = query_get_value(select task_id from oceanbase.__all_virtual_sys_task_status, task_id, 1);
+let $ddl_task_id = query_get_value(select task_id from oceanbase.__all_virtual_ddl_task_status, task_id, 1);
+let $trace_id = query_get_value(select trace_id from oceanbase.__all_virtual_ddl_task_status, trace_id, 1);
+
+alter tenant sys set primary_zone = 'zone1';
+sleep 15;
+
+let $tenant_name = `select tenant_name from __all_tenant where tenant_id = $tenant_id`;
+let $id = query_get_value(select id from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and trace_id = '$trace_id' and tenant = '$tenant_name', id, 1);
+
+let $ddl_task_status = `select status from oceanbase.__all_virtual_ddl_task_status where tenant_id = $tenant_id`;
+if ($ddl_task_status != 3) {
+    --echo error: unexpected ddl task status
+    eval select * from oceanbase.__all_virtual_ddl_task_status where tenant_id = $tenant_id and task_id = $ddl_task_id;
+}
+let $inner_sql_cnt = `select count(*) from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name'`;
+if ($inner_sql_cnt != 1) {
+    --echo error: unexpected inner sql cnt
+    eval select * from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name';
+}
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+
+connection default;
+reap;
+
+drop table t1;
+
+--echo
+--echo # create partitioned local index rs switch after reporting checksum
+create table t1(c1 int) partition by hash(c1) partitions 10;
+# when we create index on empty table, we don't submit ddl_task. So we need to insert a row.
+insert into t1 values(1);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'END_DDL_IN_PX_SUBCOORD wait_for continue_signal execute 10000';
+connection default;
+send create index i1 on t1(c1) local;
+connection obsys;
+sleep 10;
+alter tenant sys set primary_zone = 'zone1';
+sleep 10;
+let $ddl_task_id = `select task_id from oceanbase.__all_virtual_ddl_task_status where tenant_id = $tenant_id`;
+let $inner_sql_cnt = `select count(*) from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name'`;
+if ($inner_sql_cnt != 1) {
+    --echo unexpected inner sql cnt
+    eval select * from oceanbase.__all_virtual_session_info where info like "%INSERT%ddl_task_id%$ddl_task_id%INTO%SELECT%" and tenant = '$tenant_name';
+}
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+drop table t1;
+
+connection obsys;
+drop database test;
+create database test;
+--disable_query_log
+eval alter tenant sys set primary_zone = "$saved_primary_zone";
+--enable_query_log
+sleep 10;

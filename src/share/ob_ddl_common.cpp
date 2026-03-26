@@ -846,7 +846,7 @@ int ObDDLUtil::generate_spatial_index_column_names(const ObTableSchema &dest_tab
           // do nothing
         } else if (OB_FAIL(select_column_ids.push_back(column_schema->get_column_id()))) {
           LOG_WARN("push back select column id failed", K(ret));
-        }
+        } 
       }
     }
     // get dest table column names
@@ -1596,7 +1596,7 @@ int ObDDLUtil::report_ddl_sstable_checksum(
 {
   int ret = OB_SUCCESS;
   ObSSTableMetaHandle sst_meta_hdl;
-  if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || OB_INVALID_ID == target_table_id ||
+  if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || OB_INVALID_ID == target_table_id || 
                    execution_id < 0 || ddl_task_id < 0 || tenant_data_version < 0 || nullptr == first_major_sstable ||
                    !tablet_handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -1758,9 +1758,9 @@ int ObDDLUtil::init_inc_macro_block_writer(
 }
 
 OB_INLINE int check_lob_column_inrow(
-    char *ptr,
-    uint32_t len,
-    const int64_t lob_inrow_threshold,
+    char *ptr, 
+    uint32_t len, 
+    const int64_t lob_inrow_threshold, 
     bool &is_inrow)
 {
   int ret = OB_SUCCESS;
@@ -1776,7 +1776,7 @@ OB_INLINE int check_lob_column_inrow(
 
 OB_INLINE int check_skip_handle_lob_column(
     const ObDatum &datum,
-    const int64_t lob_inrow_threshold,
+    const int64_t lob_inrow_threshold, 
     bool &can_skip)
 {
   int ret = OB_SUCCESS;
@@ -1791,7 +1791,7 @@ OB_INLINE int check_skip_handle_lob_column(
 int check_skip_handle_lob_column(
     ObIVector *vector,
     const int64_t row_count,
-    const int64_t lob_inrow_threshold,
+    const int64_t lob_inrow_threshold, 
     bool &can_skip)
 {
   int ret = OB_SUCCESS;
@@ -1806,9 +1806,9 @@ int check_skip_handle_lob_column(
       if (!nulls->is_all_true(row_count)) {
         for (int64_t j = 0; OB_SUCC(ret) && can_skip && j < row_count; ++j) {
           if (!nulls->at(j)) {
-            if (OB_FAIL(check_lob_column_inrow(data + offsets[j],
-                                               offsets[j + 1] - offsets[j],
-                                               lob_inrow_threshold,
+            if (OB_FAIL(check_lob_column_inrow(data + offsets[j], 
+                                               offsets[j + 1] - offsets[j], 
+                                               lob_inrow_threshold, 
                                                can_skip))) {
               LOG_WARN("fail to check lob column inrow", K(ret), K(j), KP(data), K(offsets[j]), K(offsets[j + 1]));
             }
@@ -1839,8 +1839,8 @@ int check_skip_handle_lob_column(
       for (int64_t j = 0; OB_SUCC(ret) && can_skip && j < row_count; ++j) {
         const ObDatum &datum = datums[j];
         if (!datum.is_null()) {
-          if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_),
-                                             datum.len_,
+          if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_), 
+                                             datum.len_, 
                                              lob_inrow_threshold,
                                              can_skip))) {
             LOG_WARN("fail to check lob column inrow", K(ret), K(j), K(datum));
@@ -1853,9 +1853,9 @@ int check_skip_handle_lob_column(
       ObUniformBase *uniform_vec = static_cast<ObUniformBase *>(vector);
       const ObDatum &datum = uniform_vec->get_datums()[0];
       if (!datum.is_null()) {
-        if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_),
-                                           datum.len_,
-                                           lob_inrow_threshold,
+        if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_), 
+                                           datum.len_, 
+                                           lob_inrow_threshold, 
                                            can_skip))) {
           LOG_WARN("fail to check lob column inrow", K(ret), K(datum));
         }
@@ -1971,7 +1971,7 @@ int ObDDLUtil::handle_lob_columns(
     ObDatumRow &datum_row)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
                   slice_idx < 0 ||
                   !param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -2037,8 +2037,8 @@ int ObDDLUtil::handle_lob_column(
 {
   int ret = OB_SUCCESS;
   lob_cells.reuse();
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
-                  slice_idx < 0 ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
+                  slice_idx < 0 || 
                   !param.is_valid() ||
                   !selector.is_valid() ||
                   nullptr == vector)) {
@@ -2197,9 +2197,9 @@ int ObDDLUtil::handle_lob_columns(
     ObBatchDatumRows &batch_rows)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
                   slice_idx < 0 ||
-                  !param.is_valid() ||
+                  !param.is_valid() || 
                   batch_rows.row_count_ <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tablet_id), K(slice_idx), K(param), K(batch_rows.row_count_));
@@ -2223,8 +2223,8 @@ int ObDDLUtil::handle_lob_columns(
           LOG_WARN("fail to check skip handle lob column", K(ret));
         } else if (!can_skip) {
           const ObColumnSchemaItem &column_schema_item = ddl_table_schema.column_items_.at(idx);
-          if (OB_FAIL(ObDDLUtil::handle_lob_column(tablet_id,
-                                                   slice_idx,
+          if (OB_FAIL(ObDDLUtil::handle_lob_column(tablet_id, 
+                                                   slice_idx, 
                                                    param,
                                                    false, // need_all_cells
                                                    lob_cells,
@@ -2294,7 +2294,7 @@ int ObDDLUtil::check_null_and_length(
         const ObIVector *vector = batch_rows.vectors_[col_idx];
         const VectorFormat format = vector->get_format();
         switch (format) {
-          case VEC_FIXED:
+          case VEC_FIXED: 
           {
             const ObFixedLengthBase *vec = static_cast<const ObFixedLengthBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2303,7 +2303,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_CONTINUOUS:
+          case VEC_CONTINUOUS: 
           {
             const ObContinuousBase *vec = static_cast<const ObContinuousBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2312,7 +2312,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_DISCRETE:
+          case VEC_DISCRETE: 
           {
             const ObDiscreteBase *vec = static_cast<const ObDiscreteBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2321,7 +2321,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_UNIFORM:
+          case VEC_UNIFORM: 
           {
             const ObUniformBase *vec = static_cast<const ObUniformBase *>(vector);
             for (int64_t row_idx = 0; row_idx < row_count; row_idx++) {
@@ -2331,7 +2331,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_UNIFORM_CONST:
+          case VEC_UNIFORM_CONST: 
           {
             const ObUniformBase *vec = static_cast<const ObUniformBase *>(vector);
             for (int64_t row_idx = 0; row_idx < row_count; row_idx++) {
@@ -2341,7 +2341,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          default:
+          default: 
           {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected vector format", KR(ret), K(format));
@@ -3221,7 +3221,7 @@ int ObDDLUtil::get_task_ranges(
     const int64_t tablet_size,
     const int64_t hint_parallelism,
     common::ObArenaAllocator &allocator,
-    ObArray<blocksstable::ObDatumRange> &report_ranges)
+    ObArray<blocksstable::ObDatumRange> &report_ranges) 
 {
   int ret = OB_SUCCESS;
   ObFreezeInfo frozen_status;
@@ -3271,7 +3271,7 @@ int ObDDLUtil::get_task_ranges(
                                                           ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US,
                                                           ranges,
                                                           min(min(max(expected_task_count, 1), hint_parallelism), ObMacroDataSeq::MAX_PARALLEL_IDX + 1),
-                                                          allocator,
+                                                          allocator, 
                                                           multi_range_split_array))) {
       LOG_WARN("split multi ranges failed", K(ret));
       if (OB_REPLICA_NOT_READABLE == ret) {
@@ -3296,7 +3296,7 @@ int ObDDLUtil::get_task_ranges(
       }
     }
     if (OB_SUCC(ret)) {
-      FLOG_INFO("succeed to get range", K(ret), K(task_id), K(tablet_id), K(total_size),
+      FLOG_INFO("succeed to get range", K(ret), K(task_id), K(tablet_id), K(total_size), 
       K(hint_parallelism), K(expected_task_count), K(params), K(multi_range_split_array), K(report_ranges));
     }
   }
@@ -4237,7 +4237,7 @@ int ObDDLUtil::get_task_tablet_slice_count(const int64_t tenant_id,  const int64
     LOG_WARN("fail to get schedule info", K(ret), K(tenant_id), K(ddl_task_id));
   } else {
     for (int64_t i = 0; i < ddl_slice_info.part_ranges_.count() && OB_SUCC(ret); i++) {
-      int64_t tablet_slice_cnt = 0;
+      int64_t tablet_slice_cnt = 0; 
       const ObPxTabletRange &cur_part_range = ddl_slice_info.part_ranges_.at(i);
       const int64_t cur_tablet_id = cur_part_range.tablet_id_;
       if (0 == cur_tablet_id && 1 == ddl_slice_info.part_ranges_.count()) {
@@ -4764,72 +4764,108 @@ int ObDDLUtil::check_tablet_checksum_error(
   return ret;
 }
 
-int ObDDLUtil::check_table_empty_in_oracle_mode(
-    const uint64_t tenant_id,
-    const uint64_t table_id,
-    ObSchemaGetterGuard &schema_guard,
+int ObDDLUtil::check_table_empty(
+    const share::schema::ObSysVariableSchema &sys_var_schema,
+    const ObString &database_name,
+    const share::schema::ObTableSchema &table_schema,
+    const ObSQLMode sql_mode,
     bool &is_table_empty)
 {
   int ret = OB_SUCCESS;
   is_table_empty = false;
-  const ObSimpleTableSchemaV2 *table_schema = nullptr;
-  const ObSimpleDatabaseSchema *database_schema = nullptr;
   bool is_oracle_mode = false;
-  if (OB_INVALID_TENANT_ID == tenant_id || OB_INVALID_ID == table_id) {
+  uint64_t table_id = OB_INVALID_ID;
+  if (!table_schema.is_valid() || database_name.empty()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(tenant_id), K(table_id));
-  } else if (OB_FAIL(schema_guard.get_simple_table_schema(tenant_id, table_id, table_schema))) {
-    LOG_WARN("get table schema failed", K(ret), K(tenant_id), K(table_id));
-  } else if (OB_ISNULL(table_schema)) {
-    ret = OB_TABLE_NOT_EXIST;
-    LOG_WARN("table schema not exist", K(ret), K(table_id));
-  } else if (OB_FAIL(table_schema->check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("invalid argument", K(ret), K(database_name), K(table_schema));
+  } else if (FALSE_IT(table_id = table_schema.get_table_id())) {
+  } else if (OB_INVALID_ID == table_id) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(table_id));
+  } else if (OB_FAIL(table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
     LOG_WARN("fail to check is oracle mode", K(ret), K(table_schema));
-  } else if (!is_oracle_mode) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("check table empty in mysql mode support later", K(ret), K(is_oracle_mode));
-  } else if (OB_FAIL(schema_guard.get_database_schema(tenant_id, table_schema->get_database_id(), database_schema))) {
-    LOG_WARN("get database schema failed", K(ret), K(tenant_id));
-  } else if (OB_ISNULL(database_schema)) {
-    ret = OB_ERR_SYS;
-    LOG_WARN("get database schema failed", K(ret), K(table_id));
   } else {
-    const ObString &check_expr_str = "1 != 1";
-    const ObString &database_name = database_schema->get_database_name_str();
-    const ObString &table_name = table_schema->get_table_name_str();
+    const ObString &table_name = table_schema.get_table_name_str();
     ObSqlString sql_string;
     ObSessionParam session_param;
-    session_param.sql_mode_ = nullptr;
+    int64_t new_sql_mode = static_cast<int64_t>(sql_mode);
+    session_param.sql_mode_ = &new_sql_mode;
     session_param.tz_info_wrap_ = nullptr;
-    session_param.ddl_info_.set_is_ddl(true);
-    session_param.ddl_info_.set_source_table_hidden(table_schema->is_user_hidden_table());
-    session_param.ddl_info_.set_dest_table_hidden(false);
+    InnerDDLInfo ddl_info;
+    ddl_info.set_is_ddl(true);
+    ddl_info.set_retryable_ddl(true);
+    ddl_info.set_source_table_hidden(table_schema.is_user_hidden_table());
+    ddl_info.set_dest_table_hidden(false);
     ObTimeoutCtx timeout_ctx;
-    ObCommonSqlProxy *sql_proxy = nullptr;
+    const char* format_str = nullptr;
+    const uint64_t tenant_id = table_schema.get_tenant_id();
+    ObOracleSqlProxy oracle_sql_proxy(*GCTX.sql_proxy_);
+    ObSingleConnectionProxy single_conn_proxy;
+    sqlclient::ObISQLConnection *connection = nullptr;
+    const ObSysVarSchema *var_schema = nullptr;
+
+    if (is_oracle_mode) {
+      format_str = "SELECT /*+ %.*s */ 1 FROM \"%.*s\".\"%.*s\" WHERE NOT 1 != 1 AND ROWNUM = 1";
+      if (OB_FAIL(single_conn_proxy.connect(tenant_id, 0/*group_id*/, &oracle_sql_proxy))) {
+        LOG_WARN("failed to get mysql connect", KR(ret), K(tenant_id));
+      }
+    } else {
+      format_str = "SELECT /*+ %.*s */ 1 FROM `%.*s`.`%.*s` WHERE NOT 1 != 1 LIMIT 1";
+      if (OB_FAIL(single_conn_proxy.connect(tenant_id, 0/*group_id*/, GCTX.sql_proxy_))) {
+        LOG_WARN("failed to get mysql connect", KR(ret), K(tenant_id));
+      }
+    }
+
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       common::sqlclient::ObMySQLResult *result = nullptr;
       ObSqlString ddl_schema_hint_str;
-      if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, GCONF.internal_sql_execute_timeout))) {
+      ObArenaAllocator allocator("ObDDLTmp");
+      ObString new_table_name;
+      ObString new_database_name;
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(sys_var_schema.get_sysvar_schema(SYS_VAR_LOWER_CASE_TABLE_NAMES, var_schema))) {
+        LOG_WARN("failed to get lower_case_table_names", KR(ret));
+      } else if (OB_ISNULL(var_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("var_schema is null", KR(ret));
+      } else if (OB_ISNULL(connection = single_conn_proxy.get_connection())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null conn", K(ret));
+      } else if (OB_FAIL(connection->set_session_variable(share::OB_SV_LOWER_CASE_TABLE_NAMES, var_schema->get_value()))) {
+        LOG_WARN("update lower_case_table_names for ddl inner sql failed", K(ret));
+      } else if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+                  allocator,
+                  database_name,
+                  new_database_name,
+                  is_oracle_mode))) {
+        LOG_WARN("fail to generate new name with escape character",
+                  K(ret), K(database_name));
+      } else if (OB_FAIL(sql::ObSQLUtils::generate_new_name_with_escape_character(
+                         allocator,
+                         table_name,
+                         new_table_name,
+                         is_oracle_mode))) {
+        LOG_WARN("fail to generate new name with escape character",
+                  K(ret), K(table_name));
+      } else if (OB_FAIL(session_param.ddl_info_.init(ddl_info, table_schema.get_session_id()))) {
+        LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info), K(table_schema.get_session_id())); 
+      } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(timeout_ctx, GCONF.internal_sql_execute_timeout))) {
         LOG_WARN("failed to set default timeout ctx", K(ret), K(timeout_ctx));
-      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(table_name, table_schema->get_schema_version(), true, ddl_schema_hint_str))) {
+      } else if (OB_FAIL(connection->set_ddl_info(&session_param.ddl_info_))) {
+        LOG_WARN("fail to set ddl info", K(ret), K(session_param.ddl_info_));
+      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(table_name, table_schema.get_schema_version(), true, ddl_schema_hint_str))) {
         LOG_WARN("failed to generate ddl schema hint str", K(ret));
       } else if (OB_FAIL(sql_string.assign_fmt(
-        "SELECT /*+ %.*s */ 1 FROM \"%.*s\".\"%.*s\" WHERE NOT (%.*s) AND ROWNUM = 1",
-          static_cast<int>(ddl_schema_hint_str.length()), ddl_schema_hint_str.ptr(),
-          static_cast<int>(database_name.length()), database_name.ptr(),
-          static_cast<int>(table_name.length()), table_name.ptr(),
-          static_cast<int>(check_expr_str.length()), check_expr_str.ptr()))) {
+                         format_str,
+                         static_cast<int>(ddl_schema_hint_str.length()), ddl_schema_hint_str.ptr(),
+                         static_cast<int>(new_database_name.length()), new_database_name.ptr(),
+                         static_cast<int>(new_table_name.length()), new_table_name.ptr()))) {
         LOG_WARN("fail to assign format", K(ret));
-      }
-      if (OB_FAIL(ret)) {
-      } else if (OB_ISNULL(sql_proxy = GCTX.ddl_oracle_sql_proxy_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("sql proxy is null", K(ret));
-      } else if (OB_FAIL(GCTX.ddl_oracle_sql_proxy_->read(res, table_schema->get_tenant_id(), sql_string.ptr(), &session_param))) {
+      } else if (OB_FAIL(single_conn_proxy.read(res, tenant_id, sql_string.ptr()))) {
         LOG_WARN("execute sql failed", K(ret), K(sql_string.ptr()));
       } else if (OB_ISNULL(result = res.get_result())) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("execute sql failed", K(ret), K(table_schema->get_tenant_id()), K(sql_string));
+        LOG_WARN("execute sql failed", K(ret), K(tenant_id), K(sql_string));
       } else if (OB_FAIL(result->next())) {
         if (OB_ITER_END == ret) {
           ret = OB_SUCCESS;
@@ -6797,7 +6833,7 @@ int ObCODDLUtil::is_rowkey_based_co_sstable(
   return ret;
 }
 
-int ObDDLUtil::is_ls_leader(ObLS &ls, bool &is_leader)
+int ObDDLUtil::is_ls_leader(ObLS &ls, bool &is_leader) 
 {
   int ret = OB_SUCCESS;
   ObRole role;
