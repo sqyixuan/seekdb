@@ -26,6 +26,7 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
 #include "share/ob_vec_index_builder_util.h"
+#include "share/external_table/ob_hdfs_storage_info.h"
 #include "sql/resolver/ddl/ob_fts_parser_resolver.h"
 #include "share/ob_dynamic_partition_manager.h"
 #include "share/ob_license_utils.h"
@@ -1119,24 +1120,7 @@ int ObDDLResolver::resolve_file_prefix(ObString &url, ObSqlString &prefix_str, c
   if (!tmp_prefix.empty()) {
     OZ (get_storage_type_from_name(tmp_prefix.ptr(), device_type));
   }
-  if (OB_FAIL(ret)) {
-    // do nothing
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "OSS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    LOG_WARN("OSS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "COS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    LOG_WARN("COS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "HDFS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    LOG_WARN("HDFS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE) {
+  if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE) {
     device_type = common::ObStorageType::OB_STORAGE_FILE;
     if (url.empty()) {
       ret = OB_DIR_NOT_EXIST;
@@ -6603,6 +6587,10 @@ int ObDDLResolver::resolve_vec_index_constraint(
       LOG_WARN("vector index can only be built on vector column", K(ret), K(column_schema), K(ob_obj_type_class(column_schema.get_data_type())));
     } else if (!is_text_column && OB_FAIL(ObVectorIndexUtil::is_sparse_vec_col(column_schema.get_extended_type_info(), is_sparse_vec_col))) {
       LOG_WARN("fail to check is sparse vec col", K(ret));
+    } else if (is_text_column && !tenant_config->_enable_semantic_index) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("when _enable_semantic_index is false, hybrid vector index not supported", K(ret), K(tenant_config->_enable_semantic_index));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "when _enable_semantic_index is false, hybrid vector index");
     } else if (!is_sparse_vec_col && !is_user_tenant(tenant_id)) {
 #ifndef OB_BUILD_SYS_VEC_IDX
       ret = OB_NOT_SUPPORTED;
@@ -6610,7 +6598,7 @@ int ObDDLResolver::resolve_vec_index_constraint(
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "not user tenant create vector index is");
 #endif
     }
-    
+
     if (OB_SUCC(ret)) {
       int64_t dim = 0;
 
