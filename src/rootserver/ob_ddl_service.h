@@ -1283,21 +1283,6 @@ int check_will_be_having_domain_index_operation(
               share::schema::ObSchemaGetterGuard &schema_guard,
               ObDDLSQLTransaction &trans,
               const share::ObForkTableInfo &fork_table_info);
-  // Helper function to fork a single table within a transaction.
-  // This is shared by fork_table() and fork_database().
-  int fork_single_table_in_trans_(
-              const uint64_t tenant_id,
-              const share::schema::ObTableSchema &src_table_schema,
-              const share::schema::ObDatabaseSchema &src_db_schema,
-              const share::schema::ObDatabaseSchema &dst_db_schema,
-              const common::ObString &dst_table_name,
-              const int64_t fork_snapshot_version,
-              const uint64_t session_id,
-              const common::ObString &ddl_stmt_str,
-              share::schema::ObSchemaGetterGuard &schema_guard,
-              ObDDLSQLTransaction &trans,
-              common::ObIAllocator &allocator,
-              ObDDLTaskRecord &task_record);
   int print_view_expanded_definition(
       const share::schema::ObTableSchema &table_schema,
       ObString &ddl_stmt_str,

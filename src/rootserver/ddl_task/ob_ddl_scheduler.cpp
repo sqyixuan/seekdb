@@ -1250,6 +1250,7 @@ int ObDDLScheduler::create_ddl_task(const ObCreateDDLTaskParam &param,
   const obrpc::ObRebuildIndexArg *rebuild_index_arg = nullptr;
   const obrpc::ObMViewCompleteRefreshArg *mview_complete_refresh_arg = nullptr;
   const obrpc::ObForkTableArg *fork_table_arg = nullptr;
+  const obrpc::ObForkDatabaseArg *fork_database_arg = nullptr;
   LOG_INFO("create ddl task", K(param));
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;

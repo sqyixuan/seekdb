@@ -13063,8 +13063,8 @@ struct ObRevokeObjMysqlArg : public ObDDLArg
 
 public:
   ObRevokeObjMysqlArg() : ObDDLArg(), tenant_id_(common::OB_INVALID_ID), user_id_(common::OB_INVALID_ID),
-                            obj_name_(), obj_type_(common::OB_INVALID_ID),
-                            priv_set_(0), grant_(true),
+                            obj_name_(), obj_type_(common::OB_INVALID_ID), 
+                            priv_set_(0), grant_(true), 
                             grantor_(), grantor_host_()
   { }
   bool is_valid() const;
