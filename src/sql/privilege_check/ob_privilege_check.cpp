@@ -55,6 +55,7 @@
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/resolver/cmd/ob_event_stmt.h"
 #include "sql/resolver/cmd/ob_location_utils_stmt.h"
+#include "sql/resolver/cmd/ob_merge_table_stmt.h"
 
 namespace oceanbase {
 using namespace share;
@@ -440,7 +441,7 @@ int get_dml_stmt_need_privs(
               }
             }
             
-            if (OB_SUCC(ret)
+            if (OB_SUCC(ret) 
                && ObTableType::EXTERNAL_TABLE == table_item->table_type_
                && common::OB_INVALID_ID != table_item->external_location_id_) {
               ObSchemaGetterGuard schema_guard;
@@ -729,7 +730,7 @@ int get_create_table_stmt_need_privs(
         const ObLocationSchema *location_schema = NULL;
         CK(GCTX.schema_service_ != NULL);
         OZ(GCTX.schema_service_->get_tenant_schema_guard(session_priv.tenant_id_, schema_guard));
-        if (OB_FAIL(schema_guard.get_location_schema_by_id(session_priv.tenant_id_,
+        if (OB_FAIL(schema_guard.get_location_schema_by_id(session_priv.tenant_id_, 
                                                            stmt->get_external_location_id(),
                                                            location_schema))) {
           LOG_WARN("failed to get location schema");
@@ -2644,6 +2645,38 @@ int get_drop_ccl_priv(
     need_priv.priv_set_ = OB_PRIV_DROP;
     need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
     ADD_NEED_PRIV(need_priv);
+  }
+  return ret;
+}
+
+int get_merge_table_stmt_need_privs(
+    const ObSessionPrivInfo &session_priv,
+    const ObStmt *basic_stmt,
+    ObIArray<ObNeedPriv> &need_privs)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(session_priv);
+  if (OB_ISNULL(basic_stmt)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("basic_stmt should not be NULL", K(ret));
+  } else if (stmt::T_MERGE_TABLE != basic_stmt->get_stmt_type()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected stmt type", K(ret), K(basic_stmt->get_stmt_type()));
+  } else {
+    const ObMergeTableStmt *merge_stmt = static_cast<const ObMergeTableStmt *>(basic_stmt);
+    ObNeedPriv need_priv;
+    need_priv.priv_level_ = OB_PRIV_TABLE_LEVEL;
+    need_priv.is_sys_table_ = false;
+    need_priv.db_ = merge_stmt->get_inc_db_name();
+    need_priv.table_ = merge_stmt->get_inc_table_name();
+    need_priv.priv_set_ = OB_PRIV_SELECT;
+    ADD_NEED_PRIV(need_priv);
+    if (OB_SUCC(ret)) {
+      need_priv.db_ = merge_stmt->get_cur_db_name();
+      need_priv.table_ = merge_stmt->get_cur_table_name();
+      need_priv.priv_set_ = OB_PRIV_SELECT | OB_PRIV_INSERT | OB_PRIV_UPDATE;
+      ADD_NEED_PRIV(need_priv);
+    }
   }
   return ret;
 }
