@@ -21,8 +21,10 @@
 #include <cstdlib>
 #include <cstddef>
 #include <utility>
+#ifdef __APPLE__
+#include <unistd.h> // For getpagesize on macOS
+#endif
 #include "lib/ob_define.h"
-#include "lib/utility/ob_platform_utils.h"
 #include "lib/ob_abort.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "lib/alloc/alloc_assist.h"
@@ -60,7 +62,12 @@ static const int64_t ALLOC_ABLOCK_CONCURRENCY = 4;
 
 static ssize_t get_page_size()
 {
-  return ob_get_page_size();
+#ifdef __APPLE__
+  static ssize_t ps = sysconf(_SC_PAGESIZE);
+#else
+  static ssize_t ps = getpagesize();
+#endif
+  return ps;
 }
 
 class BlockSet;

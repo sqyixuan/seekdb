@@ -18,6 +18,105 @@
 
 #include "ob_vector_util.h"
 #include "lib/string/ob_string.h"
+#include "lib/ob_errno.h"
+
+#ifdef __APPLE__
+// macOS: Provide empty implementations for VSAG (not supported on macOS)
+namespace oceanbase {
+namespace common {
+namespace obvectorutil {
+
+void ObVsagLogger::SetLevel(Level Log_level) { (void)Log_level; }
+void ObVsagLogger::Trace(const std::string& msg) { (void)msg; }
+void ObVsagLogger::Debug(const std::string& msg) { (void)msg; }
+void ObVsagLogger::Info(const std::string& msg) { (void)msg; }
+void ObVsagLogger::Warn(const std::string& msg) { (void)msg; }
+void ObVsagLogger::Error(const std::string& msg) { (void)msg; }
+void ObVsagLogger::Critical(const std::string& msg) { (void)msg; }
+int init_vasg_logger(void* logger) { (void)logger; return OB_NOT_SUPPORTED; }
+bool check_vsag_init() { return false; }
+int create_index(obvsag::VectorIndexPtr& index_handler, int index_type, const char* dtype, const char* metric, int dim,
+    int max_degree, int ef_construction, int ef_search, void* allocator, int extra_info_size,
+    int16_t refine_type, int16_t bq_bits_query, bool bq_use_fht) {
+    (void)index_handler; (void)index_type; (void)dtype; (void)metric; (void)dim;
+    (void)max_degree; (void)ef_construction; (void)ef_search; (void)allocator;
+    (void)extra_info_size; (void)refine_type; (void)bq_bits_query; (void)bq_use_fht;
+    index_handler = nullptr; return OB_NOT_SUPPORTED; }
+int create_index(obvsag::VectorIndexPtr &index_handler, int index_type, const char *dtype, const char *metric,
+    bool use_reorder, float doc_prune_ratio, int window_size, void *allocator, int extra_info_size) {
+    (void)index_handler; (void)index_type; (void)dtype; (void)metric; (void)use_reorder;
+    (void)doc_prune_ratio; (void)window_size; (void)allocator; (void)extra_info_size;
+    index_handler = nullptr; return OB_NOT_SUPPORTED; }
+int build_index(obvsag::VectorIndexPtr index_handler, float* vector_list, int64_t* ids, int dim, int size, char *extra_info) {
+    (void)index_handler; (void)vector_list; (void)ids; (void)dim; (void)size; (void)extra_info; return OB_NOT_SUPPORTED; }
+int build_index(obvsag::VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids,
+    int size, char *extra_infos) {
+    (void)index_handler; (void)lens; (void)dims; (void)vals; (void)ids; (void)size; (void)extra_infos; return OB_NOT_SUPPORTED; }
+int add_index(obvsag::VectorIndexPtr index_handler, float* vector_list, int64_t* ids, int dim, char *extra_info, int size) {
+    (void)index_handler; (void)vector_list; (void)ids; (void)dim; (void)extra_info; (void)size; return OB_NOT_SUPPORTED; }
+int add_index(obvsag::VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size,
+    char *extra_infos) {
+    (void)index_handler; (void)lens; (void)dims; (void)vals; (void)ids; (void)size; (void)extra_infos; return OB_NOT_SUPPORTED; }
+int get_index_number(obvsag::VectorIndexPtr index_handler, int64_t &size) {
+    (void)index_handler; size = 0; return OB_NOT_SUPPORTED; }
+int get_index_type(obvsag::VectorIndexPtr index_handler) {
+    (void)index_handler; return -1; }
+int cal_distance_by_id(obvsag::VectorIndexPtr index_handler, const float *vector, const int64_t *ids, int64_t count, const float *&distances) {
+    (void)index_handler; (void)vector; (void)ids; (void)count; (void)distances; return OB_NOT_SUPPORTED; }
+int cal_distance_by_id(obvsag::VectorIndexPtr index_handler, uint32_t len, uint32_t *dims, float *vals, const int64_t *ids,
+    int64_t count, const float *&distances) {
+    (void)index_handler; (void)len; (void)dims; (void)vals; (void)ids; (void)count; (void)distances; return OB_NOT_SUPPORTED; }
+int get_vid_bound(obvsag::VectorIndexPtr index_handler, int64_t &min_vid, int64_t &max_vid) {
+    (void)index_handler; min_vid = 0; max_vid = 0; return OB_NOT_SUPPORTED; }
+int get_extra_info_by_ids(obvsag::VectorIndexPtr& index_handler, const int64_t* ids, int64_t count, char *extra_infos) {
+    (void)index_handler; (void)ids; (void)count; (void)extra_infos; return OB_NOT_SUPPORTED; }
+uint64_t estimate_memory(obvsag::VectorIndexPtr& index_handler, const uint64_t row_count, const bool is_build) {
+    (void)index_handler; (void)row_count; (void)is_build; return 0; }
+int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector, int dim, int64_t topk,
+    const obvsag::FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)filter; (void)ids; (void)distances; result_count = 0; return OB_NOT_SUPPORTED; }
+int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector, int dim, int64_t topk,
+    const obvsag::FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count, char *extra_infos) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)filter; (void)ids; (void)distances; (void)extra_infos; result_count = 0; return OB_NOT_SUPPORTED; }
+int knn_search(obvsag::VectorIndexPtr index_handler, uint32_t len, uint32_t *dims, float *vals, int64_t topk,
+    const obvsag::FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count) {
+    (void)index_handler; (void)len; (void)dims; (void)vals; (void)topk; (void)filter; (void)ids; (void)distances; result_count = 0; return OB_NOT_SUPPORTED; }
+int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector, int dim, int64_t topk,
+    const float*& result_dist, const int64_t*& result_ids, const char *&extra_info, int64_t &result_size, int ef_search,
+    void* invalid, bool reverse_filter, bool is_extra_info_filter, float valid_ratio, void *allocator, bool need_extra_info,
+    float distance_threshold) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)result_dist; (void)result_ids; (void)extra_info;
+    (void)result_size; (void)ef_search; (void)invalid; (void)reverse_filter; (void)is_extra_info_filter;
+    (void)valid_ratio; (void)allocator; (void)need_extra_info; (void)distance_threshold;
+    result_size = 0; return OB_NOT_SUPPORTED; }
+int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector, int dim, int64_t topk,
+    const float*& result_dist, const int64_t*& result_ids, const char *&extra_info, int64_t &result_size, int ef_search,
+    void* invalid, bool reverse_filter, bool is_extra_info_filter, float valid_ratio, void *allocator,
+    bool need_extra_info, void *&iter_ctx, bool is_last_search) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)result_dist; (void)result_ids; (void)extra_info;
+    (void)result_size; (void)ef_search; (void)invalid; (void)reverse_filter; (void)is_extra_info_filter;
+    (void)valid_ratio; (void)allocator; (void)need_extra_info; (void)iter_ctx; (void)is_last_search;
+    result_size = 0; iter_ctx = nullptr; return OB_NOT_SUPPORTED; }
+int knn_search(obvsag::VectorIndexPtr index_handler, uint32_t len, uint32_t *dims, float *vals, int64_t topk,
+    const float *&result_dist, const int64_t *&result_ids, const char *&extra_info, int64_t &result_size, float query_prune_ratio, int64_t n_candidate,
+    void *invalid, bool reverse_filter, bool is_extra_info_filter, float valid_ratio, void *allocator, bool need_extra_info) {
+    (void)index_handler; (void)len; (void)dims; (void)vals; (void)topk; (void)result_dist; (void)result_ids; (void)extra_info;
+    (void)result_size; (void)query_prune_ratio; (void)n_candidate; (void)invalid; (void)reverse_filter;
+    (void)is_extra_info_filter; (void)valid_ratio; (void)allocator; (void)need_extra_info;
+    result_size = 0; return OB_NOT_SUPPORTED; }
+int fserialize(obvsag::VectorIndexPtr index_handler, std::ostream& out_stream) {
+    (void)index_handler; (void)out_stream; return OB_NOT_SUPPORTED; }
+int fdeserialize(obvsag::VectorIndexPtr& index_handler, std::istream& in_stream) {
+    (void)index_handler; (void)in_stream; index_handler = nullptr; return OB_NOT_SUPPORTED; }
+int delete_index(obvsag::VectorIndexPtr& index_handler) {
+    (void)index_handler; index_handler = nullptr; return OB_NOT_SUPPORTED; }
+void delete_iter_ctx(void *iter_ctx) { (void)iter_ctx; }
+
+} //namespace obvectorutil
+} //namespace common
+} //namespace oceanbase
+
+#else
 
 namespace oceanbase {
 namespace common {
@@ -125,7 +224,7 @@ int create_index(obvsag::VectorIndexPtr &index_handler, int index_type, const ch
     INIT_SUCC(ret);
 #ifdef OB_BUILD_CDC_DISABLE_VSAG
   return ret;
-#else
+#else 
   obvsag::set_block_size_limit(2*1024*1024);
   LOG_INFO("vector index create params: ", K(index_type), KCSTRING(dtype), KCSTRING(metric), K(use_reorder), K(doc_prune_ratio), K(window_size), KP(allocator), K(extra_info_size));
   return obvsag::create_index(index_handler, static_cast<obvsag::IndexType>(index_type),
@@ -292,8 +391,8 @@ int knn_search(obvsag::VectorIndexPtr index_handler, uint32_t len, uint32_t *dim
   return ret;
 #else
   return obvsag::knn_search(index_handler, len, dims, vals, topk,
-                                  result_dist, result_ids, extra_info, result_size,
-                                  query_prune_ratio, n_candidate,
+                                  result_dist, result_ids, extra_info, result_size, 
+                                  query_prune_ratio, n_candidate,  
                                   invalid, reverse_filter, is_extra_info_filter,
                                   valid_ratio, allocator, need_extra_info);
 #endif
@@ -349,16 +448,7 @@ uint64_t estimate_memory(obvsag::VectorIndexPtr& index_handler, const uint64_t r
 
 }
 
-int immutable_optimize(obvsag::VectorIndexPtr& index_handler)
-{
-  int ret = OB_SUCCESS;
-#ifdef OB_BUILD_CDC_DISABLE_VSAG
-    return ret;
-#else
-  return obvsag::immutable_optimize(index_handler);
-#endif
-}
-
-} //namespace obvectorlib
+} //namespace obvectorutil
 } //namespace common
 } //namespace oceanbase
+#endif // __APPLE__

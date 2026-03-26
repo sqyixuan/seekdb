@@ -76,12 +76,8 @@ ObSpecialSysVarValues::ObSpecialSysVarValues()
     tzset(); // init tzname
     int64_t current_time_us = ObTimeUtility::current_time();
     struct tm tmp_tm;
-#ifdef __APPLE__
     time_t current_time_t = static_cast<time_t>(current_time_us / 1000000L);
     UNUSED(localtime_r(&current_time_t, &tmp_tm));
-#else
-    UNUSED(localtime_r(&current_time_us, &tmp_tm));
-#endif
     bool is_neg = false;
     if (tmp_tm.tm_gmtoff < 0) {
       is_neg = true;

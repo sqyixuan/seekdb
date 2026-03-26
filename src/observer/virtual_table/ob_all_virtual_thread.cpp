@@ -82,12 +82,6 @@ int ObAllVirtualThread::inner_get_next_row(common::ObNewRow *&row)
     ret = OB_NOT_SUPPORTED;
     return ret;
     #endif
-    #ifdef __APPLE__
-    // GET_OTHER_TSI_ADDR macro relies on Linux-specific pthread/TLS memory layout.
-    // On macOS, pthread_t offset calculation cannot access other threads' TLS variables.
-    ret = OB_NOT_SUPPORTED;
-    return ret;
-    #endif
     const int64_t col_count = output_column_ids_.count();
     pid_t pid = getpid();
     StackMgr::Guard guard(g_stack_mgr);

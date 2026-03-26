@@ -152,14 +152,19 @@ int ob_str_to_sql_mode(const ObString &str, ObSQLMode &mode)
     ret = OB_BUF_NOT_ENOUGH;
     LOG_WARN("sql mode string is too long", K(str), K(ret));
   } else {
-    // alloca is supported on both Linux and macOS, stack allocation is automatically freed on function return
-    if (OB_ISNULL(buf = (char *)alloca(str.length() + 1))) {
+#ifdef __linux__
+    // strndupa uses alloca (stack allocation), automatically freed on function return
+    if (OB_ISNULL(buf = strndupa(str.ptr(), str.length()))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("failed to alloc memory", K(ret));
-    } else {
-      MEMCPY(buf, str.ptr(), str.length());
-      buf[str.length()] = '\0';
     }
+#elif defined(__APPLE__)
+    // macOS doesn't support strndupa, use strndup (heap allocation) and free manually
+    if (OB_ISNULL(buf = strndup(str.ptr(), str.length()))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_ERROR("failed to alloc memory", K(ret));
+    }
+#endif
     if (OB_SUCC(ret) && OB_NOT_NULL(buf)) {
       char  *value = NULL;
       char  *saveptr = NULL;
@@ -190,6 +195,11 @@ int ob_str_to_sql_mode(const ObString &str, ObSQLMode &mode)
       if (OB_SUCC(ret)) {
         mode = tmp_mode;
       }
+#ifdef __APPLE__
+      // Free memory allocated by strndup on macOS
+      free(buf);
+      buf = NULL;
+#endif
     }
   }
   return ret;

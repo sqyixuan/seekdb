@@ -19,12 +19,12 @@
 
 #include "ob_pl_stmt.h"
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 // On macOS, use the system unwind.h from clang
 #include <unwind.h>
 #else
 // On Linux, use the clang-specific path
-#include <lib/clang/17/include/unwind.h>
+#include "lib64/clang/17/include/unwind.h"
 #endif
 
 namespace oceanbase

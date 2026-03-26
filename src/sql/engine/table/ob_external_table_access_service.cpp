@@ -21,6 +21,12 @@
 #include "share/external_table/ob_external_table_utils.h"
 #include "share/ob_device_manager.h"
 #include "sql/engine/table/ob_parquet_table_row_iter.h"
+#ifdef OB_BUILD_CPP_ODPS
+#include "sql/engine/table/ob_odps_table_row_iter.h"
+#endif
+#ifdef OB_BUILD_JNI_ODPS
+#include "sql/engine/table/ob_odps_jni_table_row_iter.h"
+#endif
 #include "sql/engine/cmd/ob_load_data_file_reader.h"
 #include "sql/engine/table/ob_orc_table_row_iter.h"
 #include "sql/engine/table/ob_csv_table_row_iter.h"
@@ -259,7 +265,8 @@ int ObExternalDataAccessDriver::get_file_list(const ObString &path,
     LOG_WARN("fail to init filter", K(ret));
   } else if (OB_FAIL(ob_write_string(allocator, path, path_cstring, true/*c_style*/))) {
     LOG_WARN("fail to copy string", KR(ret), K(path));
-  } else if (get_storage_type() == OB_STORAGE_FILE) {
+  } else if (get_storage_type() == OB_STORAGE_FILE ||
+             get_storage_type() == OB_STORAGE_HDFS) {
     ObSEArray<ObString, 4> file_dirs;
     bool is_dir = false;
 
@@ -272,6 +279,14 @@ int ObExternalDataAccessDriver::get_file_list(const ObString &path,
       if (!is_dir) {
         LOG_INFO("external location is not a directory",
                  K(path_without_prifix));
+      } else {
+        OZ(file_dirs.push_back(path_cstring));
+      }
+    } else {
+      // OB_STORAGE_HDFS
+      OZ(ObBackupIoAdapter::is_directory(path_cstring, access_info_, is_dir));
+      if (!is_dir) {
+        LOG_INFO("external location is not a directory", K(path_cstring));
       } else {
         OZ(file_dirs.push_back(path_cstring));
       }
@@ -316,8 +331,10 @@ int ObExternalDataAccessDriver::init(const ObString &location, const ObString &a
   } else {
     storage_type_ = device_type;
     // Note: if device type is file, the storage info is empty.
+    // And if device type is hdfs, the storage info `may be` empty.
     if (device_type == OB_STORAGE_FILE ||
-        (OB_ISNULL(access_info) || OB_LIKELY(0 == access_info.length()))) {
+        (device_type == OB_STORAGE_HDFS &&
+         (OB_ISNULL(access_info) || OB_LIKELY(0 == access_info.length())))) {
       OZ(ob_write_string(temp_allocator, location, location_cstr, true));
       access_info_cstr.assign_ptr(&dummy_empty_char, static_cast<ObString::obstr_size_t>(strlen(&dummy_empty_char)));
     } else {
@@ -325,7 +342,11 @@ int ObExternalDataAccessDriver::init(const ObString &location, const ObString &a
       OZ (ob_write_string(temp_allocator, access_info, access_info_cstr, true));
     }
   }
-  access_info_ = &backup_storage_info_;
+  if (device_type == OB_STORAGE_HDFS) {
+    access_info_ = &hdfs_storage_info_;
+  } else {
+    access_info_ = &backup_storage_info_;
+  }
   if (OB_ISNULL(access_info_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("failed to get access into", K(ret), K(device_type), K(access_info_cstr));
@@ -578,11 +599,27 @@ int ObExternalTableAccessService::table_scan(
       break;
     case ObExternalFileFormat::ODPS_FORMAT:
       if (!GCONF._use_odps_jni_connector) {
+#if defined(OB_BUILD_CPP_ODPS) 
+        if (OB_ISNULL(row_iter = OB_NEWx(ObODPSTableRowIterator,
+                                         (scan_param.allocator_)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("alloc memory failed", K(ret));
+        }
+#else
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("odps cpp connector is not enabled", K(ret));
+#endif
       } else {
+#if defined(OB_BUILD_JNI_ODPS)
+        if (OB_ISNULL(row_iter = OB_NEWx(ObODPSJNITableRowIterator,
+                                         (scan_param.allocator_)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("alloc memory failed for jni row iterator", K(ret));
+        }
+#else
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("odps jni connector is not enabled", K(ret));
+#endif
       }
       break;
     case ObExternalFileFormat::ORC_FORMAT:
@@ -629,9 +666,13 @@ int ObExternalTableAccessService::table_rescan(ObVTableScanParam &param, ObNewRo
         result->reset();
         break;
       case ObExternalFileFormat::ODPS_FORMAT:
+#if defined (OB_BUILD_CPP_ODPS) || defined (OB_BUILD_JNI_ODPS)
+        result->reset();
+#else
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "external odps table");
         LOG_WARN("not support to read odps in opensource", K(ret));
+#endif
         break;
       default:
         ret = OB_ERR_UNEXPECTED;

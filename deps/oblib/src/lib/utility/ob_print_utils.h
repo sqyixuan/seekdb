@@ -532,42 +532,12 @@ int databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos, const T &
 {
   return databuff_printf(buf, buf_len, pos, "%ld", static_cast<int64_t>(obj));
 }
-
-// Detect pthread-like types (opaque on macOS) to avoid calling to_string
-template <typename U>
-struct is_pthread_like {
-  static constexpr bool value = std::is_same_v<std::remove_cv_t<U>, pthread_t>;
-};
-#ifdef __APPLE__
-template <>
-struct is_pthread_like<_opaque_pthread_t> {
-  static constexpr bool value = true;
-};
-template <>
-struct is_pthread_like<_opaque_pthread_t *> {
-  static constexpr bool value = true;
-};
-template <>
-struct is_pthread_like<const _opaque_pthread_t *> {
-  static constexpr bool value = true;
-};
-#endif
-
 /// print object with to_string members
 template<class T>
 int databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos, const T &obj, FalseType)
 {
-  if constexpr (is_pthread_like<T>::value) {
-    // pthread_t on macOS is an opaque pointer type; print its address
-    const void *as_void = nullptr;
-    if constexpr (std::is_pointer_v<T>) {
-      as_void = reinterpret_cast<const void *>(obj);
-    } else {
-      as_void = reinterpret_cast<const void *>(&obj);
-    }
-    return databuff_printf(buf, buf_len, pos, "%p", as_void);
-  } else if constexpr (std::is_arithmetic_v<T>) {
-    // Check if T is an arithmetic type (basic types like int, long, unsigned long, etc.)
+  // Check if T is an arithmetic type (basic types like int, long, unsigned long, etc.)
+  if constexpr (std::is_arithmetic_v<T>) {
     if constexpr (std::is_integral_v<T>) {
       if constexpr (std::is_unsigned_v<T>) {
         return databuff_printf(buf, buf_len, pos, "%lu", static_cast<unsigned long>(obj));

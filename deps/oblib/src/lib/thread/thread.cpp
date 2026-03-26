@@ -17,7 +17,9 @@
 #define USING_LOG_PREFIX LIB
 
 #include "thread.h"
-#include "lib/utility/ob_platform_utils.h"  // Platform compatibility layer
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 #include "lib/rc/context.h"
 #include "lib/thread/protected_stack_allocator.h"
 #include "lib/utility/ob_hang_fatal_error.h"
@@ -93,33 +95,7 @@ int Thread::start()
     if (pret == 0) {
       need_destroy = true;
 #ifndef OB_USE_ASAN
-      // Set high priority QoS for new threads (platform-independent)
-      // On macOS, daemon processes get low QoS priority by default, causing scheduling delays.
-      int qos_ret = ob_pthread_attr_set_qos(&attr, ObThreadQoS::USER_INITIATED);
-      if (qos_ret != 0) {
-        LOG_WARN("ob_pthread_attr_set_qos failed", K(qos_ret));
-        // Continue even if QoS setting failed
-      }
-#ifdef __APPLE__
-      // On macOS, pthread_attr_setstack often fails with EINVAL if address/size
-      // are not perfectly aligned or if the memory is already managed in a way
-      // that pthread doesn't like. Use setstacksize instead and let the system
-      // allocate the stack, while keeping our stack_addr_ for stack_header logic.
-      pret = pthread_attr_setstacksize(&attr, stack_size_);
-      if (pret != 0) {
-        // Fallback to default if setstacksize fails
-        pret = 0;
-      } else {
-        size_t actual_stack_size = 0;
-        pthread_attr_getstacksize(&attr, &actual_stack_size);
-        LOG_INFO("successfully set stack size", K_(stack_size), K(actual_stack_size));
-      }
-#else
-      // ProtectedStackAllocator::alloc returns the top of the stack (high address)
-      // but pthread_attr_setstack needs the bottom of the stack (low address)
-      // Calculate the bottom address: stack_addr_ points to the top, so bottom = stack_addr_ - stack_size_
       pret = pthread_attr_setstack(&attr, stack_addr_, stack_size_);
-#endif
 #endif
     }
     if (pret == 0) {
@@ -136,9 +112,6 @@ int Thread::start()
           LOG_ERROR("thread create failed", K(create_ret_));
         }
       }
-    } else {
-      int64_t total_size = stack_size_ + SIG_STACK_SIZE;
-      LOG_ERROR("pthread_attr_setstack failed", K(pret), K(total_size), K_(stack_size), KP(stack_addr_));
     }
     if (0 != pret) {
       ret = OB_ERR_SYS;
@@ -333,15 +306,6 @@ void Thread::destroy_stack()
 void* Thread::__th_start(void *arg)
 {
   Thread * const th = reinterpret_cast<Thread*>(arg);
-  // Set high QoS for this thread (platform-independent)
-  // On macOS, threads in a daemon process inherit low QoS priority which causes scheduling delays.
-  ob_set_thread_qos(ObThreadQoS::USER_INITIATED);
-#ifdef __APPLE__
-  // On macOS, also remove background state explicitly and signal thread start early
-  // to prevent the parent thread from spin-waiting with low scheduling priority.
-  setpriority(PRIO_DARWIN_THREAD, 0, 0);
-  ATOMIC_STORE(&th->create_ret_, OB_SUCCESS);
-#endif
   ob_set_thread_tenant_id(th->get_tenant_id());
   current_thread_ = th;
   th->tid_ = gettid();
@@ -354,9 +318,6 @@ void* Thread::__th_start(void *arg)
   /**
     signal handler stack
    */
-  #ifndef __APPLE__
-  // On macOS, sigaltstack may fail with ENOMEM (errno=12) due to system limitations
-  // Skip sigaltstack setup on macOS to avoid warnings
   stack_t nss;
   stack_t oss;
   bzero(&nss, sizeof(nss));
@@ -370,7 +331,6 @@ void* Thread::__th_start(void *arg)
     restore_sigstack = true;
   }
   DEFER(if (restore_sigstack) { sigaltstack(&oss, nullptr); });
-  #endif // __APPLE__
   #endif
 
   stack_header->pth_ = (uint64_t)pthread_self();
@@ -402,11 +362,7 @@ void* Thread::__th_start(void *arg)
         WITH_CONTEXT(*mem_context) {
           try {
             in_try_stmt = true;
-#ifndef __APPLE__
-            // On Linux, signal thread started here. On macOS, this was already done
-            // earlier (right after QoS setup) to prevent spin-wait delays.
             ATOMIC_STORE(&th->create_ret_, OB_SUCCESS);
-#endif
             th->run();
             in_try_stmt = false;
           } catch (OB_BASE_EXCEPTION &except) {
@@ -433,11 +389,6 @@ void* Thread::__th_start(void *arg)
   return nullptr;
 }
 
-#ifdef __APPLE__
-#include <mach/thread_info.h>
-#include <mach/mach.h>
-#endif
-
 int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
 {
   int ret = OB_SUCCESS;
@@ -446,19 +397,6 @@ int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
   int64_t cpu_time = 0;
   cpu_time_inc = 0;
 
-#ifdef __APPLE__
-  // macOS doesn't have /proc, use mach APIs
-  thread_port_t mach_thread = pthread_mach_thread_np(pth_);
-  thread_basic_info_data_t basic_info;
-  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
-  if (KERN_SUCCESS != thread_info(mach_thread, THREAD_BASIC_INFO, (thread_info_t)&basic_info, &count)) {
-    ret = OB_ERR_SYS;
-    LOG_WARN("thread_info failed", K(ret), K(tid));
-  } else {
-    cpu_time = (int64_t)basic_info.user_time.seconds * 1000000 + basic_info.user_time.microseconds
-             + (int64_t)basic_info.system_time.seconds * 1000000 + basic_info.system_time.microseconds;
-  }
-#else
   int fd = -1;
   int64_t read_size = -1;
   int32_t PATH_BUFSIZE = 512;
@@ -508,10 +446,6 @@ int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
       field_ptr = strtok_r(NULL, " ", &save_ptr);
       field_index++;
     }
-  }
-#endif
-
-  if (OB_SUCC(ret)) {
     cpu_time_inc = cpu_time - cpu_time_;
     cpu_time_ = cpu_time;
   }

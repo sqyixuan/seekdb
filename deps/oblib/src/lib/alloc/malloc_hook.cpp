@@ -16,11 +16,23 @@
 #include "malloc_hook.h"
 #include "deps/oblib/src/lib/hash/ob_hashmap.h"
 
+#ifdef __APPLE__
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+// macOS doesn't have loff_t, use off_t instead
+typedef off_t loff_t;
+// macOS doesn't support alias attribute, use weak symbols instead
+#define LIBC_ALIAS(fn)	__attribute__((weak))
+#else
+#define LIBC_ALIAS(fn)	__attribute__((alias (#fn), used))
+#endif
+
 #define OBMALLOC_ATTR(s) __attribute__((s))
 #define OBMALLOC_EXPORT __attribute__((visibility("default")))
 #define OBMALLOC_ALLOC_SIZE(s) __attribute__((alloc_size(s)))
 #define OBMALLOC_NOTHROW __attribute__((nothrow))
-#define LIBC_ALIAS(fn)	__attribute__((alias (#fn), used))
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -91,7 +103,12 @@ void *ob_malloc_retry(size_t size, bool &from_malloc_hook)
 
 static inline void *ob_mmap(void *addr, size_t length, int prot, int flags, int fd, loff_t offset)
 {
+#ifdef __APPLE__
+  // On macOS, use mmap directly instead of syscall
+  void *ptr = mmap(addr, length, prot, flags, fd, offset);
+#else
   void *ptr = (void*)syscall(SYS_mmap, addr, length, prot, flags, fd, offset);
+#endif
   if (OB_UNLIKELY(!UNMAMAGED_MEMORY_STAT.is_disabled()) && OB_LIKELY(MAP_FAILED != ptr)) {
     UNMAMAGED_MEMORY_STAT.inc(length);
   }
@@ -103,13 +120,18 @@ static inline int ob_munmap(void *addr, size_t length)
   if (OB_UNLIKELY(!ObUnmanagedMemoryStat::is_disabled())) {
     UNMAMAGED_MEMORY_STAT.dec(length);
   }
+#ifdef __APPLE__
+  // On macOS, use munmap directly instead of syscall
+  return munmap(addr, length);
+#else
   return syscall(SYS_munmap, addr, length);
+#endif
 }
 
 EXTERN_C_BEGIN
 
 OBMALLOC_EXPORT
-void OBMALLOC_NOTHROW *
+void *
 OBMALLOC_ATTR(malloc) OBMALLOC_ALLOC_SIZE(1)
 malloc(size_t size)
 {
@@ -138,7 +160,7 @@ malloc(size_t size)
   return ptr;
 }
 
-OBMALLOC_EXPORT void OBMALLOC_NOTHROW
+OBMALLOC_EXPORT void
 free(void *ptr)
 {
   if (OB_LIKELY(ptr != nullptr)) {
@@ -162,7 +184,7 @@ free(void *ptr)
 }
 
 OBMALLOC_EXPORT
-void OBMALLOC_NOTHROW *
+void *
 OBMALLOC_ALLOC_SIZE(2)
 realloc(void *ptr, size_t size)
 {
@@ -255,11 +277,27 @@ int ob_munmap_hook(void *addr, size_t length)
   return ob_munmap(addr, length);
 }
 
+#ifdef __APPLE__
+// macOS doesn't support alias attribute, use weak symbols with wrapper functions
+__attribute__((visibility("default"))) __attribute__((weak)) void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+{
+  return ob_mmap_hook(addr, length, prot, flags, fd, offset);
+}
+__attribute__((visibility("default"))) __attribute__((weak)) void *mmap64(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
+{
+  return ob_mmap_hook(addr, length, prot, flags, fd, offset);
+}
+__attribute__((visibility("default"))) __attribute__((weak)) int munmap(void *addr, size_t length)
+{
+  return ob_munmap_hook(addr, length);
+}
+#else
 __attribute__((visibility("default"))) void *mmap(void *addr, size_t, int, int, int, loff_t) __attribute__((weak,alias("ob_mmap_hook")));
 __attribute__((visibility("default"))) void *mmap64(void *addr, size_t, int, int, int, loff_t) __attribute__((weak,alias("ob_mmap_hook")));
 __attribute__((visibility("default"))) int munmap(void *addr, size_t length) __attribute__((weak,alias("ob_munmap_hook")));
+#endif
 
-OBMALLOC_EXPORT size_t OBMALLOC_NOTHROW
+OBMALLOC_EXPORT size_t
 malloc_usable_size(void *ptr)
 {
   size_t ret = 0;
@@ -271,9 +309,17 @@ malloc_usable_size(void *ptr)
   return ret;
 }
 
+#ifdef __APPLE__
+// macOS doesn't support alias attribute, use weak symbols with wrapper functions
+__attribute__((weak)) void *__libc_malloc(size_t size) { return malloc(size); }
+__attribute__((weak)) void *__libc_realloc(void* ptr, size_t size) { return realloc(ptr, size); }
+__attribute__((weak)) void __libc_free(void* ptr) { free(ptr); }
+__attribute__((weak)) void *__libc_memalign(size_t align, size_t s) { return memalign(align, s); }
+#else
 void *__libc_malloc(size_t size) LIBC_ALIAS(malloc);
 void *__libc_realloc(void* ptr, size_t size) LIBC_ALIAS(realloc);
 void __libc_free(void* ptr) LIBC_ALIAS(free);
 void *__libc_memalign(size_t align, size_t s) LIBC_ALIAS(memalign);
+#endif
 
 EXTERN_C_END

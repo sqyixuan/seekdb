@@ -306,6 +306,15 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_ccl_rule_executor.cpp
 )
 
+ob_set_subtarget(ob_sql engine_connector
+  engine/connector/ob_java_native_method.cpp
+  engine/connector/ob_java_env.cpp
+  engine/connector/ob_java_helper.cpp
+  engine/connector/ob_jni_connector.cpp
+  engine/connector/ob_jni_scanner.cpp
+  engine/connector/ob_jni_writer.cpp
+)
+
 ob_set_subtarget(ob_sql engine_dml
   engine/dml/ob_conflict_checker.cpp
   engine/dml/ob_dml_ctx_define.cpp
@@ -769,6 +778,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_func_ceil.cpp
   engine/expr/ob_expr_eval_functions.cpp
   engine/expr/ob_expr_in.cpp
+  engine/expr/ob_expr_calc_odps_size.cpp
   engine/expr/ob_expr_to_pinyin_tab.cpp
   engine/expr/ob_expr_to_pinyin.cpp
   engine/expr/ob_expr_url_codec.cpp
@@ -977,7 +987,10 @@ ob_set_subtarget(ob_sql engine_table
   engine/table/ob_csv_table_row_iter.cpp
   engine/table/ob_orc_table_row_iter.cpp
   engine/table/ob_parquet_table_row_iter.cpp
+  engine/table/ob_odps_table_row_iter.cpp
   engine/table/ob_file_prefetch_buffer.cpp
+  engine/table/ob_odps_jni_table_row_iter.cpp
+  engine/table/ob_odps_table_utils.cpp
   engine/table/ob_ddl_block_sample_scan_op.cpp
 )
 
@@ -1303,8 +1316,6 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_explain_stmt.cpp
   resolver/ddl/ob_external_file_ddl_resolver.cpp
   resolver/ddl/ob_flashback_resolver.cpp
-  resolver/ddl/ob_fork_table_resolver.cpp
-  resolver/ddl/ob_fork_table_stmt.cpp
   resolver/ddl/ob_lock_table_resolver.cpp
   resolver/ddl/ob_lock_table_stmt.cpp
   resolver/ddl/ob_lock_tenant_resolver.cpp
@@ -1464,6 +1475,8 @@ ob_set_subtarget(ob_sql udr
   udr/ob_udr_utils.cpp
 )
 
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+
 ob_add_new_object_target(ob_sql ob_sql)
 ob_add_new_object_target(ob_sql_extra ob_sql_extra)
 
@@ -1499,14 +1512,14 @@ target_link_libraries(ob_sql_static
   PUBLIC ob_sql ob_sql_extra
   ob_sql_server_parser_static)
 
-execute_process(
-  COMMAND env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
-  RESULT_VARIABLE RET
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
-  OUTPUT_FILE _gen_parser.output
-  ERROR_FILE _gen_parser.error)
-if(RET AND NOT RET EQUAL 0)
-  message(FATAL_ERROR "Generate sql parser failed and check error in ${PROJECT_SOURCE_DIR}/src/sql/parser/_gen_parser.error")
-endif()
+# execute_process(
+#   COMMAND env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
+#   RESULT_VARIABLE RET
+#   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
+#   OUTPUT_FILE _gen_parser.output
+#   ERROR_FILE _gen_parser.error)
+# if(RET AND NOT RET EQUAL 0)
+#   message(FATAL_ERROR "Generate sql parser failed and check error in ${PROJECT_SOURCE_DIR}/src/sql/parser/_gen_parser.error")
+# endif()
 
 add_subdirectory(parser)

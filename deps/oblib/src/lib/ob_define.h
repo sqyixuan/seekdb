@@ -203,7 +203,7 @@ const uint64_t OB_INTERNAL_CATALOG_ID = 0;
 const char *const OB_INTERNAL_CATALOG_NAME = "internal";
 const char *const OB_INTERNAL_CATALOG_NAME_UPPER = "INTERNAL";
 const char *const OB_OCEANBASE_NAME = "OceanBase";
-const char *const OB_SEEKDB_NAME = "seekdb";
+const char *const OB_SEEKDB_NAME = "SeekDB";
 const char *const OB_COMPATIBILITY_VERSION = "4.3.5.3";
 
 OB_INLINE bool is_valid_group(const uint64_t group_id)
@@ -2788,15 +2788,6 @@ extern int ob_pthread_cond_wait(pthread_cond_t *__restrict __cond,
 extern int ob_pthread_cond_timedwait(pthread_cond_t *__restrict __cond,
                                      pthread_mutex_t *__restrict __mutex,
                                      const struct timespec *__restrict __abstime);
-// Portable timed wait with relative timeout in microseconds.
-// On macOS, uses pthread_cond_timedwait_relative_np to avoid clock drift issues.
-// On Linux, computes absolute time using the specified clock and uses ob_pthread_cond_timedwait.
-// use_monotonic: true for CLOCK_MONOTONIC (when pthread_cond uses pthread_condattr_setclock),
-//                false for CLOCK_REALTIME (when pthread_cond uses default attr).
-extern int ob_pthread_cond_timedwait_us(pthread_cond_t *__restrict __cond,
-                                        pthread_mutex_t *__restrict __mutex,
-                                        int64_t timeout_us,
-                                        bool use_monotonic = false);
 }
 
 

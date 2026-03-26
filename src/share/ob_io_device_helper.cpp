@@ -594,23 +594,12 @@ int ObIODeviceLocalFileOp::fallocate(
       sys_ret = fcntl(static_cast<int32_t>(fd.second_id_), F_PREALLOCATE, &store);
     }
     if (0 != sys_ret) {
-      ret = convert_sys_errno();
-      SHARE_LOG(WARN, "fail to fallocate", K(ret), K(sys_ret), K(fd), K(offset), K(len), KERRMSG);
-    } else {
-      // F_PREALLOCATE only reserves disk space but doesn't change file size.
-      // Use ftruncate to set the logical file size to match Linux fallocate behavior.
-      const int64_t new_size = offset + len;
-      if (0 != ::ftruncate(static_cast<int32_t>(fd.second_id_), new_size)) {
-        ret = convert_sys_errno();
-        SHARE_LOG(WARN, "fail to ftruncate after preallocate", K(ret), K(fd), K(new_size), KERRMSG);
-      }
-    }
 #else
     if (0 != (sys_ret = ::fallocate(static_cast<int32_t>(fd.second_id_), mode, offset, len))) {
+#endif
       ret = convert_sys_errno();
       SHARE_LOG(WARN, "fail to fallocate", K(ret), K(sys_ret), K(fd), K(offset), K(len), KERRMSG);
     }
-#endif
   }
   return ret;
 }
@@ -1046,11 +1035,6 @@ int ObIODeviceLocalFileOp::open_block_file(
           // Try allocating non-contiguous space
           store.fst_flags = F_ALLOCATEALL;
           sys_ret = fcntl(block_file_attr.block_fd_, F_PREALLOCATE, &store);
-        }
-        // F_PREALLOCATE only reserves space but doesn't change file size.
-        // We must call ftruncate to actually set the file size.
-        if (0 == sys_ret) {
-          sys_ret = ::ftruncate(block_file_attr.block_fd_, adjust_file_size);
         }
         if (0 != sys_ret) {
 #else

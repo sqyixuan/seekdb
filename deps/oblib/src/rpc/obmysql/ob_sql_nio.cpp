@@ -23,23 +23,12 @@
 #include "lib/queue/ob_link_queue.h"
 #include "lib/thread/ob_thread_name.h"
 #include "lib/net/ob_net_util.h"
-#include "lib/utility/ob_platform_utils.h"  // Platform compatibility layer
 #ifdef __linux__
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #elif defined(__APPLE__)
-#include <sys/event.h>
-#include <sys/time.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <map>
-#include <vector>
-
-// Forward declarations for kqueue-based epoll emulation
-static int kqueue_epoll_create1(int flags);
-static int kqueue_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-static int kqueue_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
-
+// macOS doesn't have epoll, but we need to define basic types for compilation
+// Note: This file may not work correctly on macOS without epoll support
 struct epoll_event {
   uint32_t events;
   union {
@@ -49,7 +38,6 @@ struct epoll_event {
     uint64_t u64;
   } data;
 };
-
 #define EPOLLIN 0x001
 #define EPOLLOUT 0x004
 #define EPOLLERR 0x008
@@ -60,126 +48,23 @@ struct epoll_event {
 #define EPOLL_CTL_ADD 1
 #define EPOLL_CTL_DEL 2
 #define EPOLL_CTL_MOD 3
-
-static inline int epoll_create1(int flags) { return kqueue_epoll_create1(flags); }
-static inline int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) { return kqueue_epoll_ctl(epfd, op, fd, event); }
-static inline int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) { return kqueue_epoll_wait(epfd, events, maxevents, timeout); }
-
+static inline int epoll_create1(int flags) { (void)flags; return -1; }
+static inline int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) { (void)epfd; (void)op; (void)fd; (void)event; return -1; }
+static inline int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) { (void)epfd; (void)events; (void)maxevents; (void)timeout; return -1; }
 // macOS doesn't have eventfd, use pipe as alternative
 #define EFD_NONBLOCK 04000
-
-// We need a way to find the write end of the pipe for eventfd
-static std::map<int, int> g_evfd_write_map;
-
 static inline int eventfd(unsigned int initval, int flags) {
   (void)initval;
+  (void)flags;
   int fds[2];
   if (pipe(fds) < 0) return -1;
   if (flags & EFD_NONBLOCK) {
     fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
     fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
   }
-  g_evfd_write_map[fds[0]] = fds[1];
+  close(fds[1]);
   return fds[0];
 }
-
-// Implementation of kqueue-based epoll emulation
-static int kqueue_epoll_create1(int flags) {
-  int fd = kqueue();
-  if (fd >= 0 && (flags & EPOLL_CLOEXEC)) {
-    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
-  }
-  return fd;
-}
-
-static int kqueue_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event) {
-  struct kevent kev[2];
-  int n = 0;
-
-  if (op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD) {
-    uint16_t flags = EV_ADD | EV_ENABLE;
-    if (event->events & EPOLLET) flags |= EV_CLEAR;
-
-    if (event->events & EPOLLIN) {
-      EV_SET(&kev[n++], fd, EVFILT_READ, flags, 0, 0, event->data.ptr);
-    }
-    if (event->events & EPOLLOUT) {
-      EV_SET(&kev[n++], fd, EVFILT_WRITE, flags, 0, 0, event->data.ptr);
-    }
-
-    if (op == EPOLL_CTL_MOD) {
-      // For MOD, we might need to delete existing filters if they are not in the new event
-      if (!(event->events & EPOLLIN)) {
-        struct kevent del_kev;
-        EV_SET(&del_kev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-        kevent(epfd, &del_kev, 1, NULL, 0, NULL);
-      }
-      if (!(event->events & EPOLLOUT)) {
-        struct kevent del_kev;
-        EV_SET(&del_kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-        kevent(epfd, &del_kev, 1, NULL, 0, NULL);
-      }
-    }
-  } else if (op == EPOLL_CTL_DEL) {
-    EV_SET(&kev[n++], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    EV_SET(&kev[n++], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-  } else {
-    errno = EINVAL;
-    return -1;
-  }
-
-  if (n > 0) {
-    if (kevent(epfd, kev, n, NULL, 0, NULL) < 0) {
-      if (op != EPOLL_CTL_DEL) return -1;
-    }
-  }
-  return 0;
-}
-
-static int kqueue_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout) {
-  struct kevent *kevs = (struct kevent *)alloca(sizeof(struct kevent) * maxevents);
-  struct timespec ts;
-  struct timespec *pts = NULL;
-
-  if (timeout >= 0) {
-    ts.tv_sec = timeout / 1000;
-    ts.tv_nsec = (timeout % 1000) * 1000000;
-    pts = &ts;
-  }
-
-  int n = kevent(epfd, NULL, 0, kevs, maxevents, pts);
-  if (n < 0) return -1;
-
-  for (int i = 0; i < n; i++) {
-    events[i].events = 0;
-    if (kevs[i].filter == EVFILT_READ) events[i].events |= EPOLLIN;
-    if (kevs[i].filter == EVFILT_WRITE) events[i].events |= EPOLLOUT;
-    if (kevs[i].flags & EV_EOF) events[i].events |= EPOLLHUP;
-    if (kevs[i].flags & EV_ERROR) events[i].events |= EPOLLERR;
-    events[i].data.ptr = kevs[i].udata;
-  }
-  return n;
-}
-
-static inline ssize_t macos_write(int fd, const void *buf, size_t count) {
-  std::map<int, int>::iterator it = g_evfd_write_map.find(fd);
-  if (it != g_evfd_write_map.end()) {
-    return ::write(it->second, buf, count);
-  }
-  return ::write(fd, buf, count);
-}
-#define write(fd, buf, count) macos_write(fd, buf, count)
-
-static inline int macos_close(int fd) {
-  std::map<int, int>::iterator it = g_evfd_write_map.find(fd);
-  if (it != g_evfd_write_map.end()) {
-    ::close(it->second);
-    g_evfd_write_map.erase(it);
-  }
-  return ::close(fd);
-}
-#define close(fd) macos_close(fd)
-
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -853,11 +738,15 @@ static int listen_create(int family, int port, bool need_monopolize)
   struct sockaddr_storage addr;
   memset(&addr, 0, sizeof(addr));
   int ipv6_only_on = 1; /* Disable IPv4-mapped IPv6 addresses */
-  // Use platform-independent socket creation with CLOEXEC and NONBLOCK
-  if ((fd = oceanbase::lib::ob_socket_cloexec_nonblock(family, SOCK_STREAM, 0)) < 0) {
+  if ((fd = socket(family, SOCK_STREAM, 0)) < 0) {
     LOG_ERROR_RET(common::OB_ERR_SYS, "sql nio create socket for listen failed", K(errno));
     err = errno;
   } else {
+#ifdef __APPLE__
+    // macOS doesn't support SOCK_CLOEXEC and SOCK_NONBLOCK in socket(), set them via fcntl
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+#endif
     if (socket_set_opt(fd, SO_REUSEADDR, 1) < 0) {
       LOG_ERROR_RET(OB_ERR_SYS, "sql nio set sock opt SO_REUSEADDR failed", K(errno), K(fd));
       err = errno;
@@ -869,7 +758,7 @@ static int listen_create(int family, int port, bool need_monopolize)
       LOG_ERROR_RET(OB_ERR_SYS, "sql nio set sock opt SO_REUSEPORT failed", K(errno), K(fd));
       err = errno;
     } else if (bind(fd, (sockaddr*)obsys::ObNetUtil::make_unix_sockaddr_any(AF_INET6 == family, port, &addr),
-                    (AF_INET6 == family) ? sizeof(sockaddr_in6) : sizeof(sockaddr_in)) < 0) {
+                    sizeof(addr)) < 0) {
       LOG_ERROR_RET(OB_ERR_SYS, "sql nio bind listen fd failed", K(errno), K(fd));
       err = errno;
     } else if (listen(fd, 1024) < 0) {
@@ -895,15 +784,16 @@ static int listen_create_unix(const char* unix_path, bool need_monopolize)
   int fd = 0;
   struct sockaddr_un addr;
   memset(&addr, 0, sizeof(addr));
-  // Use platform-independent socket creation with CLOEXEC and NONBLOCK
-  if ((fd = oceanbase::lib::ob_socket_cloexec_nonblock(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+  if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
     LOG_ERROR_RET(common::OB_ERR_SYS, "sql nio create unix socket for listen failed", K(errno));
     err = errno;
   } else {
-    addr.sun_family = AF_UNIX;
 #ifdef __APPLE__
-    addr.sun_len = sizeof(struct sockaddr_un);
+    // macOS doesn't support SOCK_CLOEXEC and SOCK_NONBLOCK in socket(), set them via fcntl
+    fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
 #endif
+    addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, unix_path, sizeof(addr.sun_path) - 1);
     
     unlink(unix_path);

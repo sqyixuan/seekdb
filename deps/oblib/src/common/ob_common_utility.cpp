@@ -128,14 +128,35 @@ int get_stackattr(void *&stackaddr, size_t &stacksize)
       g_stacksize = stacksize;
     }
 #elif defined(__APPLE__)
-    // macOS doesn't support pthread_getattr_np, use macOS specific APIs
-    stacksize = pthread_get_stacksize_np(pthread_self());
-    void *stacktop = pthread_get_stackaddr_np(pthread_self());
-    // pthread_get_stackaddr_np returns the TOP of the stack.
-    // OceanBase's check_stack_overflow expects stackaddr to be the BOTTOM (lowest address).
-    stackaddr = (void*)((char*)stacktop - stacksize);
+    // macOS doesn't support pthread_getattr_np, use alternative method
+    // Get stack size from system default or use a reasonable default
+    size_t default_stack_size = 8 * 1024 * 1024; // 8MB default stack size on macOS
+    // Try to get actual stack size from pthread attributes (if available)
+    pthread_attr_t attr;
+    if (0 == pthread_attr_init(&attr)) {
+      size_t attr_stack_size = 0;
+      if (0 == pthread_attr_getstacksize(&attr, &attr_stack_size) && attr_stack_size > 0) {
+        default_stack_size = attr_stack_size;
+      }
+      pthread_attr_destroy(&attr);
+    }
+    // Estimate stack address: use a local variable's address as a reference point
+    // Stack grows downward on most systems, so stack start is approximately
+    // current stack pointer rounded up to page boundary + stack size
+    char stack_ref;
+    void *current_stack_ptr = (void*)&stack_ref;
+    // Align to page boundary (typically 4KB or 16KB)
+    const size_t page_size = 4096;
+    uintptr_t stack_ptr_val = (uintptr_t)current_stack_ptr;
+    // Round up to page boundary for stack start
+    uintptr_t stack_start_val = (stack_ptr_val + page_size - 1) & ~(page_size - 1);
+    // Stack grows downward, so add stack size to get the top of stack
+    stackaddr = (void*)(stack_start_val + default_stack_size);
+    stacksize = default_stack_size;
     g_stackaddr = (char*)stackaddr;
     g_stacksize = stacksize;
+    // Note: This is an approximation. For more accurate stack detection on macOS,
+    // consider using platform-specific APIs or setting stack attributes at thread creation time.
 #endif
   }
   return ret;

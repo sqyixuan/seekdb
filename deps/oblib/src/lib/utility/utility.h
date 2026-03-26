@@ -32,9 +32,9 @@
 #include "common/ob_clock_generator.h"
 
 #ifdef __APPLE__
-#include <sys/types.h>  // includes BSD type definitions
-using uint = unsigned int;
+#include <sys/types.h>  // 包含 BSD 类型定义
 #endif
+using uint = unsigned int;
 #define FALSE_IT(stmt) ({ (stmt); false; })
 #define OB_FALSE_IT(stmt) ({ (stmt); false; })
 

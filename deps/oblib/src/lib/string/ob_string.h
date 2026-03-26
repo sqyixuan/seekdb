@@ -24,7 +24,21 @@
 #include "lib/ob_define.h"
 #include "lib/alloc/alloc_assist.h"
 #include "lib/oblog/ob_log.h"
-#include "lib/utility/ob_platform_utils.h"
+
+// memrchr is a GNU extension, not available on macOS
+#ifndef __linux__
+inline void *memrchr(const void *s, int c, size_t n)
+{
+  if (n == 0) return nullptr;
+  const unsigned char *p = static_cast<const unsigned char *>(s) + n - 1;
+  for (size_t i = 0; i < n; ++i, --p) {
+    if (*p == static_cast<unsigned char>(c)) {
+      return const_cast<void *>(static_cast<const void *>(p));
+    }
+  }
+  return nullptr;
+}
+#endif
 
 namespace oceanbase
 {

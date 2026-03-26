@@ -736,7 +736,7 @@ unsigned int ob_instr_mb(const ObCharsetInfo *cs,
                  const char *s, size_t s_length,
                  ob_match_t *match, unsigned int nmatch);
 
-unsigned int ob_mbcharlen_ptr(const struct ObCharsetInfo *cs, const char *s, const char *e);
+                 unsigned int ob_mbcharlen_ptr(const struct ObCharsetInfo *cs, const char *s, const char *e);
 
 void ob_hash_sort_simple(const ObCharsetInfo *cs,
 				const unsigned char *key, size_t len,

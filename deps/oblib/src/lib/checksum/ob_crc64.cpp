@@ -1044,18 +1044,23 @@ uint64_t fast_crc64_sse42_manually(uint64_t crc, const char *buf, int64_t len)
 }
 
 //If the CPU is intel, ISA-L library for CRC can be used
+#ifdef __linux__
 uint64_t ob_crc64_isal(uint64_t uCRC64, const char* buf, int64_t cb)
 {
-  if (buf == NULL || cb <= 0) {
+  if (buf == NULL || cb <= 0){
     return uCRC64;
   }
-#ifdef __linux__
   return crc32_iscsi((unsigned char*)(buf), cb, uCRC64);
-#elif defined(__APPLE__)
-  // macOS: ISA-L is not available, use crc64_sse42 implementation
-  return crc64_sse42(uCRC64, buf, cb);
-#endif
 }
+#elif defined(__APPLE__)
+// macOS: ISA-L is not available, provide stub implementation
+uint64_t ob_crc64_isal(uint64_t uCRC64, const char* buf, int64_t cb)
+{
+  (void)buf; (void)cb;
+  // Return unchanged CRC64 (stub implementation)
+  return uCRC64;
+}
+#endif
 
 uint64_t crc64_sse42_dispatch(uint64_t crc, const char *buf, int64_t len)
 {

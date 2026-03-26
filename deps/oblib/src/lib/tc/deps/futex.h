@@ -42,21 +42,10 @@ static int tc_futex_wait(int *p, int val, const int64_t timeout_us) {
   return err;
 }
 #elif defined(__APPLE__)
-// macOS futex emulation using Darwin's ulock syscalls
+// macOS doesn't have futex, provide stub implementations
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
-#include <stdint.h>
-
-// Darwin ulock syscalls
-extern "C" {
-int __ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout_us);
-int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
-}
-
-// ulock operation flags
-#define TC_UL_COMPARE_AND_WAIT 1
-#define TC_ULF_WAKE_ALL        0x00000100
 
 static int tc_futex(int *uaddr, int op, int val, const struct timespec *timeout, int *uaddr2, int val3) {
   (void)uaddr;
@@ -65,26 +54,15 @@ static int tc_futex(int *uaddr, int op, int val, const struct timespec *timeout,
   (void)timeout;
   (void)uaddr2;
   (void)val3;
-  // Not directly used, kept for compatibility
+  // Stub implementation - returns success but does nothing
   return 0;
 }
 
 static int tc_futex_wake(int *p, int val) {
-  // Use Darwin's __ulock_wake for efficient wake
-  if (val >= INT32_MAX) {
-    return __ulock_wake(TC_UL_COMPARE_AND_WAIT | TC_ULF_WAKE_ALL, (void*)p, 0);
-  }
-  // Otherwise wake one at a time
-  int woken = 0;
-  for (int i = 0; i < val; i++) {
-    int ret = __ulock_wake(TC_UL_COMPARE_AND_WAIT, (void*)p, 0);
-    if (ret >= 0) {
-      woken++;
-    } else {
-      break;
-    }
-  }
-  return woken;
+  (void)p;
+  (void)val;
+  // Stub implementation - returns success but does nothing
+  return 0;
 }
 
 static struct timespec *tc_make_timespec(struct timespec *ts, int64_t us)
@@ -95,31 +73,10 @@ static struct timespec *tc_make_timespec(struct timespec *ts, int64_t us)
 }
 
 static int tc_futex_wait(int *p, int val, const int64_t timeout_us) {
-  uint32_t timeout = 0;
-  if (timeout_us > 0) {
-    timeout = (uint32_t)timeout_us;
-  }
-  // Note: timeout_us == 0 means no timeout (infinite wait is not well supported by __ulock_wait)
-  // For infinite wait, use a very large timeout value
-  if (timeout_us <= 0) {
-    timeout = UINT32_MAX;  // ~71 minutes max, should be enough for most cases
-  }
-
-  // Check if value has changed before waiting
-  if (*p != val) {
-    return EAGAIN;
-  }
-
-  int ret = __ulock_wait(TC_UL_COMPARE_AND_WAIT, (void*)p, (uint64_t)val, timeout);
-  if (ret < 0) {
-    if (errno == ETIMEDOUT) {
-      return ETIMEDOUT;
-    } else if (errno == EAGAIN || errno == EINTR) {
-      // Value changed or interrupted - not an error
-      return 0;
-    }
-    return errno;
-  }
+  (void)p;
+  (void)val;
+  (void)timeout_us;
+  // Stub implementation - returns success but does nothing
   return 0;
 }
 #endif

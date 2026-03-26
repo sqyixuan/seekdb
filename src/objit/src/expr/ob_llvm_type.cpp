@@ -42,7 +42,7 @@ ObIRValuePtr ObIRObj::get_ir_value_element(core::JitContext &jc,
   ObIRValuePtr indices[] = {get_const(jc.get_context(), 32, 0),
                             get_const(jc.get_context(), 32, idx)};
   ObIRValuePtr value_p = jc.get_builder().CreateGEP(ObIRType::getInt64Ty(jc.get_context()), obj,
-                                               makeArrayRef(indices),
+                                               llvm::ArrayRef<ObIRValuePtr>(indices),
                                                "obj_elem_p");
   ret = jc.get_builder().CreateLoad(ObIRType::getInt64Ty(jc.get_context()), value_p, "value_elem");
   return ret;

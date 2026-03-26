@@ -17,9 +17,37 @@
 #ifndef OB_VECTOR_UTIL_H
 #define OB_VECTOR_UTIL_H
 #include <stdint.h>
+#ifdef __APPLE__
+// macOS: VSAG is not supported, provide forward declarations
+#include <string>
+#include <fstream>
+#include <iostream>
+namespace vsag {
+    class Logger {
+    public:
+        enum Level { TRACE, DEBUG, INFO, WARN, ERROR, CRITICAL, OFF };
+        virtual void SetLevel(Level level) = 0;
+        virtual void Trace(const std::string& msg) = 0;
+        virtual void Debug(const std::string& msg) = 0;
+        virtual void Info(const std::string& msg) = 0;
+        virtual void Warn(const std::string& msg) = 0;
+        virtual void Error(const std::string& msg) = 0;
+        virtual void Critical(const std::string& msg) = 0;
+    };
+    class Allocator {
+    public:
+        virtual ~Allocator() = default;
+        virtual std::string Name() = 0;
+        virtual void* Allocate(size_t size) = 0;
+        virtual void Deallocate(void* p) = 0;
+        virtual void* Reallocate(void* p, size_t size) = 0;
+    };
+}
+#else
 #include <vsag/allocator.h>
 #include <vsag/logger.h>
 #include <vsag/iterator_context.h>
+#endif
 #include <fstream>
 #include "lib/allocator/page_arena.h"
 #include "lib/vector/ob_vsag_adaptor.h"
@@ -139,7 +167,6 @@ int fserialize(obvsag::VectorIndexPtr index_handler, std::ostream& out_stream);
 int fdeserialize(obvsag::VectorIndexPtr& index_handler, std::istream& in_stream);
 int delete_index(obvsag::VectorIndexPtr& index_handler);
 void delete_iter_ctx(void *iter_ctx);
-int immutable_optimize(obvsag::VectorIndexPtr& index_handler);
 } // namesapce obvectorutil
 } // namespace common
 } // namespace oceanbase

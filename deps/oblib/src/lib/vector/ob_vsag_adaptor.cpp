@@ -17,6 +17,103 @@
 #define USING_LOG_PREFIX LIB
 
 #include "ob_vsag_adaptor.h"
+#include "lib/utility/ob_print_utils.h"
+#include "lib/oblog/ob_log.h"
+#include "lib/worker.h"
+#include "lib/ob_errno.h"
+
+#ifdef OB_BUILD_CDC_DISABLE_VSAG
+
+#elif defined(__APPLE__)
+#include <map>
+#include <string>
+// macOS: Provide empty implementations for VSAG (not supported on macOS)
+namespace oceanbase {
+namespace common {
+namespace obvsag {
+
+bool is_init_ = false;
+
+std::string version() { return "macos-stub"; }
+bool is_init() { return false; }
+void set_log_level(int32_t ob_level_num) { (void)ob_level_num; }
+void set_logger(void *logger_ptr) { (void)logger_ptr; }
+void set_block_size_limit(uint64_t size) { (void)size; }
+bool is_hgraph_type(uint8_t create_type) { (void)create_type; return false; }
+const char* get_index_type_str(uint8_t create_type) { (void)create_type; return ""; }
+int construct_vsag_create_param(uint8_t create_type, const char *dtype, const char *metric, int dim,
+    int max_degree, int ef_construction, int ef_search, void *allocator,
+    int extra_info_size, int16_t refine_type, int16_t bq_bits_query,
+    bool bq_use_fht, char *result_param_str) { (void)create_type; (void)dtype; (void)metric; (void)dim;
+    (void)max_degree; (void)ef_construction; (void)ef_search; (void)allocator;
+    (void)extra_info_size; (void)refine_type; (void)bq_bits_query; (void)bq_use_fht; (void)result_param_str; return OB_NOT_SUPPORTED; }
+int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, const char *metric,
+    bool use_reorder, float doc_prune_ratio, int window_size, void *allocator, int extra_info_size, char *result_param_str) {
+    (void)create_type; (void)dtype; (void)metric; (void)use_reorder; (void)doc_prune_ratio;
+    (void)window_size; (void)allocator; (void)extra_info_size; (void)result_param_str; return OB_NOT_SUPPORTED; }
+int construct_vsag_search_param(uint8_t create_type, int64_t ef_search, bool use_extra_info_filter, char *result_param_str) {
+    (void)create_type; (void)ef_search; (void)use_extra_info_filter; (void)result_param_str; return OB_NOT_SUPPORTED; }
+int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candidate, char *result_param_str) {
+    (void)query_prune_ratio; (void)n_candidate; (void)result_param_str; return OB_NOT_SUPPORTED; }
+int create_index(VectorIndexPtr &index_handler, IndexType index_type, const char *dtype, const char *metric,
+    int dim, int max_degree, int ef_construction, int ef_search, void *allocator,
+    int extra_info_size, int16_t refine_type, int16_t bq_bits_query, bool bq_use_fht) {
+    (void)index_handler; (void)index_type; (void)dtype; (void)metric; (void)dim;
+    (void)max_degree; (void)ef_construction; (void)ef_search; (void)allocator;
+    (void)extra_info_size; (void)refine_type; (void)bq_bits_query; (void)bq_use_fht;
+    index_handler = nullptr; return OB_NOT_SUPPORTED; }
+int create_index(VectorIndexPtr &index_handler, IndexType index_type, const char *dtype, const char *metric,
+    bool use_reorder, float doc_prune_ratio, int window_size, void *allocator, int extra_info_size) {
+    (void)index_handler; (void)index_type; (void)dtype; (void)metric; (void)use_reorder;
+    (void)doc_prune_ratio; (void)window_size; (void)allocator; (void)extra_info_size;
+    index_handler = nullptr; return OB_NOT_SUPPORTED; }
+int build_index(VectorIndexPtr &index_handler, float *vector_list, int64_t *ids, int dim, int size, char *extra_infos) {
+    (void)index_handler; (void)vector_list; (void)ids; (void)dim; (void)size; (void)extra_infos; return OB_NOT_SUPPORTED; }
+int build_index(VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos) {
+    (void)index_handler; (void)lens; (void)dims; (void)vals; (void)ids; (void)size; (void)extra_infos; return OB_NOT_SUPPORTED; }
+int add_index(VectorIndexPtr &index_handler, float *vector, int64_t *ids, int dim, int size, char *extra_info) {
+    (void)index_handler; (void)vector; (void)ids; (void)dim; (void)size; (void)extra_info; return OB_NOT_SUPPORTED; }
+int add_index(VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos) {
+    (void)index_handler; (void)lens; (void)dims; (void)vals; (void)ids; (void)size; (void)extra_infos; return OB_NOT_SUPPORTED; }
+int get_index_number(VectorIndexPtr &index_handler, int64_t &size) {
+    (void)index_handler; size = 0; return OB_NOT_SUPPORTED; }
+int get_index_type(VectorIndexPtr &index_handler) {
+    (void)index_handler; return -1; }
+int cal_distance_by_id(VectorIndexPtr &index_handler, const float *vector, const int64_t *ids, int64_t count, const float *&distances) {
+    (void)index_handler; (void)vector; (void)ids; (void)count; (void)distances; return OB_NOT_SUPPORTED; }
+int cal_distance_by_id(VectorIndexPtr &index_handler, uint32_t len, uint32_t *dims, float *vals, const int64_t *ids, int64_t count, const float *&distances) {
+    (void)index_handler; (void)len; (void)dims; (void)vals; (void)ids; (void)count; (void)distances; return OB_NOT_SUPPORTED; }
+int get_vid_bound(VectorIndexPtr &index_handler, int64_t &min_vid, int64_t &max_vid) {
+    (void)index_handler; min_vid = 0; max_vid = 0; return OB_NOT_SUPPORTED; }
+int knn_search(VectorIndexPtr &index_handler, float *query_vector, int dim, int64_t topk,
+    const FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)filter; (void)ids; (void)distances; result_count = 0; return OB_NOT_SUPPORTED; }
+int knn_search(VectorIndexPtr &index_handler, float *query_vector, int dim, int64_t topk,
+    const FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count, char *extra_infos) {
+    (void)index_handler; (void)query_vector; (void)dim; (void)topk; (void)filter; (void)ids; (void)distances; (void)extra_infos; result_count = 0; return OB_NOT_SUPPORTED; }
+int knn_search(VectorIndexPtr &index_handler, uint32_t len, uint32_t *dims, float *vals, int64_t topk,
+    const FilterInterface *filter, int64_t *ids, float *distances, int64_t &result_count) {
+    (void)index_handler; (void)len; (void)dims; (void)vals; (void)topk; (void)filter; (void)ids; (void)distances; result_count = 0; return OB_NOT_SUPPORTED; }
+int serialize(VectorIndexPtr &index_handler, const std::string dir) {
+    (void)index_handler; (void)dir; return OB_NOT_SUPPORTED; }
+int deserialize_bin(VectorIndexPtr &index_handler, const std::string dir) {
+    (void)index_handler; (void)dir; return OB_NOT_SUPPORTED; }
+int fserialize(VectorIndexPtr &index_handler, std::ostream &out_stream) {
+    (void)index_handler; (void)out_stream; return OB_NOT_SUPPORTED; }
+int fdeserialize(VectorIndexPtr &index_handler, std::istream &in_stream) {
+    (void)index_handler; (void)in_stream; return OB_NOT_SUPPORTED; }
+int delete_index(VectorIndexPtr &index_handler) {
+    (void)index_handler; return OB_NOT_SUPPORTED; }
+void delete_iter_ctx(void *iter_ctx) { (void)iter_ctx; }
+int get_extra_info_by_ids(VectorIndexPtr &index_handler, const int64_t *ids, int64_t count, char *extra_infos) {
+    (void)index_handler; (void)ids; (void)count; (void)extra_infos; return OB_NOT_SUPPORTED; }
+
+} // namespace obvsag
+} // namespace common
+} // namespace oceanbase
+
+#else
+
 #include <map>
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
@@ -25,13 +122,6 @@
 #include "vsag/index.h"
 #include "vsag/options.h"
 #include "vsag/factory.h"
-#include "lib/utility/ob_print_utils.h"
-#include "lib/oblog/ob_log.h"
-#include "lib/worker.h"
-
-#ifdef OB_BUILD_CDC_DISABLE_VSAG
-
-#else
 
 namespace oceanbase {
 namespace common {
@@ -42,38 +132,11 @@ using namespace vsag;
 static int vsag_errcode2ob(vsag::ErrorType vsag_errcode)
 {
   int ret = OB_ERR_VSAG_RETURN_ERROR;
-  switch (vsag_errcode) {
-    case vsag::ErrorType::INVALID_ARGUMENT: {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid vsag parameter", K(ret), K(vsag_errcode));
-      break;
-    }
-    case vsag::ErrorType::UNSUPPORTED_INDEX:
-    case vsag::ErrorType::UNSUPPORTED_INDEX_OPERATION: {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("not support vsag feature", K(ret), K(vsag_errcode));
-      break;
-    }
-    case vsag::ErrorType::DIMENSION_NOT_EQUAL: {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("the dimension of request is NOT equal to index", K(ret), K(vsag_errcode));
-      break;
-    }
-    case vsag::ErrorType::INDEX_EMPTY: {
-      ret = OB_OP_NOT_ALLOW;
-      LOG_WARN("index is empty, cannot search or serialize", K(ret), K(vsag_errcode));
-      break;
-    }
-    case vsag::ErrorType::NO_ENOUGH_MEMORY: {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to alloc memory in vasg", K(ret), K(vsag_errcode));
-      break;
-    }
-    default: {
-      ret = OB_ERR_VSAG_RETURN_ERROR;
-      LOG_WARN("vsag return error", K(ret), K(vsag_errcode));
-      break;
-    }
+  if (vsag_errcode == vsag::ErrorType::INDEX_EMPTY/*10*/) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("vsag failed to allocate", K(ret), K(vsag_errcode));
+  } else {
+    LOG_WARN("get vsag failed.", K(ret), K(vsag_errcode));
   }
   return ret;
 }
@@ -161,8 +224,6 @@ public:
                  int index_type, FilterInterface *bitmap, bool reverse_filter,
                  bool need_extra_info, const char *&extra_infos,
                  void *&iter_ctx, bool is_last_search, void *allocator);
-  int immutable_optimize();
-
   std::shared_ptr<vsag::Index> &get_index() { return index_; }
   void set_index(std::shared_ptr<vsag::Index> hnsw) { index_ = hnsw; }
   vsag::Allocator *get_allocator() const { return allocator_; }
@@ -181,11 +242,6 @@ public:
   inline bool get_use_reorder() const { return use_reorder_; }
   inline float get_doc_prune_ratio() const { return doc_prune_ratio_; }
   inline int get_window_size() const { return window_size_; }
-
-  TO_STRING_KV(KP(this), K_(is_created), K_(is_build), K_(use_static), KCSTRING_(dtype),
-      KCSTRING_(metric), K_(max_degree), K_(ef_construction), K_(ef_search), K_(dim),
-      K_(ef_search), K_(index_type), KP(index_.get()), KP_(allocator), K_(extra_info_size),
-      K_(refine_type), K_(bq_bits_query), K_(bq_use_fht));
 
 private:
   bool is_created_;
@@ -316,7 +372,7 @@ int HnswIndexHandler::get_vid_bound(int64_t &min_vid, int64_t &max_vid)
 
 uint64_t HnswIndexHandler::estimate_memory(const uint64_t row_count, const bool is_build)
 {
-
+  
   uint64_t size = 0;
   if (IPIVF_TYPE == index_type_) {
     // TODO(ningxin.ning): use vsag EstimateMemory
@@ -337,23 +393,6 @@ uint64_t HnswIndexHandler::estimate_memory(const uint64_t row_count, const bool 
     }
   }
   return size;
-}
-
-int HnswIndexHandler::immutable_optimize()
-{
-  int ret = OB_SUCCESS;
-  if (index_type_ == IPIVF_TYPE) {
-    // TODO(ningxin.ning): support SetImmutable for sparse vector index
-  } else {
-    tl::expected<void, Error> res = index_->SetImmutable();
-    if (res.has_value()) {
-      LOG_INFO("[OBVSAG] set immutable success", KPC(this));
-    } else {
-      ret = vsag_errcode2ob(res.error().type);
-      LOG_WARN("[OBVSAG] index set immutable error", K(ret), K(res.error().type));
-    }
-  }
-  return ret;
 }
 
 int HnswIndexHandler::knn_search(const vsag::DatasetPtr &query, int64_t topk,
@@ -690,7 +729,7 @@ int construct_vsag_create_param(
   return ret;
 }
 
-int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, const char *metric,
+int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, const char *metric, 
     void *allocator, int extra_info_size, bool use_reorder, float doc_prune_ratio, int window_size,
     char *result_param_str)
 {
@@ -780,7 +819,7 @@ int construct_vsag_search_param(uint8_t create_type,
   return ret;
 }
 
-int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candidate,
+int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candidate, 
                                 char *result_param_str)
 {
   int ret = OB_SUCCESS;
@@ -788,19 +827,19 @@ int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candid
   int64_t pos = 0;
   int64_t buff_size = 0;
   int64_t buf_len = 1024;
-  if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         "{\"%s\":{", index_type_str))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
-  } else if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  } else if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         "\"query_prune_ratio\":%f", query_prune_ratio))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
-  } else if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  } else if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         ",\"n_candidate\":%lu}}", n_candidate))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
   }
@@ -1143,7 +1182,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
                int dim, int64_t topk, const float *&dist, const int64_t *&ids,
                int64_t &result_size, int ef_search, bool need_extra_info,
                const char *&extra_infos, void *invalid, bool reverse_filter,
-               bool use_extra_info_filter, void *allocator, float valid_ratio,
+               bool use_extra_info_filter, void *allocator, float valid_ratio, 
                float distance_threshold)
 {
   int ret = OB_SUCCESS;
@@ -1155,18 +1194,8 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
     HnswIndexHandler *hnsw = static_cast<HnswIndexHandler *>(index_handler);
     const IndexType index_type = static_cast<IndexType>(hnsw->get_index_type());
     char result_param_str[1024]= {0};
-    const int64_t EF_SEARCH_LIMIT = 1000L;
-    const int64_t AMPLIFICATION_FACTOR = 10;
-    if (ef_search > EF_SEARCH_LIMIT) {
-      int64_t index_number = hnsw->get_index_number();
-      if (0 != index_number) {
-        topk = topk < index_number ? topk : index_number;
-      }
-      int64_t ef_search_threshold = AMPLIFICATION_FACTOR * topk > EF_SEARCH_LIMIT ? AMPLIFICATION_FACTOR * topk : EF_SEARCH_LIMIT;
-      ef_search = ef_search < ef_search_threshold ? ef_search : ef_search_threshold;
-    }
     if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str))) {
-      LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter), K(topk));
+      LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter));
     } else {
       const std::string input_json_string(result_param_str);
       DatasetPtr query = vsag::Dataset::Make();
@@ -1197,18 +1226,8 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
     HnswIndexHandler *hnsw = static_cast<HnswIndexHandler *>(index_handler);
     const IndexType index_type = static_cast<IndexType>(hnsw->get_index_type());
     char result_param_str[1024]= {0};
-    const int64_t EF_SEARCH_LIMIT = 1000L;
-    const int64_t AMPLIFICATION_FACTOR = 10;
-    if (ef_search > EF_SEARCH_LIMIT) {
-      int64_t index_number = hnsw->get_index_number();
-      if (0 != index_number) {
-        topk = topk < index_number ? topk : index_number;
-      }
-      int64_t ef_search_threshold = AMPLIFICATION_FACTOR * topk > EF_SEARCH_LIMIT ? AMPLIFICATION_FACTOR * topk : EF_SEARCH_LIMIT;
-      ef_search = ef_search < ef_search_threshold ? ef_search : ef_search_threshold;
-    }
     if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str))) {
-      LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter), K(topk));
+      LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter));
     } else {
       const std::string input_json_string(result_param_str);
       DatasetPtr query = vsag::Dataset::Make();
@@ -1217,7 +1236,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
                             result_size, valid_ratio, index_type, bitmap,
                             reverse_filter, need_extra_info, extra_infos, iter_ctx,
                             is_last_search, allocator))) {
-        LOG_WARN("[OBVSAG] knn search error happend", K(ret), K(index_type), K(topk), KCSTRING(result_param_str));
+        LOG_WARN("[OBVSAG] knn search error happend", K(ret), K(index_type), KCSTRING(result_param_str));
       }
     }
   }
@@ -1325,7 +1344,7 @@ int fdeserialize(VectorIndexPtr &index_handler,
         ef_construction, ef_search, hnsw->get_allocator(),
         extra_info_size, refine_type, bq_bits_query, bq_use_fht, result_param_str))) {
         LOG_WARN("construct_vsag_create_param fail", K(ret), K(index_type));
-      }
+      } 
     }
     if (OB_FAIL(ret)) {
     } else {
@@ -1339,7 +1358,7 @@ int fdeserialize(VectorIndexPtr &index_handler,
           LOG_INFO("[OBVSAG] fdeserialize success", KCSTRING(result_param_str));
         } else {
           ret = vsag_errcode2ob(bs.error().type);
-          LOG_WARN("[OBVSAG] fdeserialize error", K(ret), K(bs.error().type));
+          LOG_WARN("[OBVSAG] fdeserialize error", K(ret), K(index.error().type));
         }
       } else {
         ret = vsag_errcode2ob(index.error().type);
@@ -1397,21 +1416,6 @@ uint64_t estimate_memory(VectorIndexPtr &index_handler, const uint64_t row_count
     estimate_memory_size = hnsw->estimate_memory(row_count, is_build);
   }
   return estimate_memory_size;
-}
-
-int immutable_optimize(VectorIndexPtr& index_handler)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(index_handler)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("[OBVSAG] null pointer addr", K(ret), KP(index_handler));
-  } else {
-    HnswIndexHandler *hnsw = static_cast<HnswIndexHandler *>(index_handler);
-    if (OB_FAIL(hnsw->immutable_optimize())) {
-      LOG_WARN("[OBVSAG] immutable_optimize error happend", K(ret));
-    }
-  }
-  return ret;
 }
 
 } // namespace obvsag

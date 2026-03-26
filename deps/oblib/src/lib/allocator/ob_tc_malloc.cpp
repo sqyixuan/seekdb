@@ -24,10 +24,8 @@
 #endif
 #include "lib/signal/ob_signal_struct.h"
 #include "lib/utility/ob_tracepoint.h"
-#include "lib/utility/ob_platform_utils.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
 #include "lib/alloc/malloc_hook.h"
-#include "lib/alloc/alloc_func.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -105,9 +103,6 @@ void  __attribute__((constructor(MALLOC_INIT_PRIORITY))) init_global_memory_pool
   auto& t = EventTable::instance();
   auto& c = get_mem_leak_checker();
   auto& a = AChunkMgr::instance();
-  // Set unlimited memory limit early to avoid 8GB default limit issue
-  // This will be reset to proper value in main() after config is loaded
-  set_memory_limit(INT64_MAX);
   in_hook()= true;
   global_default_allocator = ObMallocAllocator::get_instance();
   in_hook()= false;
@@ -122,7 +117,7 @@ void  __attribute__((constructor(MALLOC_INIT_PRIORITY))) init_global_memory_pool
 
 int64_t get_virtual_memory_used(int64_t *resident_size)
 {
-  static const ssize_t ps = lib::ob_get_page_size();
+  static const int ps = sysconf(_SC_PAGESIZE);
   int64_t page_cnt = 0;
   int64_t res_page_cnt = 0;
   FILE *statm = fopen("/proc/self/statm", "r");

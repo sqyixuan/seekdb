@@ -17,7 +17,6 @@
 
 #include "ob_storage_file.h"
 #include "lib/utility/ob_sort.h"
-#include "lib/utility/ob_platform_utils.h"
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
@@ -32,6 +31,24 @@ namespace oceanbase
 {
 namespace common
 {
+
+// Helper function to handle strerror_r differences between macOS and Linux
+// On macOS, strerror_r returns int and writes to the buffer
+// On Linux, strerror_r returns char* (either the buffer or a static string)
+static const char* ob_strerror_r(int errnum, char* buf, size_t buflen)
+{
+#ifdef __APPLE__
+  // macOS: strerror_r returns int (0 on success, -1 on error)
+  if (strerror_r(errnum, buf, buflen) == 0) {
+    return buf;
+  } else {
+    return "Unknown error";
+  }
+#else
+  // Linux: strerror_r returns char* (pointer to the error string)
+  return strerror_r(errnum, buf, buflen);
+#endif
+}
 
 static void convert_io_error(const int sys_err, int &ob_error_code)
 {

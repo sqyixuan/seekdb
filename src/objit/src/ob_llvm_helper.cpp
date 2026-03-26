@@ -58,6 +58,15 @@ using namespace common;
 namespace jit
 {
 
+// Helper functions to create pointer types (replacing removed getInt32PtrTy/getInt8PtrTy)
+static ObIRType* getInt32PtrTy(ObIRContext& C) {
+  return llvm::PointerType::get(llvm::Type::getInt32Ty(C), 0);
+}
+
+static ObIRType* getInt8PtrTy(ObIRContext& C) {
+  return llvm::PointerType::get(llvm::Type::getInt8Ty(C), 0);
+}
+
 typedef ObIRType* (*ObGetIRType)(ObIRContext&, ...);
 typedef ObIRValue* (*ObGetIRConst)(ObIRContext&, const common::ObObj&);
 static ObGetIRType OB_IR_TYPE[common::ObMaxType + 1] =
@@ -77,16 +86,16 @@ static ObGetIRType OB_IR_TYPE[common::ObMaxType + 1] =
   reinterpret_cast<ObGetIRType>(ObIRType::getDoubleTy),   //12.ObDoubleType
   reinterpret_cast<ObGetIRType>(ObIRType::getFloatTy),    //13.ObUFloatType
   reinterpret_cast<ObGetIRType>(ObIRType::getDoubleTy),   //14.ObUDoubleType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt32PtrTy), //15.ObNumberType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt32PtrTy), //16.ObUNumberType
+  reinterpret_cast<ObGetIRType>(getInt32PtrTy),           //15.ObNumberType
+  reinterpret_cast<ObGetIRType>(getInt32PtrTy),           //16.ObUNumberType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //17.ObDateTimeType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //18.ObTimestampType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //19.ObDateType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //20.ObTimeType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //21.ObYearType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt8PtrTy),  //22.ObVarcharType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt8PtrTy),  //23.ObCharType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt8PtrTy),  //24.ObHexStringType
+  reinterpret_cast<ObGetIRType>(getInt8PtrTy),            //22.ObVarcharType
+  reinterpret_cast<ObGetIRType>(getInt8PtrTy),            //23.ObCharType
+  reinterpret_cast<ObGetIRType>(getInt8PtrTy),            //24.ObHexStringType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //25.ObExtendType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //26.ObUnknownType
   NULL,                                                   //27.ObTinyTextType
@@ -96,8 +105,8 @@ static ObGetIRType OB_IR_TYPE[common::ObMaxType + 1] =
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //31.ObBitType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //32.ObEnumType
   reinterpret_cast<ObGetIRType>(ObIRType::getInt64Ty),    //33.ObSetType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt8PtrTy),  //34.ObEnumInnerType
-  reinterpret_cast<ObGetIRType>(ObIRType::getInt8PtrTy),  //35.ObSetInnerType
+  reinterpret_cast<ObGetIRType>(getInt8PtrTy),            //34.ObEnumInnerType
+  reinterpret_cast<ObGetIRType>(getInt8PtrTy),            //35.ObSetInnerType
   NULL,                                                    //47.ObJsonType
   NULL,                                                    //48.ObGeometryType
   NULL,                                                    //49.ObUserDefinedSQLType
@@ -1986,46 +1995,11 @@ int ObLLVMHelper::get_llvm_type(common::ObObjType obj_type, ObLLVMType &type)
   if (OB_ISNULL(jc_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("jc is NULL", K(jc_), K(ret));
-  } else if (obj_type < 0 || obj_type >= common::ObMaxType) {
+  } else if (obj_type < 0 || obj_type >= common::ObMaxType || OB_ISNULL(OB_IR_TYPE[obj_type])) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("obj_type passed in is invalid", K(obj_type), K(ret));
   } else {
-    llvm::LLVMContext &ctx = jc_->get_context();
-    llvm::Type *llvm_type = nullptr;
-
-    // Handle pointer types separately to avoid variadic function pointer issues
-    // In LLVM 17 with opaque pointers, all pointer types should use the same base ptr type
-    switch (obj_type) {
-      case common::ObVarcharType:    // 22
-      case common::ObCharType:       // 23
-      case common::ObHexStringType:  // 24
-      case common::ObEnumInnerType:  // 34
-      case common::ObSetInnerType:   // 35
-        // These are string/char pointer types - use getInt8PtrTy with explicit address space 0
-        llvm_type = llvm::Type::getInt8PtrTy(ctx, 0);
-        break;
-      case common::ObNumberType:     // 15
-      case common::ObUNumberType:    // 16
-        // Number types use int32 pointer
-        llvm_type = llvm::Type::getInt32PtrTy(ctx, 0);
-        break;
-      default:
-        // For non-pointer types, use the original array approach
-        if (OB_ISNULL(OB_IR_TYPE[obj_type])) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("obj_type passed in is invalid (no handler)", K(obj_type), K(ret));
-        } else {
-          llvm_type = OB_IR_TYPE[obj_type](ctx);
-        }
-        break;
-    }
-
-    if (OB_SUCC(ret) && OB_NOT_NULL(llvm_type)) {
-      type.set_v(llvm_type);
-    } else if (OB_SUCC(ret)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("failed to get llvm type", K(obj_type), K(ret));
-    }
+    type.set_v(OB_IR_TYPE[obj_type](jc_->get_context(), 0));
   }
   return ret;
 }

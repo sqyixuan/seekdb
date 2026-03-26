@@ -38,19 +38,21 @@ set(CPACK_RPM_PACKAGE_GROUP "Applications/Databases")
 set(CPACK_RPM_PACKAGE_DESCRIPTION ${CPACK_PACKAGE_DESCRIPTION})
 set(CPACK_RPM_PACKAGE_LICENSE "Apache 2.0")
 if (NOT BUILD_CDC_ONLY OR OB_BUILD_STANDALONE)
-  set(DEBUG_INSTALL_POST "mv $RPM_BUILD_ROOT/../server/usr/bin/obshell %{_builddir}/obshell; %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir}; mv %{_builddir}/obshell $RPM_BUILD_ROOT/../server/usr/bin/obshell; %{nil}")
+  set(DEBUG_INSTALL_POST "mv $RPM_BUILD_ROOT/../server/usr/bin/obshell %{_builddir}/obshell; /usr/bin/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir}; mv %{_builddir}/obshell $RPM_BUILD_ROOT/../server/usr/bin/obshell; %{nil}")
 else()
-  set(DEBUG_INSTALL_POST "%{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir};%{nil}")
+  set(DEBUG_INSTALL_POST "/usr/bin/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir};%{nil}")
 endif()
 set(CPACK_RPM_SPEC_MORE_DEFINE
   "%global _missing_build_ids_terminate_build 0
 %global _find_debuginfo_opts -g
 %global __brp_check_rpaths %{nil}
-%define __strip ${CMAKE_SOURCE_DIR}/deps/3rd/usr/local/oceanbase/devtools/bin/llvm-strip
+%define __strip /usr/bin/llvm-strip
 %undefine __brp_mangle_shebangs
 %global __requires_exclude ^\(/bin/bash\|/usr/bin/\.*\)$
 %define __debug_install_post ${DEBUG_INSTALL_POST}
+%if \\\"%name\\\" != \\\"seekdb-sql-parser\\\"
 %debug_package
+%endif
 ")
 
 # systemd define on rpm
@@ -82,7 +84,7 @@ install(FILES
   tools/systemd/profile/post_install.sh
   tools/systemd/profile/post_uninstall.sh
   tools/systemd/profile/pre_uninstall.sh
-  DESTINATION usr/libexec/seekdb/scripts
+  DESTINATION usr/libexec/oceanbase/scripts
   COMPONENT server)
 
 if (BUILD_CDC_ONLY)
@@ -120,7 +122,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/tools/ocp/software_package.template
 
 install(FILES
   tools/ocp/software_package
-  DESTINATION usr/share/seekdb/software_package
+  DESTINATION usr/share/oceanbase/software_package
   COMPONENT server)
 
 message(STATUS "Cpack Components:${CPACK_COMPONENTS_ALL}")

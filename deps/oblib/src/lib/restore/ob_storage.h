@@ -18,7 +18,10 @@
 #define SRC_LIBRARY_SRC_LIB_RESTORE_OB_STORAGE_H_
 #include "ob_i_storage.h"
 #include "ob_storage_file.h"
+// #include "ob_storage_oss_base.h"
+// #include "ob_storage_cos_base.h"
 #include "ob_storage_s3_base.h"
+// #include "hdfs/ob_storage_hdfs_jni_base.h"
 #include "common/storage/ob_io_device.h"
 
 namespace oceanbase
@@ -29,7 +32,7 @@ namespace common
 class ObObjectDevice;
 
 /* In order to uniform naming format, here we will define the name format about uri/path.
- *   a. 'uri' represents a full path which has type prefix, like FILE.
+ *   a. 'uri' represents a full path which has type prefix, like OSS/FILE.
  *   b. 'raw_dir_path' represents a dir path which does not have suffix '/'
  *   c. 'dir_path' represents a dir path, but we can't ensure that this path has suffix '/' or not
  *   d. 'full_dir_path' represents a dir path which has suffix '/'
@@ -273,7 +276,7 @@ public:
       const ObIArray<ObString> &files_to_delete, ObIArray<int64_t> &failed_files_idx);
   int del_unmerged_parts(const common::ObString &uri);
 
-  // For one object, if given us the uri(no matter in s3), we can't tell the type of this object.
+  // For one object, if given us the uri(no matter in oss, cos or s3), we can't tell the type of this object.
   // It may be a 'single、normal' object. Or it may be a 's3-appendable-object'(like a dir), containing several 
   // 'single、normal' objects.
   // So, this function is for checking the object meta, to get its meta info
@@ -355,7 +358,10 @@ private:
   int head_object_meta_(const ObString &uri, ObStorageObjectMetaBase &obj_meta);
 
   ObStorageFileUtil file_util_;
+  // ObStorageOssUtil oss_util_;
+  // ObStorageCosUtil cos_util_;
   ObStorageS3Util s3_util_;
+  // ObStorageHdfsJniUtil hdfs_util_;
   ObIStorageUtil* util_;
   common::ObObjectStorageInfo* storage_info_;
   bool init_state;
@@ -425,7 +431,10 @@ protected:
   int64_t file_length_;
   ObIStorageReader *reader_;
   ObStorageFileReader file_reader_;
+  // ObStorageOssReader oss_reader_;
+  // ObStorageCosReader cos_reader_;
   ObStorageS3Reader s3_reader_;
+  // ObStorageHdfsReader hdfs_reader_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
   bool has_meta_;
@@ -453,7 +462,10 @@ private:
   ObString object_;
   ObIStorageReader *reader_;
   ObStorageFileReader file_reader_;
+  // ObStorageOssReader oss_reader_;
+  // ObStorageCosReader cos_reader_;
   ObStorageS3Reader s3_reader_;
+  // ObStorageHdfsReader hdfs_reader_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
   ObObjectStorageInfo *storage_info_;
@@ -471,6 +483,8 @@ public:
 protected:
   ObIStorageWriter *writer_;
   ObStorageFileSingleWriter file_writer_;
+  // ObStorageOssWriter oss_writer_;
+  // ObStorageCosWriter cos_writer_;
   ObStorageS3Writer s3_writer_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
@@ -504,6 +518,8 @@ public:
 private:
   ObIStorageWriter *appender_;
   ObStorageFileAppender file_appender_;
+  // ObStorageOssAppendWriter oss_appender_;
+  // ObStorageCosAppendWriter cos_appender_;
   ObStorageS3AppendWriter s3_appender_;
   int64_t start_ts_;
   bool is_opened_;
@@ -535,6 +551,8 @@ public:
 protected:
   ObIStorageMultiPartWriter *multipart_writer_;
   ObStorageFileMultiPartWriter file_multipart_writer_;
+  // ObStorageCosMultiPartWriter cos_multipart_writer_;
+  // ObStorageOssMultiPartWriter oss_multipart_writer_;
   ObStorageS3MultiPartWriter s3_multipart_writer_;
   int64_t start_ts_;
   bool is_opened_;
@@ -556,6 +574,8 @@ public:
 protected:
   ObIStorageParallelMultipartWriter *multipart_writer_;
   ObStorageParallelFileMultiPartWriter file_multipart_writer_;
+  // ObStorageParallelCosMultiPartWriter cos_multipart_writer_;
+  // ObStorageParallelOssMultiPartWriter oss_multipart_writer_;
   ObStorageParallelS3MultiPartWriter s3_multipart_writer_;
   int64_t start_ts_;
   bool is_opened_;

@@ -40,7 +40,6 @@
 #include <locale.h>
 #ifdef __APPLE__
 #include <stdlib.h> // malloc.h is not available on macOS, use stdlib.h instead
-#include <mach-o/dyld.h> // for _NSGetExecutablePath
 #else
 #include <malloc.h>
 #endif
@@ -92,40 +91,18 @@ static int create_observer_softlink()
 {
   int ret = OB_SUCCESS;
   char softlink_path[PATH_MAX] = {0};
-  snprintf(softlink_path, PATH_MAX, "%s/seekdb", PID_DIR);
+  snprintf(softlink_path, PATH_MAX, "%s/observer", PID_DIR);
   char target_path[PATH_MAX] = {0};
-#ifdef __APPLE__
-  // On macOS, use _NSGetExecutablePath to get the executable path
-  uint32_t size = PATH_MAX;
-  if (0 != _NSGetExecutablePath(target_path, &size)) {
-    ret = OB_IO_ERROR;
-    MPRINT("failed to get executable path on macOS");
-  }
-  // Resolve symlinks to get the real path
-  if (OB_SUCC(ret)) {
-    char resolved_path[PATH_MAX] = {0};
-    if (nullptr == realpath(target_path, resolved_path)) {
-      ret = OB_IO_ERROR;
-      MPRINT("failed to resolve executable path, errno=%s", strerror(errno));
-    } else {
-      strncpy(target_path, resolved_path, PATH_MAX - 1);
-      target_path[PATH_MAX - 1] = '\0';
-    }
-  }
-#else
   ssize_t read_len = readlink("/proc/self/exe", target_path, PATH_MAX - 1);
   if (read_len < 0) {
     ret = OB_IO_ERROR;
     MPRINT("failed to readlink /proc/self/exe, errno=%s", strerror(errno));
-  } else {
-    target_path[read_len] = '\0';
   }
-#endif
   if (OB_FAIL(ret)) {
   } else if (FALSE_IT(FileDirectoryUtils::unlink_symlink(softlink_path))) {
   } else if (OB_FAIL(FileDirectoryUtils::symlink(target_path, softlink_path))) {
     ret = OB_IO_ERROR;
-    MPRINT("create seekdb softlink failed, errno=%s", strerror(errno));
+    MPRINT("create observer softlink failed, errno=%s", strerror(errno));
   }
   return ret;
 }
@@ -270,7 +247,7 @@ static int check_uid_before_start(const char *dir_path)
   } else {
     if (current_uid != dir_info.st_uid) {
       ret = OB_UTL_FILE_ACCESS_DENIED;
-      MPRINT("ERROR: current user(uid=%u) that starts seekdb is not the same with the original one(uid=%u), seekdb starts failed!",
+      MPRINT("ERROR: current user(uid=%u) that starts observer is not the same with the original one(uid=%u), observer starts failed!",
               current_uid, dir_info.st_uid);
     }
   }
@@ -319,7 +296,7 @@ int inner_main(int argc, char *argv[])
   backtrace_symbolize_func = oceanbase::common::backtrace_symbolize;
 #endif
   if (0 != pthread_getname_np(pthread_self(), ob_get_tname(), OB_THREAD_NAME_BUF_LEN)) {
-    snprintf(ob_get_tname(), OB_THREAD_NAME_BUF_LEN, "seekdb");
+    snprintf(ob_get_tname(), OB_THREAD_NAME_BUF_LEN, "observer");
   }
   ObStackHeaderGuard stack_header_guard;
   int64_t memory_used = get_virtual_memory_used();
@@ -335,21 +312,8 @@ int inner_main(int argc, char *argv[])
   bzero(&oss, sizeof(oss));
   nss.ss_sp = ptr;
   nss.ss_size = SIG_STACK_SIZE;
-#ifdef __APPLE__
-  // On macOS, sigaltstack might fail or behave differently
-  // Just try to set it but don't abort if it fails
-  int sigaltstack_ret = sigaltstack(&nss, &oss);
-  if (0 == sigaltstack_ret) {
-    DEFER(sigaltstack(&oss, nullptr));
-  } else {
-    // sigaltstack failed, but continue anyway
-    free(ptr);
-    ptr = nullptr;
-  }
-#else
   abort_unless(0 == sigaltstack(&nss, &oss));
   DEFER(sigaltstack(&oss, nullptr));
-#endif
   ::oceanbase::common::g_redirect_handler = true;
 #endif
 
@@ -360,9 +324,9 @@ int inner_main(int argc, char *argv[])
 #endif
 
   ObCurTraceId::SeqGenerator::seq_generator_  = ObTimeUtility::current_time();
-  static const int  LOG_FILE_SIZE             = DEFAULT_LOG_FILE_SIZE_MB * 1024 * 1024;
-  const char *const LOG_FILE_NAME             = "log/seekdb.log";
-  const char *const PID_FILE_NAME             = "run/seekdb.pid";
+  static const int  LOG_FILE_SIZE             = 256 * 1024 * 1024;
+  const char *const LOG_FILE_NAME             = "log/observer.log";
+  const char *const PID_FILE_NAME             = "run/observer.pid";
   int               ret                       = OB_SUCCESS;
 
   // change signal mask first.
@@ -387,7 +351,7 @@ int inner_main(int argc, char *argv[])
   setlocale(LC_TIME, "en_US.UTF-8");
   setlocale(LC_NUMERIC, "en_US.UTF-8");
 
-  opts->log_level_ = DEFAULT_LOG_LEVEL;
+  opts->log_level_ = OB_LOG_LEVEL_WARN;
   if (FAILEDx(parse_args(argc, argv, *opts))) {
   }
 
@@ -408,7 +372,7 @@ int inner_main(int argc, char *argv[])
 
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(check_uid_before_start(CONF_DIR))) {
-    MPRINT("Fail check_uid_before_start, please use the initial user to start seekdb!");
+    MPRINT("Fail check_uid_before_start, please use the initial user to start observer!");
   } else if (OB_FAIL(FileDirectoryUtils::create_full_path(PID_DIR))) {
     MPRINT("create pid dir fail: ./run/");
   } else if (OB_FAIL(FileDirectoryUtils::create_full_path(LOG_DIR))) {
@@ -421,14 +385,14 @@ int inner_main(int argc, char *argv[])
   }
   if (OB_FAIL(ret)) {
   } else if (!opts->nodaemon_ && !opts->initialize_) {
-    MPRINT("The seekdb will be started as a daemon process. You can check the server status by client later.");
-    MPRINT("    Start seekdb with --nodaemon if you don't want to start as a daemon process.");
+    MPRINT("The observer will be started as a daemon process. You can check the server status by client later.");
+    MPRINT("    Start observer with --nodaemon if you don't want to start as a daemon process.");
     if (OB_FAIL(start_daemon(PID_FILE_NAME))) {
-      MPRINT("Start seekdb as a daemon failed. Did you started seekdb already?");
+      MPRINT("Start observer as a daemon failed. Did you started observer already?");
     }
   } else if (opts->nodaemon_) {
     if (OB_FAIL(start_daemon(PID_FILE_NAME, true/*skip_daemon*/))) {
-      MPRINT("Start seekdb failed. Did you started seekdb already?");
+      MPRINT("Start observer failed. Did you started observer already?");
     }
   }
 
@@ -481,35 +445,29 @@ int inner_main(int argc, char *argv[])
       // new worker with it.
       lib::Worker worker;
       lib::Worker::set_worker_to_thread_local(&worker);
-      // Initialize thread group manager before using TGMgr
-      // This ensures that all TGDefIDs (like ServerGTimer) have their create functions registered
-      // Explicitly call init_create_func() to register all TG creation functions including ServerGTimer
-      // before accessing TGMgr::instance(), which will create all thread groups in its constructor
-      lib::init_create_func();
-      lib::TGMgr::instance();
       ObServer &observer = ObServer::get_instance();
-      LOG_INFO("seekdb starts", "seekdb_version", PACKAGE_STRING);
+      LOG_INFO("observer starts", "observer_version", PACKAGE_STRING);
       // to speed up bootstrap phase, need set election INIT TS
-      // to count election keep silence time as soon as possible after seekdb process started
+      // to count election keep silence time as soon as possible after observer process started
       ATOMIC_STORE(&palf::election::INIT_TS, palf::election::get_monotonic_ts());
       if (OB_FAIL(observer.init(*opts, log_cfg))) {
-        LOG_ERROR("seekdb init fail", K(ret));
+        LOG_ERROR("observer init fail", K(ret));
       }
       OB_DELETE(ObServerOptions, mem_attr, opts);
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(observer.start(embed_mode))) {
-        LOG_ERROR("seekdb start fail", K(ret));
+        LOG_ERROR("observer start fail", K(ret));
       } else {
         safe_sd_notify(0, "READY=1\n"
                        "STATUS=seekdb is ready and running\n");
       }
       if (initialize) {
-        LOG_INFO("seekdb starts in initialize mode, exit now", K(initialize));
+        LOG_INFO("observer starts in initialize mode, exit now", K(initialize));
         _exit(OB_SUCC(ret) ? 0 : 1);
       }
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(observer.wait())) {
-        LOG_ERROR("seekdb wait fail", K(ret));
+        LOG_ERROR("observer wait fail", K(ret));
       }
 
       if (OB_FAIL(ret)) {
@@ -521,7 +479,7 @@ int inner_main(int argc, char *argv[])
     unlink(PID_FILE_NAME);
   }
 
-  LOG_INFO("seekdb exits", "seekdb_version", PACKAGE_STRING);
+  LOG_INFO("observer exits", "observer_version", PACKAGE_STRING);
   return ret;
 }
 

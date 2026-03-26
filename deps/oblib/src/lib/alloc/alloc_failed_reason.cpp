@@ -16,7 +16,10 @@
 
 #include "lib/alloc/alloc_failed_reason.h"
 #include <unistd.h>
-#include "lib/utility/ob_platform_utils.h"  // Platform compatibility layer
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#include <mach/mach.h>
+#endif
 #include "lib/allocator/ob_tc_malloc.h"
 #include "lib/allocator/ob_mod_define.h"
 #include "lib/alloc/memory_dump.h"
@@ -109,8 +112,27 @@ char *alloc_failed_msg()
   case PHYSICAL_MEMORY_EXHAUST: {
       int64_t process_hold = 0;
       int64_t virtual_memory_used = common::get_virtual_memory_used(&process_hold);
-      int64_t os_total = lib::ob_get_total_memory();
-      int64_t os_available = lib::ob_get_available_memory();
+      int64_t os_total = sysconf(_SC_PHYS_PAGES) * sysconf(_SC_PAGESIZE);
+      int64_t os_available = 0;
+#ifdef __linux__
+      os_available = sysconf(_SC_AVPHYS_PAGES) * sysconf(_SC_PAGESIZE);
+#elif defined(__APPLE__)
+      // macOS doesn't have _SC_AVPHYS_PAGES, use sysctl to get available memory
+      vm_size_t page_size;
+      vm_statistics64_data_t vm_stat;
+      mach_port_t mach_port = mach_host_self();
+      mach_msg_type_number_t count = sizeof(vm_stat) / sizeof(natural_t);
+      if (host_page_size(mach_port, &page_size) == KERN_SUCCESS &&
+          host_statistics64(mach_port, HOST_VM_INFO, (host_info64_t)&vm_stat, &count) == KERN_SUCCESS) {
+        os_available = (int64_t)vm_stat.free_count * page_size;
+      } else {
+        // Fallback: use a reasonable estimate
+        os_available = os_total / 2;
+      }
+#else
+      // Fallback for other platforms
+      os_available = os_total / 2;
+#endif
       snprintf(msg, len,
                "physical memory exhausted(os_total: %ld, os_available: %ld, virtual_memory_used: %ld, server_hold: %ld, errno: %d, alloc_size: %ld)",
                os_total,

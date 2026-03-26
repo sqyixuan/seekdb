@@ -452,7 +452,7 @@ public: // API
         pages_ += rhs.pages_;
         total_ += rhs.total_;
       }
-      rhs.reset();
+      rhs.free();
     }
     return *this;
   }

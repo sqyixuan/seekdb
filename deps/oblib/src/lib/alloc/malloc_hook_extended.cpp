@@ -20,7 +20,9 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef __linux__
 #include <gnu/libc-version.h>
+#endif
 
 #define LIKELY(x) __builtin_expect(!!(x),!!1)
 #define UNLIKELY(x) __builtin_expect(!!(x),!!0)
@@ -28,9 +30,15 @@
 #define MALLOC_EXPORT __attribute__((visibility("default")))
 #define MALLOC_ALLOC_SIZE(s) __attribute__((alloc_size(s)))
 #define MALLOC_ALLOC_SIZE2(s1, s2) __attribute__((alloc_size(s1, s2)))
+#ifdef __APPLE__
+// macOS system headers don't have nothrow attribute, remove it
+#define MALLOC_NOTHROW
+#define LIBC_ALIAS(fn)	__attribute__((weak))
+#else
 #define MALLOC_NOTHROW __attribute__((nothrow))
-#define powerof2(x) ((((x) - 1) & (x)) == 0)
 #define LIBC_ALIAS(fn)	__attribute__((alias (#fn), used))
+#endif
+#define powerof2(x) ((((x) - 1) & (x)) == 0)
 
 typedef void* (*MemsetPtr)(void*, int, size_t);
 extern MemsetPtr memset_ptr;
@@ -45,10 +53,16 @@ void get_glibc_version(int &major, int &minor)
 {
   major = 0;
   minor = 0;
+#ifdef __linux__
   const char *glibc_version = gnu_get_libc_version();
   if (NULL != glibc_version) {
     sscanf(glibc_version, "%d.%d", &major, &minor);
   }
+#elif defined(__APPLE__)
+  // macOS doesn't use glibc, return 0 for both major and minor
+  (void)major;
+  (void)minor;
+#endif
 }
 
 bool glibc_prereq(int major, int minor)
@@ -168,12 +182,22 @@ pvalloc(size_t size)
   return memalign(pagesize, rounded_bytes);
 }
 
+#ifdef __APPLE__
+// macOS doesn't support alias attribute, use weak symbols with wrapper functions
+__attribute__((weak)) void *__libc_calloc(size_t n, size_t size) { return calloc(n, size); }
+__attribute__((weak)) void __libc_free_sized(void* ptr, size_t size) { free_sized(ptr, size); }
+__attribute__((weak)) void __libc_free_aligned_sized(void* ptr, size_t alignment, size_t size) { free_aligned_sized(ptr, alignment, size); }
+__attribute__((weak)) void *__libc_valloc(size_t size) { return valloc(size); }
+__attribute__((weak)) void *__libc_pvalloc(size_t size) { return pvalloc(size); }
+__attribute__((weak)) int __posix_memalign(void** r, size_t a, size_t s) { return posix_memalign(r, a, s); }
+#else
 void *__libc_calloc(size_t n, size_t size) LIBC_ALIAS(calloc);
 void __libc_free_sized(void* ptr, size_t size) LIBC_ALIAS(free_sized);
 void __libc_free_aligned_sized(void* ptr, size_t alignment, size_t size) LIBC_ALIAS(free_aligned_sized);
 void *__libc_valloc(size_t size) LIBC_ALIAS(valloc);
 void *__libc_pvalloc(size_t size) LIBC_ALIAS(pvalloc);
 int __posix_memalign(void** r, size_t a, size_t s) LIBC_ALIAS(posix_memalign);
+#endif
 
 } // extern "C" end
 

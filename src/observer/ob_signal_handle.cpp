@@ -20,23 +20,19 @@
 #include <signal.h>
 #include <errno.h>
 #include <unistd.h>
-#include <pthread.h>
-
-// macOS doesn't have sigtimedwait. Use simple sigwait since thread wakeup
-// is handled by pthread_kill(SIGUSR1) in the destructor.
-// The timeout is not implemented - relies on external wakeup signal.
+// macOS doesn't have sigtimedwait, provide a stub implementation
+// This implementation uses sigwait which blocks until a signal arrives
+// Note: The timeout is not precisely implemented, but the outer loop will check has_set_stop()
 static int sigtimedwait(const sigset_t *set, siginfo_t *info, const struct timespec *timeout) {
-  (void)info;
-  (void)timeout; // Timeout not implemented; wakeup via pthread_kill(SIGUSR1)
-
+  (void)info; // macOS sigwait doesn't provide siginfo_t
+  (void)timeout; // Timeout is handled by outer loop checking has_set_stop()
   int signum = 0;
-  int result = sigwait(const_cast<sigset_t*>(set), &signum);
-
-  if (result != 0) {
-    errno = result;
+  if (sigwait(const_cast<sigset_t*>(set), &signum) == 0) {
+    return signum;
+  } else {
+    // On error, return -1 (timeout or error)
     return -1;
   }
-  return signum;
 }
 #endif
 
@@ -59,8 +55,7 @@ namespace observer
 
 void ObSignalHandle::run1()
 {
-  // Save thread id for macOS wakeup in destructor
-  thread_id_ = pthread_self();
+
 
   int ret = OB_SUCCESS;
   lib::set_thread_name("SignalHandle");

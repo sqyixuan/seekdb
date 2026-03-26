@@ -619,7 +619,7 @@ int ObDropVecIndexTask::drop_aux_index_table(const share::ObDDLTaskStatus &new_s
     LOG_WARN("fail to create drop index task", K(ret), K(vec_index_snapshot_data_));
   } else if (0 == hybrid_embedded_vec_.task_id_ && hybrid_embedded_vec_.is_valid()
       && OB_FAIL(create_drop_index_task(schema_guard, hybrid_embedded_vec_.table_id_, hybrid_embedded_vec_.index_name_, hybrid_embedded_vec_.task_id_))) {
-    LOG_WARN("fail to create drop index task", K(ret), K(hybrid_embedded_vec_));
+    LOG_WARN("fail to create drop index task", K(ret), K(hybrid_embedded_vec_)); 
   } else if (OB_FAIL(update_task_message())) {
     LOG_WARN("fail to update domain_index_, vec_index_id_, vec_index_snapshot_data_, hybrid_embedded_vec_ to __all_ddl_task_status", K(ret));
   } else if (OB_FAIL(wait_none_share_index_child_task_finish(has_finished))) {
@@ -825,7 +825,6 @@ int ObDropVecIndexTask::create_drop_index_task(
     arg.ddl_stmt_str_        = drop_index_sql.string();
     arg.is_add_to_scheduler_ = true;
     arg.task_id_             = task_id_;
-    arg.is_hidden_           = drop_index_arg_.is_hidden_;
     if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(
             index_schema->get_all_part_num() + data_table_schema->get_all_part_num(), ddl_rpc_timeout_us))) {
       LOG_WARN("fail to get ddl rpc timeout", K(ret));
