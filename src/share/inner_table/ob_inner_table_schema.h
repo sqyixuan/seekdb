@@ -1483,6 +1483,10 @@ public:
   static int dba_ob_ai_model_endpoints_schema(share::schema::ObTableSchema &table_schema);
   static int cdb_ob_ai_models_schema(share::schema::ObTableSchema &table_schema);
   static int cdb_ob_ai_model_endpoints_schema(share::schema::ObTableSchema &table_schema);
+  static int gv_ob_hnsw_index_info_schema(share::schema::ObTableSchema &table_schema);
+  static int v_ob_hnsw_index_info_schema(share::schema::ObTableSchema &table_schema);
+  static int gv_ob_ivf_index_info_schema(share::schema::ObTableSchema &table_schema);
+  static int v_ob_ivf_index_info_schema(share::schema::ObTableSchema &table_schema);
   static int all_table_aux_lob_meta_schema(share::schema::ObTableSchema &table_schema);
   static int all_column_aux_lob_meta_schema(share::schema::ObTableSchema &table_schema);
   static int all_ddl_operation_aux_lob_meta_schema(share::schema::ObTableSchema &table_schema);
@@ -3503,6 +3507,10 @@ const schema_create_func sys_view_schema_creators [] = {
   ObInnerTableSchema::dba_ob_ai_model_endpoints_schema,
   ObInnerTableSchema::cdb_ob_ai_models_schema,
   ObInnerTableSchema::cdb_ob_ai_model_endpoints_schema,
+  ObInnerTableSchema::gv_ob_hnsw_index_info_schema,
+  ObInnerTableSchema::v_ob_hnsw_index_info_schema,
+  ObInnerTableSchema::gv_ob_ivf_index_info_schema,
+  ObInnerTableSchema::v_ob_ivf_index_info_schema,
   NULL,};
 
 const schema_create_func core_index_table_schema_creators [] = {
@@ -4542,6 +4550,10 @@ const uint64_t tenant_space_tables [] = {
   OB_V_OB_VECTOR_MEMORY_TID,
   OB_DBA_OB_AI_MODELS_TID,
   OB_DBA_OB_AI_MODEL_ENDPOINTS_TID,
+  OB_GV_OB_HNSW_INDEX_INFO_TID,
+  OB_V_OB_HNSW_INDEX_INFO_TID,
+  OB_GV_OB_IVF_INDEX_INFO_TID,
+  OB_V_OB_IVF_INDEX_INFO_TID,
   OB_ALL_TABLE_IDX_DATA_TABLE_ID_TID,
   OB_ALL_TABLE_IDX_DB_TB_NAME_TID,
   OB_ALL_TABLE_IDX_TB_NAME_TID,
@@ -6107,6 +6119,10 @@ const char* const tenant_space_table_names [] = {
   OB_V_OB_VECTOR_MEMORY_TNAME,
   OB_DBA_OB_AI_MODELS_TNAME,
   OB_DBA_OB_AI_MODEL_ENDPOINTS_TNAME,
+  OB_GV_OB_HNSW_INDEX_INFO_TNAME,
+  OB_V_OB_HNSW_INDEX_INFO_TNAME,
+  OB_GV_OB_IVF_INDEX_INFO_TNAME,
+  OB_V_OB_IVF_INDEX_INFO_TNAME,
   OB_ALL_TABLE_IDX_DATA_TABLE_ID_TNAME,
   OB_ALL_TABLE_IDX_DB_TB_NAME_TNAME,
   OB_ALL_TABLE_IDX_TB_NAME_TNAME,
@@ -9410,10 +9426,10 @@ static inline int get_sys_table_lob_aux_schema(const uint64_t tid,
 const int64_t OB_CORE_TABLE_COUNT = 4;
 const int64_t OB_SYS_TABLE_COUNT = 288;
 const int64_t OB_VIRTUAL_TABLE_COUNT = 468;
-const int64_t OB_SYS_VIEW_COUNT = 544;
-const int64_t OB_SYS_TENANT_TABLE_COUNT = 1305;
+const int64_t OB_SYS_VIEW_COUNT = 548;
+const int64_t OB_SYS_TENANT_TABLE_COUNT = 1309;
 const int64_t OB_CORE_SCHEMA_VERSION = 1;
-const int64_t OB_BOOTSTRAP_SCHEMA_VERSION = 1308;
+const int64_t OB_BOOTSTRAP_SCHEMA_VERSION = 1312;
 
 } // end namespace share
 } // end namespace oceanbase

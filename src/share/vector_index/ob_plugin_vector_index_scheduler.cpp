@@ -165,7 +165,7 @@ void ObPluginVectorIndexLoadScheduler::clean_deprecated_adapters()
             } else {
               ret = OB_SUCCESS; // not found, moved from this ls
               if (OB_FAIL(delete_tablet_id_array.push_back(tablet_id))) {
-                LOG_WARN("push back table id failed",
+                LOG_WARN("push back table id failed", 
                   K(delete_tablet_id_array.count()), K(adapter->get_inc_tablet_id()), KR(ret));
               }
             }
@@ -184,28 +184,28 @@ void ObPluginVectorIndexLoadScheduler::clean_deprecated_adapters()
                 adapter->inc_idle();
                 if (adapter->is_deprecated()) {
                   if (OB_FAIL(delete_tablet_id_array.push_back(tablet_id))) {
-                    LOG_WARN("push back table id failed",
+                    LOG_WARN("push back table id failed", 
                       K(delete_tablet_id_array.count()), K(adapter->get_inc_tablet_id()), KR(ret));
                   }
                 }
               }
             } else {
               LOG_WARN("fail to check exist refactored", K(ret));
-            }
+            }  
           } else {
             // tablet exist, but it may in recyclebin, cannot check schema if it is partial adapter from dml
             // add count here if more then 3 loops not merged, remove them.
             adapter->inc_idle();
             if (adapter->is_deprecated()) {
               if (OB_FAIL(delete_tablet_id_array.push_back(tablet_id))) {
-                LOG_WARN("push back table id failed",
+                LOG_WARN("push back table id failed", 
                   K(delete_tablet_id_array.count()), K(adapter->get_inc_tablet_id()), KR(ret));
               }
             }
           }
         }
       }
-    }
+    } 
 
     if (delete_tablet_id_array.count() > 0) {
       LOG_INFO("try erase partial vector index adapter", 
@@ -327,7 +327,7 @@ int ObPluginVectorIndexLoadScheduler::acquire_adapter_in_maintenance(
   } else {
     ObTabletHandle tablet_handle;
     ObVectorIndexSharedTableInfo info;
-
+    
     for (int64_t i = 0; OB_SUCC(ret) && i < tablet_ids.count(); i++) {
       if (OB_FAIL(ls_->get_tablet_svr()->get_tablet(tablet_ids.at(i), tablet_handle))) {
         if (OB_TABLET_NOT_EXIST != ret) {
@@ -366,7 +366,7 @@ int ObPluginVectorIndexLoadScheduler::acquire_adapter_in_maintenance(
         } else {
           adapter_guard.get_adatper()->reset_idle();
         }
-
+        
         if (OB_SUCC(ret)) {
           if (OB_FAIL(shared_table_info_map.get_refactored(data_tablet_id, info))) {
             if (OB_HASH_NOT_EXIST != ret) {
@@ -384,7 +384,7 @@ int ObPluginVectorIndexLoadScheduler::acquire_adapter_in_maintenance(
             if (OB_FAIL(shared_table_info_map.set_refactored(data_tablet_id, info, overwrite))) {
               LOG_WARN("fail to set shared table info", K(ret), K(data_tablet_id));
             }
-          }
+          } 
         }
       }
     }
@@ -581,7 +581,7 @@ int ObPluginVectorIndexLoadScheduler::check_and_load_task_executors(bool &has_iv
   int ret = OB_SUCCESS;
   uint64_t task_trace_base_num = 0;
   bool schema_changed = false;
-
+  
   if (OB_FAIL(async_task_exec_.check_and_set_thread_pool())) {
     LOG_WARN("fail to check and open thread pool", K(ret));
   } else if (OB_FAIL(async_task_exec_.clear_old_task_ctx_if_need())) {
@@ -1698,18 +1698,13 @@ int ObVectorIndexTask::process_one()
   
   if (OB_SUCC(ret)) {
     task_ctx_->err_code_ = OB_SUCCESS;
-    new_adpt_guard.get_adatper()->sync_finish();
-    new_adpt_guard.get_adatper()->reset_sync_idle_count();
+    new_adpt_guard.get_adatper()->sync_succ();
   } else {
     task_ctx_->err_code_ = ret;
     if (OB_NOT_NULL(new_adpt_guard.get_adatper())) {
-      new_adpt_guard.get_adatper()->sync_finish();
-      new_adpt_guard.get_adatper()->sync_fail();
-      new_adpt_guard.get_adatper()->reset_sync_idle_count();
+      new_adpt_guard.get_adatper()->sync_fail(ret);
     } else if (OB_NOT_NULL(adpt_guard.get_adatper())) {
-      adpt_guard.get_adatper()->sync_finish();
-      adpt_guard.get_adatper()->sync_fail();
-      adpt_guard.get_adatper()->reset_sync_idle_count();
+      adpt_guard.get_adatper()->sync_fail(ret);
     }
   }
 

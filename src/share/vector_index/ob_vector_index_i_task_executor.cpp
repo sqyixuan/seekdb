@@ -108,12 +108,12 @@ int ObVecITaskExecutor::load_task_from_inner_table()
     field2.field_name_ = "status";
     field2.data_.uint_ = ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_PREPARE;
     ObVecIndexAsyncTaskOption &task_opt = index_ls_mgr->get_async_task_opt();
-
+    
     if (OB_FAIL(filters.push_back(field1))) {
       LOG_WARN("fail to push back field", K(ret));
     } else if (OB_FAIL(filters.push_back(field2))) {
       LOG_WARN("fail to push back field", K(ret));
-    } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::resume_task_from_inner_table(tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME,
+    } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::resume_task_from_inner_table(tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME, 
         false, filters, ls_, *sql_proxy, task_opt))) {
       LOG_WARN("fail to load task from inner table", K(ret));
     }
@@ -239,7 +239,8 @@ int ObVecITaskExecutor::update_status_and_ret_code(ObVecIndexAsyncTaskCtx *task_
       if (OB_FAIL(trans.start(GCTX.sql_proxy_, tenant_id_))) {
         LOG_WARN("fail start transaction", K(ret), K(tenant_id_));
       } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::update_vec_task(
-          tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME, trans, key, update_fields))) {
+          tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME, trans, key,
+          update_fields, task_ctx->task_status_.progress_info_))) {
         LOG_WARN("fail to update task status", K(ret));
       } else {
         LOG_DEBUG("success to update_status_and_ret_code", KPC(task_ctx));

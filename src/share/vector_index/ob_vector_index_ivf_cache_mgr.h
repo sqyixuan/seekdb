@@ -127,8 +127,8 @@ public:
   virtual void reuse();
   ObIAllocator &get_self_allocator() { return self_allocator_; }
 
-  int64_t get_actual_memory_used() { return sub_mem_ctx_->used(); }
-  int64_t get_memory_hold() { return sub_mem_ctx_ == nullptr ? 0 : sub_mem_ctx_->hold(); }
+  uint64_t get_actual_memory_used() { return sub_mem_ctx_ == nullptr ? 0 : sub_mem_ctx_->used(); }
+  uint64_t get_memory_hold() { return sub_mem_ctx_ == nullptr ? 0 : sub_mem_ctx_->hold(); }
   virtual int64_t get_expect_memory_used(const IvfCacheKey &key, const ObVectorIndexParam &param) = 0;
   RWLock &get_lock() { return rwlock_; }
   OB_INLINE bool is_writing() { return ATOMIC_LOAD(&status_) == IvfCacheStatus::IVF_CACHE_WRITING; }
@@ -168,7 +168,7 @@ class ObIvfCentCache : public ObIvfICache
 public:
   friend class ObIvfCacheMgr;
   explicit ObIvfCentCache(ObIAllocator &allocator, int64_t tenant_id)
-      : ObIvfICache(allocator, tenant_id), centroids_(nullptr), cent_vec_dim_(0), nlist_(0), capacity_(0), count_(0)
+      : ObIvfICache(allocator, tenant_id), centroids_(nullptr), center_prefix_(0), cent_vec_dim_(0), nlist_(0), capacity_(0), count_(0)
   {}
   virtual ~ObIvfCentCache();
   // NOTE(liyao): attention! read_centroid and write_centroid are not thread-safe
@@ -189,7 +189,11 @@ public:
   int write_centroid_with_real_idx(const int64_t real_idx, const float *centroid,
                                    const int64_t length);
 
-  TO_STRING_KV(K(centroids_), K(cent_vec_dim_), K(capacity_), K(nlist_));
+  OB_INLINE void set_center_prefix(uint64_t center_prefix) { center_prefix_ = center_prefix; }
+  OB_INLINE uint64_t get_center_prefix() const { return center_prefix_; }
+  OB_INLINE ObCenterId get_center_id(int64_t center_idx) const { return ObCenterId(center_prefix_, center_idx); }
+
+  TO_STRING_KV(K(centroids_), K(cent_vec_dim_), K(capacity_), K(nlist_), K(center_prefix_));
 
 protected:
   int inner_read_centroid(int64_t centroid_idx, float *&centroid_vec, bool deep_copy = false,
@@ -199,6 +203,7 @@ protected:
   // NOTE(liyao): to avoid ObIArray using sizeof(float*) * capacity_ extra memory,
   //              we use float* to save centroids_
   float *centroids_;
+  uint64_t center_prefix_; // prefix of center_id, now, it is tablet_id
   int cent_vec_dim_; // dim for flat, dim/m for pq
   int nlist_; // 0 for flat
   int32_t capacity_;
@@ -232,8 +237,8 @@ public:
   bool dec_ref_and_check_release();
   // only used to alloc/free ObIvfCacheMgr self
   ObIAllocator &get_self_allocator() { return self_allocator_; }
-  int64_t get_actual_memory_used();
-  int64_t get_memory_hold();
+  uint64_t get_actual_memory_used();
+  uint64_t get_memory_hold();
   template<typename CacheType>
   int get_or_create_cache_node(const IvfCacheKey &key, CacheType *&cache);
 

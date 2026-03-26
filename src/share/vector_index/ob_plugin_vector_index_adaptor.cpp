@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_plugin_vector_index_adaptor.h"
@@ -45,7 +46,8 @@ ObVectorIndexInfo::ObVectorIndexInfo()
     snapshot_index_tablet_id_(common::ObTabletID::INVALID_TABLET_ID),
     data_tablet_id_(common::ObTabletID::INVALID_TABLET_ID),
     statistics_(),
-    sync_info_()
+    sync_info_(),
+    index_type_(ObVectorIndexAlgorithmType::VIAT_MAX)
 {
   MEMSET(statistics_, '\0', sizeof(statistics_));
   MEMSET(sync_info_, '\0', sizeof(sync_info_));
@@ -68,6 +70,7 @@ void ObVectorIndexInfo::reset()
   data_tablet_id_ = common::ObTabletID::INVALID_TABLET_ID;
   MEMSET(statistics_, '\0', sizeof(statistics_));
   MEMSET(sync_info_, '\0', sizeof(sync_info_));
+  index_type_ = ObVectorIndexAlgorithmType::VIAT_MAX;
 }
 
 OB_DEF_SERIALIZE_SIZE(ObVectorIndexParam)
@@ -686,81 +689,86 @@ int ObPluginVectorIndexAdaptor::fill_vector_index_info(ObVectorIndexInfo &info)
   info.embedded_tablet_id_ = embedded_tablet_id_.id();
   ObVectorIndexParam *param;
   int64_t pos = 0;
+  ObCStringHelper helper;
 
-  if (OB_FAIL(databuff_printf(info.statistics_,
-                 sizeof(info.statistics_), pos,
-                 "is_complete=%d;", is_complete()))) {
-    LOG_WARN("failed to fill statistics", K(ret), K(this));
-  } else if (type_ == VIAT_MAX) {
-    // partial adapter without index configuration
-  } else if (OB_FAIL(get_hnsw_param(param))) {
-    LOG_WARN("get hnsw param failed.", K(ret));
-  } else if (OB_FAIL(databuff_printf(info.statistics_,
-                 sizeof(info.statistics_), pos,
-                 "param=%s;", to_cstring(*param)))) {
-    LOG_WARN("failed to fill statistics", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.statistics_,
-                      sizeof(info.statistics_), pos,
-                      "snap_index_type=%d;", int(get_snap_index_type())))) {
-    LOG_WARN("failed to fill snap index type", K(ret), K(this));
+  #define STAT_PRINT(...) \
+    if (OB_SUCC(ret)) { \
+      if (OB_FAIL(databuff_printf(info.statistics_, sizeof(info.statistics_), pos, __VA_ARGS__))) { \
+        LOG_WARN("failed to fill statistics", K(ret)); \
+      } \
+    }
+
+  STAT_PRINT("{");
+  STAT_PRINT("\"is_complete\":%d", is_complete());
+  STAT_PRINT(",\"incr_mem_used\":%ld", get_incr_vsag_mem_used());
+  STAT_PRINT(",\"incr_mem_hold\":%ld", get_incr_vsag_mem_hold());
+  STAT_PRINT(",\"snap_mem_used\":%ld", get_snap_vsag_mem_used());
+  STAT_PRINT(",\"snap_mem_hold\":%ld", get_snap_vsag_mem_hold());
+
+  if (type_ != VIAT_MAX && OB_SUCC(ret)) {
+    if (OB_FAIL(get_hnsw_param(param))) {
+      LOG_WARN("get hnsw param failed.", K(ret));
+    } else {
+      info.index_type_ = param->type_;
+      STAT_PRINT(",\"param\":\"");
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(param->print_to_string(info.statistics_, sizeof(info.statistics_), pos))) {
+          LOG_WARN("failed to print param", K(ret));
+        }
+      }
+      STAT_PRINT("\"");
+    }
   }
-  if (FAILEDx(databuff_printf(info.statistics_,
-                 sizeof(info.statistics_), pos,
-                 "ref_cnt=%ld;",  ATOMIC_LOAD(&ref_cnt_) - 1))) { // delete the virtual table ref
-    LOG_WARN("failed to fill statistics", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.statistics_,
-             sizeof(info.statistics_), pos, "idle_cnt=%ld;", idle_cnt_))) {
-    LOG_WARN("failed to fill statistics", K(ret), K(this));
-  } else if (!index_identity_.empty() && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "index=%s;", to_cstring(index_identity_)))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));
-  } else if (nullptr != incr_data_ && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "incr_data.scn=%lu;", incr_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
-  } else if (nullptr != vbitmap_data_ && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "vbitmap_data.scn=%lu;", vbitmap_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
-  } else if (nullptr != snap_data_ && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "snap_data.scn=%lu;", snap_data_->scn_.get_val_for_inner_table_field()))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));          
-  } else if (nullptr != all_vsag_use_mem_ && OB_FAIL(databuff_printf(
-             info.statistics_, sizeof(info.statistics_), pos,
-             "all_index_mem_used=%lu;", ATOMIC_LOAD(all_vsag_use_mem_)))) {
-    LOG_WARN("failed to fill statistic", K(ret), K(this));      
-  } else {
+  STAT_PRINT(",\"snap_index_type\":%d", int(get_snap_index_type()));
+  STAT_PRINT(",\"ref_cnt\":%ld", ATOMIC_LOAD(&ref_cnt_) - 1);
+  STAT_PRINT(",\"idle_cnt\":%ld", idle_cnt_);
+
+  if (!index_identity_.empty()) {
+    STAT_PRINT(",\"index\":\"%s\"", helper.convert(index_identity_));
+  }
+  if (nullptr != incr_data_) {
+    STAT_PRINT(",\"incr_data_scn\":%lu", incr_data_->scn_.get_val_for_inner_table_field());
+  }
+  if (nullptr != vbitmap_data_) {
+    STAT_PRINT(",\"vbitmap_data_scn\":%lu", vbitmap_data_->scn_.get_val_for_inner_table_field());
+  }
+  if (nullptr != snap_data_) {
+    STAT_PRINT(",\"snap_data_scn\":%lu", snap_data_->scn_.get_val_for_inner_table_field());
+  }
+  if (nullptr != all_vsag_use_mem_) {
+    STAT_PRINT(",\"all_index_mem_used\":%lu", ATOMIC_LOAD(all_vsag_use_mem_));
+  }
+  if (OB_SUCC(ret)) {
     ObRbMemMgr *mem_mgr = nullptr;
     uint64_t tenant_id = MTL_ID();
     if (OB_ISNULL(mem_mgr = MTL(ObRbMemMgr *))) {
-      int ret = OB_ERR_UNEXPECTED;
+      ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("mem_mgr is null", K(tenant_id));
-    } else if (OB_FAIL(databuff_printf(
-               info.statistics_, sizeof(info.statistics_), pos,
-               "all_index_bitmap_used=%lu;", mem_mgr->get_vec_idx_used()))) {
-      LOG_WARN("failed to fill statistic", K(ret), K(this));      
+    } else {
+      STAT_PRINT(",\"all_index_bitmap_used\":%lu", mem_mgr->get_vec_idx_used());
     }
-  } 
-  pos = 0;
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
-             "incr_cnt=%lu;", follower_sync_statistics_.incr_count_))) {
-    LOG_WARN("failed to fill sync_info", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
-             "vbitmap_cnt=%lu;", follower_sync_statistics_.vbitmap_count_))) {
-    LOG_WARN("failed to fill sync_info", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
-             "snap_cnt=%lu;", follower_sync_statistics_.snap_count_))) {
-    LOG_WARN("failed to fill sync_info", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
-             "sync_total_cnt=%lu;", follower_sync_statistics_.sync_count_))) {
-    LOG_WARN("failed to fill sync_info", K(ret), K(this));
-  } else if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos,
-             "sync_fail_cnt=%lu;", follower_sync_statistics_.sync_fail_))) {
-    LOG_WARN("failed to fill sync_info", K(ret), K(this));
   }
+  STAT_PRINT("}");
+  #undef STAT_PRINT
+
+  #define SYNC_INFO_PRINT(...) \
+  if (OB_SUCC(ret)) { \
+    if (OB_FAIL(databuff_printf(info.sync_info_, sizeof(info.sync_info_), pos, __VA_ARGS__))) { \
+      LOG_WARN("failed to fill sync_info", K(ret)); \
+    } \
+  }
+  pos = 0;
+  SYNC_INFO_PRINT("{\"incr_cnt\":%lu", follower_sync_statistics_.incr_count_);
+  SYNC_INFO_PRINT(",\"vbitmap_cnt\":%lu", follower_sync_statistics_.vbitmap_count_);
+  SYNC_INFO_PRINT(",\"snap_cnt\":%lu", follower_sync_statistics_.snap_count_);
+  SYNC_INFO_PRINT(",\"sync_total_cnt\":%lu", follower_sync_statistics_.sync_count_);
+  SYNC_INFO_PRINT(",\"sync_fail_cnt\":%lu", follower_sync_statistics_.sync_fail_);
+  SYNC_INFO_PRINT(",\"last_succ_time\":%ld", follower_sync_statistics_.last_succ_time_);
+  SYNC_INFO_PRINT(",\"last_fail_time\":%ld", follower_sync_statistics_.last_fail_time_);
+  SYNC_INFO_PRINT(",\"last_fail_code\":%d", follower_sync_statistics_.last_fail_code_);
+  SYNC_INFO_PRINT("}");
+
+  #undef SYNC_INFO_PRINT
   return ret;
 }
 
@@ -780,13 +788,13 @@ int ObPluginVectorIndexAdaptor::init_mem_data(ObVectorIndexRecordType type, ObVe
       } else if (param->type_ == VIAT_IPIVF) {
         lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
         lib::ObLightBacktraceGuard light_backtrace_guard(false);
-        if (OB_FAIL(obvectorutil::create_index(incr_data_->index_,
-                                                      param->type_,
-                                                      DATATYPE_SPARSE,
-                                                      VEC_INDEX_ALGTH[param->dist_algorithm_],
-                                                      param->refine_,
-                                                      param->ob_sparse_drop_ratio_build_,
-                                                      param->window_size_,
+        if (OB_FAIL(obvectorutil::create_index(incr_data_->index_, 
+                                                      param->type_, 
+                                                      DATATYPE_SPARSE, 
+                                                      VEC_INDEX_ALGTH[param->dist_algorithm_], 
+                                                      param->refine_, 
+                                                      param->ob_sparse_drop_ratio_build_, 
+                                                      param->window_size_, 
                                                       incr_data_->mem_ctx_,
                                                       param->extra_info_actual_size_))) {
           LOG_WARN("failed to create vsag index.", K(ret), KPC(param));
@@ -938,7 +946,7 @@ int ObPluginVectorIndexAdaptor::init_snap_data_without_lock(ObVectorIndexAlgorit
       int64_t build_metric = param->type_ == VIAT_HNSW_SQ ? ObVectorIndexUtil::get_hnswsq_type_metric(param->m_) : param->m_;
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
       lib::ObLightBacktraceGuard light_backtrace_guard(false);
-
+      
       if (is_sparse_vector_index_type()) {
         const char* DATATYPE_SPARSE = "sparse";
         if (OB_FAIL(obvectorutil::create_index(snap_data_->index_,
@@ -1179,7 +1187,7 @@ int ObPluginVectorIndexAdaptor::handle_insert_incr_table_rows(blocksstable::ObDa
     if (OB_ISNULL(del_vids = static_cast<uint64_t *>(tmp_allocator.alloc(sizeof(uint64_t) * row_count)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to alloc del vids.", K(ret));
-    }
+    } 
     for (int i = 0; OB_SUCC(ret) && i < row_count; i++) {
       ObDatum &vid_datum = rows[i].storage_datums_[vid_idx];
       ObDatum &op_datum = rows[i].storage_datums_[type_idx];
@@ -1188,7 +1196,7 @@ int ObPluginVectorIndexAdaptor::handle_insert_incr_table_rows(blocksstable::ObDa
       if (op_str.ptr()[0] == sql::ObVecIndexDMLIterator::VEC_DELTA_DELETE[0]) {
         // D type, only record vid
         del_vids[del_vid_count++] = vid;
-      }
+      } 
     }
     if (OB_SUCC(ret)) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPH"));
@@ -1198,7 +1206,7 @@ int ObPluginVectorIndexAdaptor::handle_insert_incr_table_rows(blocksstable::ObDa
       }
     }
   }
-
+  
   return ret;
 }
 
@@ -1281,7 +1289,7 @@ int ObPluginVectorIndexAdaptor::handle_insert_embedded_table_rows(blocksstable::
             }
           }
         }
-        if (OB_SUCC(ret)) {
+        if (OB_SUCC(ret)) { 
           for (int j = 0; j < dim; j++) {
             vectors[incr_vid_count * dim + j] = vector[j];
           }
@@ -1300,17 +1308,17 @@ int ObPluginVectorIndexAdaptor::handle_insert_embedded_table_rows(blocksstable::
     if (OB_SUCC(ret) && incr_vid_count > 0) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
       TCWLockGuard lock_guard(incr_data_->mem_data_rwlock_);
-      if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
-                                              vectors,
-                                              incr_vids,
-                                              dim,
+      if (OB_FAIL(obvectorutil::add_index(incr_data_->index_, 
+                                              vectors, 
+                                              incr_vids,  
+                                              dim, 
                                               extra_info_buf_ptr,
                                               incr_vid_count))) {
         LOG_WARN("failed to add index.", K(ret), K(dim), K(row_count));
       } else {
         incr_data_->set_vid_bound(vid_bound);
       }
-    }
+    } 
     if (OB_SUCC(ret)) {
       lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIBitmapADPH"));
       TCWLockGuard lock_guard(incr_data_->bitmap_rwlock_);
@@ -1582,12 +1590,12 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
       lib::ObLightBacktraceGuard light_backtrace_guard(false);
       TCWLockGuard lock_guard(incr_data_->mem_data_rwlock_);
       if (is_sparse_vector_index_type()) {
-        if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
-                                              lens,
+        if (OB_FAIL(obvectorutil::add_index(incr_data_->index_, 
+                                              lens, 
                                               dims,
                                               vals,
-                                              incr_vids,
-                                              incr_vid_count,
+                                              incr_vids, 
+                                              incr_vid_count, 
                                               extra_info_buf_ptr
                                               ))) {
           LOG_WARN("failed to add sparse index.", K(ret), K(dim), K(row_count));
@@ -1595,7 +1603,7 @@ int ObPluginVectorIndexAdaptor::insert_rows(blocksstable::ObDatumRow *rows,
           incr_data_->set_vid_bound(vid_bound);
         }
       } else {
-        if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
+        if (OB_FAIL(obvectorutil::add_index(incr_data_->index_, 
                                               vectors, 
                                               incr_vids,  
                                               dim, 
@@ -2274,10 +2282,10 @@ int ObPluginVectorIndexAdaptor::write_into_delta_mem(ObVectorQueryAdaptorResultC
       lib::ObLightBacktraceGuard light_backtrace_guard(false);
       if (OB_SUCC(ret)) {
         if (!is_sparse_vector_index_type()) {
-          if (OB_FAIL(obvectorutil::add_index(incr_data_->index_,
-                                             vectors,
-                                             reinterpret_cast<int64_t *>(vids),
-                                             ctx->get_dim(),
+          if (OB_FAIL(obvectorutil::add_index(incr_data_->index_, 
+                                             vectors, 
+                                             reinterpret_cast<int64_t *>(vids), 
+                                             ctx->get_dim(), 
                                              extra_info_buf,
                                              count))) {
             LOG_WARN("failed to add index.", K(ret), K(ctx->get_dim()), K(count));
@@ -2362,7 +2370,7 @@ int ObPluginVectorIndexAdaptor::complete_delta_buffer_table_data(ObVectorQueryAd
           }
         }
         vid_bound.set_vid(vid);
-
+        
         if (!is_sparse_vector_index_type()) {
           if (OB_ISNULL(vector = reinterpret_cast<float *>(ctx->vec_data_.vectors_[i].get_string().ptr()))) {
             ret = OB_ERR_UNEXPECTED;
@@ -2375,7 +2383,7 @@ int ObPluginVectorIndexAdaptor::complete_delta_buffer_table_data(ObVectorQueryAd
         } else {
           sparse_total_length += ctx->vec_data_.vectors_[i].get_string().length();
         }
-
+        
         if (OB_SUCC(ret)) {
           count++;
         }
@@ -2434,7 +2442,7 @@ int ObPluginVectorIndexAdaptor::complete_delta_buffer_table_data(ObVectorQueryAd
         }
       }
     }
-
+    
     if (OB_SUCC(ret)) {
       ctx->batch_allocator_.reuse();
       ctx->do_next_batch();
@@ -2870,7 +2878,7 @@ int ObPluginVectorIndexAdaptor::renew_single_snap_index()
         LOG_WARN("fail to set snapshot key prefix", K(ret));
       }
     }
-  // snap_data_->index_ is null for empty table
+  // snap_data_->index_ is null for empty table 
   } else if (OB_NOT_NULL(snap_data_->index_) && OB_FAIL(obvectorutil::immutable_optimize(snap_data_->index_))) {
     LOG_WARN("fail to index immutable_optimize", K(ret), K(index_type));
   } else {
@@ -2995,16 +3003,16 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(float *vector,
       uint32_t *sparse_lens;
       uint32_t *sparse_dims;
       float *sparse_vals;
-      if (OB_FAIL(parse_sparse_vector((char *)vector, 1, sparse_byte_lens, &tmp_allocator,
+      if (OB_FAIL(parse_sparse_vector((char *)vector, 1, sparse_byte_lens, &tmp_allocator, 
                                      &sparse_lens, &sparse_dims, &sparse_vals))) {
         LOG_WARN("failed to parse sparse vector using parse_sparse_vector", K(ret));
       } else {
-        ret = obvectorutil::cal_distance_by_id(is_snap ? get_snap_index() : get_incr_index(),
-                                            *sparse_lens, sparse_dims, sparse_vals,
+        ret = obvectorutil::cal_distance_by_id(is_snap ? get_snap_index() : get_incr_index(), 
+                                            *sparse_lens, sparse_dims, sparse_vals,  
                                             vids, count, distance);
       }
     } else {
-      ret = obvectorutil::cal_distance_by_id(is_snap ? get_snap_index() : get_incr_index(),
+      ret = obvectorutil::cal_distance_by_id(is_snap ? get_snap_index() : get_incr_index(), 
                                             vector, 
                                             vids, count, distance);
     }
@@ -3070,7 +3078,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
       int num = 1;
       uint32_t sparse_byte_lens[1];
       sparse_byte_lens[0] = vector_str.length();
-      if (OB_FAIL(parse_sparse_vector(data, num, sparse_byte_lens, &tmp_allocator,
+      if (OB_FAIL(parse_sparse_vector(data, num, sparse_byte_lens, &tmp_allocator, 
                                      &sparse_lens, &sparse_dims, &sparse_vals))) {
         LOG_WARN("failed to parse sparse vector using parse_sparse_vector", K(ret));
       }
@@ -3144,17 +3152,17 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
     lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id_, "VIndexVsagADP"));
     lib::ObLightBacktraceGuard light_backtrace_guard(false);
     TCRLockGuard lock_guard(incr_data_->mem_data_rwlock_);
-    if (is_sparse_vector_index_type() && is_mem_data_init_atomic(VIRT_INC) &&
-      OB_FAIL(obvectorutil::knn_search(get_incr_index(),
+    if (is_sparse_vector_index_type() && is_mem_data_init_atomic(VIRT_INC) && 
+      OB_FAIL(obvectorutil::knn_search(get_incr_index(), 
                                          sparse_lens[0],
                                          sparse_dims,
                                          sparse_vals,
                                          query_cond->query_limit_,
-                                         delta_distances,
+                                         delta_distances, 
                                          delta_vids,
                                          delta_extra_info_buf_ptr,
-                                         delta_res_cnt,
-                                         ob_sparse_drop_ratio_search,
+                                         delta_res_cnt, 
+                                         ob_sparse_drop_ratio_search, 
                                          n_candidate,
                                          &ifilter,//ibitmap,
                                          true,/*reverse_filter*/
@@ -3164,7 +3172,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
                                          query_cond->extra_column_count_ > 0))) {
       LOG_WARN("knn search delta failed.", K(ret), K(dim));
     } else if (!is_sparse_vector_index_type() && !is_incr_search_with_iter_ctx && is_mem_data_init_atomic(VIRT_INC)) {
-      if (OB_FAIL(obvectorutil::knn_search(get_incr_index(),
+      if (OB_FAIL(obvectorutil::knn_search(get_incr_index(), 
                                          query_vector, 
                                          dim,
                                          query_cond->query_limit_, 
@@ -3179,7 +3187,7 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
                                          valid_ratio,
                                          &ctx->search_allocator_,
                                          query_cond->extra_column_count_ > 0,
-                                         query_cond->distance_threshold_))) {
+                                         query_cond->distance_threshold_))) { 
         LOG_WARN("knn search delta failed.", K(ret), K(dim));
       } else if (!is_sparse_vector_index_type() && query_cond->distance_threshold_ != FLT_MAX && delta_res_cnt > 0) {
         int64_t *tmp_vids = nullptr;
@@ -3205,15 +3213,15 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
         }
       }
     } else if (is_incr_search_with_iter_ctx && is_mem_data_init_atomic(VIRT_INC)) {
-      if (OB_FAIL(obvectorutil::knn_search(get_incr_index(),
-                                           query_vector,
+      if (OB_FAIL(obvectorutil::knn_search(get_incr_index(), 
+                                           query_vector, 
                                            dim,
-                                           query_cond->query_limit_,
-                                           delta_distances,
-                                           delta_vids,
+                                           query_cond->query_limit_, 
+                                           delta_distances, 
+                                           delta_vids, 
                                            delta_extra_info_buf_ptr,
-                                           delta_res_cnt,
-                                           query_ef_search,
+                                           delta_res_cnt, 
+                                           query_ef_search, 
                                            &ifilter, //ibitmap,
                                            true,/*reverse_filter*/
                                            ifilter.is_range_filter(), // use_inner_id_filter
@@ -3261,17 +3269,17 @@ int ObPluginVectorIndexAdaptor::vsag_query_vids(ObVectorQueryAdaptorResultContex
     ifilter.is_snap_ = true;
     dfilter.is_snap_ = true;
     bool is_pre_filter = ctx->is_prefilter_valid();
-    if (is_sparse_vector_index_type() && is_mem_data_init_atomic(VIRT_SNAP) &&
-      OB_FAIL(obvectorutil::knn_search(get_snap_index(),
+    if (is_sparse_vector_index_type() && is_mem_data_init_atomic(VIRT_SNAP) && 
+      OB_FAIL(obvectorutil::knn_search(get_snap_index(), 
                                          sparse_lens[0],
                                          sparse_dims,
                                          sparse_vals,
                                          query_cond->query_limit_,
-                                         snap_distances,
+                                         snap_distances, 
                                          snap_vids,
                                          snap_extra_info_buf_ptr,
-                                         snap_res_cnt,
-                                         ob_sparse_drop_ratio_search,
+                                         snap_res_cnt, 
+                                         ob_sparse_drop_ratio_search, 
                                          n_candidate,
                                          (!is_pre_filter && dfilter.is_empty()) ? nullptr : &dfilter,
                                          is_pre_filter,/*reverse_filter*/
@@ -3531,15 +3539,15 @@ int ObPluginVectorIndexAdaptor::query_next_result(ObVectorQueryAdaptorResultCont
       lib::ObLightBacktraceGuard light_backtrace_guard(false);
       TCRLockGuard lock_guard(incr_data_->mem_data_rwlock_);
       if (incr_cnt > 0 && is_mem_data_init_atomic(VIRT_INC)) {
-        if (OB_FAIL(obvectorutil::knn_search(get_incr_index(),
-                                             query_vector,
+        if (OB_FAIL(obvectorutil::knn_search(get_incr_index(), 
+                                             query_vector, 
                                              dim,
-                                             query_cond->query_limit_,
-                                             delta_distances,
-                                             delta_vids,
+                                             query_cond->query_limit_, 
+                                             delta_distances, 
+                                             delta_vids, 
                                              delta_extra_info_buf_ptr,
-                                             delta_res_cnt,
-                                             query_ef_search,
+                                             delta_res_cnt, 
+                                             query_ef_search, 
                                              &ifilter,
                                              true,/*reverse_filter*/
                                              ifilter.is_range_filter(), // use_inner_id_filter
@@ -3972,10 +3980,10 @@ int ObPluginVectorIndexAdaptor::set_adaptor_ctx_flag(ObVectorQueryAdaptorResultC
 // use init flag instead？
 bool ObPluginVectorIndexAdaptor::is_complete()
 { 
-   bool is_vaild = is_inc_tablet_valid()
+   bool is_vaild = is_inc_tablet_valid() 
                   && is_vbitmap_tablet_valid()
                   && is_snap_tablet_valid()
-                  && is_data_tablet_valid()
+                  && is_data_tablet_valid() 
                   && (vbitmap_table_id_ != OB_INVALID_ID)
                   && (inc_table_id_ != OB_INVALID_ID)
                   && (snapshot_table_id_ != OB_INVALID_ID);
@@ -4243,8 +4251,16 @@ void ObPluginVectorIndexAdaptor::output_bitmap(roaring::api::roaring64_bitmap_t 
   tmp_allocator.reset();
 }
 
+int64_t ObPluginVectorIndexAdaptor::get_incr_vsag_mem_used()
+{
+  int64_t size = 0;
+  if (incr_data_->is_inited()) {
+    size = incr_data_->mem_ctx_->used();
+  }
+  return size;
+}
 
-int ObPluginVectorIndexAdaptor::get_incr_vsag_mem_hold()
+int64_t ObPluginVectorIndexAdaptor::get_incr_vsag_mem_hold()
 {
   int64_t size = 0;
   if (incr_data_->is_inited()) {
@@ -4253,8 +4269,16 @@ int ObPluginVectorIndexAdaptor::get_incr_vsag_mem_hold()
   return size;
 }
 
+int64_t ObPluginVectorIndexAdaptor::get_snap_vsag_mem_used()
+{
+  int64_t size = 0;
+  if (snap_data_->is_inited()) {
+    size = snap_data_->mem_ctx_->used();
+  }
+  return size;
+}
 
-int ObPluginVectorIndexAdaptor::get_snap_vsag_mem_hold()
+int64_t ObPluginVectorIndexAdaptor::get_snap_vsag_mem_hold()
 {
   int64_t size = 0;
   if (snap_data_->is_inited()) {

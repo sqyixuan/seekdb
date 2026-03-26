@@ -1,0 +1,114 @@
+#owner: gehao.wh
+#owner group: shenzhen
+#description: test vector_index_memdata_sync
+
+--disable_warnings
+#PURGE RECYCLEBIN;
+drop table if exists t1_vec_bitmap_sync;
+drop table if exists t2_vec_bitmap_sync;
+--enable_warnings
+
+alter system set ob_vector_memory_limit_percentage = 20;
+sleep 3;
+
+--echo create table
+create table t1_vec_bitmap_sync(c1 int, c2 vector(10), primary key(c1), vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag));
+create table t2_vec_bitmap_sync(c1 int, v1 varchar(2), c2 vector(10), primary key(c1, v1), vector index idx2(c2) with (distance=l2, type=hnsw, lib=vsag));
+# wait for follower create adaptors, or sync log before adaptor creation will be discarded 
+--sleep 20
+
+# check empty, from 4351 hnsw vector index aways load every existed index once.
+# if the this is the first hnsw index case in farm, sync_total_cnt maybe 1, 
+# but if this is not the first hnsw index test case, sync_total_cnt must be 0,
+# so skip check sync_total_cnt here.
+select
+sum(JSON_VALUE(sync_info, '$.incr_cnt')) as check_incr_cnt,
+sum(JSON_VALUE(sync_info, '$.vbitmap_cnt')) as check_vbitmap_cnt,
+sum(JSON_VALUE(sync_info, '$.snap_cnt')) as check_snap_cnt,
+sum(JSON_VALUE(sync_info, '$.sync_fail_cnt')) as check_sync_fail_cnt
+from oceanbase.__all_virtual_vector_index_info a, oceanbase.__all_virtual_table b 
+where a.data_table_id = b.table_id and b.table_name in ('t1_vec_bitmap_sync', 't2_vec_bitmap_sync');
+
+--echo insert data for t1_vec_bitmap_sync
+insert into t1_vec_bitmap_sync values(1, '[0.203846,0.205289,0.880265,0.824340,0.615737,0.496899,0.983632,0.865571,0.248373,0.542833]');
+--disable_query_log
+--let $loop=2
+while($loop < 102)
+{
+  eval insert into t1_vec_bitmap_sync values($loop, '[0.735541,0.670776,0.903237,0.447223,0.232028,0.659316,0.765661,0.226980,0.579658,0.933939]');
+  inc $loop;
+}
+
+--enable_query_log
+--echo check t1_vec_bitmap_sync inc sync 1st
+--sleep 15
+
+--echo do fast refresh for t1_vec_bitmap_sync
+call dbms_vector.refresh_index('idx1', 't1_vec_bitmap_sync', 'c2', 20, 'FAST');
+# wait aux table sync
+--sleep 5
+--echo insert more data for t1_vec_bitmap_sync to trigger anther sync_info
+--disable_query_log
+--let $loop=102
+while($loop < 203)
+{
+  eval insert into t1_vec_bitmap_sync values($loop, '[0.835541,0.670776,0.903237,0.447223,0.232028,0.659316,0.765661,0.226980,0.579658,0.933939]');
+  inc $loop;
+}
+--enable_query_log
+--sleep 15
+--echo check t1_vec_bitmap_sync inc sync 2nd
+
+--echo test multi column rowkey tables
+insert into t2_vec_bitmap_sync values(1, 'a', '[0.203846,0.205289,0.880265,0.824340,0.615737,0.496899,0.983632,0.865571,0.248373,0.542833]');
+--disable_query_log
+--let $loop=2
+while($loop < 103)
+{
+  eval insert into t2_vec_bitmap_sync values($loop, 'b', '[0.327936,0.048756,0.084670,0.389642,0.970982,0.370915,0.181664,0.940780,0.013905,0.628127]');
+  inc $loop;
+}
+--enable_query_log
+--sleep 15
+--echo check t2_vec_bitmap_sync inc sync 1st
+
+--echo do fast refresh for t2_vec_bitmap_sync
+call dbms_vector.refresh_index('idx2', 't2_vec_bitmap_sync', 'c2', 20, 'FAST');
+# wait aux table sync
+--sleep 5
+
+--echo insert more data for t2_vec_bitmap_sync to trigger anther sync_info
+--disable_query_log
+--let $loop=103
+while($loop < 205)
+{
+  eval insert into t2_vec_bitmap_sync values($loop, 'b', '[0.427936,0.048756,0.084670,0.389642,0.970982,0.370915,0.181664,0.940780,0.013905,0.628127]');
+  inc $loop;
+}
+--enable_query_log
+--sleep 15
+--echo check t2_vec_bitmap_sync inc sync 2nd
+#select * from oceanbase.__all_virtual_vector_index_info order by sync_info;
+
+--echo check upper sync limit
+
+# sync_total_cnt will not exceed 8, so configuring it this way should be safe and cause no issues. 
+# However, on the 435release branch the condition sync_total_cnt <= 6 is met, so we still need to investigate why the difference occurs.
+select
+sum(JSON_VALUE(sync_info, '$.incr_cnt')) <= 812 as check_incr_cnt,
+sum(JSON_VALUE(sync_info, '$.vbitmap_cnt')) <= 203 as check_vbitmap_cnt,
+sum(JSON_VALUE(sync_info, '$.snap_cnt')) <= 812 as check_snap_cnt,
+sum(JSON_VALUE(sync_info, '$.sync_total_cnt')) <= 8 as check_sync_total_cnt,
+sum(JSON_VALUE(sync_info, '$.sync_fail_cnt')) = 0 as check_sync_fail_cnt
+from oceanbase.__all_virtual_vector_index_info a, oceanbase.__all_virtual_table b 
+where a.data_table_id = b.table_id and b.table_name in ('t1_vec_bitmap_sync', 't2_vec_bitmap_sync');
+
+drop table t1_vec_bitmap_sync;
+drop table t2_vec_bitmap_sync;
+
+--sleep 15
+select count(*) 
+from oceanbase.__all_virtual_vector_index_info a, oceanbase.__all_virtual_table b 
+where a.data_table_id = b.table_id and b.table_name in ('t1_vec_bitmap_sync', 't2_vec_bitmap_sync');
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
