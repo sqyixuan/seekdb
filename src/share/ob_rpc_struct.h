@@ -985,18 +985,6 @@ public:
 struct ObCreateIndexArg;//Forward declaration
 struct ObCreateForeignKeyArg;//Forward declaration
 
-struct ObMVAdditionalInfo
-{
-  OB_UNIS_VERSION(1);
-public:
-  share::schema::ObTableSchema container_table_schema_;
-  ObMVRefreshInfo mv_refresh_info_;
-
-  int assign(const ObMVAdditionalInfo &other);
-
-  TO_STRING_KV(K_(container_table_schema), K_(mv_refresh_info));
-};
-
 struct ObCreateTableRes
 {
   OB_UNIS_VERSION(1);
@@ -2350,6 +2338,16 @@ public:
   {
     return part_storage_cache_policy_;
   }
+  inline bool is_only_alter_index() const
+  {
+    return is_alter_indexs_ 
+       && !is_alter_columns_ 
+       && !is_alter_options_ 
+       && !is_alter_partitions_ 
+       && !is_convert_to_character_
+       && alter_constraint_type_ ==  CONSTRAINT_NO_OPERATION;
+  }
+  
   TO_STRING_KV(K_(session_id),
                K_(alter_part_type),
                K_(index_arg_list),
@@ -13063,8 +13061,8 @@ struct ObRevokeObjMysqlArg : public ObDDLArg
 
 public:
   ObRevokeObjMysqlArg() : ObDDLArg(), tenant_id_(common::OB_INVALID_ID), user_id_(common::OB_INVALID_ID),
-                            obj_name_(), obj_type_(common::OB_INVALID_ID),
-                            priv_set_(0), grant_(true),
+                            obj_name_(), obj_type_(common::OB_INVALID_ID), 
+                            priv_set_(0), grant_(true), 
                             grantor_(), grantor_host_()
   { }
   bool is_valid() const;

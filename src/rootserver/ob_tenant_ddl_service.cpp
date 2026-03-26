@@ -1753,8 +1753,9 @@ int ObTenantDDLService::init_tenant_schema(
         LOG_WARN("fail to replace sys variable", KR(ret), K(sys_variable));
       } else if (CLICK_FAIL(ddl_operator.init_tenant_schemas(tenant_schema, sys_variable, trans))) {
         LOG_WARN("init tenant env failed", KR(ret), K(tenant_schema), K(sys_variable));
-      } else if (CLICK_FAIL(ObLoadInnerTableSchemaExecutor::load_core_schema_version(tenant_id, trans,
-          ObSchemaUtils::get_inner_table_core_schema_version(tables)))) {
+      } else if (CLICK_FAIL(ObLoadInnerTableSchemaExecutor::load_schema_version(tenant_id, trans,
+          ObSchemaUtils::get_inner_table_core_schema_version(tables),
+          ObSchemaUtils::get_inner_table_sys_schema_version(tables)))) {
         LOG_WARN("failed to load core schema version", KR(ret), K(tenant_id));
       }
     }
@@ -5508,6 +5509,7 @@ int ObTenantDDLService::init_tenant_global_stat_(
     LOG_WARN("failed to check_inner_stat", KR(ret));
   } else {
     const int64_t core_schema_version = OB_CORE_SCHEMA_VERSION + 1;
+    const int64_t sys_schema_version = OB_CORE_SCHEMA_VERSION + 1;
     const int64_t baseline_schema_version = OB_INVALID_VERSION;
     const int64_t ddl_epoch = 0;
     const SCN snapshot_gc_scn  = SCN::min_scn();
@@ -5534,7 +5536,7 @@ int ObTenantDDLService::init_tenant_global_stat_(
         ret = OB_ENTRY_NOT_EXIST;
         LOG_WARN("compatible version not defined", KR(ret), K(tenant_id), K(init_configs));
       } else if (OB_FAIL(global_stat_proxy.set_tenant_init_global_stat(
-              core_schema_version, baseline_schema_version,
+              core_schema_version, sys_schema_version, baseline_schema_version,
               snapshot_gc_scn, ddl_epoch, data_version, data_version, data_version))) {
         LOG_WARN("fail to set tenant init global stat", KR(ret), K(tenant_id),
             K(core_schema_version), K(baseline_schema_version),

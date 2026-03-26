@@ -107,6 +107,7 @@ ob_set_subtarget(ob_rootserver common
   ob_objpriv_mysql_ddl_operator.cpp
   ob_objpriv_mysql_ddl_service.cpp
   ob_objpriv_mysql_schema_history_recycler.cpp
+  ob_create_index_on_empty_table_helper.cpp
 )
 
 ob_set_subtarget(ob_rootserver balance
@@ -151,6 +152,7 @@ ob_set_subtarget(ob_rootserver parallel_ddl
   parallel_ddl/ob_ddl_helper.cpp
   parallel_ddl/ob_create_table_helper.cpp
   parallel_ddl/ob_create_view_helper.cpp
+  parallel_ddl/ob_create_materialized_view_helper.cpp
   parallel_ddl/ob_index_name_checker.cpp
   parallel_ddl/ob_tablet_balance_allocator.cpp
   parallel_ddl/ob_set_comment_helper.cpp
@@ -161,6 +163,8 @@ ob_set_subtarget(ob_rootserver parallel_ddl
   parallel_ddl/ob_set_kv_attribute_helper.cpp
   parallel_ddl/ob_create_tablegroup_helper.cpp
   parallel_ddl/ob_drop_tablegroup_helper.cpp
+  parallel_ddl/ob_table_helper.cpp
+  parallel_ddl/ob_create_table_like_helper.cpp
 )
 
 ob_set_subtarget(ob_rootserver freeze
