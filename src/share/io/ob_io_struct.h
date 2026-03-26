@@ -30,6 +30,7 @@
 #include "lib/lock/ob_spin_lock.h"
 #include "lib/lock/ob_qsync_lock.h"
 #include "share/io/ob_io_define.h"
+#include "lib/queue/ob_lighty_queue.h"
 
 namespace oceanbase
 {

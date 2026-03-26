@@ -459,7 +459,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//[INTERNAL_URL]
+//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -1078,9 +1078,9 @@ DEF_INT(data_disk_usage_limit_percentage, OB_CLUSTER_PARAMETER, "90", "[50,100]"
 DEF_INT(sys_bkgd_net_percentage, OB_CLUSTER_PARAMETER, "60", "[0,100]",
         "the net percentage of sys background net. Range: [0, 100] in integer",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT_WITH_CHECKER(disk_io_thread_count, OB_CLUSTER_PARAMETER, "8",
+DEF_INT_WITH_CHECKER(disk_io_thread_count, OB_CLUSTER_PARAMETER, "1",
                      common::ObConfigEvenIntChecker,
-                     "[2,32]",
+                     "[1,32]",
                      "The number of io threads on each disk. The default value is 8. Range: [2,32] in even integer",
                      ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT(sync_io_thread_count, OB_CLUSTER_PARAMETER, "0",
@@ -1733,22 +1733,12 @@ DEF_BOOL(enable_asan_for_memory_context, OB_CLUSTER_PARAMETER, "False",
         "when use ob_asan, user can specifies whether to allow ObAsanAllocator(default is ObAllocator as allocator of MemoryContext",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 #endif
-DEF_INT(sql_login_thread_count, OB_CLUSTER_PARAMETER, "0", "[0,32]",
-        "the number of threads for sql login request. Range: [0, 32] in integer, 0 stands for use default thread count defined in TG."
-        "the default thread count for login request in TG is normal:6 mini-mode:2",
-        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT(tenant_sql_login_thread_count, OB_CLUSTER_PARAMETER, "0", "[0,32]",
-        "the number of threads for sql login request of each tenant. Range: [0, 32] in integer, 0 stands for unit_min_cpu",
-        ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT(tenant_sql_net_thread_count, OB_CLUSTER_PARAMETER, "0", "[0, 64]",
         "the number of mysql I/O threads for a tenant. Range: [0, 64] in integer, 0 stands for unit_min_cpu",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT(sql_net_thread_count, OB_CLUSTER_PARAMETER, "0", "[0,64]",
         "the number of global mysql I/O threads. Range: [0, 64] in integer, "
         "default value is 0, 0 stands for old value GCONF.net_thread_count",
-        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_BOOL(_enable_tenant_sql_net_thread, OB_CLUSTER_PARAMETER, "True",
-        "Dispatch mysql request to each tenant with True, or disable with False",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_STR(_endpoint_tenant_mapping, OB_CLUSTER_PARAMETER, "",
         "This parameter will store the mapping of endpoint and tenant",
@@ -2276,10 +2266,10 @@ DEF_BOOL(_allow_skip_replay_redo_after_detete_tablet, OB_CLUSTER_PARAMETER, "FAL
          "The default value is FALSE. Value: TRUE means we allow skip replaying this invalid redo log, False means we do not alow such behavior.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
-//check os params
+// Deprecated: strict OS parameter check has been removed. Keep for compatibility only.
 DEF_BOOL(strict_check_os_params, OB_CLUSTER_PARAMETER, "False",
-         "A switch that determines whether to enable strict OS parameter check mode, defaulting to true and can be set to false to bypass strict checks."
-         "Value: True: allowed; False: allowed but not suggested",
+         "Deprecated. The strict OS parameter check logic has been removed and this parameter has no effect. "
+         "Default: False. Value: True/False are accepted for compatibility only.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
 DEF_BOOL(_enable_tree_based_io_scheduler, OB_CLUSTER_PARAMETER, "True",
          "A switch that allows enabling the tree-based IO scheduler."
@@ -2594,7 +2584,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// [INTERNAL_URL]
+// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));

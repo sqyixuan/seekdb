@@ -506,7 +506,7 @@ int MockTenantModuleEnv::init_dir()
 #else
   curr_dir_ = get_current_dir_name();
 #endif
-
+  
   int ret = OB_SUCCESS;
   sstable_dir_ = env_dir_ + "/sstable";
   clog_dir_ = env_dir_ + "/clog";
@@ -747,7 +747,7 @@ int MockTenantModuleEnv::init_before_start_mtl()
     STORAGE_LOG(WARN, "fail to init env", K(ret));
   } else if (OB_FAIL(startup_accel_handler_.init(observer::SERVER_ACCEL))) {
     STORAGE_LOG(WARN, "init server startup task handler failed", KR(ret));
-  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init(GCTX.is_shared_storage_mode()))) {
+  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init())) {
     STORAGE_LOG(ERROR, "init server checkpoint slog handler fail", K(ret));
   } else if (OB_FAIL(multi_tenant_.init(self_addr_, &sql_proxy_, false))) {
     STORAGE_LOG(WARN, "fail to init env", K(ret));
@@ -802,7 +802,6 @@ int MockTenantModuleEnv::init()
       oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
       MTL_BIND2(ObTenantIOManager::mtl_new, ObTenantIOManager::mtl_init, mtl_start_default, mtl_stop_default, nullptr, ObTenantIOManager::mtl_destroy);
       MTL_BIND2(mtl_new_default, omt::ObSharedTimer::mtl_init, omt::ObSharedTimer::mtl_start, omt::ObSharedTimer::mtl_stop, omt::ObSharedTimer::mtl_wait, mtl_destroy_default);
-      MTL_BIND2(ObTimerService::mtl_new, nullptr, ObTimerService::mtl_start, ObTimerService::mtl_stop, ObTimerService::mtl_wait, ObTimerService::mtl_destroy);
       MTL_BIND2(mtl_new_default, ObTenantSchemaService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(ObTenantMetaMemMgr::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::ObSharedMemAllocMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);

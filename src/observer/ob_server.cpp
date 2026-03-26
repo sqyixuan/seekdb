@@ -65,7 +65,6 @@
 #include "logservice/arbserver/ob_arb_server_config.h"
 #endif
 #include "lib/xml/ob_libxml2_sax_handler.h"
-#include "ob_check_params.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/prewarm/ob_replica_prewarm_struct.h"
 #endif
@@ -236,10 +235,6 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
                   DBA_STEP_INC_INFO(server_start),
                   "observer init begin.");
 
-  //check os params
-  if (OB_SUCC(ret) && OB_FAIL(check_os_params(GCONF.strict_check_os_params))) {
-    LOG_ERROR("check OS params failed", K(GCONF.strict_check_os_params));
-  }
   // set large page param
   ObLargePageHelper::set_param(config_.use_large_pages);
 
@@ -425,7 +420,7 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init tenant manager failed", KR(ret));
     } else if (OB_FAIL(startup_accel_handler_.init(SERVER_ACCEL))) {
       LOG_ERROR("init server startup task handler failed", KR(ret));
-    } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init(GCTX.is_shared_storage_mode()))) {
+    } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init())) {
       LOG_ERROR("init server storage meta handler failed", KR(ret));
     } else if (OB_FAIL(common::occam::ObThreadHungDetector::get_instance().init())) {
       LOG_ERROR("init sObThreadHungDetector failed", KR(ret));
@@ -741,10 +736,6 @@ void ObServer::destroy()
     SERVER_STORAGE_META_SERVICE.destroy();
     FLOG_INFO("server storage meta service destroyed");
 
-    FLOG_INFO("begin to destroy io device");
-    ObIODeviceWrapper::get_instance().destroy();
-    FLOG_INFO("io device destroyed");
-
     FLOG_INFO("begin to destroy memory dump");
     ObMemoryDump::get_instance().destroy();
     FLOG_INFO("memory dump destroyed");
@@ -855,9 +846,9 @@ void ObServer::destroy()
 
     deinit_plugin();
 
-    FLOG_INFO("begin to destroy log io device wrapper");
-    LOG_IO_DEVICE_WRAPPER.destroy();
-    FLOG_INFO("log io device wrapper destroyed");
+    FLOG_INFO("begin to destroy io device");
+    ObIODeviceWrapper::get_instance().destroy();
+    FLOG_INFO("io device destroyed");
 
     has_destroy_ = true;
     FLOG_INFO("[OBSERVER_NOTICE] destroy observer end");
@@ -2338,12 +2329,6 @@ int ObServer::init_io()
                                                   data_disk_percentage,
                                                   log_disk_percentage))) {
           LOG_ERROR("cal_all_part_disk_size failed", KR(ret));
-        } else if (OB_FAIL(LOG_IO_DEVICE_WRAPPER.init(storage_env_.clog_dir_,
-                                                      io_config.disk_io_thread_count_,
-                                                      max_io_depth,
-                                                      &OB_IO_MANAGER,
-                                                      &ObDeviceManager::get_instance()))) {
-          LOG_ERROR("log_io_device_wrapper init failed", KR(ret));
         }
         if (OB_SUCC(ret)) {
           storage_env_.data_disk_size_ = data_disk_size;
@@ -3811,9 +3796,7 @@ int ObServer::init_server_in_arb_mode()
     LOG_ERROR("start ObIOManager failed", K(ret));
   } else if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
     LOG_ERROR("init device manager failed", K(ret));
-  } else if (OB_FAIL(LOG_IO_DEVICE_WRAPPER.init(GCONF.data_dir, io_config.disk_io_thread_count_, max_io_depth, &OB_IO_MANAGER, &ObDeviceManager::get_instance()))) {
-    LOG_ERROR("log_io_adapter init failed", K(ret));
-  } else if (OB_FAIL(palf_env_mgr.init(GCONF.data_dir, self_addr_, net_work_farme.get_req_transport(), LOG_IO_DEVICE_WRAPPER.get_local_device(), &G_RES_MGR, &OB_IO_MANAGER))) {
+  } else if (OB_FAIL(palf_env_mgr.init(GCONF.data_dir, self_addr_, net_work_farme.get_req_transport(), &LOCAL_DEVICE_INSTANCE, &G_RES_MGR, &OB_IO_MANAGER))) {
     LOG_ERROR("init PalfEnvLiteMgr failed", K(ret), K(arb_opts));
   } else if (OB_FAIL(arb_timer_.init(lib::TGDefIDs::ArbServerTimer, &palf_env_mgr))) {
     LOG_ERROR("init ArbServerTimer failed", K(ret));
@@ -3936,7 +3919,6 @@ int ObServer::destroy_server_in_arb_mode()
   ObMemoryDump::get_instance().destroy();
   ASCONF.destroy();
   palf::election::GLOBAL_REPORT_TIMER.destroy();
-  LOG_IO_DEVICE_WRAPPER.destroy();
   ObIOManager::get_instance().destroy();
   LOG_WARN("destroy_server_in_arb_mode success", K(ret));
   return ret;

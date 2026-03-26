@@ -37,7 +37,6 @@ ObAdminExecutor::ObAdminExecutor()
 {
   // Set MTL context
   IGNORE_RETURN ObTimerService::get_instance().start();
-  mock_server_tenant_.set(&ObTimerService::get_instance());
   share::ObTenantEnv::set_tenant(&mock_server_tenant_);
   storage_env_.data_dir_ = data_dir_;
   storage_env_.sstable_dir_ = sstable_dir_;
@@ -120,7 +119,7 @@ int ObAdminExecutor::prepare_io()
     LOG_WARN("fail to start io manager", K(ret));
   } else if (OB_FAIL(OB_FILE_SYSTEM_ROUTER.get_instance().init(data_dir_, clog_dir_))) {
     LOG_WARN("fail to init file system router", K(ret));
-  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init(false/*is_shared_storage*/))) {
+  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init())) {
     LOG_WARN("fail to init storage meta service", K(ret));
   } else if (OB_FAIL(OB_STORAGE_OBJECT_MGR.init(false/*is_shared_storage*/, storage_env_.default_block_size_))) {
     LOG_WARN("fail to init block manager, ", K(ret));

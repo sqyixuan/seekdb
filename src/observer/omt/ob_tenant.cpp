@@ -1768,11 +1768,6 @@ void ObTenant::check_worker_count()
     }
     IGNORE_RETURN workers_lock_.unlock();
   }
-
-  if (GCONF._enable_new_sql_nio && GCONF._enable_tenant_sql_net_thread &&
-      (is_sys_tenant(id_) || is_user_tenant(id_))) {
-    GCTX.net_frame_->reload_tenant_sql_thread_config(id_);
-  }
 }
 
 void ObTenant::check_group_worker_count()
