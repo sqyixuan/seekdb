@@ -1,0 +1,78 @@
+alter system set debug_sync_timeout = '300s';
+set timestamp = 1600000000;
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+
+"========== scenario 1: query blocked before get adaptor -> merge completes -> query gets new adaptor -> OB_SCHEMA_EAGAIN，retry =========="
+drop table if exists t1;
+create table t1(
+c1 int primary key,
+c2 vector(3),
+VECTOR INDEX idx1(c2) WITH(distance=l2, type=hnsw, lib=vsag)
+);
+insert into t1 values(1, '[0.1,0.2,0.3]');
+insert into t1 values(2, '[0.4,0.5,0.6]');
+insert into t1 values(3, '[0.7,0.8,0.9]');
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'VECTOR_INDEX_QUERY_BEFORE_GET_ADAPTOR wait_for query_continue_signal execute 10000';
+SELECT c1 from t1 where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+"=== insert 100 rows ===="
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal query_continue_signal';
+c1
+100
+scenario1 done, normal query should succeed after retry
+SELECT c1 from t1 where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+c1
+100
+drop table t1;
+
+"========== scenario 2: query blocked before adaptor lock -> merge completes -> query continues, use first adaptor (latest replace_scn > query scn) =========="
+drop table if exists t1;
+create table t1(
+c1 int primary key,
+c2 vector(3),
+VECTOR INDEX idx1(c2) WITH(distance=l2, type=hnsw, lib=vsag)
+);
+insert into t1 values(1, '[0.1,0.2,0.3]');
+insert into t1 values(2, '[0.4,0.5,0.6]');
+insert into t1 values(3, '[0.7,0.8,0.9]');
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'VECTOR_INDEX_QUERY_BEFORE_LOCK wait_for lock_continue_signal execute 10000';
+SELECT c1 from t1  where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+"=== insert 100 rows ===="
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal lock_continue_signal';
+c1
+scenario 2.2.1 done, query used first adaptor and returned result
+SELECT c1 from t1  where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+c1
+100
+drop table t1;
+
+"========== scenario 3: merge blocks before replace -> query blocks before lock -> merge continues (replaces adaptor) -> query continues (use latest adaptor if replace_scn < query scn) =========="
+drop table if exists t1;
+create table t1(
+c1 int primary key,
+c2 vector(3),
+VECTOR INDEX idx1(c2) WITH(distance=l2, type=hnsw, lib=vsag)
+);
+insert into t1 values(1, '[0.1,0.2,0.3]');
+insert into t1 values(2, '[0.4,0.5,0.6]');
+insert into t1 values(3, '[0.7,0.8,0.9]');
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'ASYNC_TASK_BEFORE_REPLACE_OLD_ADAPTOR wait_for merge_continue_signal execute 10000';
+set ob_global_debug_sync = 'VECTOR_INDEX_QUERY_BEFORE_LOCK wait_for query_continue_signal execute 10000';
+"=== insert 100 rows ===="
+SELECT c1 from t1 where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+set ob_global_debug_sync = 'now signal merge_continue_signal';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal query_continue_signal';
+c1
+100
+scenario 2.2.2 done, query continued after merge replaced adaptor
+SELECT c1 from t1 where c1 = 100 order by l2_distance(c2, '[0,0,0]') APPROXIMATE limit 2;
+c1
+100
+drop table t1;
+set ob_global_debug_sync = 'reset';

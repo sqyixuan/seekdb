@@ -40,6 +40,7 @@ namespace share
 {
 struct ObPluginVectorIndexTaskCtx;
 class ObVsagMemContext;
+class ObPluginVectorIndexMgr;
 
 struct ObVectorIndexInfo
 {
@@ -277,7 +278,9 @@ public:
       batch_allocator_("BATCHALLOC", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       search_allocator_(tenant_id),
       ls_leader_(true),
-      is_sparse_vector_(false) {};
+      is_sparse_vector_(false),
+      is_refresh_adaptor_(false),
+      scn_() {};
   ~ObVectorQueryAdaptorResultContext();
   int init_bitmaps();
   int init_prefilter(const int64_t &min, const int64_t &max);
@@ -310,6 +313,10 @@ public:
   void set_flag(ObVectorQueryProcessFlag flag) {flag_ = flag; }
   void set_ls_leader(const bool ls_leader) { ls_leader_ = ls_leader; }
   bool get_ls_leader() { return ls_leader_; }
+  void set_is_refresh_adaptor(const bool is_refresh_adaptor) { is_refresh_adaptor_ = is_refresh_adaptor; }
+  bool get_is_refresh_adaptor() { return is_refresh_adaptor_; }
+  void set_scn(const SCN scn) { scn_ = scn; }
+  SCN get_scn() const { return scn_; }
 
   inline void set_sparse_vector(const bool is_sparse) { is_sparse_vector_ = is_sparse; }
 
@@ -336,6 +343,8 @@ private:
   ObVsagSearchAlloc search_allocator_;
   bool ls_leader_;
   bool is_sparse_vector_;
+  bool is_refresh_adaptor_;
+  SCN scn_;
 };
 
 class ObVectorQueryConditions {
@@ -365,6 +374,7 @@ public:
     is_post_with_filter_ = false;
     ob_sparse_drop_ratio_search_ = 0;
     n_candidate_ = 0;
+    only_complete_data_ = false;
   }
   TO_STRING_KV(K_(query_limit), K_(query_order), K_(ef_search), K_(query_vector), K_(query_scn), K_(ob_sparse_drop_ratio_search), K_(n_candidate));
 
@@ -600,7 +610,7 @@ public:
     }
   }
 
-  int renew_single_snap_index();
+  int renew_single_snap_index(bool mem_saving_mode);
   int set_adaptor_ctx_flag(ObVectorQueryAdaptorResultContext *ctx);
 
   ObString &get_index_identity() { return index_identity_; };
@@ -766,8 +776,8 @@ public:
     need_be_optimized_ = false;   // single thread modify need_be_optimized_
   }
 
-  void vector_embedding_task_finish()
-  {
+  void vector_embedding_task_finish() 
+  { 
     common::ObSpinLockGuard ctx_guard(opt_task_lock_);
     is_in_opt_task_ = false;  // multiple thread modify is_in_opt_task_
   }
