@@ -45,10 +45,6 @@ OB_INLINE int cosine_calculate_normal(const float *a, const float *b, const int6
     ip += a[i] * b[i];
     abs_dist_a += a[i] * a[i];
     abs_dist_b += b[i] * b[i];
-    if (OB_UNLIKELY(0 != ::isinf(ip) || 0 != ::isinf(abs_dist_a) || 0 != ::isinf(abs_dist_b))) {
-      ret = OB_NUMERIC_OVERFLOW;
-      LIB_LOG(WARN, "value is overflow", K(ret), K(ip), K(abs_dist_a), K(abs_dist_b));
-    }
   }
   return ret;
 }
@@ -60,10 +56,6 @@ OB_INLINE int cosine_calculate_normal(const uint8_t *a, const uint8_t *b, const 
     ip += a[i] * b[i];
     abs_dist_a += a[i] * a[i];
     abs_dist_b += b[i] * b[i];
-    if (OB_UNLIKELY(0 != ::isinf(ip) || 0 != ::isinf(abs_dist_a) || 0 != ::isinf(abs_dist_b))) {
-      ret = OB_NUMERIC_OVERFLOW;
-      LIB_LOG(WARN, "value is overflow", K(ret), K(ip), K(abs_dist_a), K(abs_dist_b));
-    }
   }
   return ret;
 }
@@ -123,9 +115,7 @@ int ObVectorCosineDistance<float>::cosine_similarity_func(const float *a, const 
 template <>
 int ObVectorCosineDistance<uint8_t>::cosine_similarity_func(const uint8_t *a, const uint8_t *b, const int64_t len, double &similarity);
 
-
-#if defined(__SSE2__) || defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX512BW__)
-// SSE
+OB_DECLARE_SSE_AND_AVX_CODE(
 OB_INLINE static int cosine_calculate_simd4_avx128(const float *a, const float *b, const int64_t len, double &ip, double &abs_dist_a, double &abs_dist_b)
 {
   int ret = OB_SUCCESS;
@@ -193,8 +183,10 @@ OB_INLINE static int cosine_calculate_simd4_avx128_extra(const float *a, const f
   }
   return ret;
 }
+)
 
-OB_INLINE static int cosine_similarity_avx128(const float *a, const float *b, const int64_t len, double &similarity)
+OB_DECLARE_SSE42_SPECIFIC_CODE(
+inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
 {
   int ret = OB_SUCCESS;
   double ip = 0;
@@ -217,10 +209,9 @@ OB_INLINE static int cosine_similarity_avx128(const float *a, const float *b, co
   }
   return ret;
 }
-#endif
+)
 
-#if defined(__AVX__) || defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX512BW__)
-// AVX2
+OB_DECLARE_AVX_ALL_CODE(
 OB_INLINE static int cosine_calculate_simd8_avx256(const float *a, const float *b, const int64_t len, double &ip, double &abs_dist_a, double &abs_dist_b)
 {
   int ret = OB_SUCCESS;
@@ -269,8 +260,10 @@ OB_INLINE static int cosine_calculate_simd8_avx256_extra(const float *a, const f
   }
   return ret;
 }
+)
 
-OB_INLINE static int cosine_similarity_avx256(const float *a, const float *b, const int64_t len, double &similarity)
+OB_DECLARE_AVX_AND_AVX2_CODE(
+inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
 {
   int ret = OB_SUCCESS;
   double ip = 0;
@@ -299,10 +292,9 @@ OB_INLINE static int cosine_similarity_avx256(const float *a, const float *b, co
   }
   return ret;
 }
-#endif
+)
 
-#if defined(__AVX512F__) || defined(__AVX512BW__)
-// AVX512
+OB_DECLARE_AVX512_SPECIFIC_CODE(
 OB_INLINE static int cosine_calculate_simd16_avx512(const float *a, const float *b, const int64_t len, double &ip, double &abs_dist_a, double &abs_dist_b)
 {
   int ret = OB_SUCCESS;
@@ -355,7 +347,7 @@ OB_INLINE static int cosine_calculate_simd16_avx512_extra(const float *a, const 
   return ret;
 }
 
-OB_INLINE static int cosine_similarity_avx512(const float *a, const float *b, const int64_t len, double &similarity)
+inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
 {
   int ret = OB_SUCCESS;
   double ip = 0;
@@ -388,52 +380,124 @@ OB_INLINE static int cosine_similarity_avx512(const float *a, const float *b, co
   }
   return ret;
 }
-#endif
+)
 
 OB_DECLARE_DEFAULT_CODE (
 inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
 {
-  int ret = OB_SUCCESS;
-  #if defined(__SSE2__)
-  ret = cosine_similarity_avx128(a, b, len, similarity);
-  #else
-  ret = cosine_similarity_normal(a, b, len, similarity);
-  #endif
-  return ret;
+  return cosine_similarity_normal(a, b, len, similarity);
 }
 )
 
-OB_DECLARE_AVX2_SPECIFIC_CODE (
-inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
-{
-  int ret = OB_SUCCESS;
-  #if defined(__AVX__) || defined(__AVX2__)
-  ret = cosine_similarity_avx256(a, b, len, similarity);
-  #elif defined(__SSE2__)
-  ret = cosine_similarity_avx128(a, b, len, similarity);
-  #else
-  ret = cosine_similarity_normal(a, b, len, similarity);
-  #endif
-  return ret;
-}
-)
+#if defined(__aarch64__)
 
-OB_DECLARE_AVX512_SPECIFIC_CODE (
-inline static int cosine_similarity(const float *a, const float *b, const int64_t len, double &similarity)
+inline static float cosine_inner_product_neon(const float *x, const float *y, const int64_t len) {
+  float32x4_t sum0 = vdupq_n_f32(0.0f);
+  float32x4_t sum1 = vdupq_n_f32(0.0f);
+  float32x4_t sum2 = vdupq_n_f32(0.0f);
+  float32x4_t sum3 = vdupq_n_f32(0.0f);
+  
+  int64_t i = 0;
+  
+  for (; i + 15 < len; i += 16) {
+    float32x4x4_t a = vld1q_f32_x4(x + i);
+    float32x4x4_t b = vld1q_f32_x4(y + i);
+    
+    sum0 = vfmaq_f32(sum0, a.val[0], b.val[0]);
+    sum1 = vfmaq_f32(sum1, a.val[1], b.val[1]);
+    sum2 = vfmaq_f32(sum2, a.val[2], b.val[2]);
+    sum3 = vfmaq_f32(sum3, a.val[3], b.val[3]);
+  }
+  
+  if (i + 7 < len) {
+    float32x4x2_t a = vld1q_f32_x2(x + i);
+    float32x4x2_t b = vld1q_f32_x2(y + i);
+    
+    sum0 = vfmaq_f32(sum0, a.val[0], b.val[0]);
+    sum1 = vfmaq_f32(sum1, a.val[1], b.val[1]);
+    i += 8;
+  }
+  
+  if (i + 3 < len) {
+    float32x4_t a = vld1q_f32(x + i);
+    float32x4_t b = vld1q_f32(y + i);
+    sum0 = vfmaq_f32(sum0, a, b);
+    i += 4;
+  }
+  
+  sum0 = vaddq_f32(sum0, sum1);
+  sum2 = vaddq_f32(sum2, sum3);
+  sum0 = vaddq_f32(sum0, sum2);
+  
+  float result = vaddvq_f32(sum0);
+  for (; i < len; i++) {
+    result += x[i] * y[i];
+  }
+  
+  return result;
+}
+
+inline static float cosine_norm_square_neon(const float *x, const int64_t len) {
+  float32x4_t sum0 = vdupq_n_f32(0.0f);
+  float32x4_t sum1 = vdupq_n_f32(0.0f);
+  float32x4_t sum2 = vdupq_n_f32(0.0f);
+  float32x4_t sum3 = vdupq_n_f32(0.0f);
+  
+  int64_t i = 0;
+  
+  for (; i + 15 < len; i += 16) {
+    float32x4x4_t a = vld1q_f32_x4(x + i);
+    
+    sum0 = vfmaq_f32(sum0, a.val[0], a.val[0]);
+    sum1 = vfmaq_f32(sum1, a.val[1], a.val[1]);
+    sum2 = vfmaq_f32(sum2, a.val[2], a.val[2]);
+    sum3 = vfmaq_f32(sum3, a.val[3], a.val[3]);
+  }
+  
+  if (i + 7 < len) {
+    float32x4x2_t a = vld1q_f32_x2(x + i);
+    
+    sum0 = vfmaq_f32(sum0, a.val[0], a.val[0]);
+    sum1 = vfmaq_f32(sum1, a.val[1], a.val[1]);
+    i += 8;
+  }
+  
+  if (i + 3 < len) {
+    float32x4_t a = vld1q_f32(x + i);
+    sum0 = vfmaq_f32(sum0, a, a);
+    i += 4;
+  }
+  
+  sum0 = vaddq_f32(sum0, sum1);
+  sum2 = vaddq_f32(sum2, sum3);
+  sum0 = vaddq_f32(sum0, sum2);
+  
+  float result = vaddvq_f32(sum0);
+  for (; i < len; i++) {
+    result += x[i] * x[i];
+  }
+  
+  return result;
+}
+
+inline static int cosine_similarity_neon(const float *a, const float *b, const int64_t len, double &similarity)
 {
   int ret = OB_SUCCESS;
-  #if defined(__AVX512F__) || defined(__AVX512BW__)
-  ret = cosine_similarity_avx512(a, b, len, similarity);
-  #elif defined(__AVX__) || defined(__AVX2__)
-  ret = cosine_similarity_avx256(a, b, len, similarity);
-  #elif defined(__SSE2__)
-  ret = cosine_similarity_avx128(a, b, len, similarity);
-  #else
-  ret = cosine_similarity_normal(a, b, len, similarity);
-  #endif
+  
+  double ip = cosine_inner_product_neon(a, b, len);
+  double norm_a_sq = cosine_norm_square_neon(a, len);
+  double norm_b_sq = cosine_norm_square_neon(b, len);
+  
+  if (0 == norm_a_sq || 0 == norm_b_sq) {
+    ret = OB_ERR_NULL_VALUE;
+  } else {
+    similarity = ip / (sqrt(norm_a_sq) * sqrt(norm_b_sq));
+  }
+  
   return ret;
 }
-)
+
+#endif
 
 } // common
 } // oceanbase
