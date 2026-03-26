@@ -40,7 +40,6 @@ ob_set_subtarget(ob_logservice leader_coordinator
 
 ob_set_subtarget(ob_logservice palf
   palf/block_gc_timer_task.cpp
-  palf/fetch_log_engine.cpp
   palf/log_block_handler.cpp
   palf/log_block_header.cpp
   palf/log_block_mgr.cpp

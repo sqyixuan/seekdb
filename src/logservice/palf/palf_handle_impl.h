@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_PALF_LOG_SERVICE_
@@ -55,7 +51,6 @@ namespace palf
 class FlushLogCbCtx;
 class ObMemberChangeCtx;
 class LSN;
-class FetchLogEngine;
 class TruncateLogCbCtx;
 class FlushMetaCbCtx;
 class LogIOFlushLogTask;
@@ -218,7 +213,8 @@ public:
   LSN last_submit_lsn_;
   int64_t last_submit_log_pid_;
 };
-// The interface class of the log service, modules other than logservice are only allowed to call the interfaces of IPalfHandleImpl when using the log service
+
+// 日志服务的接口类，logservice以外的模块使用日志服务，只允许调用IPalfHandleImpl的接口
 class IPalfHandleImpl : public common::LinkHashValue<LSKey>
 {
 public:
@@ -253,26 +249,26 @@ public:
   virtual int get_arb_member_info(ArbMemberInfo &arb_member_info) const = 0;
   virtual int get_arbitration_member(common::ObMember &arb_member) const = 0;
 #endif
-  // Submit content that needs to be persisted, the submitted content is logged locally and synchronized to other replicas in the Paxos member list
-  // At the same time, if there are read-only replicas or physical standby databases, logs will be synchronized to the corresponding nodes when conditions are met
-  // After the majority of replicas in the Paxos member list successfully persist, it will call log_ctx->on_success() to notify the caller
+  // 提交需要持久化的内容，提交内容以日志形式在本地持久化并同步给Paxos成员列表中的其他副本
+  // 同时，若存在只读副本或物理备库，日志会在满足条件时同步给对应节点
+  // 在Paxos成员列表中的多数派副本持久化成功后，会调用log_ctx->on_success()通知调用者
   //
-  // If a leader-follower switch (Leader->Follower) occurs during execution, and this log eventually forms a majority,
-  // then it will still call log_ctx->on_success() rather than replay log
+  // 若执行过程中，发生了主备切换（Leader->Follower），且该日志最终形成了多数派，
+  // 则仍会调用log_ctx->on_success()而非replay log
   //
-  // In the scenario where the function returns successfully, on any replica, log_ctx->on_success()/log_ctx->on_failure()/replay log
-  // One of them ensures the final call and only one call
+  // 函数返回成功的场景下，在任一副本上log_ctx->on_success()/log_ctx->on_failure()/replay log
+  // 其中之一保证最终调用且只调用一次
   //
-  // @param [in] opts, some optional parameters for submitting logs, see the definition of PalfAppendOptions for details
-  // @param [in] buf, the starting pointer of the content to be persisted, buf can be released after ::submit_log function returns
-  // @param [in] buf_len, the length of the content to be persisted, the valid range of size is [0, 2M]
-  // @param [in] ref_scn, log corresponding time, meeting weak read requirements
+  // @param [in] opts, 提交日志的一些可选项参数，具体参见PalfAppendOptions的定义
+  // @param [in] buf, 待持久化内容的起点指针，::submit_log函数返回后buf即可被释放
+  // @param [in] buf_len, 待持久化内容的长度，size的有效范围是[0, 2M]
+  // @param [in] ref_scn, 日志对应的时间，满足弱读需求
   //
-  // The following two values are passed out via the submit_log return parameters, rather than through on_success() and upper-layer interaction, which allows logic similar to lock_for_read to occur earlier
-  // get the accurate version number information
-  // @param [out] lsn, the unique identifier of the log
-  //                          The main usage scenario is to record the redo log's lsn in the prepare log, used for locating historical logs when pulling back in the data link
-  // @param [out] scn, submit_scn corresponding to the log, mainly used for transaction version number, for example, in the lock_for_read scenario
+  // 下述两个值通过submit_log出参，而不是on_success()和上层交互，好处是类似于lock_for_read逻辑可以更早
+  // 的拿到准确的版本号信息
+  // @param [out] lsn, 日志的唯一标识符
+  //                          主要使用场景是prepare日志中记录redo日志的lsn，用于数据链路回拉历史日志时定位使用
+  // @param [out] scn, 日志对应的submit_scn，主要用于事务版本号，比如lock_for_read场景使用
   //
   // @return :TODO
   virtual int submit_log(const PalfAppendOptions &opts,
@@ -281,37 +277,37 @@ public:
                          const share::SCN &ref_scn,
                          LSN &lsn,
                          share::SCN &scn) = 0;
-  // submit group_log to palf
-  // Usage scenario: Follower leader processes logs received from the primary
-  // @param [in] opts, some optional parameters for submitting logs, see the definition of PalfAppendOptions for details
-  // @param [in] lsn, log sequence number corresponding to the log
-  // @param [in] buf, the starting pointer of the content to be persisted, buf can be released after ::submit_group_log function returns
-  // @param [in] buf_len, the length of the content to be persisted
+  // 提交group_log到palf
+  // 使用场景：备库leader处理从主库收到的日志
+  // @param [in] opts, 提交日志的一些可选项参数，具体参见PalfAppendOptions的定义
+  // @param [in] lsn, 日志对应的lsn
+  // @param [in] buf, 待持久化内容的起点指针，::submit_group_log函数返回后buf即可被释放
+  // @param [in] buf_len, 待持久化内容的长度
   virtual int submit_group_log(const PalfAppendOptions &opts,
                                const LSN &lsn,
                                const char *buf,
                                const int64_t buf_len) = 0;
-  // Return the current replica's role, which only exists in Leader/StandbyLeader/Follower three roles
+  // 返回当前副本的角色，只存在Leader/StandbyLeader/Follower三种角色
   //
-  // @param [out] role, current replica's role
-  // @param [out] proposal_id, unique identifier for the leader, monotonically increasing across machines.
+  // @param [out] role, 当前副本的角色
+  // @param [out] proposal_id, leader的唯一标识符，跨机单调递增.
   //
   // @return :TODO
   virtual int get_role(common::ObRole &role,
                        int64_t &proposal_id,
                        bool &is_pending_state) const = 0;
-  // get palf_id
+  // 获取 palf_id
   virtual int get_palf_id(int64_t &palf_id) const = 0;
-  // Primary switch interface, used for internal debugging only, no formal functionality should depend on this interface
-  // The cut-in action in the formal function should be described by a priority strategy, unified into a set of rules
-  // This interface is an asynchronous interface, after the interface call returns successfully, the Leader may take several seconds to complete the switch, theoretically there is also a very small probability of the switch failing
-  // In a normal system, it is expected that the leader will complete the switch within several ms
+  // 切主接口，用于内部调试用，任何正式功能不应依赖此接口
+  // 正式功能中的切主动作应当由优先级策略来描述，统一到一套规则中
+  // 该接口是异步接口，在该接口调用返回成功后，Leader可能会经历若干秒才完成切换，理论上也存在极小概率切换失败
+  // 在系统正常的情况下，预期在若干ms内，leader就会完成切换
   //
-  // @param [in] dest_addr, the destination replica for leader switch, must be in the current member list
+  // @param [in] dest_addr, 切主的目的副本，必须在当前的成员列表中
   //
   // @return :
-  //  OB_ENTRY_NOT_EXIST : The target replica for the leader switch is not in palf's current member list
-  //  OB_NOT_MASTER : This replica is not currently the leader and cannot accept a leader switch request
+  //  OB_ENTRY_NOT_EXIST : 切主的目标副本不在palf当前的成员列表中
+  //  OB_NOT_MASTER : 本副本当前不是leader，无法接受切主请求
   virtual int change_leader_to(const common::ObAddr &dest_addr) = 0;
 
   virtual int get_global_learner_list(common::GlobalLearnerList &learner_list) const = 0;
@@ -526,22 +522,25 @@ public:
   virtual int set_election_silent_flag(const bool election_silent_flag) = 0;
   virtual bool is_election_silent() const = 0;
 #endif
-  // Set the recyclable point of the log file, log files with LSN less than or equal to lsn can be safely recycled
+
+  // 设置日志文件的可回收位点，小于等于lsn的日志文件均可以安全回收
   //
-  // @param [in] lsn, the log file position that can be recycled
+  // @param [in] lsn，可回收的日志文件位点
   //
   // @return :TODO
   virtual int set_base_lsn(const LSN &lsn) = 0;
-  // Allow palf to pull logs
+
+  // 允许palf收拉日志
   virtual int enable_sync() = 0;
-  // Prohibit palf from pulling logs, to prevent log disk overflow in rebuild/migrate scenarios
+  // 禁止palf收拉日志，在rebuild/migrate场景下，防止日志盘爆
   virtual int disable_sync() = 0;
-  // Mark the palf instance as deleted
+  // 标记palf实例已经删除
   virtual void set_deleted() = 0;
   virtual bool is_sync_enabled() const = 0;
-  // Migration/rebuild scenario purpose end advancing base_lsn
+
+  // 迁移/rebuild场景目的端推进base_lsn
   //
-  // @param [in] palf_base_info, recyclable log file position
+  // @param [in] palf_base_info，可回收的日志文件位点
   virtual int advance_base_info(const PalfBaseInfo &palf_base_info, const bool is_rebuild) = 0;
 
   // @desc: query coarse lsn by scn, that means there is a LogGroupEntry in disk,
@@ -585,7 +584,6 @@ public:
   virtual int get_base_lsn(LSN &lsn) const = 0;
   virtual int get_base_info(const LSN &base_lsn, PalfBaseInfo &base_info) = 0;
 
-  virtual int get_min_block_id_for_gc(block_id_t &min_block_id) = 0;
   virtual int get_min_block_info_for_gc(block_id_t &min_block_id, share::SCN &max_scn) = 0;
   //begin lsn                          base lsn                                end lsn
   //   │                                │                                         │
@@ -651,32 +649,9 @@ public:
   virtual int handle_election_message(const election::ElectionAcceptRequestMsg &msg) = 0;
   virtual int handle_election_message(const election::ElectionAcceptResponseMsg &msg) = 0;
   virtual int handle_election_message(const election::ElectionChangeLeaderMsg &msg) = 0;
-  virtual int receive_log(const common::ObAddr &server,
-                          const PushLogType push_log_type,
-                          const int64_t &proposal_id,
-                          const LSN &prev_lsn,
-                          const int64_t &prev_proposal_id,
-                          const LSN &lsn,
-                          const char *buf,
-                          const int64_t buf_len) = 0;
-  virtual int receive_batch_log(const common::ObAddr &server,
-                                const int64_t msg_proposal_id,
-                                const int64_t prev_log_proposal_id,
-                                const LSN &prev_lsn,
-                                const LSN &curr_lsn,
-                                const char *buf,
-                                const int64_t buf_len) = 0;
   virtual int ack_log(const common::ObAddr &server,
                       const int64_t &proposal_id,
                       const LSN &log_end_lsn) = 0;
-  virtual int get_log(const common::ObAddr &server,
-                      const FetchLogType fetch_type,
-                      const int64_t msg_proposal_id,
-                      const LSN &prev_lsn,
-                      const LSN &start_lsn,
-                      const int64_t fetch_log_size,
-                      const int64_t fetch_log_count,
-                      const int64_t accepted_mode_pid) = 0;
   virtual int fetch_log_from_storage(const common::ObAddr &server,
                                      const FetchLogType fetch_type,
                                      const int64_t &req_proposal_id,
@@ -702,7 +677,6 @@ public:
                                 const LogModeMeta &meta) = 0;
   virtual int ack_mode_meta(const common::ObAddr &server,
                             const int64_t proposal_id) = 0;
-  virtual int handle_notify_fetch_log_req(const common::ObAddr &server) = 0;
   virtual int handle_notify_rebuild_req(const common::ObAddr &server,
                                         const LSN &base_lsn,
                                         const LogInfo &base_prev_log_info) = 0;
@@ -820,7 +794,6 @@ public:
            const AccessMode &access_mode,
            const PalfBaseInfo &palf_base_info,
            const LogReplicaType replica_type,
-           FetchLogEngine *fetch_log_engine,
            const char *log_dir,
            ObILogAllocator *alloc_mgr,
            ILogBlockPool *log_block_pool,
@@ -832,13 +805,12 @@ public:
            const int64_t palf_epoch,
            LogIOAdapter *io_adapter);
   bool check_can_be_used() const override final;
-  // Restart interface
-  // 1. Generate iterator, locate the end of meta_storage and log_storage;
-  // 2. Read the latest data from meta storage, initialize dio_aligned_buf;
-  // 3. Initialize dio_aligned_buf in log_storage;
-  // 4. Initialize other fields of palf_handle_impl.
+  // 重启接口
+  // 1. 生成迭代器，定位meta_storage和log_storage的终点;
+  // 2. 从meta storage中读最新数据，初始化dio_aligned_buf;
+  // 3. 初始化log_storage中的dio_aligned_buf;
+  // 4. 初始化palf_handle_impl的其他字段.
   int load(const int64_t palf_id,
-           FetchLogEngine *fetch_log_engine,
            const char *log_dir,
            ObILogAllocator *alloc_mgr,
            ILogBlockPool *log_block_pool,
@@ -1005,7 +977,6 @@ public:
   int get_begin_scn(share::SCN &scn)  override final;
   int get_base_lsn(LSN &lsn) const override final;
   int get_base_info(const LSN &base_lsn, PalfBaseInfo &base_info) override final;
-  int get_min_block_id_for_gc(block_id_t &min_block_id) override final;
   int get_min_block_info_for_gc(block_id_t &min_block_id, share::SCN &max_scn) override final;
   // return the block length which the previous data was committed
   const LSN get_end_lsn() const override final
@@ -1029,8 +1000,8 @@ public:
 
   const share::SCN get_end_scn() const override final
   {
-    // Based on implementation complexity, directly use last_slide_scn as end_scn
-    // Otherwise, it is necessary to maintain scn additionally in match_lsn_map
+    // 基于实现复杂度考虑，直接用last_slide_scn作为end_scn
+    // 否则需要在match_lsn_map中额外维护scn
     return sw_.get_last_slide_scn();
   }
   int get_last_rebuild_lsn(LSN &last_rebuild_lsn) const override final;
@@ -1087,32 +1058,9 @@ public:
   int handle_election_message(const election::ElectionAcceptRequestMsg &msg) override final;
   int handle_election_message(const election::ElectionAcceptResponseMsg &msg) override final;
   int handle_election_message(const election::ElectionChangeLeaderMsg &msg) override final;
-  int receive_log(const common::ObAddr &server,
-                  const PushLogType push_log_type,
-                  const int64_t &msg_proposal_id,
-                  const LSN &prev_lsn,
-                  const int64_t &prev_log_proposal_id,
-                  const LSN &lsn,
-                  const char *buf,
-                  const int64_t buf_len) override final;
-  int receive_batch_log(const common::ObAddr &server,
-                        const int64_t msg_proposal_id,
-                        const int64_t prev_log_proposal_id,
-                        const LSN &prev_lsn,
-                        const LSN &curr_lsn,
-                        const char *buf,
-                        const int64_t buf_len) override final;
   int ack_log(const common::ObAddr &server,
               const int64_t &proposal_id,
               const LSN &log_end_lsn) override final;
-  int get_log(const common::ObAddr &server,
-              const FetchLogType fetch_type,
-              const int64_t msg_proposal_id,
-              const LSN &prev_lsn,
-              const LSN &start_lsn,
-              const int64_t fetch_log_size,
-              const int64_t fetch_log_count,
-              const int64_t accepted_mode_pid) override final;
   int fetch_log_from_storage(const common::ObAddr &server,
                              const FetchLogType fetch_type,
                              const int64_t &msg_proposal_id,
@@ -1138,7 +1086,6 @@ public:
                         const LogModeMeta &meta) override final;
   int ack_mode_meta(const common::ObAddr &server,
                      const int64_t proposal_id) override final;
-  int handle_notify_fetch_log_req(const common::ObAddr &server) override final;
   int handle_notify_rebuild_req(const common::ObAddr &server,
                                 const LSN &base_lsn,
                                 const LogInfo &base_prev_log_info) override final;
@@ -1181,7 +1128,6 @@ private:
                    const LogMeta &log_meta,
                    const char *log_dir,
                    const common::ObAddr &self,
-                   FetchLogEngine *fetch_log_engine,
                    ObILogAllocator *alloc_mgr,
                    LogRpc *log_rpc,
                    IPalfEnvImpl *palf_env_impl);
@@ -1215,56 +1161,7 @@ private:
                                const LSN &log_lsn,
                                const LSN &log_end_lsn,
                                const int64_t &log_proposal_id);
-  int receive_log_(const common::ObAddr &server,
-                  const PushLogType push_log_type,
-                  const int64_t &msg_proposal_id,
-                  const LSN &prev_lsn,
-                  const int64_t &prev_log_proposal_id,
-                  const LSN &lsn,
-                  const char *buf,
-                  const int64_t buf_len);
-  int fetch_log_from_storage_(const common::ObAddr &server,
-                              const FetchLogType fetch_type,
-                              const int64_t &msg_proposal_id,
-                              const LSN &prev_lsn,
-                              const LSN &fetch_start_lsn,
-                              const int64_t fetch_log_size,
-                              const int64_t fetch_log_count,
-                              const SCN &replayable_point,
-                              FetchLogStat &fetch_stat);
-  int batch_fetch_log_each_round_(const common::ObAddr &server,
-                                  const int64_t msg_proposal_id,
-                                  PalfGroupBufferIterator &iterator,
-                                  const bool is_limitted_by_end_lsn,
-                                  const bool is_dest_in_memberlist,
-                                  const share::SCN& replayable_point,
-                                  const LSN &fetch_end_lsn,
-                                  const LSN &committed_end_lsn,
-                                  const int64_t batch_log_size_threshold,
-                                  BatchFetchParams &batch_fetch_params,
-                                  bool &skip_next,
-                                  bool &is_reach_end,
-                                  FetchLogStat &fetch_stat);
-  int submit_fetch_log_resp_(const common::ObAddr &server,
-                             const int64_t &msg_proposal_id,
-                             const int64_t &prev_log_proposal_id,
-                             const LSN &prev_lsn,
-                             const LSN &curr_lsn,
-                             const LogGroupEntry &curr_group_entry);
-  int submit_fetch_log_resp_(const common::ObAddr &server,
-                             const int64_t &msg_proposal_id,
-                             const int64_t &prev_log_proposal_id,
-                             const LSN &prev_lsn,
-                             const LSN &curr_lsn,
-                             const char *buf,
-                             const int64_t buf_len);
-  int submit_batch_fetch_log_resp_(const common::ObAddr &server,
-                                   const int64_t msg_proposal_id,
-                                   const int64_t prev_log_proposal_id,
-                                   const LSN &prev_lsn,
-                                   const LSN &curr_lsn,
-                                   const char *buf,
-                                   const int64_t buf_len);
+
   int try_update_proposal_id_(const common::ObAddr &server,
                               const int64_t &proposal_id);
   int get_binary_search_range_(const share::SCN &scn,
@@ -1451,7 +1348,6 @@ private:
   LogEngine log_engine_;
   election::ElectionImpl election_;
   LogCache log_cache_;
-  FetchLogEngine *fetch_log_engine_;
   common::ObILogAllocator *allocator_;
   int64_t palf_id_;
   common::ObAddr self_;

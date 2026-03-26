@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_NET_SERVICE_
@@ -52,75 +48,6 @@ public:
   int start();
 
   template<class List>
-  int submit_push_log_req(
-      const List &member_list,
-      const PushLogType &push_log_type,
-      const int64_t &msg_proposal_id,
-      const int64_t &prev_log_proposal_id,
-      const LSN &prev_lsn,
-      const LSN &curr_lsn,
-      const LogWriteBuf &write_buf)
-  {
-    int ret = OB_SUCCESS;
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-      PALF_LOG(ERROR, "LogNetService has not inited!!!", K(ret));
-    } else {
-      LogPushReq push_log_req(push_log_type,
-                              msg_proposal_id,
-                              prev_log_proposal_id,
-                              prev_lsn,
-                              curr_lsn,
-                              write_buf);
-      ret = post_request_to_member_list_(member_list, push_log_req);
-    }
-    return ret;
-  }
-    
-  template<class List>
-  int submit_batch_push_log_req(
-      const List &member_list,
-      const PushLogType &push_log_type,
-      const int64_t &msg_proposal_id,
-      const int64_t &prev_log_proposal_id,
-      const LSN &prev_lsn,
-      const LSN &curr_lsn,
-      const LogWriteBuf &write_buf)
-  {
-    int ret = OB_SUCCESS;
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-      PALF_LOG(ERROR, "LogNetService has not inited!!!", K(ret));
-    } else {
-      LogBatchPushReq push_log_req(push_log_type,
-                                   msg_proposal_id,
-                                   prev_log_proposal_id,
-                                   prev_lsn,
-                                   curr_lsn,
-                                   write_buf);
-      ret = post_request_to_member_list_(member_list, push_log_req);
-      PALF_LOG(TRACE, "post_request_to_member_list_ success", K(member_list), K(push_log_req));
-    }
-    return ret;
-  }
-
-  int submit_push_log_req(
-      const ObAddr &server,
-      const PushLogType &push_log_type,
-      const int64_t &msg_proposal_id,
-      const int64_t &prev_log_proposal_id,
-      const LSN &prev_lsn,
-      const LSN &curr_lsn,
-      const LogWriteBuf &write_buf);
-
-
-  int submit_push_log_resp(
-      const common::ObAddr &server,
-      const int64_t &msg_proposal_id,
-      const LSN &lsn,
-      const bool is_batch);
-
-  template<class List>
   int submit_prepare_meta_req(
       const List &member_list,
       const int64_t &log_proposal_id)
@@ -150,31 +77,10 @@ public:
       const LSN &committed_end_lsn,
       const LogModeMeta &mode_meta);
 
-  int submit_fetch_log_req(
-      const common::ObAddr &server,
-      const FetchLogType fetch_type,
-      const int64_t msg_proposal_id,
-      const LSN &prev_lsn,
-      const LSN &lsn,
-      const int64_t fetch_log_size,
-      const int64_t fetch_log_count,
-      const int64_t accepted_mode_pid);
-
-  int submit_batch_fetch_log_resp(
-    const common::ObAddr &server,
-    const int64_t msg_proposal_id,
-    const int64_t prev_log_proposal_id,
-    const LSN &prev_lsn,
-    const LSN &curr_lsn,
-    const LogWriteBuf &write_buf);
-
   int submit_notify_rebuild_req(
     const ObAddr &server,
     const LSN &base_lsn,
     const LogInfo &base_prev_log_info);
-
-  int submit_notify_fetch_log_req(
-    const ObMemberList &dst_list);
 
   template<class List>
   int submit_change_config_meta_req(

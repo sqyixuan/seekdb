@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 #define private public
 #include "ob_simple_log_server.h"
@@ -738,9 +734,6 @@ bool ObLogServerReqQueueHandler::handlePacketQueue(ObRequest *req, void */* arg 
       case obrpc::OB_LOG_PUSH_RESP: {
         PALF_PROCESS(LogPushRespP);
       }
-      case obrpc::OB_LOG_FETCH_REQ: {
-        PALF_PROCESS(LogFetchReqP);
-      }
       case obrpc::OB_LOG_PREPARE_REQ: {
         PALF_PROCESS(LogPrepareReqP);
       }
@@ -791,9 +784,6 @@ bool ObLogServerReqQueueHandler::handlePacketQueue(ObRequest *req, void */* arg 
       }
       case obrpc::OB_LOG_GET_MC_ST: {
         PALF_PROCESS(LogGetMCStP)
-      }
-      case obrpc::OB_LOG_BATCH_FETCH_RESP: {
-        PALF_PROCESS(LogBatchFetchRespP)
       }
       case obrpc::OB_LOG_CREATE_REPLICA_CMD: {
         LOG_SERVICE_PROCESS(palfcluster::LogCreateReplicaCmdP)

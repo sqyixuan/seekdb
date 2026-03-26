@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "log_net_service.h"
@@ -63,31 +59,6 @@ int LogNetService::start()
   return ret;
 }
 
-int LogNetService::submit_push_log_req(
-    const common::ObAddr &server,
-    const PushLogType &push_log_type,
-    const int64_t &msg_proposal_id,
-    const int64_t &prev_log_proposal_id,
-    const LSN &prev_lsn,
-    const LSN &curr_lsn,
-    const LogWriteBuf &write_buf)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    PALF_LOG(ERROR, "LogNetService has not inited!!!", K(ret));
-  } else {
-    LogPushReq push_log_req(push_log_type,
-                            msg_proposal_id,
-                            prev_log_proposal_id,
-                            prev_lsn,
-                            curr_lsn,
-                            write_buf);
-    ret = post_request_to_server_(server, push_log_req);
-  }
-  return ret;
-}
-
 int LogNetService::submit_committed_info_req(
       const common::ObAddr &server,
       const int64_t &msg_proposal_id,
@@ -107,75 +78,6 @@ int LogNetService::submit_committed_info_req(
   return ret;
 }
 
-int LogNetService::submit_push_log_resp(
-    const ObAddr &server,
-    const int64_t &msg_proposal_id,
-    const LSN &lsn,
-    const bool is_batch)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    PALF_LOG(ERROR, "LogNetService not inited", K(ret), K(palf_id_),
-        K(server), K(msg_proposal_id), K(lsn));
-  } else if (false == server.is_valid()
-             || INVALID_PROPOSAL_ID == msg_proposal_id
-             || false == lsn.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    PALF_LOG(ERROR, "Invalid argument!!!", K(ret), K(palf_id_),
-        K(server), K(msg_proposal_id), K(lsn));
-  } else if (is_batch) {
-    LogBatchPushResp push_log_resp(msg_proposal_id, lsn);
-    ret = post_request_to_server_(server, push_log_resp);
-  } else {
-    LogPushResp push_log_resp(msg_proposal_id, lsn);
-    ret = post_request_to_server_(server, push_log_resp);
-  }
-  return ret;
-}
-
-int LogNetService::submit_fetch_log_req(
-    const ObAddr &server,
-    const FetchLogType fetch_type,
-    const int64_t msg_proposal_id,
-    const LSN &prev_lsn,
-    const LSN &lsn,
-    const int64_t fetch_log_size,
-    const int64_t fetch_log_count,
-    const int64_t accepted_mode_pid)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    PALF_LOG(ERROR, "LogNetService not inited!!!", K(ret), K(palf_id_));
-  } else {
-    LogFetchReq fetch_log_req(fetch_type, msg_proposal_id, prev_lsn, lsn, fetch_log_size,
-        fetch_log_count, accepted_mode_pid);
-    ret = post_request_to_server_(server, fetch_log_req);
-  }
-  return ret;
-}
-
-int LogNetService::submit_batch_fetch_log_resp(
-    const common::ObAddr &server,
-    const int64_t msg_proposal_id,
-    const int64_t prev_log_proposal_id,
-    const LSN &prev_lsn,
-    const LSN &curr_lsn,
-    const LogWriteBuf &write_buf)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    PALF_LOG(ERROR, "LogNetService not inited!!!", K(ret), K(palf_id_));
-  } else {
-    LogBatchFetchResp batch_fetch_log_resp(msg_proposal_id, prev_log_proposal_id,
-        prev_lsn, curr_lsn, write_buf);
-    ret = post_request_to_server_(server, batch_fetch_log_resp);
-  }
-  return ret;
-}
-
 int LogNetService::submit_notify_rebuild_req(
   const ObAddr &server,
   const LSN &base_lsn,
@@ -187,18 +89,6 @@ int LogNetService::submit_notify_rebuild_req(
   } else {
     NotifyRebuildReq notify_rebuild_req(base_lsn, base_prev_log_info);
     ret = post_request_to_server_(server, notify_rebuild_req);
-  }
-  return ret;
-}
-
-int LogNetService::submit_notify_fetch_log_req(const ObMemberList &dst_list)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    NotifyFetchLogReq notify_req;
-    ret = post_request_to_member_list_(dst_list, notify_req);
   }
   return ret;
 }

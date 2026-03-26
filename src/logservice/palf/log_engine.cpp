@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**log_engine.cpp
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX PALF
@@ -197,7 +193,6 @@ int LogEngine::load(const int64_t palf_id,
                     LogIOWorker *log_io_worker,
                     LogSharedQueueTh *log_shared_queue_th,
                     LogPlugins *plugins,
-                    LSN &last_group_entry_header_lsn,
                     LogGroupEntryHeader &entry_header,
                     const int64_t palf_epoch,
                     const int64_t log_storage_block_size,
@@ -226,6 +221,7 @@ int LogEngine::load(const int64_t palf_id,
     }
     return ret;
   };
+  LSN last_group_entry_header_lsn;
   LSN last_meta_entry_start_lsn;
   LogMetaEntryHeader unused_meta_entry_header;
   if (IS_INIT) {
@@ -1093,61 +1089,6 @@ int LogEngine::update_log_snapshot_meta_for_flashback(const LogInfo &log_info,
 // ===================== MetaStorage end =======================
 
 // ===================== NetService start ======================
-int LogEngine::submit_push_log_req(const common::ObAddr &server,
-                                   const PushLogType &push_log_type,
-                                   const int64_t &msg_proposal_id,
-                                   const int64_t &prev_log_proposal_id,
-                                   const LSN &prev_lsn,
-                                   const LSN &curr_lsn,
-                                   const LogWriteBuf &write_buf)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    PALF_LOG(ERROR, "LogEngine not init", K(ret), K_(palf_id), K_(is_inited));
-  } else if (OB_FAIL(log_net_service_.submit_push_log_req(server,
-                                                          push_log_type,
-                                                          msg_proposal_id,
-                                                          prev_log_proposal_id,
-                                                          prev_lsn,
-                                                          curr_lsn,
-                                                          write_buf))) {
-    PALF_LOG(ERROR,
-             "LogNetService submit_group_entry_to_server failed",
-             K(ret),
-             K_(palf_id), K_(is_inited),
-             K(server),
-             K(prev_log_proposal_id),
-             K(prev_lsn),
-             K(curr_lsn),
-             K(write_buf));
-  } else {
-    PALF_LOG(TRACE,
-             "submit_group_entry_to_server success",
-             K(ret),
-             K_(palf_id), K_(is_inited),
-             K(server),
-             K(prev_log_proposal_id),
-             K(prev_lsn),
-             K(curr_lsn));
-  }
-  return ret;
-}
-
-int LogEngine::submit_push_log_resp(const ObAddr &server,
-                                    const int64_t &msg_proposal_id,
-                                    const LSN &lsn,
-                                    const bool is_batch)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    ret = log_net_service_.submit_push_log_resp(server, msg_proposal_id, lsn, is_batch);
-    PALF_LOG(TRACE, "submit_push_log_resp success", K(ret), K(server));
-  }
-  return ret;
-}
 
 int LogEngine::submit_prepare_meta_resp(const common::ObAddr &server,
                                         const int64_t &msg_proposal_id,
@@ -1224,44 +1165,6 @@ int LogEngine::sync_get_arb_member_info(const common::ObAddr &server,
 }
 #endif
 
-int LogEngine::submit_fetch_log_req(const ObAddr &server,
-                                    const FetchLogType fetch_type,
-                                    const int64_t msg_proposal_id,
-                                    const LSN &prev_lsn,
-                                    const LSN &lsn,
-                                    const int64_t fetch_log_size,
-                                    const int64_t fetch_log_count,
-                                    const int64_t accepted_mode_pid)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    ret = log_net_service_.submit_fetch_log_req(
-        server, fetch_type, msg_proposal_id, prev_lsn, lsn,
-        fetch_log_size, fetch_log_count, accepted_mode_pid);
-  }
-  return ret;
-}
-
-int LogEngine::submit_batch_fetch_log_resp(const common::ObAddr &server,
-                                           const int64_t msg_proposal_id,
-                                           const int64_t prev_log_proposal_id,
-                                           const LSN &prev_lsn,
-                                           const LSN &curr_lsn,
-                                           const LogWriteBuf &write_buf)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    ret = log_net_service_.submit_batch_fetch_log_resp(
-        server, msg_proposal_id, prev_log_proposal_id,
-        prev_lsn, curr_lsn, write_buf);
-  }
-  return ret;
-}
-
 int LogEngine::submit_notify_rebuild_req(const ObAddr &server,
                                          const LSN &base_lsn,
                                          const LogInfo &base_prev_log_info)
@@ -1277,13 +1180,7 @@ int LogEngine::submit_notify_rebuild_req(const ObAddr &server,
 
 int LogEngine::submit_notify_fetch_log_req(const ObMemberList &dst_list)
 {
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    ret = log_net_service_.submit_notify_fetch_log_req(dst_list);
-  }
-  return ret;
+  return OB_ERR_UNEXPECTED;
 }
 
 int LogEngine::submit_register_parent_req(const common::ObAddr &server,

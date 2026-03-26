@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "ob_batch_processor.h"
@@ -41,7 +37,6 @@ int ObBatchP::process()
     // Get the cluster_id of the source
     const int64_t src_cluster_id = get_src_cluster_id();
     share::ObLSID ls_id;
-    int64_t clog_batch_cnt = 0;
     int64_t trx_batch_cnt = 0;
     while(NULL != (req = arg_.next(req_pos))) {
       // rewrite ret
@@ -61,12 +56,6 @@ int ObBatchP::process()
       }
       if (OB_SUCC(ret)) {
         switch (batch_type) {
-          case CLOG_BATCH_REQ:
-            if (OB_SUCCESS == ls_id.deserialize(buf, req->size_, pos)) {
-              handle_log_req(sender, msg_type, ls_id, buf + pos, req->size_ - (int32_t)pos);
-            }
-            clog_batch_cnt++;
-            break;
           case TRX_BATCH_REQ_NODELAY:
             trx_batch_cnt++;
             if (OB_SUCCESS == ls_id.deserialize(buf, req->size_, pos)) {
@@ -85,7 +74,7 @@ int ObBatchP::process()
       }
     }
     if (REACH_TIME_INTERVAL(3000000)) {
-      RPC_LOG(INFO, "batch rpc statistics", K(clog_batch_cnt), K(trx_batch_cnt));
+      RPC_LOG(INFO, "batch rpc statistics", K(trx_batch_cnt));
     }
   }
   return ret;
@@ -131,10 +120,6 @@ int ObBatchP::handle_log_req(const common::ObAddr& sender, int type, const share
     ret = OB_ERR_UNEXPECTED;
     RPC_LOG(ERROR, "palf_env is nullptr", K(ret), KP(log_service));
   } else if (FALSE_IT(palf_env_impl = log_service->get_palf_env()->get_palf_env_impl())) {
-  } else if (palf::LOG_BATCH_PUSH_LOG_REQ == type) {
-    __LOG_BATCH_PROCESS_REQ(palf::LogPushReq);
-  } else if (palf::LOG_BATCH_PUSH_LOG_RESP == type) {
-    __LOG_BATCH_PROCESS_REQ(palf::LogPushResp);
   } else {
     RPC_LOG(ERROR, "invalid sub_type", K(ret), K(type));
   }

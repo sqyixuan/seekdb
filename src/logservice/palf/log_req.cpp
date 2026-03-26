@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "log_req.h"
@@ -21,193 +17,6 @@ namespace oceanbase
 using namespace common;
 namespace palf
 {
-// ==================== LogPushReq start ========================
-LogPushReq::LogPushReq()
-    : push_log_type_(PUSH_LOG),
-      msg_proposal_id_(INVALID_PROPOSAL_ID),
-      prev_log_proposal_id_(INVALID_PROPOSAL_ID),
-      prev_lsn_(),
-      curr_lsn_(),
-      write_buf_()
-{
-}
-
-LogPushReq::LogPushReq(const PushLogType push_log_type,
-                       const int64_t &msg_proposal_id,
-                       const int64_t &prev_log_proposal_id,
-                       const LSN &prev_lsn,
-                       const LSN &curr_lsn,
-                       const LogWriteBuf &write_buf)
-    : push_log_type_(push_log_type),
-      msg_proposal_id_(msg_proposal_id),
-      prev_log_proposal_id_(prev_log_proposal_id),
-      prev_lsn_(prev_lsn),
-      curr_lsn_(curr_lsn),
-      write_buf_(write_buf)
-{
-}
-
-LogPushReq::~LogPushReq()
-{
-  reset();
-}
-
-bool LogPushReq::is_valid() const
-{
-  // NB: prev_lsn may be invalid
-  return INVALID_PROPOSAL_ID != msg_proposal_id_
-         && true == curr_lsn_.is_valid()
-         && true == write_buf_.is_valid();
-}
-
-void LogPushReq::reset()
-{
-  push_log_type_ = PUSH_LOG;
-  msg_proposal_id_ = INVALID_PROPOSAL_ID;
-  prev_log_proposal_id_ = INVALID_PROPOSAL_ID;
-  prev_lsn_.reset();
-  curr_lsn_.reset();
-  write_buf_.reset();
-}
-
-OB_DEF_SERIALIZE(LogPushReq)
-{
-  int ret = OB_SUCCESS;
-  int64_t new_pos = pos;
-  if (NULL == buf || pos < 0 || pos > buf_len) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(serialization::encode_i16(buf, buf_len, new_pos, push_log_type_))
-             || OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, msg_proposal_id_))
-             || OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, prev_log_proposal_id_))
-             || OB_FAIL(prev_lsn_.serialize(buf, buf_len, new_pos))
-             || OB_FAIL(curr_lsn_.serialize(buf, buf_len, new_pos))
-             || OB_FAIL(write_buf_.serialize(buf, buf_len, new_pos))) {
-    PALF_LOG(ERROR, "LogPushReq serialize failed", K(ret), K(new_pos));
-  } else {
-    pos = new_pos;
-  }
-  return ret;
-}
-
-OB_DEF_DESERIALIZE(LogPushReq)
-{
-  int ret = OB_SUCCESS;
-  int64_t new_pos = pos;
-  if (NULL == buf || pos < 0 || pos > data_len) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(serialization::decode_i16(buf, data_len, new_pos, &push_log_type_))
-             || OB_FAIL(serialization::decode_i64(buf, data_len, new_pos, reinterpret_cast<int64_t*>(&msg_proposal_id_)))
-             || OB_FAIL(serialization::decode_i64(buf, data_len, new_pos, reinterpret_cast<int64_t*>(&prev_log_proposal_id_)))
-             || OB_FAIL(prev_lsn_.deserialize(buf, data_len, new_pos))
-             || OB_FAIL(curr_lsn_.deserialize(buf, data_len, new_pos))
-             || OB_FAIL(write_buf_.deserialize(buf, data_len, new_pos))) {
-    PALF_LOG(ERROR, "LogPushReq serialize failed", K(ret), K(new_pos));
-  } else {
-    pos = new_pos;
-  }
-  return ret;
-}
-
-OB_DEF_SERIALIZE_SIZE(LogPushReq)
-{
-  int64_t size = 0;
-  size += serialization::encoded_length_i16(push_log_type_);
-  size += serialization::encoded_length_i64(msg_proposal_id_);
-  size += serialization::encoded_length_i64(prev_log_proposal_id_);
-  size += prev_lsn_.get_serialize_size();
-  size += curr_lsn_.get_serialize_size();
-  size += write_buf_.get_serialize_size();
-  return size;
-}
-// ================== LogPushReq end =========================
-
-// ================== LogPushResp start ======================
-LogPushResp::LogPushResp()
-    : msg_proposal_id_(INVALID_PROPOSAL_ID),
-      lsn_()
-{
-}
-
-LogPushResp::LogPushResp(const int64_t &msg_proposal_id,
-                             const LSN &lsn)
-    : msg_proposal_id_(msg_proposal_id),
-      lsn_(lsn)
-{
-}
-
-LogPushResp::~LogPushResp()
-{
-  reset();
-}
-
-bool LogPushResp::is_valid() const
-{
-  return INVALID_PROPOSAL_ID != msg_proposal_id_
-         && true == lsn_.is_valid();
-}
-
-void LogPushResp::reset()
-{
-  msg_proposal_id_ = INVALID_PROPOSAL_ID;
-  lsn_.reset();
-}
-
-OB_SERIALIZE_MEMBER(LogPushResp, msg_proposal_id_, lsn_);
-// ================= LogPushResp end =======================
-
-// ================= LogFetchReq start =====================
-LogFetchReq::LogFetchReq()
-    : fetch_type_(FETCH_LOG_FOLLOWER),
-      msg_proposal_id_(INVALID_PROPOSAL_ID),
-      prev_lsn_(),
-      lsn_(),
-      fetch_log_size_(0),
-      fetch_log_count_(0)
-{
-}
-
-LogFetchReq::LogFetchReq(const FetchLogType fetch_type,
-                         const int64_t msg_proposal_id,
-                         const LSN &prev_lsn,
-                         const LSN &lsn,
-                         const int64_t fetch_log_size,
-                         const int64_t fetch_log_count,
-                         const int64_t accepted_mode_pid)
-    : fetch_type_(fetch_type),
-      msg_proposal_id_(msg_proposal_id),
-      prev_lsn_(prev_lsn),
-      lsn_(lsn),
-      fetch_log_size_(fetch_log_size),
-      fetch_log_count_(fetch_log_count),
-      accepted_mode_pid_(accepted_mode_pid)
-{
-}
-
-LogFetchReq::~LogFetchReq()
-{
-  reset();
-}
-
-bool LogFetchReq::is_valid() const
-{
-  return INVALID_PROPOSAL_ID != msg_proposal_id_
-          && true == lsn_.is_valid();
-}
-
-void LogFetchReq::reset()
-{
-  fetch_type_ = FETCH_LOG_FOLLOWER;
-  msg_proposal_id_ = INVALID_PROPOSAL_ID;
-  prev_lsn_.reset();
-  lsn_.reset();
-  fetch_log_size_ = 0;
-  fetch_log_count_ = 0;
-  accepted_mode_pid_ = INVALID_PROPOSAL_ID;
-}
-
-OB_SERIALIZE_MEMBER(LogFetchReq, fetch_type_, msg_proposal_id_, prev_lsn_, lsn_, fetch_log_size_,
-    fetch_log_count_, accepted_mode_pid_);
-// ================= LogFetchReq end ======================
 
 NotifyRebuildReq::NotifyRebuildReq()
     : base_lsn_(), base_prev_log_info_()
@@ -237,19 +46,6 @@ void NotifyRebuildReq::reset()
 }
 
 OB_SERIALIZE_MEMBER(NotifyRebuildReq, base_lsn_, base_prev_log_info_);
-
-NotifyFetchLogReq::NotifyFetchLogReq()
-{}
-
-NotifyFetchLogReq::~NotifyFetchLogReq()
-{}
-
-bool NotifyFetchLogReq::is_valid() const
-{
-  return true;
-}
-
-OB_SERIALIZE_MEMBER(NotifyFetchLogReq);
 
 // ================= LogPrepareReq start =================
 LogPrepareReq::LogPrepareReq()
@@ -370,7 +166,7 @@ LogChangeConfigMetaReq::~LogChangeConfigMetaReq()
 bool LogChangeConfigMetaReq::is_valid() const
 {
   return INVALID_PROPOSAL_ID != msg_proposal_id_
-//         && INVALID_PROPOSAL_ID != prev_log_proposal_id_  // For scenarios where there is no write to the log stream, prev_log is invalid
+//         && INVALID_PROPOSAL_ID != prev_log_proposal_id_  // 对于日志流无写入的场景，prev_log是无效的
 //         && prev_lsn_.is_valid()
          && meta_.is_valid();
 }
@@ -851,98 +647,6 @@ OB_SERIALIZE_MEMBER(ArbMemberInfo, palf_id_, arb_server_, log_proposal_id_,
     config_version_, mode_version_, access_mode_, paxos_member_list_,
     paxos_replica_num_, arbitration_member_, degraded_list_);
 #endif
-
-LogBatchFetchResp::LogBatchFetchResp()
-    : msg_proposal_id_(INVALID_PROPOSAL_ID),
-      prev_log_proposal_id_(INVALID_PROPOSAL_ID),
-      prev_lsn_(),
-      curr_lsn_(),
-      write_buf_()
-{
-}
-
-LogBatchFetchResp::LogBatchFetchResp(const int64_t msg_proposal_id,
-                                     const int64_t prev_log_proposal_id,
-                                     const LSN &prev_lsn,
-                                     const LSN &curr_lsn,
-                                     const LogWriteBuf &write_buf)
-    : msg_proposal_id_(msg_proposal_id),
-      prev_log_proposal_id_(prev_log_proposal_id),
-      prev_lsn_(prev_lsn),
-      curr_lsn_(curr_lsn),
-      write_buf_(write_buf)
-{
-}
-
-LogBatchFetchResp::~LogBatchFetchResp()
-{
-  reset();
-}
-
-bool LogBatchFetchResp::is_valid() const
-{
-  return INVALID_PROPOSAL_ID != msg_proposal_id_
-      && true == curr_lsn_.is_valid()
-      && true == write_buf_.is_valid();
-}
-
-void LogBatchFetchResp::reset()
-{
-  msg_proposal_id_ = INVALID_PROPOSAL_ID;
-  prev_log_proposal_id_ = INVALID_PROPOSAL_ID;
-  prev_lsn_.reset();
-  curr_lsn_.reset();
-  write_buf_.reset();
-}
-
-OB_DEF_SERIALIZE(LogBatchFetchResp)
-{
-  int ret = OB_SUCCESS;
-  int64_t new_pos = pos;
-  if (NULL == buf || pos < 0 || pos > buf_len) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, msg_proposal_id_))
-             || OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, prev_log_proposal_id_))
-             || OB_FAIL(prev_lsn_.serialize(buf, buf_len, new_pos))
-             || OB_FAIL(curr_lsn_.serialize(buf, buf_len, new_pos))
-             || OB_FAIL(write_buf_.serialize(buf, buf_len, new_pos))) {
-    PALF_LOG(ERROR, "LogBatchFetchResp serialize failed", K(ret), K(new_pos));
-  } else {
-    pos = new_pos;
-  }
-  return ret;
-}
- 
-OB_DEF_DESERIALIZE(LogBatchFetchResp)
-{
-  int ret = OB_SUCCESS;
-  int64_t new_pos = pos;
-  if (NULL == buf || pos < 0 || pos > data_len) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(serialization::decode_i64(buf, data_len, new_pos,
-                                               reinterpret_cast<int64_t *>(&msg_proposal_id_)))
-             || OB_FAIL(serialization::decode_i64(buf, data_len, new_pos,
-                                               reinterpret_cast<int64_t *>(&prev_log_proposal_id_)))
-             || OB_FAIL(prev_lsn_.deserialize(buf, data_len, new_pos))
-             || OB_FAIL(curr_lsn_.deserialize(buf, data_len, new_pos))
-             || OB_FAIL(write_buf_.deserialize(buf, data_len, new_pos))) {
-    PALF_LOG(ERROR, "LogBatchFetchResp deserialize failed", K(ret), K(new_pos));
-  } else {
-    pos = new_pos;
-  }
-  return ret;
-}
-
-OB_DEF_SERIALIZE_SIZE(LogBatchFetchResp)
-{
-  int64_t size = 0;
-  size += serialization::encoded_length_i64(msg_proposal_id_);
-  size += serialization::encoded_length_i64(prev_log_proposal_id_);
-  size += prev_lsn_.get_serialize_size();
-  size += curr_lsn_.get_serialize_size();
-  size += write_buf_.get_serialize_size();
-  return size;
-}
 
 } // end namespace palf
 } // end namespace oceanbase

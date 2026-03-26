@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OB_SHARE_TENANT_MUTIL_ALLOCATOR_H_
@@ -36,7 +32,6 @@ class LogIOTruncatePrefixBlocksTask;
 class LogIOFlushMetaTask;
 class LogIOFlashbackTask;
 class LogIOPurgeThrottlingTask;
-class FetchLogTask;
 class LogFillCacheTask;
 }
 namespace logservice
@@ -73,8 +68,6 @@ public:
   virtual void free_log_io_flush_meta_task(palf::LogIOFlushMetaTask *ptr) = 0;
   virtual palf::LogIOTruncatePrefixBlocksTask *alloc_log_io_truncate_prefix_blocks_task(const int64_t palf_id, const int64_t palf_epoch) = 0;
   virtual void free_log_io_truncate_prefix_blocks_task(palf::LogIOTruncatePrefixBlocksTask *ptr) = 0;
-  virtual palf::FetchLogTask *alloc_palf_fetch_log_task() = 0;
-  virtual void free_palf_fetch_log_task(palf::FetchLogTask *ptr) = 0;
   virtual void *alloc_replay_task(const int64_t size) = 0;
   virtual void *alloc_replay_log_buf(const int64_t size) = 0;
   virtual void free_replay_task(logservice::ObLogReplayTask *ptr) = 0;
@@ -153,8 +146,6 @@ public:
   void free_log_io_flush_meta_task(palf::LogIOFlushMetaTask *ptr);
   palf::LogIOTruncatePrefixBlocksTask *alloc_log_io_truncate_prefix_blocks_task(const int64_t palf_id, const int64_t palf_epoch);
   void free_log_io_truncate_prefix_blocks_task(palf::LogIOTruncatePrefixBlocksTask *ptr);
-  palf::FetchLogTask *alloc_palf_fetch_log_task();
-  void free_palf_fetch_log_task(palf::FetchLogTask *ptr);
   void *alloc_replay_task(const int64_t size);
   void *alloc_replay_log_buf(const int64_t size);
   void free_replay_task(logservice::ObLogReplayTask *ptr);
@@ -186,7 +177,6 @@ private:
   const int LOG_IO_TRUNCATE_LOG_TASK_SIZE;
   const int LOG_IO_FLUSH_META_TASK_SIZE;
   const int LOG_IO_TRUNCATE_PREFIX_BLOCKS_TASK_SIZE;
-  const int PALF_FETCH_LOG_TASK_SIZE;
   const int LOG_IO_FLASHBACK_TASK_SIZE;
   const int LOG_IO_PURGE_THROTTLING_TASK_SIZE;
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -202,7 +192,6 @@ private:
   ObSliceAlloc log_io_truncate_log_task_alloc_;
   ObSliceAlloc log_io_flush_meta_task_alloc_;
   ObSliceAlloc log_io_truncate_prefix_blocks_task_alloc_;
-  ObSliceAlloc palf_fetch_log_task_alloc_;
   ObVSliceAlloc replay_log_task_alloc_;
   ObSliceAlloc log_io_flashback_task_alloc_;
   ObSliceAlloc log_io_purge_throttling_task_alloc_;

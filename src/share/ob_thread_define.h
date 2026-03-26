@@ -1,22 +1,18 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifdef TG_DEF
 #define GET_THREAD_NUM_BY_NPROCESSORS(factor) (sysconf(_SC_NPROCESSORS_ONLN) / (factor) > 0 ? sysconf(_SC_NPROCESSORS_ONLN) / (factor) : 1)
-#define GET_THREAD_NUM_BY_NPROCESSORS_WITH_LIMIT(factor, limit) (sysconf(_SC_NPROCESSORS_ONLN) / (factor) > 0 ? min(static_cast<int64_t>(sysconf(_SC_NPROCESSORS_ONLN) / (factor)), static_cast<int64_t>(limit)) : 1)
+#define GET_THREAD_NUM_BY_NPROCESSORS_WITH_LIMIT(factor, limit) (sysconf(_SC_NPROCESSORS_ONLN) / (factor) > 0 ? min(sysconf(_SC_NPROCESSORS_ONLN) / (factor), limit) : 1)
 #define GET_MYSQL_THREAD_COUNT(default_cnt) (GCONF.sql_login_thread_count ? GCONF.sql_login_thread_count : (default_cnt))
 TG_DEF(TEST_OB_TH, testObTh, THREAD_POOL, 1)
 TG_DEF(COMMON_THREAD_POOL, ComTh, THREAD_POOL, 1)
@@ -35,7 +31,7 @@ TG_DEF(StandbyTimestampService, StandbyTimestampService, THREAD_POOL, 1)
 TG_DEF(TSnapSvc, TSnapSvc, THREAD_POOL, 1)
 TG_DEF(WeakReadService, WeakRdSrv, THREAD_POOL, 1)
 // TG_DEF(TransTaskWork, TransTaskWork, QUEUE_THREAD, ThreadCountPair(GET_THREAD_NUM_BY_NPROCESSORS(12), 1), transaction::ObThreadLocalTransCtx::MAX_BIG_TRANS_TASK)
-TG_DEF(DDLTaskExecutor3, DDLTaskExecutor3, REENTRANT_THREAD_POOL, ThreadCountPair(8, 2))
+TG_DEF(DDLTaskExecutor3, DDLTaskExecutor3, REENTRANT_THREAD_POOL, ThreadCountPair(8, 1))
 TG_DEF(TSWorker, TSWorker, QUEUE_THREAD, ThreadCountPair(GET_THREAD_NUM_BY_NPROCESSORS(12), 1), transaction::ObTsWorker::MAX_TASK_NUM)
 TG_DEF(BRPC, BRPC, THREAD_POOL, ThreadCountPair(obrpc::ObBatchRpc::MAX_THREAD_COUNT, obrpc::ObBatchRpc::MINI_MODE_THREAD_COUNT))
 TG_DEF(RLMGR, RLMGR, THREAD_POOL, 1)
@@ -121,9 +117,6 @@ TG_DEF(LogFetcherTimer, LSTimer, TIMER)
 TG_DEF(PalfBlockGC, PalfGC, TIMER)
 TG_DEF(LSFreeze, LSFreeze, QUEUE_THREAD, ThreadCountPair(storage::ObLSFreezeThread::QUEUE_THREAD_NUM, storage::ObLSFreezeThread::MINI_MODE_QUEUE_THREAD_NUM),
        storage::ObLSFreezeThread::MAX_FREE_TASK_NUM)
-TG_DEF(LSFetchLogEngine, FetchLog, LINK_QUEUE_THREAD,
-       ThreadCountPair(palf::FetchLogEngine::FETCH_LOG_THREAD_COUNT, palf::FetchLogEngine::MINI_MODE_FETCH_LOG_THREAD_COUNT),
-       palf::FetchLogEngine::FETCH_LOG_TASK_MAX_COUNT_PER_LS * OB_MAX_LS_NUM_PER_TENANT_PER_SERVER_CAN_BE_SET)
 TG_DEF(DagScheduler, DagScheduler, THREAD_POOL, 1)
 TG_DEF(DagWorker, DagWorker, THREAD_POOL, 1)
 TG_DEF(RCService, RCSrv, QUEUE_THREAD,
@@ -227,5 +220,4 @@ TG_DEF(MultiVersionGarbageCollector, MultiVersionGC, TIMER)
 TG_DEF(TenantFreezer, FrzTrigger, TIMER)
 TG_DEF(CommonLSService, COMMONLSSe, TIMER)
 TG_DEF(PxTargetMgr, PxTargetMgr, TIMER)
-TG_DEF(TLD_HTimer, TLD_HTimer, TIMER)
 #endif

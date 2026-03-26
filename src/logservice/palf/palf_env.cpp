@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX PALF
@@ -43,7 +39,6 @@ int PalfEnv::create_palf_env(
     const char *base_dir,
     const common::ObAddr &self,
     rpc::frame::ObReqTransport *transport,
-    obrpc::ObBatchRpc *batch_rpc,
     common::ObILogAllocator *log_alloc_mgr,
     ILogBlockPool *log_block_pool,
     PalfMonitorCb *monitor,
@@ -59,7 +54,7 @@ int PalfEnv::create_palf_env(
   } else if (OB_FAIL(FileDirectoryUtils::delete_tmp_file_or_directory_at(base_dir))) {
     CLOG_LOG(WARN, "delete_tmp_file_or_directory_at failed", K(ret), K(base_dir));
   } else if (OB_FAIL(palf_env->palf_env_impl_.init(options, base_dir, self, obrpc::ObRpcNetHandler::CLUSTER_ID,
-                                                   MTL_ID(), transport, batch_rpc,
+                                                   MTL_ID(), transport,
                                                    log_alloc_mgr, log_block_pool, monitor, 
                                                    log_local_device, resource_manager, io_manager))) {
     PALF_LOG(WARN, "PalfEnvImpl init failed", K(ret), K(base_dir));
@@ -187,12 +182,6 @@ int PalfEnv::for_each(const ObFunction<int(const PalfHandle &)> &func)
 int PalfEnv::get_io_start_time(int64_t &last_working_time)
 {
   return palf_env_impl_.get_io_start_time(last_working_time);
-}
-
-// should be removed in version 4.2.0.0
-int PalfEnv::update_replayable_point(const SCN &replayable_scn)
-{
-  return palf_env_impl_.update_replayable_point(replayable_scn);
 }
 
 } // end namespace palf

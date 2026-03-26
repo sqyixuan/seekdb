@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_RPC_PROXY_
@@ -35,18 +31,7 @@ class LogRpcProxyV2 : public obrpc::ObRpcProxy
 public:
   DEFINE_TO(LogRpcProxyV2);
   void set_group_id(int32_t group_id);
-  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
-                                  LogPushReq,
-                                  OB_LOG_PUSH_REQ);
-  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
-                                  LogPushResp,
-                                  OB_LOG_PUSH_RESP);
-  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
-                                  LogFetchReq,
-                                  OB_LOG_FETCH_REQ);
-  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
-                                  LogBatchFetchResp,
-                                  OB_LOG_BATCH_FETCH_RESP);
+
   DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
                                   LogPrepareReq,
                                   OB_LOG_PREPARE_REQ);
@@ -68,9 +53,6 @@ public:
   DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
                                   NotifyRebuildReq,
                                   OB_LOG_NOTIFY_REBUILD_REQ);
-  DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
-                                  NotifyFetchLogReq,
-                                  OB_LOG_NOTIFY_FETCH_LOG);
   DECLARE_RPC_PROXY_POST_FUNCTION(PR3,
                                   LogRegisterParentReq,
                                   OB_LOG_REGISTER_PARENT_REQ);

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_DEFINE_
@@ -19,13 +15,6 @@
 #include <cstdint>                                       // UINT64_MAX
 #include <string.h>                                      // strncmp...
 #include <dirent.h>                                      // dirent
-#include <fcntl.h>                                       // O_RDONLY, O_RDWR, O_SYNC
-#ifdef __APPLE__
-// macOS doesn't support O_DIRECT, define it as 0 (no-op)
-#ifndef O_DIRECT
-#define O_DIRECT 0
-#endif
-#endif
 #include "lib/ob_errno.h"                                // errno
 #include "lib/utility/ob_print_utils.h"                  // databuff_printf
 #include "lib/container/ob_fixed_array.h"                // ObFixedArray
@@ -77,9 +66,8 @@ constexpr offset_t MAX_NORMAL_LOG_BODY_SIZE = 2 * 1024 * 1024 + 16 * 1024;
 const int64_t PALF_PHY_BLOCK_SIZE = 1 << 26;                                        // 64MB
 const int64_t PALF_BLOCK_SIZE = PALF_PHY_BLOCK_SIZE - MAX_INFO_BLOCK_SIZE;          // log block size is 64M-MAX_INFO_BLOCK_SIZE by default.
 const int64_t PALF_META_BLOCK_SIZE = PALF_PHY_BLOCK_SIZE - MAX_INFO_BLOCK_SIZE;     // meta block size is 64M-MAX_INFO_BLOCK_SIZE by default.
-const int64_t DEFAULT_LOG_UTL_THRESHOLD = 80;
 
-constexpr int64_t CLOG_FILE_TAIL_PADDING_TRIGGER = 4096;     // Threshold for padding the remaining space at the end of the file
+constexpr int64_t CLOG_FILE_TAIL_PADDING_TRIGGER = 4096;     // 文件尾剩余空间补padding阈值
 // The valid group_entry (not padding entry) size range is:
 //    (0, (MAX_LOG_BODY_SIZE + MAX_LOG_HEADER_SIZE) ).
 // The padding group_entry size range is:
@@ -133,7 +121,7 @@ const int64_t PALF_SYNC_RPC_TIMEOUT_US = 2 * 1000 * 1000;                       
 const int64_t PALF_LOG_SYNC_DELAY_THRESHOLD_US = 3 * 1000 * 1000L;                  // 3 s
 constexpr int64_t INVALID_PROPOSAL_ID = INT64_MAX;
 constexpr int64_t PALF_MAX_PROPOSAL_ID = INT64_MAX - 1;
-constexpr int64_t PALF_INITIAL_PROPOSAL_ID = 1;
+constexpr int64_t PALF_INITIAL_PROPOSAL_ID = 0;
 constexpr char PADDING_LOG_CONTENT_CHAR = '\0';
 const int64_t MIN_WRITING_THTOTTLING_TRIGGER_PERCENTAGE = 40;
 constexpr int64_t PALF_IO_WAIT_EVENT_TIMEOUT_MS = 100;
@@ -163,13 +151,6 @@ constexpr int LOG_READ_FLAG = O_RDONLY | O_DIRECT | O_SYNC;
 constexpr int LOG_WRITE_FLAG = O_RDWR | O_DIRECT | O_SYNC;
 constexpr mode_t FILE_OPEN_MODE = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 // =========== Disk io end ====================
-
-
-// =========== BatchRPC start ==================
-// NOTE: ORDER AND VALUE ARE VITAL, DO NOT CHANGE
-constexpr int64_t LOG_BATCH_PUSH_LOG_REQ = 1;
-constexpr int64_t LOG_BATCH_PUSH_LOG_RESP = 2;
-// =========== BatchRPC end  ==================
 
 // ========== LogCache start =================
 constexpr offset_t LOG_CACHE_ALIGN_SIZE = 64 * 1024;

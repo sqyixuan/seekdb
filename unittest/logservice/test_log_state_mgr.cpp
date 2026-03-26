@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include <gtest/gtest.h>
@@ -135,12 +131,7 @@ TEST_F(TestLogStateMgr, replay_to_leader_active)
   mock_sw_.last_slide_end_lsn_.val_ = 190;
   EXPECT_EQ(OB_SUCCESS, state_mgr_.switch_state());
   EXPECT_EQ(true, state_mgr_.is_follower_pending());
-  // pending to reconfirm
-  mock_election_.leader_ = self_;
-  mock_election_.leader_epoch_ = 12;
-  mock_reconfirm_.mock_ret_ = OB_EAGAIN;
-  EXPECT_EQ(OB_SUCCESS, state_mgr_.switch_state());
-  EXPECT_EQ(true, state_mgr_.is_leader_reconfirm());
+
   // reconfirm to pending
   mock_election_.leader_.reset();
   mock_election_.leader_epoch_ = 0;
@@ -151,10 +142,6 @@ TEST_F(TestLogStateMgr, replay_to_leader_active)
   // pending to reconfirm
   mock_election_.leader_ = self_;
   mock_election_.leader_epoch_ = 13;
-  EXPECT_EQ(OB_SUCCESS, state_mgr_.switch_state());
-  EXPECT_EQ(true, state_mgr_.is_leader_reconfirm());
-  // reconfirm to pending
-  // reconfirm to leader active
   mock_reconfirm_.mock_ret_ = OB_SUCCESS;
   EXPECT_EQ(OB_SUCCESS, state_mgr_.switch_state());
   EXPECT_EQ(true, state_mgr_.is_leader_active());

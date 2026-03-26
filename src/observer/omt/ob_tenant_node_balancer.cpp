@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SERVER_OMT
@@ -106,8 +102,11 @@ void ObTenantNodeBalancer::handle()
     ret = OB_NEED_RETRY;
   } else if (OB_FAIL(unit_getter_.get_tenants(tenants))) {
     LOG_WARN("get cluster tenants fail", K(ret));
-  } else if (OB_FAIL(ODV_MGR.set(OB_SYS_TENANT_ID, GCONF.compatible))) {
-    LOG_WARN("set sys tenant data version failed", K(ret));
+  } else if (OB_FAIL(OTC_MGR.refresh_tenants(tenants))) {
+    LOG_WARN("fail refresh tenant config", K(tenants), K(ret));
+  }
+  if (OB_SUCCESS != (tmp_ret = GCTX.log_block_mgr_->try_resize())) {
+    LOG_WARN("ObServerLogBlockMgr try_resize failed", K(tmp_ret));
   }
 
   FLOG_INFO("refresh tenant config", K(tenants), K(ret));
@@ -185,9 +184,10 @@ int ObTenantNodeBalancer::notify_create_tenant(const obrpc::TenantServerUnitConf
 
   return ret;
 }
-// Mark as deleted rather than directly deleting, because during concurrency, another thread might have fetched the tenant but has not yet refreshed the tenant,
-// At this point, drop tenant will delete the tenant, and another thread will add it back when it refreshes the tenant a while later
-// So here we only make a mark, the deletion of tenant is uniformly done in refresh tenant
+
+// 标记删除，而不是直接删，是因为并发时，另一个线程可能刷到tenant了，但是还没有refresh tenant，
+// 此时drop tenant将tenant删除了，另一个线程过一会refresh tenant时，又给加回来了
+// 所以这里只做标记，删除tenant统一在refresh tenant里做
 int ObTenantNodeBalancer::try_notify_drop_tenant(const int64_t tenant_id)
 {
   LOG_INFO("[DELETE_TENANT] succ to receive notify of dropping tenant", K(tenant_id));
@@ -226,14 +226,6 @@ int ObTenantNodeBalancer::get_server_allocated_resource(ServerResource &server_r
     }
   }
   return ret;
-}
-
-int64_t ObTenantNodeBalancer::get_refresh_interval() {
-  if (!omt_->has_synced()) {
-    return BOOTSTRAP_REFRESH_INTERVAL;
-  } else {
-    return refresh_interval_;
-  }
 }
 
 int ObTenantNodeBalancer::check_del_tenants(const TenantUnits &local_units, TenantUnits &units)
@@ -318,7 +310,6 @@ int ObTenantNodeBalancer::check_new_tenant(
       }
     }
   }
-  
   return ret;
 }
 

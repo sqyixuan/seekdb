@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_PALF_ENV_
@@ -67,7 +63,6 @@ public:
                              const char *base_dir,
                              const common::ObAddr &self,
                              rpc::frame::ObReqTransport *transport,
-                             obrpc::ObBatchRpc *batch_rpc,
                              common::ObILogAllocator *alloc_mgr,
                              ILogBlockPool *log_block_pool,
                              PalfMonitorCb *monitor,
@@ -82,20 +77,24 @@ public:
 public:
   PalfEnv();
   ~PalfEnv();
-  // Migration scenario destination end replica creation interface
-  // @param [in] id, the identifier of the log stream to be created
+
+  // 迁移场景目的端副本创建接口
+  // @param [in] id，待创建日志流的标识符
   // @param [in] access_mode，palf access mode
-  // @param [in] palf_base_info, the log start information of palf
-  // @param [out] handle, the generated palf_handle object after successful creation
+  // @param [in] palf_base_info，palf的日志起点信息
+  // @param [out] handle，创建成功后生成的palf_handle对象
   int create(const int64_t id,
              const AccessMode &access_mode,
              const PalfBaseInfo &palf_base_info,
              PalfHandle &handle);
-  // Open a Paxos Replica corresponding to an id, and return the file handle
+
+  // 打开一个id对应的Paxos Replica，返回文件句柄
   int open(int64_t id, PalfHandle &handle);
-  // Close a handle
+
+  // 关闭一个句柄
   void close(PalfHandle &handle);
-  // Delete the Paxos Replica corresponding to the id, which will also delete the physical file;
+
+  // 删除id对应的Paxos Replica，会同时删除物理文件；
   int remove(int64_t id);
 
   // @brief get palf disk usage
@@ -127,8 +126,6 @@ public:
   int for_each(const ObFunction<int(const PalfHandle&)> &func);
   // just for LogRpc
   palf::IPalfEnvImpl *get_palf_env_impl() { return &palf_env_impl_; }
-  // should be removed in version 4.2.0.0
-  int update_replayable_point(const SCN &replayable_scn);
   int start();
 private:
   void stop_();

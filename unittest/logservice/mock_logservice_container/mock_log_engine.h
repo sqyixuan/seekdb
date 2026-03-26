@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_UNITTEST_LOGSERVICE_MOCK_CONTAINER_LOG_ENGINE_
@@ -296,40 +292,6 @@ public:
     UNUSED(prev_lsn);
     UNUSED(curr_lsn);
     UNUSED(write_buf);
-    return ret;
-  }
-
-  int submit_push_log_req(
-      const common::ObAddr &addr,
-      const PushLogType &push_log_type,
-      const int64_t &msg_proposal_id,
-      const int64_t &prev_log_proposal_id,
-      const LSN &prev_lsn,
-      const LSN &curr_lsn,
-      const LogWriteBuf &write_buf) override
-  {
-    int ret = OB_SUCCESS;
-    UNUSED(addr);
-    UNUSED(push_log_type);
-    UNUSED(msg_proposal_id);
-    UNUSED(prev_log_proposal_id);
-    UNUSED(prev_lsn);
-    UNUSED(curr_lsn);
-    UNUSED(write_buf);
-    return ret;
-  }
-
-  int submit_push_log_resp(
-      const common::ObAddr &server,
-      const int64_t &msg_proposal_id,
-      const LSN &lsn,
-      const bool is_batch) override
-  {
-    int ret = OB_SUCCESS;
-    UNUSED(server);
-    UNUSED(msg_proposal_id);
-    UNUSED(lsn);
-    UNUSED(is_batch);
     return ret;
   }
 

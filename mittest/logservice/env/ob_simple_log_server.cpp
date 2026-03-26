@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 #define private public
 #define protected public
@@ -143,7 +139,7 @@ int ObSimpleLogServer::simple_init(
     malloc->create_and_add_tenant_allocator(node_id);
   }
   if (is_bootstrap) {
-    // The print log of mittest uses an arbitration method
+    // mittest的打印日志采用仲裁的方式
     OB_LOGGER.is_arb_replica_ = true;
     // ObTenantIOManager depend static instance, need init it in ObSimpleLogCluster
     ls_service_ = OB_NEW(ObLSService, "mittest");
@@ -222,9 +218,9 @@ int ObSimpleLogServer::update_disk_opts_no_lock_(const PalfDiskOptions &opts)
   int64_t old_log_disk_size = disk_opts_.log_disk_usage_limit_size_;
   int64_t new_log_disk_size = opts.log_disk_usage_limit_size_;
   int64_t allowed_new_log_disk_size = 0;
-  // The disk_opts in the internal table take effect immediately
+  // 内部表中的disk_opts立马生效
   inner_table_disk_opts_ = opts;
-  // disk_opts_ represents the latest disk_opts for local persistence, log_disk_percentage_ takes effect with a delay
+  // disk_opts_表示本地持久化最新的disk_opts，log_disk_percentage_延迟生效
   disk_opts_ = opts;
   disk_opts_.log_disk_usage_limit_size_ = old_log_disk_size;
   if (!opts.is_valid()) {
@@ -309,7 +305,7 @@ int ObSimpleLogServer::init_memory_dump_timer_()
 {
   int ret = OB_SUCCESS;
   common::ObFunction<bool()> print_memory_info = [=](){
-      // Memory allocation still uses different tenant id
+      // 内存分配仍采取不同的租户id
       ObMallocAllocator::get_instance()->print_tenant_memory_usage(node_id_);
       ObMallocAllocator::get_instance()->print_tenant_ctx_memory_usage(node_id_);
       ObMallocAllocator::get_instance()->print_tenant_memory_usage(OB_SERVER_TENANT_ID);
@@ -397,7 +393,7 @@ int ObSimpleLogServer::init_io_(const std::string &cluster_name)
     storage_env.default_block_size_ = OB_DEFAULT_MACRO_BLOCK_SIZE;
     storage_env.data_disk_size_ = 1024 * 1024 * 1024;
     storage_env.data_disk_percentage_ = 0;
-    // When disk_opts_ is valid, use log_disk_usage_limit_size_ recorded in disk_opts_ as the initial value of log_block_pool_, otherwise the restart will fail
+    // 当disk_opts_有效时，使用disk_opts_中记录的log_disk_usage_limit_size_作为log_block_pool_的初始值，否则重启会失败
     storage_env.log_disk_size_ = disk_opts_.is_valid() ? disk_opts_.log_disk_usage_limit_size_ : 2LL * 1024 * 1024 * 1024;
     storage_env.log_disk_percentage_ = 0;
 
@@ -424,7 +420,7 @@ int ObSimpleLogServer::init_io_(const std::string &cluster_name)
     if (OB_SUCC(ret)) {
       log_block_pool_.get_tenants_log_disk_size_func_ = [](int64_t &log_disk_size) -> int
       {
-        // ObServerLogBlockMGR loads before ObLogService, at this time the log_disk_size used by the tenant is 0.
+        // ObServerLogBlockMGR 率先于 ObLogService加载，此时租户使用的log_disk_size为0.
         log_disk_size = 0;
         return OB_SUCCESS;
       };
@@ -456,7 +452,7 @@ int ObSimpleLogServer::init_log_service_(const bool is_bootstrap)
     opts.enable_log_cache_ = true;
   }
   std::string clog_dir = clog_dir_ + "/tenant_" + std::to_string(tenant_id_);
-  // Memory allocator still uses different tenant_id
+  // 内存分配器仍使用不同的tenant_id
   allocator_ = OB_NEW(ObTenantMutilAllocator, "TestBase", node_id_);
   ObMemAttr attr(1, "SimpleLog");
   ObMemAttr ele_attr(1, ObNewModIds::OB_ELECTION);
@@ -934,12 +930,6 @@ int ObLogDeliver::handle_req_(rpc::ObRequest &req)
     }
     case obrpc::OB_LOG_PUSH_RESP: {
       PROCESS(LogPushRespP);
-    }
-    case obrpc::OB_LOG_FETCH_REQ: {
-      PROCESS(LogFetchReqP);
-    }
-    case obrpc::OB_LOG_BATCH_FETCH_RESP: {
-      PROCESS(LogBatchFetchRespP);
     }
     case obrpc::OB_LOG_PREPARE_REQ: {
       PROCESS(LogPrepareReqP);

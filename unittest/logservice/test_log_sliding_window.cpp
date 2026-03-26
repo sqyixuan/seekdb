@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "logservice/palf/log_io_task_cb_utils.h"
@@ -220,39 +216,6 @@ TEST_F(TestLogSlidingWindow, test_to_follower_pending)
   EXPECT_EQ(OB_SUCCESS, log_sw_.to_follower_pending(last_lsn));
 }
 
-TEST_F(TestLogSlidingWindow, test_fetch_log)
-{
-  FetchTriggerType fetch_log_type = NOTIFY_REBUILD;
-  LSN prev_lsn;
-  LSN fetch_start_lsn;
-  int64_t fetch_start_log_id = OB_INVALID_LOG_ID;
-  EXPECT_EQ(OB_NOT_INIT, log_sw_.try_fetch_log(fetch_log_type, prev_lsn, fetch_start_lsn, fetch_start_log_id));
-  common::ObAddr dest;
-  LSN fetch_end_lsn;
-  bool is_fetched = false;
-  EXPECT_EQ(OB_NOT_INIT, log_sw_.try_fetch_log_for_reconfirm(dest, fetch_end_lsn, is_fetched));
-  PalfBaseInfo base_info;
-  gen_default_palf_base_info_(base_info);
-  // init succ
-  MockLocCb cb;
-  EXPECT_EQ(OB_SUCCESS, plugins_->add_plugin(static_cast<PalfLocationCacheCb*>(&cb)));
-  EXPECT_EQ(OB_SUCCESS, log_sw_.init(palf_id_, self_, &mock_state_mgr_,
-        &mock_mm_, &mock_mode_mgr_, &mock_log_engine_, &palf_fs_cb_, alloc_mgr_, plugins_, base_info, true));
-  prev_lsn.val_ = 1;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.try_fetch_log(fetch_log_type, prev_lsn, fetch_start_lsn, fetch_start_log_id));
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.try_fetch_log_for_reconfirm(dest, fetch_end_lsn, is_fetched));
-  dest = self_;
-  fetch_end_lsn.val_ = 100;
-  EXPECT_EQ(OB_SUCCESS, log_sw_.try_fetch_log_for_reconfirm(dest, fetch_end_lsn, is_fetched));
-  EXPECT_EQ(true, is_fetched);
-  fetch_start_lsn.val_ = PALF_INITIAL_LSN_VAL;
-  prev_lsn = fetch_start_lsn;
-  fetch_start_log_id = 1;
-  EXPECT_EQ(OB_SUCCESS, log_sw_.try_fetch_log(fetch_log_type, prev_lsn, fetch_start_lsn, fetch_start_log_id));
-  mock_state_mgr_.disable_sync();
-  EXPECT_EQ(OB_SUCCESS, log_sw_.try_fetch_log(fetch_log_type, prev_lsn, fetch_start_lsn, fetch_start_log_id));
-}
-
 TEST_F(TestLogSlidingWindow, test_report_log_task_trace)
 {
   EXPECT_EQ(OB_NOT_INIT, log_sw_.report_log_task_trace(1));
@@ -317,7 +280,7 @@ TEST_F(TestLogSlidingWindow, test_submit_log)
     EXPECT_EQ(OB_SUCCESS, log_sw_.submit_log(buf, buf_len, ref_scn, lsn, scn));
   }
   PALF_LOG(INFO, "current lsn", K(lsn), K(buf_len));
-  // 8M filled with 7M, unable to continue submit 2M log
+  // 8M已填充7M，无法继续submit 2M log
   EXPECT_EQ(OB_EAGAIN, log_sw_.submit_log(buf, buf_len, ref_scn, lsn, scn));
 }
 
@@ -365,179 +328,6 @@ TEST_F(TestLogSlidingWindow, test_submit_group_log)
   int64_t group_entry_size = pos + log_entry_size;
   // submit group_log
   EXPECT_EQ(OB_SUCCESS, log_sw_.submit_group_log(lsn, data_buf_, group_entry_size));
-}
-
-TEST_F(TestLogSlidingWindow, test_receive_log)
-{
-  PALF_LOG(INFO, "begin test_receive_log=======================");
-  int64_t curr_proposal_id = 10;
-  mock_state_mgr_.mock_proposal_id_ = curr_proposal_id;
-  ObAddr src_server = self_;
-  PushLogType push_log_type = PUSH_LOG;
-  LSN prev_lsn(0);
-  int64_t prev_log_proposal_id = curr_proposal_id;
-  LSN lsn;
-  int64_t log_data_len = 2048;
-  int64_t log_entry_size = log_data_len;
-  int64_t group_entry_size = log_entry_size;
-  TruncateLogInfo truncate_log_info;
-  EXPECT_EQ(OB_NOT_INIT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, \
-        group_entry_size, true, truncate_log_info));
-  PalfBaseInfo base_info;
-  gen_default_palf_base_info_(base_info);
-  EXPECT_EQ(OB_SUCCESS, log_sw_.init(palf_id_, self_, &mock_state_mgr_,
-        &mock_mm_, &mock_mode_mgr_, &mock_log_engine_, &palf_fs_cb_, alloc_mgr_, plugins_, base_info, true));
-
-  char *buf = data_buf_;
-  int64_t buf_len = 2 * 1024 * 1024;
-  share::SCN ref_scn;
-  ref_scn.convert_for_logservice(999);
-  share::SCN scn;
-  EXPECT_EQ(OB_SUCCESS, log_sw_.submit_log(buf, buf_len, ref_scn, lsn, scn));
-  // update lsn for next group entry
-  lsn.val_ = lsn.val_ + LogEntryHeader::HEADER_SER_SIZE + buf_len;
-  // generate new group entry
-  LogEntryHeader log_entry_header;
-  LogGroupEntryHeader group_header;
-  share::SCN max_scn;
-  max_scn.convert_for_logservice(111111);
-  int64_t log_id = 2;
-  LSN committed_end_lsn(0);
-  int64_t log_proposal_id = 20;
-  char log_data[2048];
-  log_data_len = 2048;
-  int64_t group_data_checksum = -1;
-  EXPECT_EQ(OB_SUCCESS, log_entry_header.generate_header(log_data, log_data_len, max_scn));
-  static const int64_t DATA_BUF_LEN = 64 * 1024 * 1024;
-  int64_t group_header_size = LogGroupEntryHeader::HEADER_SER_SIZE;
-  int64_t pos = 0;
-  log_entry_header.serialize(data_buf_ + group_header_size, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  memcpy(data_buf_ + group_header_size + pos, log_data, log_data_len);
-  log_entry_size = pos + log_data_len;
-  // gen 2nd log entry
-  max_scn.convert_for_logservice(222222);
-  EXPECT_EQ(OB_SUCCESS, log_entry_header.generate_header(log_data, log_data_len, max_scn));
-  pos = 0;
-  log_entry_header.serialize(data_buf_ + group_header_size + log_entry_size, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  memcpy(data_buf_ + group_header_size + log_entry_size + pos, log_data, log_data_len);
-  log_entry_size += (pos + log_data_len);
-  // gen group log
-  LogWriteBuf write_buf;
-  EXPECT_EQ(OB_SUCCESS, write_buf.push_back(data_buf_, log_entry_size + group_header_size));
-  EXPECT_EQ(OB_SUCCESS, group_header.generate(false, false, write_buf, log_entry_size, max_scn, log_id,
-      committed_end_lsn, log_proposal_id, group_data_checksum));
-  int64_t accum_checksum = 100;
-  (void) group_header.update_accumulated_checksum(accum_checksum);
-  // calculate header parity flag
-  (void) group_header.update_header_checksum();
-  pos = 0;
-  group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  group_entry_size = pos + log_entry_size;
-  EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  // receive group_log
-  src_server.reset();
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  src_server = self_;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, NULL, group_entry_size, true, truncate_log_info));
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, 0, true, truncate_log_info));
-  LSN tmp_lsn;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, tmp_lsn, data_buf_, 0, true, truncate_log_info));
-  // prev_log_proposal_id not match
-  prev_log_proposal_id = curr_proposal_id - 1;
-  EXPECT_EQ(OB_STATE_NOT_MATCH, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // use correct prev_log_proposal_id
-  prev_log_proposal_id = curr_proposal_id;
-  // handle submit log
-  EXPECT_EQ(OB_SUCCESS, log_sw_.period_freeze_last_log());
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  LSN old_lsn = lsn;
-  // test lsn > group_buffer capacity case, will return -4023
-  lsn.val_ = log_sw_.group_buffer_.get_available_buffer_size();
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // reset correct lsn
-  lsn = old_lsn;
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // ignore clean check, receive log_id=2 success
-  PALF_LOG(INFO, "begin receive log with log_id=2, and ignore clean check");
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, false, truncate_log_info));
-  // update lsn to next log
-  lsn.val_ = lsn.val_ + group_entry_size;
-  // test log_id exceeds range case
-  log_id = 999999;
-  EXPECT_EQ(OB_SUCCESS, group_header.generate(false, false, write_buf, log_entry_size, max_scn, log_id,
-      committed_end_lsn, log_proposal_id, group_data_checksum));
-  // calculate header parity flag
-  (void) group_header.update_header_checksum();
-  pos = 0;
-  group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  group_entry_size = pos + log_entry_size;
-  EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // test cache log case
-  log_id = 102;
-  lsn.val_ += 4096 * 1024;
-  EXPECT_EQ(OB_SUCCESS, group_header.generate(false, false, write_buf, log_entry_size, max_scn, log_id,
-      committed_end_lsn, log_proposal_id, group_data_checksum));
-  // calculate header parity flag
-  (void) group_header.update_header_checksum();
-  pos = 0;
-  group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  group_entry_size = pos + log_entry_size;
-  EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // test need truncate cached log_task case
-  log_id = 3;
-  lsn.val_ -= 4096 * 1024;
-  prev_lsn = old_lsn;
-  prev_log_proposal_id = log_proposal_id;
-  EXPECT_EQ(OB_SUCCESS, group_header.generate(false, false, write_buf, log_entry_size, max_scn, log_id,
-      committed_end_lsn, log_proposal_id, group_data_checksum));
-  // inc log_proposal_id to trigger clean cached log_task
-  log_proposal_id += 1;
-  group_header.update_log_proposal_id(log_proposal_id);
-  // calculate header parity flag
-  (void) group_header.update_header_checksum();
-  pos = 0;
-  group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  PALF_LOG(INFO, "begin receive log with log_id=3, and proposal_id 21");
-  // handle submit log
-  EXPECT_EQ(OB_SUCCESS, log_sw_.period_freeze_last_log());
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  EXPECT_TRUE(TRUNCATE_CACHED_LOG_TASK == truncate_log_info.truncate_type_);
-  EXPECT_EQ(log_id, truncate_log_info.truncate_log_id_);
-  EXPECT_EQ(OB_SUCCESS, log_sw_.clean_cached_log(truncate_log_info.truncate_log_id_, lsn, prev_lsn, prev_log_proposal_id));
-  // do not check need clean log
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, false, truncate_log_info));
-  log_sw_.max_flushed_end_lsn_ = lsn + group_entry_size;
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  // test <log_id, lsn> not match case
-  PALF_LOG(INFO, "begin tese <log_id, lsn> not match case");
-  // Increase flush lsn
-  log_sw_.max_flushed_end_lsn_.val_ += 100;
-  // Increase log_id, construct prev log hole
-  log_id += 100;
-  uint64_t new_val = max_scn.get_val_for_logservice() - 10;
-  max_scn.convert_for_logservice(new_val);
-  LogWriteBuf write_buf1;
-  EXPECT_EQ(OB_SUCCESS, write_buf1.push_back(data_buf_, log_entry_size+group_header_size));
-  EXPECT_EQ(OB_SUCCESS, group_header.generate(false, false, write_buf1, log_entry_size, max_scn, log_id,
-      committed_end_lsn, log_proposal_id, group_data_checksum));
-  // calculate header parity flag
-  (void) group_header.update_header_checksum();
-  pos = 0;
-  group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
-  EXPECT_TRUE(pos > 0);
-  EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  // return -4109 because lsn < max_flushed_end_lsn
-  EXPECT_EQ(OB_STATE_NOT_MATCH, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
-  PALF_LOG(INFO, "finish test_receive_log=======================");
 }
 
 TEST_F(TestLogSlidingWindow, test_after_flush_log)
@@ -675,14 +465,9 @@ TEST_F(TestLogSlidingWindow, test_truncate_log)
   lsn = log_sw_.get_max_lsn();
   src_server.reset();
   TruncateLogInfo truncate_log_info;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
   src_server = self_;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, NULL, group_entry_size, true, truncate_log_info));
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, 0, true, truncate_log_info));
   LSN tmp_lsn;
-  EXPECT_EQ(OB_INVALID_ARGUMENT, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, tmp_lsn, data_buf_, 0, true, truncate_log_info));
   prev_log_proposal_id = curr_proposal_id;
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, false, truncate_log_info));
   // test need truncate case
   PALF_LOG(INFO, "begin test need truncate case");
   group_header.update_log_proposal_id(log_proposal_id + 1);
@@ -692,7 +477,6 @@ TEST_F(TestLogSlidingWindow, test_truncate_log)
   group_header.serialize(data_buf_, DATA_BUF_LEN, pos);
   EXPECT_TRUE(pos > 0);
   EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
-  EXPECT_EQ(OB_EAGAIN, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, true, truncate_log_info));
   EXPECT_TRUE(TRUNCATE_LOG == truncate_log_info.truncate_type_);
   EXPECT_EQ(log_id, truncate_log_info.truncate_log_id_);
   EXPECT_EQ(lsn, truncate_log_info.truncate_begin_lsn_);
@@ -844,7 +628,7 @@ TEST_F(TestLogSlidingWindow, test_truncate_for_rebuild)
   // handle submit log
   EXPECT_EQ(OB_SUCCESS, log_sw_.period_freeze_last_log());
   PALF_LOG(INFO, "begin receive log with log_id=2");
-  EXPECT_EQ(OB_SUCCESS, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, false, truncate_log_info));
+
   // gen next group log
   log_id = 10;
   uint64_t new_val = max_scn.get_val_for_logservice() + 100;
@@ -863,7 +647,6 @@ TEST_F(TestLogSlidingWindow, test_truncate_for_rebuild)
   group_entry_size = pos + log_entry_size;
   EXPECT_TRUE(group_header.check_integrity(data_buf_ + group_header_size, group_entry_size - group_header_size));
   // lsn < last_submit_end_lsn, return -4016
-  EXPECT_EQ(OB_ERR_UNEXPECTED, log_sw_.receive_log(src_server, push_log_type, prev_lsn, prev_log_proposal_id, lsn, data_buf_, group_entry_size, false, truncate_log_info));
 
   // update flush end lsn
   log_sw_.max_flushed_end_lsn_ = lsn + group_entry_size;

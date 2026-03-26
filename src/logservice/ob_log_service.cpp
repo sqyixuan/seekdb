@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX CLOG
@@ -74,7 +70,7 @@ int ObLogService::mtl_init(ObLogService* &logservice)
   const ObAddr &self = GCTX.self_addr();
   const int64_t tenant_id = MTL_ID();
   observer::ObSrvNetworkFrame *net_frame = GCTX.net_frame_;
-  //log_disk_usage_limit_size cannot be actively obtained from the configuration item, and needs to be passed as a parameter during mtl initialization
+  //log_disk_usage_limit_size无法主动从配置项获取, 需要在mtl初始化时作为入参传入
   const palf::PalfOptions &palf_options = MTL_INIT_CTX()->palf_options_;
   const char *tenant_clog_dir = MTL_INIT_CTX()->tenant_clog_dir_;
   const char *clog_dir = OB_FILE_SYSTEM_ROUTER.get_clog_dir();
@@ -96,7 +92,6 @@ int ObLogService::mtl_init(ObLogService* &logservice)
                                       self,
                                       alloc_mgr,
                                       net_frame->get_req_transport(),
-                                      GCTX.batch_rpc_,
                                       MTL(ObLSService*),
                                       location_service,
                                       reporter,
@@ -237,7 +232,6 @@ int ObLogService::init(const PalfOptions &options,
                        const common::ObAddr &self,
                        common::ObILogAllocator *alloc_mgr,
                        rpc::frame::ObReqTransport *transport,
-                       obrpc::ObBatchRpc *batch_rpc,
                        ObLSService *ls_service,
                        ObLocationService *location_service,
                        observer::ObIMetaReport *reporter,
@@ -255,14 +249,14 @@ int ObLogService::init(const PalfOptions &options,
     ret = OB_INIT_TWICE;
     CLOG_LOG(WARN, "ObLogService init twice", K(ret));
   } else if (false == options.is_valid() || OB_ISNULL(base_dir) || OB_UNLIKELY(!self.is_valid())
-      || OB_ISNULL(alloc_mgr) || OB_ISNULL(transport) || OB_ISNULL(batch_rpc) || OB_ISNULL(ls_service)
+      || OB_ISNULL(alloc_mgr) || OB_ISNULL(transport) || OB_ISNULL(ls_service)
       || OB_ISNULL(location_service) || OB_ISNULL(reporter) || OB_ISNULL(log_block_pool)
       || OB_ISNULL(sql_proxy) || OB_ISNULL(net_keepalive_adapter) || OB_ISNULL(locality_manager)) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "invalid arguments", K(ret), K(options), KP(base_dir), K(self),
-             KP(alloc_mgr), KP(transport), KP(batch_rpc), KP(ls_service), KP(location_service), KP(reporter),
+             KP(alloc_mgr), KP(transport), KP(ls_service), KP(location_service), KP(reporter),
              KP(log_block_pool), KP(sql_proxy), KP(net_keepalive_adapter));
-  } else if (OB_FAIL(PalfEnv::create_palf_env(options, base_dir, self, transport, batch_rpc,
+  } else if (OB_FAIL(PalfEnv::create_palf_env(options, base_dir, self, transport,
                                               alloc_mgr, log_block_pool, &monitor_, LOG_IO_DEVICE_WRAPPER.get_local_device(), 
                                               &G_RES_MGR, &OB_IO_MANAGER, palf_env_))) {
     CLOG_LOG(WARN, "failed to create_palf_env", K(base_dir), K(ret));
@@ -304,7 +298,7 @@ int ObLogService::init(const PalfOptions &options,
     alloc_mgr_ = alloc_mgr;
     self_ = self;
     is_inited_ = true;
-    FLOG_INFO("ObLogService init success", K(ret), K(base_dir), K(self), KP(transport), KP(batch_rpc),
+    FLOG_INFO("ObLogService init success", K(ret), K(base_dir), K(self), KP(transport),
         KP(ls_service), K(tenant_id), K(enable_shared_storage_));
   }
 
@@ -498,9 +492,6 @@ int ObLogService::update_replayable_point(const SCN &replayable_point)
     CLOG_LOG(WARN, "log_service is not inited", K(ret));
   } else if (OB_FAIL(replay_service_.update_replayable_point(replayable_point))) {
     CLOG_LOG(WARN, "update_replayable_point failed", K(ret), K(replayable_point));
-    // should be removed in version 4.2.0.0
-  } else if (OB_FAIL(palf_env_->update_replayable_point(replayable_point))) {
-    CLOG_LOG(WARN, "update_replayable_point failed", K(replayable_point));
   }
   return ret;
 }
@@ -572,7 +563,7 @@ int ObLogService::update_palf_options_except_disk_usage_limit_size()
     if (OB_FAIL(common::ObCompressorPool::get_instance().get_compressor_type(
                 tenant_config->log_transport_compress_func, compressor_type))) {
       CLOG_LOG(ERROR, "log_transport_compress_func invalid.", K(ret));
-      //Need to get log_disk_usage_limit_size
+      //需要获取log_disk_usage_limit_size
     } else if (OB_FAIL(palf_env_->get_options(palf_opts))) {
       CLOG_LOG(WARN, "palf get_options failed", K(ret));
     } else {
@@ -594,7 +585,8 @@ int ObLogService::update_palf_options_except_disk_usage_limit_size()
   }
   return ret;
 }
-//log_disk_usage_limit_size cannot be proactively detected, it can only be passed in when triggered by the upper layer
+
+//log_disk_usage_limit_size无法主动感知,只能通过上层触发时传入
 int ObLogService::update_log_disk_usage_limit_size(const int64_t log_disk_usage_limit_size)
 {
   int ret = OB_SUCCESS;

@@ -1,27 +1,24 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define MAX_PCODE 0xFFFF
-// Placeholder instructions:
+
+//占位须知：
 //
-//1. Place in order by ID to avoid discontinuous or incorrect order IDs
-//2. Always placeholder on master first, ensure the master branch is a superset of all other branches, to avoid NAME and ID conflicts
-//3. After master placeholder, do not change NAME on the development branch, otherwise FARM will consider ID placeholder conflict, if there is such a scenario, you need to modify the master placeholder first
+//1. 按ID顺序占位，避免出现ID不连续或者顺序不对
+//2. 始终先在master占位，保证master分支是其他所有分支的超集，避免NAME和ID冲突
+//3. master占位之后，开发分支上不要变更NAME，否则FARM会认为ID占位冲突，如果有这种场景，需要先修改master占位
 //
-//Placeholder method: through comments, write the complete definition, //PCODE_DEF(OB_TEST_PCODE, 0x001)
+//占位方法: 通过注释，写出完整定义，//PCODE_DEF(OB_TEST_PCODE, 0x001)
 
 // for initialization
 PCODE_DEF(OB_TEST_PCODE, 0x001)
@@ -474,13 +471,13 @@ PCODE_DEF(OB_NOTIFY_CREATE_DUPLICATE_LS, 0x4B1)
 //PCODE_DEF(OB_HA_UNBLOCK_TX, 0x4B5) NO NEED ANYMORE
 PCODE_DEF(OB_TABLET_LOCATION_BROADCAST, 0x4BE)
 // migration micro cache
-PCODE_DEF(OB_HA_GET_MICRO_BLOCK_CACHE_INFO, 0x4C1)      // FARM COMPAT WHITELIST, rename, compatibility detection whitelist
+PCODE_DEF(OB_HA_GET_MICRO_BLOCK_CACHE_INFO, 0x4C1)      // FARM COMPAT WHITELIST, 重命名，兼容检测加白名单
 PCODE_DEF(OB_HA_GET_MIGRATION_CACHE_JOB_INFO, 0x4C2)
-PCODE_DEF(OB_HA_FETCH_MICRO_BLOCK_KEYS, 0x4C3)          // FARM COMPAT WHITELIST, rename, compatibility detection whitelist
+PCODE_DEF(OB_HA_FETCH_MICRO_BLOCK_KEYS, 0x4C3)          // FARM COMPAT WHITELIST, 重命名，兼容检测加白名单
 PCODE_DEF(OB_HA_FETCH_MICRO_BLOCK, 0x4C4)
 
 // fetch macro block logic id array 
-// PCODE_DEF(OB_HA_FETCH_SSTABLE_MACRO_ID_INFO, 0x4C8)  // FARM COMPAT WHITELIST, rename, compatibility detection whitelist
+// PCODE_DEF(OB_HA_FETCH_SSTABLE_MACRO_ID_INFO, 0x4C8)  // FARM COMPAT WHITELIST, 重命名，兼容检测加白名单
 
 // sql, including executor
 
@@ -970,7 +967,6 @@ PCODE_DEF(OB_NOTIFY_START_ARCHIVE, 0x142F)
 // logservice
 PCODE_DEF(OB_LOG_PUSH_REQ, 0x1501)
 PCODE_DEF(OB_LOG_PUSH_RESP, 0x1502)
-PCODE_DEF(OB_LOG_FETCH_REQ, 0x1503)
 PCODE_DEF(OB_LOG_PREPARE_REQ, 0x1504)
 PCODE_DEF(OB_LOG_PREPARE_RESP, 0x1505)
 PCODE_DEF(OB_LOG_CHANGE_CONFIG_META_REQ, 0x1506)
@@ -1003,7 +999,6 @@ PCODE_DEF(OB_LOG_FORCE_SET_LS_AS_SINGLE_REPLICA, 0x1520)
 PCODE_DEF(OB_LOG_FORCE_CLEAR_ARB_CLUSTER_INFO, 0x1521)
 PCODE_DEF(OB_LOG_GET_ARB_MEMBER_INFO, 0x1522)
 #endif
-PCODE_DEF(OB_LOG_BATCH_FETCH_RESP, 0X1523)
 PCODE_DEF(OB_LOG_GET_LS_CKPT, 0x1524)
 PCODE_DEF(OB_LOG_ACQUIRE_REBUILD_INFO, 0x1525)
 // for ob_admin
@@ -1060,7 +1055,7 @@ PCODE_DEF(OB_ADD_STORAGE, 0x1572)
 PCODE_DEF(OB_DROP_STORAGE, 0x1573)
 PCODE_DEF(OB_ALTER_STORAGE, 0x1574)
 PCODE_DEF(OB_CHECK_STORAGE_OPERATION_STATUS, 0X1575)
-PCODE_DEF(OB_CHECK_SERVER_EMPTY_WITH_RESULT, 0x1576)    // FARM COMPAT WHITELIST, renamed after 432
+PCODE_DEF(OB_CHECK_SERVER_EMPTY_WITH_RESULT, 0x1576)    // FARM COMPAT WHITELIST, 432之后改名
 PCODE_DEF(OB_REPLICA_PREWARM_FETCH_MICRO_BLOCK, 0x1577)
 PCODE_DEF(OB_SYNC_HOT_MICRO_KEY, 0x1578)
 PCODE_DEF(OB_NOTIFY_SHARED_STORAGE_INFO, 0x1579)
@@ -1116,8 +1111,8 @@ PCODE_DEF(OB_CREATE_TRIGGER_WITH_RES, 0x160D)
 
 // Shared storage network throt
 PCODE_DEF(OB_SHARED_STORAGE_NET_THROT_REGISTER, 0x160E)
-PCODE_DEF(OB_SHARED_STORAGE_NET_THROT_PREDICT, 0x1610)      // FARM COMPATIBILITY WHITELIST, renamed after 432
-PCODE_DEF(OB_SHARED_STORAGE_NET_THROT_SET, 0x1611)          // FARM COMPATIBILITY WHITELIST, renamed after 432
+PCODE_DEF(OB_SHARED_STORAGE_NET_THROT_PREDICT, 0x1610)      // FARM COMPAT WHITELIST, 432之后改名
+PCODE_DEF(OB_SHARED_STORAGE_NET_THROT_SET, 0x1611)          // FARM COMPAT WHITELIST, 432之后改名
 
 // update materialized view table status
 PCODE_DEF(OB_UPDATE_MVIEW_TABLE_STATUS, 0x1612)
@@ -1229,25 +1224,12 @@ PCODE_DEF(OB_ADMIN_FORCE_DROP_LONELY_LOB_AUX_TABLE, 0x1663)
 PCODE_DEF(OB_FORCE_DROP_LONELY_LOB_AUX_TABLE, 0x1664)
 
 PCODE_DEF(OB_CHECK_NESTED_MVIEW_MDS, 0x1666)
-
-// for ai function
-PCODE_DEF(OB_CREATE_AI_MODEL, 0x1667)
-PCODE_DEF(OB_DROP_AI_MODEL, 0x1668)
-
-// for location
-PCODE_DEF(OB_CREATE_LOCATION, 0x1669)
-PCODE_DEF(OB_DROP_LOCATION, 0x166A)
-// mysql obj priv
-PCODE_DEF(OB_REVOKE_OBJECT, 0x166B)
-PCODE_DEF(OB_FORK_TABLE, 0x166C)
-PCODE_DEF(OB_FORK_DATABASE, 0x166D)
-
-//**** Note: Add new RPC ID before this line ******
+//**** 注意：在此行之前增加新的RPC ID ******
 //
-// Placeholder Notice:
+//占位须知：
 //
-//1. Place in order by ID to avoid discontinuous or incorrect order IDs
-//2. Always placeholder on master first, ensure the master branch is a superset of all other branches, to avoid NAME and ID conflicts
-//3. After master placeholder, do not change NAME on the development branch, otherwise FARM will consider ID placeholder conflict, if there is such a scenario, you need to modify the master placeholder first
+//1. 按ID顺序占位，避免出现ID不连续或者顺序不对
+//2. 始终先在master占位，保证master分支是其他所有分支的超集，避免NAME和ID冲突
+//3. master占位之后，开发分支上不要变更NAME，否则FARM会认为ID占位冲突，如果有这种场景，需要先修改master占位
 //
-//Placeholder method: Through comments, write the complete definition, //PCODE_DEF(OB_TEST_PCODE, 0x001)
+//占位方法: 通过注释，写出完整定义，//PCODE_DEF(OB_TEST_PCODE, 0x001)

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_REQ_
@@ -54,80 +50,6 @@ inline const char *push_log_type_2_str(const PushLogType type)
 #undef EXTRACT_PUSH_LOG_TYPE
 }
 
-struct LogPushReq {
-  OB_UNIS_VERSION(1);
-public:
-  LogPushReq();
-  LogPushReq(const PushLogType push_log_type,
-             const int64_t &msg_proposal_id,
-             const int64_t &prev_log_proposal_id,
-             const LSN &prev_lsn,
-             const LSN &curr_lsn,
-             const LogWriteBuf &write_buf);
-  ~LogPushReq();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV("push_log_type", push_log_type_2_str((PushLogType)push_log_type_), K_(msg_proposal_id), K_(prev_log_proposal_id),
-               K_(prev_lsn), K_(curr_lsn), K_(write_buf));
-  int16_t push_log_type_;
-  int64_t msg_proposal_id_;
-  int64_t prev_log_proposal_id_;
-  LSN prev_lsn_;
-  // NB: no need record the proposal_id of curr_lsn, we will deserlize
-  // to LogGroupEntry.
-  LSN curr_lsn_;
-  LogWriteBuf write_buf_;
-};
-
-struct LogBatchPushReq : public LogPushReq, public obrpc::ObIFill {
-  LogBatchPushReq(const PushLogType push_log_type,
-                  const int64_t &msg_proposal_id,
-                  const int64_t &prev_log_proposal_id,
-                  const LSN &prev_lsn,
-                  const LSN &curr_lsn,
-                  const LogWriteBuf &write_buf) : LogPushReq(push_log_type, msg_proposal_id,
-                                                             prev_log_proposal_id, prev_lsn, curr_lsn, write_buf),
-                                                  ObIFill() {}
-  int fill_buffer(char* buf, int64_t size, int64_t &filled_size) const override final
-  {
-    filled_size = 0;
-    return serialize(buf, size, filled_size);
-  }
-  int64_t get_req_size() const override final
-  {
-    return get_serialize_size();
-  }
-};
-
-struct LogPushResp {
-  OB_UNIS_VERSION(1);
-public:
-  LogPushResp();
-  LogPushResp(const int64_t &msg_proposal_id,
-                const LSN &lsn);
-  ~LogPushResp();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(msg_proposal_id), K_(lsn));
-  int64_t msg_proposal_id_;
-  LSN lsn_;
-};
-
-struct LogBatchPushResp : public LogPushResp, public obrpc::ObIFill {
-  LogBatchPushResp(const int64_t &msg_proposal_id,
-                  const LSN &lsn)
-      : LogPushResp(msg_proposal_id, lsn), ObIFill() {}
-  int fill_buffer(char* buf, int64_t size, int64_t &filled_size) const override final
-  {
-    filled_size = 0;
-    return serialize(buf, size, filled_size);
-  }
-  int64_t get_req_size() const override final
-  {
-    return get_serialize_size();
-  }
-};
-
 enum FetchLogType
 {
   FETCH_LOG_FOLLOWER = 0,
@@ -150,53 +72,6 @@ inline const char *fetch_type_2_str(const FetchLogType type)
 #undef EXTRACT_FETCH_TYPE
 }
 
-struct LogFetchReq {
-  OB_UNIS_VERSION(1);
-public:
-  LogFetchReq();
-  // NB: 'prev_lsn' is used to forward check on leader
-  //     because we don't record these fields in LogGroupEntryHeader
-  LogFetchReq(const FetchLogType fetch_type,
-              const int64_t msg_proposal_id,
-              const LSN &prev_lsn,
-              const LSN &lsn,
-              const int64_t fetch_log_size,
-              const int64_t fetch_log_count,
-              const int64_t accepted_mode_pid);
-  ~LogFetchReq();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(msg_proposal_id), "fetch_type", fetch_type_2_str((FetchLogType)fetch_type_), K_(prev_lsn), K_(lsn), K_(fetch_log_size),
-      K_(fetch_log_count), K_(accepted_mode_pid));
-  int16_t fetch_type_;
-  int64_t msg_proposal_id_;
-  LSN prev_lsn_;
-  LSN lsn_;
-  int64_t fetch_log_size_;
-  int64_t fetch_log_count_;
-  int64_t accepted_mode_pid_;
-};
-
-struct LogBatchFetchResp {
-  OB_UNIS_VERSION(1);
-public:
-  LogBatchFetchResp();
-  LogBatchFetchResp(const int64_t msg_proposal_id,
-                    const int64_t prev_log_proposal_id,
-                    const LSN &prev_lsn,
-                    const LSN &curr_lsn,
-                    const LogWriteBuf &write_buf);
-  ~LogBatchFetchResp();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(msg_proposal_id), K_(prev_log_proposal_id), K_(prev_lsn), K_(curr_lsn), K_(write_buf));
-  int64_t msg_proposal_id_;
-  int64_t prev_log_proposal_id_;
-  LSN prev_lsn_;
-  LSN curr_lsn_;
-  LogWriteBuf write_buf_;
-};
-
 struct NotifyRebuildReq {
   OB_UNIS_VERSION(1);
 public:
@@ -208,19 +83,6 @@ public:
   TO_STRING_KV(K_(base_lsn), K_(base_prev_log_info));
   LSN base_lsn_;
   LogInfo base_prev_log_info_;
-};
-
-struct NotifyFetchLogReq {
-  OB_UNIS_VERSION(1);
-public:
-  NotifyFetchLogReq();
-  ~NotifyFetchLogReq();
-  bool is_valid() const;
-  int64_t to_string(char* buf, const int64_t buf_len) const
-  {
-    int64_t pos = 0;
-    return pos;
-  }
 };
 
 struct LogPrepareReq {

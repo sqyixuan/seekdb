@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "ob_tenant_mutil_allocator.h"
@@ -36,7 +32,6 @@ ObTenantMutilAllocator::ObTenantMutilAllocator(uint64_t tenant_id)
     LOG_IO_TRUNCATE_LOG_TASK_SIZE(sizeof(palf::LogIOTruncateLogTask)),
     LOG_IO_FLUSH_META_TASK_SIZE(sizeof(palf::LogIOFlushMetaTask)),
     LOG_IO_TRUNCATE_PREFIX_BLOCKS_TASK_SIZE(sizeof(palf::LogIOTruncatePrefixBlocksTask)),
-    PALF_FETCH_LOG_TASK_SIZE(sizeof(palf::FetchLogTask)),
     LOG_IO_FLASHBACK_TASK_SIZE(sizeof(palf::LogIOFlashbackTask)),
     LOG_IO_PURGE_THROTTLING_TASK_SIZE(sizeof(palf::LogIOPurgeThrottlingTask)),
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -52,7 +47,6 @@ ObTenantMutilAllocator::ObTenantMutilAllocator(uint64_t tenant_id)
     log_io_truncate_log_task_alloc_(LOG_IO_TRUNCATE_LOG_TASK_SIZE, ObMemAttr(tenant_id, "TruncateLog"), choose_blk_size(LOG_IO_TRUNCATE_LOG_TASK_SIZE), clog_blk_alloc_, this),
     log_io_flush_meta_task_alloc_(LOG_IO_FLUSH_META_TASK_SIZE, ObMemAttr(tenant_id, "FlushMeta"), choose_blk_size(LOG_IO_FLUSH_META_TASK_SIZE), clog_blk_alloc_, this),
     log_io_truncate_prefix_blocks_task_alloc_(LOG_IO_TRUNCATE_PREFIX_BLOCKS_TASK_SIZE, ObMemAttr(tenant_id, "FlushMeta"), choose_blk_size(LOG_IO_TRUNCATE_PREFIX_BLOCKS_TASK_SIZE), clog_blk_alloc_, this),
-    palf_fetch_log_task_alloc_(PALF_FETCH_LOG_TASK_SIZE, ObMemAttr(tenant_id, ObModIds::OB_FETCH_LOG_TASK), choose_blk_size(PALF_FETCH_LOG_TASK_SIZE), clog_blk_alloc_, this),
     replay_log_task_alloc_(ObMemAttr(tenant_id, ObModIds::OB_LOG_REPLAY_TASK), common::OB_MALLOC_BIG_BLOCK_SIZE, replay_log_task_blk_alloc_),
     log_io_flashback_task_alloc_(LOG_IO_FLASHBACK_TASK_SIZE, ObMemAttr(tenant_id, "Flashback"), choose_blk_size(LOG_IO_FLASHBACK_TASK_SIZE), clog_blk_alloc_, this),
     log_io_purge_throttling_task_alloc_(LOG_IO_PURGE_THROTTLING_TASK_SIZE, ObMemAttr(tenant_id, "PurgeThrottle"), choose_blk_size(LOG_IO_PURGE_THROTTLING_TASK_SIZE), clog_blk_alloc_, this),
@@ -91,7 +85,6 @@ void ObTenantMutilAllocator::destroy()
   log_io_truncate_prefix_blocks_task_alloc_.destroy();
   log_io_flashback_task_alloc_.destroy();
   log_io_purge_throttling_task_alloc_.destroy();
-  palf_fetch_log_task_alloc_.destroy();
   replay_log_task_alloc_.destroy();
 #ifdef OB_BUILD_SHARED_STORAGE
   palf_fast_rebuild_log_task_alloc_.destroy();
@@ -124,7 +117,6 @@ void ObTenantMutilAllocator::try_purge()
   log_io_truncate_prefix_blocks_task_alloc_.purge_extra_cached_block(0);
   log_io_flashback_task_alloc_.purge_extra_cached_block(0);
   log_io_purge_throttling_task_alloc_.purge_extra_cached_block(0);
-  palf_fetch_log_task_alloc_.purge_extra_cached_block(0);
   replay_log_task_alloc_.purge_extra_cached_block(0);
 #ifdef OB_BUILD_SHARED_STORAGE
   palf_fast_rebuild_log_task_alloc_.purge_extra_cached_block(0);
@@ -263,24 +255,6 @@ void ObTenantMutilAllocator::free_log_io_truncate_prefix_blocks_task(palf::LogIO
   if (OB_LIKELY(NULL != ptr)) {
     ptr->~LogIOTruncatePrefixBlocksTask();
     log_io_truncate_prefix_blocks_task_alloc_.free(ptr);
-  }
-}
-
-palf::FetchLogTask *ObTenantMutilAllocator::alloc_palf_fetch_log_task()
-{
-  FetchLogTask *ret_ptr = NULL;
-  void *ptr = palf_fetch_log_task_alloc_.alloc();
-  if (NULL != ptr) {
-    ret_ptr = new(ptr)FetchLogTask();
-  }
-  return ret_ptr;
-}
-
-void ObTenantMutilAllocator::free_palf_fetch_log_task(palf::FetchLogTask *ptr)
-{
-  if (OB_LIKELY(NULL != ptr)) {
-    ptr->~FetchLogTask();
-    palf_fetch_log_task_alloc_.free(ptr);
   }
 }
 

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_SLIDING_WINDOW_
@@ -234,7 +230,6 @@ public:
                             const LSN fetch_start_lsn = LSN(),
                             const int64_t fetch_start_log_id = OB_INVALID_LOG_ID);
   virtual int try_fetch_log_for_reconfirm(const common::ObAddr &dest, const LSN &fetch_end_lsn, bool &is_fetched);
-  virtual int submit_push_log_resp(const common::ObAddr &server);
   virtual bool is_empty() const;
   virtual bool check_all_log_has_flushed();
   virtual int get_majority_match_lsn(LSN &majority_match_lsn);
@@ -249,15 +244,6 @@ public:
   virtual int submit_group_log(const LSN &lsn,
                        const char *buf,
                        const int64_t buf_len);
-  virtual int receive_log(const common::ObAddr &src_server,
-                  const PushLogType push_log_type,
-                  const LSN &prev_lsn,
-                  const int64_t &prev_log_pid,
-                  const LSN &lsn,
-                  const char *buf,
-                  const int64_t buf_len,
-                  const bool need_check_clean_log,
-                  TruncateLogInfo &truncate_log_info);
   virtual int after_flush_log(const FlushLogCbCtx &flush_cb_ctx);
   virtual int after_truncate(const TruncateLogCbCtx &truncate_cb_ctx);
   virtual int after_rebuild(const LSN &lsn);
@@ -448,7 +434,6 @@ private:
       const int64_t &expected_log_id,
       const LSN &log_committed_end_lsn,
       bool &is_need_fetch);
-  void try_fetch_log_streamingly_(const LSN &log_end_lsn);
   int do_fetch_log_(const FetchTriggerType &trigger_type,
                     const common::ObAddr &dest,
                     const LSN &prev_lsn,
@@ -465,29 +450,15 @@ private:
                                      int64_t &log_id,
                                      int64_t &log_proposal_id);
   int leader_broadcast_committed_info_(const LSN &committed_end_lsn);
-  int submit_push_log_resp_(const common::ObAddr &server,
-                            const int64_t &msg_proposal_id,
-                            const LSN &lsn,
-                            const bool &is_fetch_log);
-  inline int try_push_log_to_paxos_follower_(const int64_t curr_proposal_id,
-                                             const int64_t prev_log_pid,
-                                             const LSN &prev_lsn,
-                                             const LSN &lsn,
-                                             const LogWriteBuf &log_write_buf);
-  int try_push_log_to_children_(const int64_t curr_proposal_id,
-                                const int64_t prev_log_pid,
-                                const LSN &prev_lsn,
-                                const LSN &lsn,
-                                const LogWriteBuf &log_write_buf);
   bool need_execute_fetch_(const FetchTriggerType &fetch_trigger_type);
   bool need_use_batch_rpc_(const int64_t buf_size,
                            const bool is_fetch_log) const;
 public:
   typedef common::ObLinearHashMap<common::ObAddr, LsnTsInfo> SvrMatchOffsetMap;
-  static const int64_t TMP_HEADER_SER_BUF_LEN = 256; // temporary buffer size for log header serialization
-  static const int64_t APPEND_CNT_ARRAY_SIZE = 32;   // size of the append count statistics array
+  static const int64_t TMP_HEADER_SER_BUF_LEN = 256; // log header序列化的临时buffer大小
+  static const int64_t APPEND_CNT_ARRAY_SIZE = 32;   // append次数统计数组的size
   static const uint64_t APPEND_CNT_ARRAY_MASK = APPEND_CNT_ARRAY_SIZE - 1;
-  static const int64_t APPEND_CNT_LB_FOR_PERIOD_FREEZE = 140000;   // Lower bound of append count to switch to PERIOD_FREEZE_MODE
+  static const int64_t APPEND_CNT_LB_FOR_PERIOD_FREEZE = 140000;   // 切为PERIOD_FREEZE_MODE的append count下界
 private:
   struct LogTaskGuard
   {
@@ -558,19 +529,19 @@ private:
   // last_fetch_req_time_:
   //    record the request time of the last fetch operation.
   // last_fetch_end_lsn_:
-  //    Record the LSN endpoint of this round's fetch, calculated based on the group_buffer capacity
+  //    记录本轮fetch的lsn终点，根据group_buffer容量算出
   // last_fetch_max_log_id_:
-  //    Record the log_id endpoint of this round fetch, calculated based on sw capacity
-  // The number of logs fetched in one round is uncertain, and it ends when any of the above conditions are met.
+  //    记录本轮fetch的log_id终点，根据sw容量算出
+  // 一轮fetch的日志数量不定，达到上述任意一个条件就结束.
   //
   // last_fetch_committed_end_lsn_:
-  //    Record the committed_end_lsn after fetching all logs in this round, when handle_next_submit_log_() is called
-  //    Check if the last log of this round fetch is processed (log_id is equal to last_fetch_max_log_id_ or
-  //    update the value if log_end_lsn exceeds last_fetch_end_lsn_.
+  //    记录本轮fetch拉到所有日志后的committed_end_lsn, handle_next_submit_log_()时
+  //    检查如果处理到本轮fetch的最后一条日志(log_id与last_fetch_max_log_id_相等或者
+  //    log_end_lsn越过了last_fetch_end_lsn_), 则更新该值.
   //
-  // Streaming fetch mechanism:
-  //    Check if the end_lsn is equal to last_fetch_committed_end_lsn_ when the log slides out, trigger the next fetch if true,
-  //    The starting point for the next fetch is (last_submit_log_id + 1).
+  // 流式fetch机制:
+  //    日志滑出时检查自己的end_lsn是否与last_fetch_committed_end_lsn_相等，是则触发下一轮fetch,
+  //    下一轮fetch的起点是(last_submit_log_id + 1).
   //
   mutable common::ObSpinLock fetch_info_lock_;
   int64_t last_fetch_req_time_;

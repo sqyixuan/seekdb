@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_RPC_
@@ -77,14 +73,11 @@ public:
   int init(const common::ObAddr &self,
            const int64_t cluster_id,
            const int64_t tenant_id,
-           rpc::frame::ObReqTransport *transport,
-           obrpc::ObBatchRpc *batch_rpc);
+           rpc::frame::ObReqTransport *transport);
   void destroy();
   int update_transport_compress_options(const PalfTransportCompressOptions &compress_opt);
   const PalfTransportCompressOptions& get_compress_opts() const;
-  template<class ReqType,
-           typename std::enable_if<(!std::is_same<ReqType, LogBatchPushReq>::value &&
-                                    !std::is_same<ReqType, LogBatchPushResp>::value), bool>::type=true>
+  template<class ReqType>
   int post_request(const common::ObAddr &server,
                    const int64_t palf_id,
                    const ReqType &req)
@@ -128,46 +121,12 @@ public:
     return ret;
   }
 
-  // BatchRPC
-  template<class ReqType,
-           typename std::enable_if<(std::is_same<ReqType, LogBatchPushReq>::value ||
-                                    std::is_same<ReqType, LogBatchPushResp>::value), bool>::type=true>
-  int post_request(const common::ObAddr &server,
-                   const int64_t palf_id,
-                   const ReqType &req)
-  {
-    int ret = common::OB_SUCCESS;
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-    } else if (false == server.is_valid()
-               || false == is_valid_palf_id(palf_id)
-               || false == req.is_valid()) {
-      ret = OB_INVALID_ARGUMENT;
-    } else if (OB_ISNULL(batch_rpc_)) {
-      ret = OB_ERR_UNEXPECTED;
-      PALF_LOG(ERROR, "batch_rpc_ is nullptr, unexpected error", K(ret), K(server), K(palf_id), KP(batch_rpc_), K(req));
-    } else {
-      const int64_t LOG_BATCH_SUB_TYPE = (std::is_same<ReqType, LogBatchPushReq>::value)? \
-          LOG_BATCH_PUSH_LOG_REQ: LOG_BATCH_PUSH_LOG_RESP;
-      ret = batch_rpc_->post(tenant_id_,
-                             server,
-                             cluster_id_,
-                             obrpc::CLOG_BATCH_REQ,
-                             LOG_BATCH_SUB_TYPE,
-                             share::ObLSID(palf_id),
-                             req);
-      PALF_LOG(TRACE, "post batch rpc finished", K(ret), K(server), K(tenant_id_));
-    }
-    return ret;
-  }
-
   TO_STRING_KV(K_(self), K_(is_inited));
 private:
   ObAddr self_;
   obrpc::LogRpcProxyV2 rpc_proxy_;
   mutable ObSpinLock opt_lock_;
   PalfTransportCompressOptions options_;
-  obrpc::ObBatchRpc *batch_rpc_;
   int64_t tenant_id_;
   int64_t cluster_id_;
   bool is_inited_;

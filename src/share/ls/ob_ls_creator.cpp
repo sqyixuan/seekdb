@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -540,7 +536,7 @@ int ObLSCreator::check_need_create_arb_replica_(
   } else if (OB_ISNULL(proxy_)
              || OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), KP(proxy_), KP(GCTX.sql_proxy_));
+    LOG_WARN("invalid argument", KR(ret), KP(proxy_), KP(GCTX.sql_proxy_), KCSTRING(lbt()));
   } else if (OB_FAIL(sql.assign_fmt("SELECT arbitration_service_status IN ('ENABLING', 'ENABLED') AS is_enabling "
                                     "FROM %s WHERE tenant_id = %ld",
                                     OB_ALL_TENANT_TNAME, tenant_id_))) {
@@ -905,37 +901,23 @@ int ObLSCreator::set_member_list_(const common::ObMemberList &member_list,
     LOG_WARN("fail to construct paxos replica number to set", KR(ret), K_(tenant_id), K_(id),
              K(paxos_replica_num), K(arb_replica_count), K(member_list));
   } else {
-    ObTimeoutCtx ctx;
-    if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.rpc_timeout))) {
-      LOG_WARN("fail to set timeout ctx", KR(ret));
+    ObLSHandle handle;
+    ObLS *ls = nullptr;
+    ObLSService *ls_svr = nullptr;
+    if (OB_ISNULL(ls_svr = MTL(ObLSService*))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("mtl ObLSService should not be null", K(ret));
+    } else if (OB_FAIL(ls_svr->get_ls(id_, handle, ObLSGetMod::OBSERVER_MOD))) {
+      LOG_WARN("get ls failed", K(ret), K(id_));
+    } else if (OB_ISNULL(ls = handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls should not be null", K(ret));
+    } else if (OB_FAIL(ls->set_initial_member_list(member_list,
+                                                  paxos_replica_number_to_persist,
+                                                  learner_list))) {
+      LOG_WARN("failed to set member list", KR(ret), K(member_list), K(paxos_replica_number_to_persist), K(learner_list));
     } else {
-      ObArray<int> return_code_array;
-      for (int64_t i = 0; OB_SUCC(ret) && i < member_list.get_member_number(); ++i) {
-        ObAddr addr;
-        ObSetMemberListArgV2 arg;
-        if (OB_FAIL(arg.init(tenant_id_, id_, paxos_replica_number_to_persist, member_list, arb_replica, learner_list))) {
-          LOG_WARN("failed to init set member list arg", KR(ret), K_(id), K_(tenant_id),
-              K(paxos_replica_number_to_persist), K(member_list), K(arb_replica), K(learner_list));
-        } else if (OB_FAIL(member_list.get_server_by_index(i, addr))) {
-          LOG_WARN("failed to get member by index", KR(ret), K(i), K(member_list));
-        } else if (OB_TMP_FAIL(set_member_list_proxy_.call(addr, ctx.get_timeout(),
-                GCONF.cluster_id, tenant_id_, arg))) {
-          LOG_WARN("failed to set member list", KR(tmp_ret), K(ctx.get_timeout()), K(arg),
-              K(tenant_id_));
-        } else if (OB_FAIL(server_list.push_back(addr))) {
-          LOG_WARN("failed to push back server list", KR(ret), K(addr));
-        }
-      }
-
-      if (OB_TMP_FAIL(set_member_list_proxy_.wait_all(return_code_array))) {
-        ret = OB_SUCC(ret) ? tmp_ret : ret;
-        LOG_WARN("failed to wait all async rpc", KR(ret), KR(tmp_ret));
-
-      }
-      if (FAILEDx(check_set_memberlist_result_(return_code_array, paxos_replica_number_to_persist))) {
-        LOG_WARN("failed to check set member liset result", KR(ret),
-            K(paxos_replica_num), K(return_code_array));
-      }
+      LOG_INFO("success to set member list", K(member_list), K(paxos_replica_number_to_persist), K(learner_list)); 
     }
   }
   if (OB_SUCC(ret)) {

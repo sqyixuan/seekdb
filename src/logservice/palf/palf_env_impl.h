@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_MGR_
@@ -27,7 +23,6 @@
 #include "lib/utility/utility.h"
 #include "share/ob_occam_timer.h"
 #include "share/scn.h"
-#include "fetch_log_engine.h"
 #include "log_define.h"
 #include "log_shared_queue_thread.h"
 #include "log_io_task_cb_thread_pool.h"
@@ -211,8 +206,6 @@ public:
   virtual int64_t get_rebuild_replica_log_lag_threshold() const = 0;
   virtual int get_io_start_time(int64_t &last_working_time) = 0;
   virtual int64_t get_tenant_id() = 0;
-  // should be removed in version 4.2.0.0
-  virtual int update_replayable_point(const SCN &replayable_scn) = 0;
   virtual int get_throttling_options(PalfThrottleOptions &option) = 0;
   virtual void period_calc_disk_usage() = 0;
   virtual LogSharedQueueTh *get_log_shared_queue_thread() = 0;
@@ -220,7 +213,8 @@ public:
   VIRTUAL_TO_STRING_KV("IPalfEnvImpl", "Dummy");
 
 };
-// Container class for the log service, also manages the lifecycle of the logservice object
+
+// 日志服务的容器类，同时管理logservice对象的生命周期
 class PalfEnvImpl : public IPalfEnvImpl
 {
 public:
@@ -233,17 +227,17 @@ public:
            const int64_t cluster_id,
            const int64_t tenant_id,
            rpc::frame::ObReqTransport *transport,
-           obrpc::ObBatchRpc *batch_rpc,
            common::ObILogAllocator *alloc_mgr,
            ILogBlockPool *log_block_pool,
            PalfMonitorCb *monitor,
            share::ObLocalDevice *log_local_device,
            share::ObResourceManager *resource_manager,
            common::ObIOManager *io_manager);
-  // start function contains two meanings:
+
+  // start函数包含两层含义：
   //
-  // 1. Start all the worker threads contained in PalfEnvImpl
-  // 2. According to the log_storage and meta_storage files included in base_dir, load all the required metadata and logs for the log streams, and perform fault recovery
+  // 1. 启动PalfEnvImpl所包含的各类工作线程
+  // 2. 根据base_dir中包含的log_storage和meta_storage文件，加载所有日志流所需的元信息及日志，执行故障恢复
   //
   // @return :TODO
   int start();
@@ -251,18 +245,18 @@ public:
   void wait();
   void destroy();
 public:
-  // Create log stream interface
-  // @param [in] palf_id, identifier of the log stream to be created
-  // @param [in] palf_base_info, palf's log start information
-  // @param [out] palf_handle_impl, the generated palf_handle_impl object after successful creation
-  //                           When the palf_handle_impl object is no longer in use, the caller needs to execute revert_palf_handle_impl
+  // 创建日志流接口
+  // @param [in] palf_id，待创建日志流的标识符
+  // @param [in] palf_base_info，palf的日志起点信息
+  // @param [out] palf_handle_impl，创建成功后生成的palf_handle_impl对象
+  //                           在不再使用palf_handle_impl对象时，需要调用者执行revert_palf_handle_impl
   int create_palf_handle_impl(const int64_t palf_id,
                               const AccessMode &access_mode,
                               const PalfBaseInfo &palf_base_info,
                               IPalfHandleImpl *&palf_handle_impl) override final;
-  // Delete log stream, called by Garbage Collector
+  // 删除日志流, 由Garbage Collector调用
   //
-  // @param [in] palf_id, the identifier of the log stream to be deleted
+  // @param [in] palf_id，删除的日志流标识符
   //
   // @return :TODO
   int remove_palf_handle_impl(const int64_t palf_id) override final;
@@ -286,7 +280,6 @@ public:
   common::ObILogAllocator* get_log_allocator() override final;
   int get_io_start_time(int64_t &last_working_time) override final;
   int64_t get_tenant_id() override final;
-  int update_replayable_point(const SCN &replayable_scn) override final;
   int get_throttling_options(PalfThrottleOptions &option);
   void period_calc_disk_usage() override final;
   LogSharedQueueTh *get_log_shared_queue_thread() override final;
@@ -314,9 +307,12 @@ private:
     bool operator() (const LSKey &palf_id, IPalfHandleImpl *palf_handle_impl);
     int64_t id_;
     block_id_t min_block_id_;
+    share::SCN min_block_max_scn_;
     block_id_t min_using_block_id_;
+    int64_t oldest_palf_id_;
+    share::SCN oldest_block_scn_;
     int ret_code_;
-    TO_STRING_KV(K_(id), K_(min_block_id), K_(min_using_block_id), K_(ret_code));
+    TO_STRING_KV(K_(id), K_(min_block_max_scn), K_(min_block_id), K_(min_using_block_id), K_(oldest_palf_id), K_(oldest_block_scn), K_(ret_code));
   };
   struct GetTotalUsedDiskSpace
   {
@@ -354,7 +350,7 @@ private:
                       int64_t &unrecyclable_disk_space,
                       int64_t &palf_id,
                       int64_t &maximum_used_size);
-  int recycle_blocks_(bool &has_recycled);
+  int recycle_blocks_(bool &has_recycled, int64_t &oldest_palf_id, share::SCN &oldest_scn);
   int wait_until_reference_count_to_zero_(const int64_t palf_id);
   // check the diskspace whether is enough to hold a new palf instance.
   bool check_can_create_palf_handle_impl_() const;
@@ -376,7 +372,6 @@ private:
   RWLock palf_meta_lock_;
   common::ObILogAllocator *log_alloc_mgr_;
   ILogBlockPool *log_block_pool_;
-  FetchLogEngine fetch_log_engine_;
   LogRpc log_rpc_;
   LogIOTaskCbThreadPool cb_thread_pool_;
   LogIOWorkerWrapper log_io_worker_wrapper_;

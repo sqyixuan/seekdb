@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_ENGINE_
@@ -128,7 +124,6 @@ public:
            LogIOWorker *log_io_worker,
            LogSharedQueueTh *log_shared_queue_th,
            LogPlugins *plugins,
-           LSN &last_group_entry_header_lsn,
            LogGroupEntryHeader &entry_header,
            const int64_t palf_epoch,
            const int64_t log_storage_size,
@@ -210,74 +205,6 @@ public:
 
   // ===================== NetService start ======================
   LogNetService& get_net_service();
-  // @brief: this function used to transfer log to remote node
-  // @param[in] member_list: remote member list
-  // @param[in] msg_proposal_id: the current proposal_id
-  // @param[in] prev_lsn: the offset of prev log
-  // @param[in] prev_log_proposal_id: the proposal_id of prev log
-  // @param[in] curr_lsn: the offset of curr log
-  //
-  // NB: this function just only send log to the remote member list
-  template <class List>
-  int submit_push_log_req(const List &member_list,
-                          const PushLogType &push_log_type,
-                          const int64_t &msg_proposal_id,
-                          const int64_t &prev_log_proposal_id,
-                          const LSN &prev_lsn,
-                          const LSN &curr_lsn,
-                          const LogWriteBuf &write_buf,
-                          const bool need_batch_rpc)
-  {
-    int ret = OB_SUCCESS;
-    if (IS_NOT_INIT) {
-      ret = OB_NOT_INIT;
-      PALF_LOG(ERROR, "LogEngine not init", K(ret), KPC(this));
-    } else if (!need_batch_rpc 
-               && OB_FAIL(log_net_service_.submit_push_log_req(member_list,
-                                                               push_log_type,
-                                                               msg_proposal_id,
-                                                               prev_log_proposal_id,
-                                                               prev_lsn,
-                                                               curr_lsn,
-                                                               write_buf))) {
-    } else if (need_batch_rpc
-               && OB_FAIL(log_net_service_.submit_batch_push_log_req(member_list,
-                                                                     push_log_type,
-                                                                     msg_proposal_id,
-                                                                     prev_log_proposal_id,
-                                                                     prev_lsn,
-                                                                     curr_lsn,
-                                                                     write_buf))) {
-    } else {
-      PALF_LOG(TRACE,
-               "submit_group_entry_to_memberlist success",
-               K(ret),
-               KPC(this),
-               K(member_list),
-               K(msg_proposal_id),
-               K(prev_log_proposal_id),
-               K(prev_lsn),
-               K(curr_lsn),
-               K(need_batch_rpc));
-    }
-    return ret;
-  }
-  virtual int submit_push_log_req(const common::ObAddr &addr,
-                                  const PushLogType &push_log_type,
-                                  const int64_t &msg_proposal_id,
-                                  const int64_t &prev_log_proposal_id,
-                                  const LSN &prev_lsn,
-                                  const LSN &curr_lsn,
-                                  const LogWriteBuf &write_buf);
-
-  // @brief: this function used to submit acknowledgement to specified server
-  // @param[in] server: the address of remote server(leader)
-  // @param[in] proposal_id: the proposal id of this log, used to filter stale log
-  // @param[in] lsn: the offset of log
-  virtual int submit_push_log_resp(const common::ObAddr &server,
-                                   const int64_t &msg_proposal_id,
-                                   const LSN &lsn,
-                                   const bool is_batch);
 
   template <class List>
   int submit_prepare_meta_req_(const List &member_list, const int64_t &log_proposal_id)
@@ -362,28 +289,6 @@ public:
                                        LogGetArbMemberInfoResp &resp);
 #endif
 
-  // @brief: this function used to submit fetch log request to sepcified server
-  // @param[in] server: the address of remote server(data source)
-  // @param[in] fetch_type: follower fetching or leader reconfirm fetching
-  // @param[in] prev_lsn: the lsn of prev log, used to forward check
-  // @param[in] lsn: the lsn of log
-  // @param[in] fetch_log_size: the totoal size
-  // @param[in] fetch_log_count: the totoal log count by log_id
-  // @param[in] accepted_mode_pid: proposal_id of accepted_mode_meta
-  virtual int submit_fetch_log_req(const common::ObAddr &server,
-                                   const FetchLogType fetch_type,
-                                   const int64_t msg_proposal_id,
-                                   const LSN &prev_lsn,
-                                   const LSN &lsn,
-                                   const int64_t fetch_log_size,
-                                   const int64_t fetch_log_count,
-                                   const int64_t accepted_mode_pid);
-  virtual int submit_batch_fetch_log_resp(const common::ObAddr &server,
-                                          const int64_t msg_proposal_id,
-                                          const int64_t prev_log_proposal_id,
-                                          const LSN &prev_lsn,
-                                          const LSN &curr_lsn,
-                                          const LogWriteBuf &write_buf);
   virtual int submit_register_parent_req(const common::ObAddr &server,
                                          const LogLearner &child_itself,
                                          const bool is_to_leader);
