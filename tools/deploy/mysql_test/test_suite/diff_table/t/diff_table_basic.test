@@ -1,0 +1,161 @@
+##owner: fanxingkun.fxk
+##owner group: 底层引擎部-轻量版
+##description: DIFF TABLE 基础功能测试
+##tags: diff_table basic
+##author: fanxingkun.fxk
+
+--disable_warnings
+drop database if exists db_diff_src;
+drop database if exists db_diff_dst;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo ============================================
+--echo 1. 基本 DIFF TABLE 功能测试（设计文档示例）
+--echo ============================================
+
+create database db_diff_src;
+create database db_diff_dst;
+use db_diff_src;
+
+create table t_src (
+    id int primary key,
+    name varchar(20),
+    score int
+);
+
+create table t_dst (
+    id int primary key,
+    name varchar(20),
+    score int
+);
+
+insert into t_src values (1, 'Alice', 80);
+insert into t_src values (2, 'Bob', 90);
+insert into t_src values (3, 'Charlie', 70);
+
+insert into t_dst values (1, 'Alice', 85);
+insert into t_dst values (3, 'Charlie', 70);
+insert into t_dst values (4, 'David', 95);
+
+--echo # DIFF TABLE: incoming(t_dst) AGAINST current(t_src)
+--echo # 预期: 冲突(id=1), current独有(id=2), incoming独有(id=4)
+use db_diff_src;
+diff table db_diff_src.t_dst against db_diff_src.t_src;
+
+--echo ============================================
+--echo 2. 完全相同 - 无输出行
+--echo ============================================
+
+create table t_same1 (id int primary key, v int);
+create table t_same2 (id int primary key, v int);
+insert into t_same1 values (1, 100), (2, 200);
+insert into t_same2 values (1, 100), (2, 200);
+
+diff table db_diff_src.t_same1 against db_diff_src.t_same2;
+
+--echo ============================================
+--echo 3. 仅主键列 - 无冲突（同PK即相同）
+--echo ============================================
+
+create table t_pk_only1 (a int, b int, primary key(a, b));
+create table t_pk_only2 (a int, b int, primary key(a, b));
+insert into t_pk_only1 values (1, 1), (2, 2);
+insert into t_pk_only2 values (1, 1), (3, 3);
+
+diff table db_diff_src.t_pk_only1 against db_diff_src.t_pk_only2;
+
+--echo ============================================
+--echo 4. 跨库 DIFF
+--echo ============================================
+
+use db_diff_dst;
+create table t_inc (id int primary key, name varchar(20), score int);
+insert into t_inc values (1, 'Alice', 80);
+insert into t_inc values (5, 'Eve', 88);
+
+diff table db_diff_src.t_dst against db_diff_dst.t_inc;
+
+--echo ============================================
+--echo 5. 空表 DIFF
+--echo ============================================
+
+create table t_empty1 (id int primary key, x int);
+create table t_empty2 (id int primary key, x int);
+
+diff table db_diff_dst.t_empty1 against db_diff_dst.t_empty2;
+
+--echo ============================================
+--echo 6. NULL 值处理
+--echo ============================================
+
+use db_diff_src;
+create table t_null1 (id int primary key, v1 int, v2 varchar(20));
+create table t_null2 (id int primary key, v1 int, v2 varchar(20));
+insert into t_null1 values (1, NULL, 'a'), (2, 10, NULL), (3, NULL, NULL);
+insert into t_null2 values (1, NULL, 'a'), (2, 10, 'b'), (3, NULL, NULL);
+
+--echo # id=1: NULL<=>NULL, 'a'<=>'a' 相同，不输出
+--echo # id=2: 10<=>10, NULL<=>'b' 冲突
+--echo # id=3: NULL<=>NULL, NULL<=>NULL 相同，不输出
+diff table db_diff_src.t_null2 against db_diff_src.t_null1;
+
+--echo ============================================
+--echo 7. 复合主键 + 有值列的冲突
+--echo ============================================
+
+create table t_cpk1 (a int, b int, v int, primary key(a, b));
+create table t_cpk2 (a int, b int, v int, primary key(a, b));
+insert into t_cpk1 values (1, 1, 100), (1, 2, 200), (2, 1, 300);
+insert into t_cpk2 values (1, 1, 100), (1, 2, 999), (2, 2, 400);
+
+--echo # (1,1): 相同; (1,2): 冲突; (2,1): current独有; (2,2): incoming独有
+diff table db_diff_src.t_cpk2 against db_diff_src.t_cpk1;
+
+--echo ============================================
+--echo 8. 特殊字符表名和列名
+--echo ============================================
+
+create table `t src space` (`id` int primary key, `my value` int);
+create table `t inc space` (`id` int primary key, `my value` int);
+insert into `t src space` values (1, 10), (2, 20);
+insert into `t inc space` values (1, 99), (3, 30);
+
+diff table db_diff_src.`t inc space` against db_diff_src.`t src space`;
+
+--echo ============================================
+--echo 9. 库表名包含引号和反引号
+--echo ============================================
+
+--disable_warnings
+drop database if exists `db'diff``name`;
+--enable_warnings
+
+create database `db'diff``name`;
+use `db'diff``name`;
+create table `t'cur``name` (`id` int primary key, `v` int);
+create table `t'inc``name` (`id` int primary key, `v` int);
+insert into `t'cur``name` values (1, 10), (2, 20);
+insert into `t'inc``name` values (1, 99), (3, 30);
+
+diff table `db'diff``name`.`t'inc``name` against `db'diff``name`.`t'cur``name`;
+
+--echo ============================================
+--echo 10. 自引用 DIFF - 同表应返回空结果
+--echo ============================================
+
+diff table db_diff_src.t_src against db_diff_src.t_src;
+
+--echo ============================================
+--echo 11. 清理
+--echo ============================================
+
+drop database if exists `db'diff``name`;
+drop database if exists db_diff_src;
+drop database if exists db_diff_dst;
