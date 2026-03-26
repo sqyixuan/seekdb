@@ -23,11 +23,12 @@
 #include "observer/ob_server_event_history_table_operator.h"
 #include "storage/tx/ob_ts_mgr.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "rootserver/ob_tenant_info_loader.h"
 #include "observer/omt/ob_tenant.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
 #include "share/ob_io_device_helper.h"
 #include "storage/high_availability/ob_storage_ha_dag.h"
+#include "storage/high_availability/ob_restore_helper.h"
+#include "storage/high_availability/ob_storage_ha_struct.h"
 
 using namespace oceanbase::share;
 
@@ -174,44 +175,9 @@ int ObStorageHAUtils::check_transfer_ls_can_rebuild(
     bool &need_rebuild)
 {
   int ret = OB_SUCCESS;
-  SCN readable_scn = SCN::base_scn();
   need_rebuild = false;
-  if (!replay_scn.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("argument invalid", K(ret), K(replay_scn));
-  } else if (MTL_TENANT_ROLE_CACHE_IS_INVALID()) {
-    ret = OB_NEED_RETRY;
-    LOG_WARN("tenant role is invalid, need retry", KR(ret), K(replay_scn));
-  } else if (MTL_TENANT_ROLE_CACHE_IS_PRIMARY()) {
-    need_rebuild = true;
-  } else if (OB_FAIL(get_readable_scn_(readable_scn))) {
-    LOG_WARN("failed to get readable scn", K(ret), K(replay_scn));
-  } else if (readable_scn >= replay_scn) {
-    need_rebuild = true;
-  } else {
-    need_rebuild = false;
-  }
   return ret;
 }
-
-
-int ObStorageHAUtils::get_readable_scn_(share::SCN &readable_scn)
-{
-  int ret = OB_SUCCESS;
-  readable_scn.set_base();
-  rootserver::ObTenantInfoLoader *info = MTL(rootserver::ObTenantInfoLoader*);
-  if (OB_ISNULL(info)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tenant info is null", K(ret), KP(info));
-  } else if (OB_FAIL(info->get_readable_scn(readable_scn))) {
-    LOG_WARN("failed to get readable scn", K(ret), K(readable_scn));
-  } else if (!readable_scn.is_valid()) {
-    ret = OB_EAGAIN;
-    LOG_WARN("readable_scn not valid", K(ret), K(readable_scn));
-  }
-  return ret;
-}
-
 
 int ObStorageHAUtils::check_disk_space()
 {
@@ -491,14 +457,6 @@ void ObTransferUtils::clear_transfer_module()
 #endif
 }
 
-
-void ObTransferUtils::set_transfer_related_info(
-    const share::ObLSID &dest_ls_id,
-    const share::ObTransferTaskID &task_id,
-    const share::SCN &start_scn)
-{
-}
-
 int ObTransferUtils::get_ls_(
     ObLSHandle &ls_handle,
     const share::ObLSID &dest_ls_id,
@@ -708,6 +666,128 @@ void ObStorageHAUtils::sort_table_key_array_by_snapshot_version(common::ObArray<
 {
   TableKeySnapshotVersionComparator cmp;
   lib::ob_sort(table_key_array.begin(), table_key_array.end(), cmp);
+}
+
+int ObStorageHAUtils::build_tablets_sstable_info_with_helper(
+    restore::ObIRestoreHelper *helper,
+    ObStorageHATableInfoMgr *ha_table_info_mgr,
+    share::ObIDagNet *dag_net,
+    const common::ObIArray<ObTabletHandle> &tablet_handle_array)
+{
+  int ret = OB_SUCCESS;
+  obrpc::ObCopyTabletSSTableInfo sstable_info;
+  obrpc::ObCopyTabletSSTableHeader copy_header;
+  common::ObArray<ObTabletID> tablet_id_array;
+
+  if (OB_ISNULL(helper) || OB_ISNULL(ha_table_info_mgr) || OB_ISNULL(dag_net)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("build tablets sstable info with helper get invalid argument", K(ret), KP(helper), KP(ha_table_info_mgr), KP(dag_net));
+  } else if (tablet_handle_array.empty()) {
+    ret = OB_EAGAIN;
+    LOG_WARN("all tablets has been gc, try again", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < tablet_handle_array.count(); ++i) {
+      const ObTabletHandle &tablet_handle = tablet_handle_array.at(i);
+      const ObTablet *tablet = tablet_handle.get_obj();
+      if (OB_ISNULL(tablet)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tablet is null", K(ret), K(i));
+      } else if (OB_FAIL(tablet_id_array.push_back(tablet->get_tablet_meta().tablet_id_))) {
+        LOG_WARN("failed to push back tablet id", K(ret), K(i));
+      }
+    }
+    ObLSHandle ls_handle;
+    ObLS *ls = nullptr;
+    ObLSService *ls_service = nullptr;
+    if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be null", K(ret));
+    } else if (OB_FAIL(ls_service->get_ls(SYS_LS, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+      LOG_WARN("failed to get ls", K(ret));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls should not be null", K(ret));
+    } else if (FAILEDx(helper->init_for_build_tablets_sstable_info(ls, tablet_handle_array))) {
+      LOG_WARN("failed to init for build tablets sstable info", K(ret));
+    }
+    while (OB_SUCC(ret)) {
+      sstable_info.reset();
+      copy_header.reset();
+      if (dag_net->is_cancel()) {
+        ret = OB_CANCELED;
+        LOG_WARN("task is cancelled", K(ret));
+      } else if (OB_FAIL(helper->fetch_next_tablet_sstable_header(copy_header))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          LOG_WARN("failed to fetch next tablet sstable header", K(ret));
+        }
+      } else if (ObCopyTabletStatus::TABLET_NOT_EXIST == copy_header.status_
+          && copy_header.tablet_id_.is_ls_inner_tablet()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ls inner tablet should be exist", K(ret), K(copy_header));
+      } else if (OB_FAIL(ha_table_info_mgr->init_tablet_info(copy_header))) {
+        LOG_WARN("failed to init tablet info", K(ret), K(copy_header));
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < copy_header.sstable_count_; ++i) {
+          if (OB_FAIL(helper->fetch_next_sstable_meta(sstable_info))) {
+            LOG_WARN("failed to fetch next sstable meta", K(ret), K(copy_header));
+          } else if (!sstable_info.is_valid()) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_WARN("build tablets sstable info get invalid argument", K(ret), K(sstable_info));
+          } else if (sstable_info.table_key_.is_memtable()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("table should not be MEMTABLE", K(ret), K(sstable_info));
+          } else if (OB_FAIL(ha_table_info_mgr->add_table_info(sstable_info.tablet_id_, sstable_info))) {
+            LOG_WARN("failed to add table info", K(ret), K(sstable_info));
+          } else {
+            LOG_DEBUG("add table info", K(sstable_info.tablet_id_), K(sstable_info));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageHAUtils::make_macro_id_to_datum(
+    const common::ObIArray<MacroBlockId> &macro_block_id_array,
+    char *buf,
+    const int64_t buf_size,
+    ObDatumRowkey &end_key)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  int64_t saved_pos = 0;
+  int64_t length = 0;
+  if (macro_block_id_array.empty() || macro_block_id_array.count() > OB_MAX_ROWKEY_COLUMN_NUMBER
+      || OB_ISNULL(buf) || buf_size <= 0 || !end_key.is_valid() || end_key.datum_cnt_ < OB_MAX_ROWKEY_COLUMN_NUMBER) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("make macro id datum get invalid argument", K(ret), K(macro_block_id_array), KP(buf), K(buf_size), K(end_key));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < macro_block_id_array.count(); ++i) {
+      const MacroBlockId &macro_block_id = macro_block_id_array.at(i);
+      if (!macro_block_id.is_valid() || !macro_block_id.is_id_mode_share()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ddl sstable macro block id is unexpected", K(ret), K(macro_block_id));
+      } else if (OB_FAIL(macro_block_id.serialize(buf, buf_size, pos))) {
+        LOG_WARN("failed to serialize macro block id", K(ret), K(macro_block_id), K(macro_block_id));
+      } else if (FALSE_IT(length = pos - saved_pos)) {
+      } else if (length <= 0) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("data length is unexpected", K(ret), K(length), K(i), K(pos), K(saved_pos));
+      } else {
+        end_key.datums_[i].set_string(buf + saved_pos, length);
+        saved_pos = pos;
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      end_key.datum_cnt_ = macro_block_id_array.count();
+    }
+  }
+  return ret;
 }
 
 } // end namespace storage
