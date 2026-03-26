@@ -1,0 +1,88 @@
+# owner: zhouhaiyu.zhy
+# tags: px
+# owner group: SQL Executor Group
+
+# test px part join filter crash problem
+
+connect (mysql, $OBMYSQL_MS0, root@mysql, ,test, $OBMYSQL_PORT);
+--disable_query_log
+connection mysql;
+--enable_query_log
+
+let $old=`select value from oceanbase.gv\\\$ob_parameters where name='_max_px_workers_per_cpu'`;
+set global parallel_servers_target = 40;
+eval alter system set _max_px_workers_per_cpu = 20;
+
+--disable_query_log
+connection mysql;
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+create table t1(c1 bigint);
+create table t2(c1 bigint, c2 bigint, c3 bigint, c4 varchar(65), c5 varchar(60)) partition by hash(c1) partitions 256;
+create index i2 on t2(c3);
+insert into t1 values(1);
+
+explain basic select /*+parallel(20) + query_timeout(10000000000) use_plan_cache(none) leading(t1 t2) use_hash(t1 t2) PQ_DISTRIBUTE(t2 hash hash) px_part_join_filter(t2) no_px_join_filter(t2) index(t2 i2)*/ *, substr(t2.c1, 1, 2), substr(t2.c2, 3, 4) from t1 join t2 on t1.c1=t2.c1 where t2.c3 < regexp_like('aaaaaaaaaaaaaaaaa1', '^(a+)+$') + length(substr('a', 1, 1));
+select /*+parallel(20) + query_timeout(10000000000) use_plan_cache(none) leading(t1 t2) use_hash(t1 t2) PQ_DISTRIBUTE(t2 hash hash) px_part_join_filter(t2) no_px_join_filter(t2) index(t2 i2)*/ *, substr(t2.c1, 1, 2), substr(t2.c2, 3, 4) from t1 join t2 on t1.c1=t2.c1 where t2.c3 < regexp_like('aaaaaaaaaaaaaaaaa1', '^(a+)+$') + length(substr('a', 1, 1));
+
+
+set global parallel_servers_target = 10;
+eval alter system set _max_px_workers_per_cpu = $old;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--disable_query_log
+connection obsys;
+--enable_query_log
+
+--disable_warnings
+drop tenant if exists mysql_t force;
+drop resource pool if exists test_resource_pool1;
+drop resource unit if exists test_resource_unit;
+--enable_warnings
+
+--disable_query_log
+create resource unit test_resource_unit max_cpu 1, memory_size '2G';
+eval create resource pool test_resource_pool1 unit = 'test_resource_unit', unit_num = 1, zone_list=('zone1','zone2');
+eval create tenant mysql_t charset='utf8mb4', ZONE_LIST=('zone1','zone2'), primary_zone='RANDOM', resource_pool_list=('test_resource_pool1') set ob_tcp_invited_nodes = '%';
+
+let $M_SLAVE_IP = query_get_value(select svr_ip from oceanbase.__all_server where with_rootserver = 0, svr_ip, 1);
+let $M_SLAVE_PORT = query_get_value(select inner_port from oceanbase.__all_server where with_rootserver = 0, inner_port, 1);
+--enable_query_log
+
+connect (mysql_t, $M_SLAVE_IP, root@mysql_t, ,test, $M_SLAVE_PORT);
+--disable_query_log
+connection mysql_t;
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+create table t1(c1 bigint);
+create table t2(c1 bigint, c2 bigint, c3 bigint);
+create table t3(c1 bigint, c2 bigint);
+insert into t1 values(1),(2),(3),(4),(5);
+insert into t2 values(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+insert into t3 values(1,1),(2,2),(3,3),(4,4),(5,5);
+
+--disable_query_log
+connection obsys;
+--enable_query_log
+alter system set_tp tp_name= EN_REMOTE_EXEC_ERR, error_code=4653, frequency=1;
+
+--disable_query_log
+connection mysql_t;
+--enable_query_log
+
+explain basic select /*+ no_rewrite  OPT_PARAM('enable_rich_vector_format', 'FALSE')   */* from t3 where t3.c1  in (select /*+leading(t1 t2) use_nl(t2) full(t2) use_das(t2)*/ t2.c1 from t1,t2  where t1.c1=t2.c1 and t2.c2=t3.c2 limit 1);
+select /*+ no_rewrite  OPT_PARAM('enable_rich_vector_format', 'FALSE')   */* from t3 where t3.c1  in (select /*+leading(t1 t2) use_nl(t2) full(t2) use_das(t2)*/ t2.c1 from t1,t2  where t1.c1=t2.c1 and t2.c2=t3.c2 limit 1);
+
+--disable_query_log
+connection obsys;
+--enable_query_log
+alter system set_tp tp_name= EN_REMOTE_EXEC_ERR, error_code=0, frequency=0;
+drop tenant if exists mysql_t force;
+drop resource pool if exists test_resource_pool1;
+drop resource unit if exists test_resource_unit;

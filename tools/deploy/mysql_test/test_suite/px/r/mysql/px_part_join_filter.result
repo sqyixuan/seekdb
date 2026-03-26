@@ -1,0 +1,117 @@
+set global parallel_servers_target = 40;
+alter system set _max_px_workers_per_cpu = 20;
+drop table if exists t1, t2;
+create table t1(c1 bigint);
+create table t2(c1 bigint, c2 bigint, c3 bigint, c4 varchar(65), c5 varchar(60)) partition by hash(c1) partitions 256;
+create index i2 on t2(c3);
+insert into t1 values(1);
+explain basic select /*+parallel(20) + query_timeout(10000000000) use_plan_cache(none) leading(t1 t2) use_hash(t1 t2) PQ_DISTRIBUTE(t2 hash hash) px_part_join_filter(t2) no_px_join_filter(t2) index(t2 i2)*/ *, substr(t2.c1, 1, 2), substr(t2.c2, 3, 4) from t1 join t2 on t1.c1=t2.c1 where t2.c3 < regexp_like('aaaaaaaaaaaaaaaaa1', '^(a+)+$') + length(substr('a', 1, 1));
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |PX COORDINATOR                     |        |
+|1 |└─EXCHANGE OUT DISTR               |:EX10002|
+|2 |  └─HASH JOIN                      |        |
+|3 |    ├─PART JOIN FILTER CREATE      |:RF0000 |
+|4 |    │ └─EXCHANGE IN DISTR          |        |
+|5 |    │   └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|6 |    │     └─PX BLOCK ITERATOR      |        |
+|7 |    │       └─TABLE FULL SCAN      |t1      |
+|8 |    └─EXCHANGE IN DISTR            |        |
+|9 |      └─EXCHANGE OUT DISTR (HASH)  |:EX10001|
+|10|        └─PX BLOCK HASH JOIN-FILTER|:RF0000 |
+|11|          └─TABLE RANGE SCAN       |t2(i2)  |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, substr(cast(t2.c1, VARCHAR(1048576)), 1, 2), substr(cast(t2.c2, VARCHAR(1048576)),
+       3, 4))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, substr(cast(t2.c1, VARCHAR(1048576)), 1, 2), substr(cast(t2.c2, VARCHAR(1048576)),
+       3, 4))]), filter(nil), rowset=16
+      dop=20
+  2 - output([t2.c1], [t2.c2], [t1.c1], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  3 - output([t1.c1]), filter(nil), rowset=16
+      RF_TYPE(bloom), RF_EXPR[calc_tablet_id(t1.c1)]
+  4 - output([t1.c1]), filter(nil), rowset=16
+  5 - output([t1.c1]), filter(nil), rowset=16
+      (#keys=1, [t1.c1]), dop=20
+  6 - output([t1.c1]), filter(nil), rowset=16
+  7 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+  9 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      (#keys=1, [t2.c1]), dop=20
+ 10 - output([t2.c1], [t2.c3], [t2.c2], [t2.c4], [t2.c5]), filter(nil), rowset=16
+ 11 - output([t2.c1], [t2.c3], [t2.c2], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      access([t2.__pk_increment], [t2.c1], [t2.c3], [t2.c2], [t2.c4], [t2.c5]), partitions(p[0-255])
+      is_index_back=true, is_global_index=false, 
+      range_key([t2.c3], [t2.__pk_increment]), range(NULL,MAX ; 1,MIN), 
+      range_cond([t2.c3 < regexp_like(cast('aaaaaaaaaaaaaaaaa1', VARCHAR(1048576)), cast('^(a+)+$', VARCHAR(1048576))) + length(substr('a', 1, 1))])
+select /*+parallel(20) + query_timeout(10000000000) use_plan_cache(none) leading(t1 t2) use_hash(t1 t2) PQ_DISTRIBUTE(t2 hash hash) px_part_join_filter(t2) no_px_join_filter(t2) index(t2 i2)*/ *, substr(t2.c1, 1, 2), substr(t2.c2, 3, 4) from t1 join t2 on t1.c1=t2.c1 where t2.c3 < regexp_like('aaaaaaaaaaaaaaaaa1', '^(a+)+$') + length(substr('a', 1, 1));
+c1	c1	c2	c3	c4	c5	substr(t2.c1, 1, 2)	substr(t2.c2, 3, 4)
+set global parallel_servers_target = 10;
+alter system set _max_px_workers_per_cpu = 10;
+drop tenant if exists mysql_t force;
+drop resource pool if exists test_resource_pool1;
+drop resource unit if exists test_resource_unit;
+drop table if exists t1, t2, t3;
+create table t1(c1 bigint);
+create table t2(c1 bigint, c2 bigint, c3 bigint);
+create table t3(c1 bigint, c2 bigint);
+insert into t1 values(1),(2),(3),(4),(5);
+insert into t2 values(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+insert into t3 values(1,1),(2,2),(3,3),(4,4),(5,5);
+alter system set_tp tp_name= EN_REMOTE_EXEC_ERR, error_code=4653, frequency=1;
+explain basic select /*+ no_rewrite  OPT_PARAM('enable_rich_vector_format', 'FALSE')   */* from t3 where t3.c1  in (select /*+leading(t1 t2) use_nl(t2) full(t2) use_das(t2)*/ t2.c1 from t1,t2  where t1.c1=t2.c1 and t2.c2=t3.c2 limit 1);
+Query Plan
+=================================================
+|ID|OPERATOR                               |NAME|
+-------------------------------------------------
+|0 |EXCHANGE IN REMOTE                     |    |
+|1 |└─EXCHANGE OUT REMOTE                  |    |
+|2 |  └─SUBPLAN FILTER                     |    |
+|3 |    ├─TABLE FULL SCAN                  |t3  |
+|4 |    └─LIMIT                            |    |
+|5 |      └─NESTED-LOOP JOIN               |    |
+|6 |        ├─DISTRIBUTED TABLE FULL SCAN  |t1  |
+|7 |        └─MATERIAL                     |    |
+|8 |          └─DISTRIBUTED TABLE FULL SCAN|t2  |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t3.c1], [t3.c2]), filter(nil)
+  1 - output([t3.c1], [t3.c2]), filter(nil)
+  2 - output([t3.c1], [t3.c2]), filter([t3.c1 = ANY(subquery(1))]), rowset=16
+      exec_params_([t3.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  3 - output([t3.c2], [t3.c1]), filter(nil), rowset=16
+      access([t3.c2], [t3.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  4 - output([t2.c1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  5 - output([t2.c1]), filter(nil), rowset=16
+      conds([t1.c1 = t2.c1]), nl_params_(nil), use_batch=false
+  6 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t2.c1]), filter(nil), rowset=16
+  8 - output([t2.c1]), filter([t2.c2 = :0]), rowset=16
+      access([t2.c1], [t2.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ no_rewrite  OPT_PARAM('enable_rich_vector_format', 'FALSE')   */* from t3 where t3.c1  in (select /*+leading(t1 t2) use_nl(t2) full(t2) use_das(t2)*/ t2.c1 from t1,t2  where t1.c1=t2.c1 and t2.c2=t3.c2 limit 1);
+c1	c2
+1	1
+2	2
+3	3
+4	4
+5	5
+alter system set_tp tp_name= EN_REMOTE_EXEC_ERR, error_code=0, frequency=0;
+drop tenant if exists mysql_t force;
+drop resource pool if exists test_resource_pool1;
+drop resource unit if exists test_resource_unit;
