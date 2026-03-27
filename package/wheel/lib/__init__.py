@@ -12,7 +12,7 @@ import sys
 from importlib.metadata import version, PackageNotFoundError
 
 try:
-  __version__ = version("pylibseekdb_runtime")
+  __version__ = version("seekdb_lib")
 except PackageNotFoundError:
   __version__ = "0.0.1.dev1"
 
