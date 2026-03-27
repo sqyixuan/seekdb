@@ -884,7 +884,6 @@ int ObILSRestoreState::advance_status_(
   }
 
   if (need_notify_rs_restore_finish_(next_status)) {
-    notify_rs_restore_finish_();
   }
   return ret;
 }
@@ -1481,22 +1480,7 @@ int ObILSRestoreState::check_replay_to_target_scn_(
     const share::SCN &target_scn, 
     bool &replayed) const
 {
-  int ret = OB_SUCCESS;
-  replayed = false;
-  rootserver::ObLSRecoveryStatHandler *ls_recovery_stat_handler = nullptr;
-  share::SCN readable_scn;
-  if (!target_scn.is_valid_and_not_min()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid target scn", K(ret), K(target_scn));
-  } else if (OB_ISNULL(ls_recovery_stat_handler = ls_->get_ls_recovery_stat_handler())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls recovery stat handler must not be null", K(ret));
-  } else if (OB_FAIL(ls_recovery_stat_handler->get_ls_replica_readable_scn(readable_scn))) {
-    LOG_WARN("failed to get ls replica readable scn", K(ret), KPC(ls_));
-  } else if (target_scn <= readable_scn) {
-    replayed = true;
-    LOG_INFO("clog replay to target scn finish", K(target_scn), K(readable_scn), KPC(ls_));
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -1598,26 +1582,6 @@ int ObILSRestoreState::report_unfinished_bytes(const int64_t bytes)
   return ret;
 }
 
-void ObILSRestoreState::notify_rs_restore_finish_()
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = ls_restore_arg_->tenant_id_;
-  common::ObAddr leader_addr;
-  obrpc::ObNotifyLSRestoreFinishArg arg;
-  arg.set_tenant_id(tenant_id);
-  arg.set_ls_id(ls_->get_ls_id());
-
-  if (OB_ISNULL(GCTX.srv_rpc_proxy_) || OB_ISNULL(GCTX.location_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("rpc proxy or location service is null", KR(ret), KP(GCTX.srv_rpc_proxy_), KP(GCTX.location_service_));
-  } else if (OB_FAIL(GCTX.location_service_->get_leader_with_retry_until_timeout(
-              GCONF.cluster_id, gen_meta_tenant_id(tenant_id), ObLSID(ObLSID::SYS_LS_ID), leader_addr))) {
-    LOG_WARN("failed to get meta tenant leader address", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(leader_addr).by(tenant_id).notify_ls_restore_finish(arg))) {
-    LOG_WARN("failed to notify tenant restore scheduler", KR(ret), K(leader_addr), K(arg));
-  }
-}
-
 //================================ObLSRestoreStartState=======================================
 ObLSRestoreStartState::ObLSRestoreStartState()
   : ObILSRestoreState(ObLSRestoreStatus::Status::RESTORE_START)
@@ -1630,9 +1594,8 @@ ObLSRestoreStartState::~ObLSRestoreStartState()
 
 int ObLSRestoreStartState::do_restore()
 {
-  int ret = OB_SUCCESS;
-#ifndef OB_BUILD_OBSERVER_LITE
   DEBUG_SYNC(BEFORE_RESTORE_START);
+  int ret = OB_SUCCESS;
   ObLSRestoreStatus next_status(ObLSRestoreStatus::Status::RESTORE_SYS_TABLETS);
   ObLogRestoreHandler *log_restore_handle = nullptr;
   bool is_created = false;
@@ -1668,39 +1631,12 @@ int ObLSRestoreStartState::do_restore()
   } else if (OB_FAIL(advance_status_(*ls_, next_status))) {
     LOG_WARN("fail to advance status", K(ret), KPC(ls_), K(next_status));
   }
-#else
-  ret = OB_NOT_SUPPORTED;
-#endif
   return ret;
 }
 
 int ObLSRestoreStartState::check_ls_leader_ready_(bool &is_ready)
 {
-  int ret = OB_SUCCESS;
-  is_ready = false;
-  uint64_t tenant_id = ls_->get_tenant_id();
-  SMART_VAR(common::ObMySQLProxy::MySQLResult, res) {
-    ObSqlString sql;
-    common::sqlclient::ObMySQLResult *result = nullptr;
-    if (OB_FAIL(sql.assign_fmt("select count(*) ls_count from %s where ls_id=%ld and role = 1",
-        OB_ALL_LS_META_TABLE_TNAME, ls_->get_ls_id().id()))) {
-      LOG_WARN("fail to assign sql", K(ret));
-    } else if (OB_FAIL(proxy_->read(res, gen_meta_tenant_id(tenant_id), sql.ptr(), share::OBCG_STORAGE))) {
-      LOG_WARN("execute sql failed", K(ret), K(sql));
-    } else if (OB_ISNULL(result = res.get_result())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("result is nullptr", K(ret), K(sql));
-    } else if (OB_FAIL(result->next())) {
-      LOG_WARN("no result", K(ret), K(sql));
-    } else {
-      int64_t count = 0;
-      EXTRACT_INT_FIELD_MYSQL(*result, OB_STR_LS_COUNT, count, int64_t);
-      if (OB_FAIL(ret)) {
-      } else {
-        is_ready = 1 == count ? true : false;
-      }
-    }
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -1836,21 +1772,6 @@ int ObLSRestoreStartState::check_ls_created_(bool &is_created)
 {
   int ret = OB_SUCCESS;
   is_created = false;
-  uint64_t tenant_id = MTL_ID();
-  uint64_t user_tenant_id = gen_user_tenant_id(tenant_id);
-  ObMySQLProxy *sql_proxy = GCTX.sql_proxy_;
-  ObLSStatusInfo status_info;
-  ObLSStatusOperator ls_status_operator;
-  if (OB_ISNULL(sql_proxy)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql proxy is nullptr is unexpected", K(ret));
-  } else if (OB_FAIL(ls_status_operator.get_ls_status_info(user_tenant_id, ls_->get_ls_id(), status_info, *sql_proxy, share::OBCG_STORAGE))) {
-    LOG_WARN("fail to get ls status info", K(ret), K(user_tenant_id), "ls_id", ls_->get_ls_id());
-  } else if (!status_info.ls_is_create_abort() && !status_info.ls_is_creating()) {
-    is_created = true;
-  } else {
-    LOG_WARN("ls has not been created, wait later", KPC(ls_));
-  }
   return ret;
 }
 
@@ -2390,7 +2311,6 @@ int ObLSQuickRestoreState::do_restore()
 int ObLSQuickRestoreState::leader_quick_restore_()
 {
   int ret = OB_SUCCESS;
-#ifndef OB_BUILD_OBSERVER_LITE
   int tmp_ret = OB_SUCCESS;
   ObSArray<ObTabletID> restored_tablets;
   ObLSRestoreTaskMgr::ToRestoreTabletGroup tablet_need_restore;
@@ -2453,16 +2373,12 @@ int ObLSQuickRestoreState::leader_quick_restore_()
   }
 #endif
 
-#else
-  ret = OB_NOT_SUPPORTED;
-#endif
   return ret;
 }
 
 int ObLSQuickRestoreState::follower_quick_restore_()
 {
   int ret = OB_SUCCESS;
-#ifndef OB_BUILD_OBSERVER_LITE
   int tmp_ret = OB_SUCCESS;
   ObSArray<ObTabletID> restored_tablets;
   ObLSRestoreTaskMgr::ToRestoreTabletGroup tablet_need_restore;
@@ -2506,9 +2422,6 @@ int ObLSQuickRestoreState::follower_quick_restore_()
   } else if (OB_FAIL(do_quick_restore_(tablet_need_restore))) {
     LOG_WARN("fail to do quick restore", K(ret), K(tablet_need_restore), KPC(ls_));
   }
-#else
-  ret = OB_NOT_SUPPORTED;
-#endif
   return ret;
 }
 
@@ -2559,7 +2472,6 @@ int ObLSQuickRestoreState::do_quick_restore_(const ObLSRestoreTaskMgr::ToRestore
 int ObLSQuickRestoreState::check_clog_replay_finish_(bool &is_finish)
 {
   int ret = OB_SUCCESS;
-#ifndef OB_BUILD_OBSERVER_LITE
   bool done = false;
   ObLogRestoreHandler *log_restore_handle = nullptr;
   if (OB_ISNULL(log_restore_handle = ls_->get_log_restore_handler())) {
@@ -2574,9 +2486,6 @@ int ObLSQuickRestoreState::check_clog_replay_finish_(bool &is_finish)
   } else if (done) {
     is_finish = true;
   }
-#else
-  ret = OB_NOT_SUPPORTED;
-#endif
   return ret;
 }
 

@@ -25,7 +25,7 @@ namespace oceanbase {
 namespace observer {
 
 /**
- * 记录命令行参数
+ * Record command line arguments
  */
 class ObServerOptions final
 {
@@ -51,6 +51,10 @@ public:
   KeyValueArray       parameters_;
   KeyValueArray       variables_;
   const char *        devname_ = nullptr;
+  
+  // Primary-Standby configuration
+  common::ObSqlString server_role_;      // PRIMARY or PHYSICAL_STANDBY
+  common::ObSqlString restore_source_;    // restore source address (ip:port)
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObServerOptions);
