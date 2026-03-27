@@ -52,7 +52,7 @@ int ObLoadSysPackageTask::load_package()
   FLOG_INFO("[LOAD_SYS_PACKAGE] load sys package begin");
   ObMySQLProxy& sql_proxy = root_service_.get_sql_proxy();
   int64_t job_id = OB_INVALID_ID;
-  ret = RS_JOB_FIND(LOAD_MYSQL_SYS_PACKAGE, job_id, sql_proxy, "tenant_id", OB_SYS_TENANT_ID);
+  ret = RS_JOB_FIND(LOAD_MYSQL_SYS_PACKAGE, job_id);
   if (OB_FAIL(ret)) {
     if (ret == OB_ENTRY_NOT_EXIST) {
       // success rs job cannot be found by RS_JOB_FIND
@@ -66,7 +66,7 @@ int ObLoadSysPackageTask::load_package()
     LOG_WARN("failed to load package", KR(ret));
   } else if (OB_FAIL(ERRSIM_LOAD_PACKAGE_ERROR)) {
     LOG_WARN("ERRSIM_LOAD_PACKAGE_ERROR", KR(ret));
-  } else if (OB_FAIL(RS_JOB_COMPLETE(job_id, 0/*result_code*/, sql_proxy))) {
+  } else if (OB_FAIL(RS_JOB_COMPLETE(job_id, 0/*result_code*/))) {
     LOG_WARN("failed to complete rs job", KR(ret), K(job_id));
   }
   FLOG_INFO("[LOAD_SYS_PACKAGE] load sys package end", K(ret));
@@ -100,7 +100,6 @@ int ObLoadSysPackageTask::process()
 // mode == oracle will only wait oracle job
 // otherwise it will wait all job
 int ObLoadSysPackageTask::wait_sys_package_ready(
-    ObMySQLProxy &sql_proxy,
     const ObTimeoutCtx &ctx,
     ObCompatibilityMode mode)
 {
@@ -117,18 +116,10 @@ int ObLoadSysPackageTask::wait_sys_package_ready(
     } else {
       inprogress_job_count = 0;
       if (mode != ObCompatibilityMode::ORACLE_MODE && 
-          OB_ENTRY_NOT_EXIST != (tmp_ret = RS_JOB_FIND(LOAD_MYSQL_SYS_PACKAGE, job_id, sql_proxy,
-            "tenant_id", OB_SYS_TENANT_ID))) {
+          OB_ENTRY_NOT_EXIST != (tmp_ret = RS_JOB_FIND(LOAD_MYSQL_SYS_PACKAGE, job_id))) {
           inprogress_job_count++;
           LOG_WARN("mysql job is not ready", K(tmp_ret), K(mode));
       }
-      // dont wait oracle mode, because oracle job is not ready after drop oracle type
-      // if (mode != ObCompatibilityMode::MYSQL_MODE && 
-      //     OB_ENTRY_NOT_EXIST != (tmp_ret = RS_JOB_FIND(LOAD_ORACLE_SYS_PACKAGE, job_id, sql_proxy,
-      //       "tenant_id", OB_SYS_TENANT_ID))) {
-      //     inprogress_job_count++;
-      //     LOG_WARN("oracle job is not ready", K(tmp_ret), K(mode));
-      // }
       if (inprogress_job_count == 0) {
         // RS_JOB_FIND will only find INPROGRESS job
         finish = true;

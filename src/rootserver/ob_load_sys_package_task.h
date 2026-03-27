@@ -35,7 +35,6 @@ public:
   virtual ObAsyncTask *deep_copy(char *buf, const int64_t buf_size) const override;
   virtual int process();
   static int wait_sys_package_ready(
-      common::ObMySQLProxy &sql_proxy,
       const common::ObTimeoutCtx &ctx,
       ObCompatibilityMode mode);
 private:
