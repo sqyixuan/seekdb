@@ -717,23 +717,23 @@ if (OB_ENABLE_BOLT)
     OUTPUT fake_observer_bolt
     COMMAND ${CMAKE_SOURCE_DIR}/cmake/script/do_bolt_opt --build_dir=${CMAKE_BINARY_DIR}
     DEPENDS observer_without_bolt)
-  add_custom_target(seekdb ALL
+  add_custom_target(observer ALL
     DEPENDS fake_observer_bolt)
 else()
   add_custom_command(
     OUTPUT fake_observer
-    COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/seekdb
+    COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/observer
     DEPENDS observer_without_bolt)
-  add_custom_target(seekdb ALL
+  add_custom_target(observer ALL
     DEPENDS fake_observer)
 endif()
 
-add_custom_target(observer ALL
-  DEPENDS seekdb
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-      ${CMAKE_BINARY_DIR}/src/observer/seekdb
+add_custom_target(seekdb ALL
+  DEPENDS observer
+  COMMAND ${CMAKE_COMMAND} -E copy
       ${CMAKE_BINARY_DIR}/src/observer/observer
-  COMMENT "Creating symbol link observer to seekdb"
+      ${CMAKE_BINARY_DIR}/src/observer/seekdb
+  COMMENT "Creating seekdb from observer"
 )
 
 configure_file(../share/ob_version.cpp.in ob_version.cpp)
