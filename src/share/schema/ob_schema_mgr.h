@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OB_OCEANBASE_SCHEMA_OB_SCHEMA_MGR_H_
@@ -38,7 +34,6 @@
 #include "share/schema/ob_catalog_mgr.h"
 #include "share/schema/ob_ccl_rule_mgr.h"
 #include "share/schema/ob_ai_model_mgr.h"
-#include "share/schema/ob_location_mgr.h"
 
 namespace oceanbase
 {
@@ -73,8 +68,7 @@ public:
                K_(gmt_modified),
                K_(drop_tenant_time),
                K_(status),
-               K_(in_recyclebin),
-               K_(arbitration_service_status));
+               K_(in_recyclebin));
   virtual void reset();
   bool is_valid() const;
   inline int64_t get_convert_size() const;
@@ -114,12 +108,6 @@ public:
   inline void set_drop_tenant_time(const int64_t drop_tenant_time) { drop_tenant_time_ = drop_tenant_time; }
   inline int64_t get_drop_tenant_time() const { return drop_tenant_time_; }
 
-  inline void set_arbitration_service_status(const ObArbitrationServiceStatus &status) { arbitration_service_status_ = status; }
-  inline int set_arbitration_service_status(const ObString &status) { return arbitration_service_status_.parse_from_string(status); }
-  inline int set_arbitration_service_status_from_string(const common::ObString &status) { return arbitration_service_status_.parse_from_string(status); }
-  inline const ObArbitrationServiceStatus &get_arbitration_service_status() const { return arbitration_service_status_; }
-  inline const char *get_arbitration_service_status_str() const { return arbitration_service_status_.get_status_str(); }
-
   inline bool is_dropping() const { return TENANT_STATUS_DROPPING == status_; }
   inline bool is_in_recyclebin() const { return in_recyclebin_; }
   inline bool is_creating() const { return TENANT_STATUS_CREATING == status_;}
@@ -127,10 +115,6 @@ public:
                                           || TENANT_STATUS_CREATING_STANDBY == status_;}
   inline bool is_normal() const { return TENANT_STATUS_NORMAL == status_; }
   inline bool is_creating_standby_tenant_status() const { return TENANT_STATUS_CREATING_STANDBY == status_; }
-  inline bool is_arbitration_service_enabling() const { return arbitration_service_status_.is_enabling(); }
-  inline bool is_arbitration_service_enabled() const { return arbitration_service_status_.is_enabled(); }
-  inline bool is_arbitration_service_disabling() const { return arbitration_service_status_.is_disabling(); }
-  inline bool is_arbitration_service_disabled() const { return arbitration_service_status_.is_disabled(); }
   inline void set_status(const ObTenantStatus status) { status_ = status; }
   inline ObTenantStatus get_status() const { return status_; }
   inline void set_in_recyclebin(const bool in_recyclebin) { in_recyclebin_ = in_recyclebin; }
@@ -148,7 +132,6 @@ private:
   int64_t drop_tenant_time_;
   ObTenantStatus status_;
   bool in_recyclebin_;
-  ObArbitrationServiceStatus arbitration_service_status_;
 };
 
 class ObSimpleUserSchema : public ObSchema
@@ -654,15 +637,6 @@ public:
       const ObString &ai_model_name,
       const common::ObNameCaseMode &case_mode,
       const ObAiModelSchema *&ai_model_schema) const;
-  int get_location_schema(
-      const uint64_t tenant_id,
-      const uint64_t schema_id,
-      const ObLocationSchema *&schema) const;
-  // location
-  int add_locations(const common::ObIArray<ObLocationSchema> &location_schemas);
-  int add_location(const ObLocationSchema &location_schema);
-  int del_location(const ObTenantLocationId &id);
-
 
   // other
   int get_tenant_schemas(common::ObIArray<const ObSimpleTenantSchema *> &tenant_schemas) const;
@@ -686,9 +660,6 @@ public:
       const uint64_t tenant_id,
       common::ObIArray<const ObSimpleTableSchemaV2 *> &schema_array) const;
   #undef GET_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DECLARE
-  int get_vector_index_schemas_in_tenant(
-      const uint64_t tenant_id,
-      common::ObIArray<const ObSimpleTableSchemaV2 *> &schema_array) const;
   int get_primary_table_schema_in_tablegroup(
       const uint64_t tenant_id,
       const uint64_t tablegroup_id,
@@ -888,7 +859,6 @@ private:
   int64_t allocator_idx_;
   TableInfos mlog_infos_;
   ObAiModelMgr ai_model_mgr_;
-  ObLocationMgr location_mgr_;
 };
 
 }//end of namespace schema

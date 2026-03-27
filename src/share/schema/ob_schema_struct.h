@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OB_OCEANBASE_SCHEMA_SCHEMA_STRUCT_H
@@ -26,7 +22,6 @@
 #include "common/ob_tablet_id.h"
 #include "common/row/ob_row_util.h"
 #include "common/rowkey/ob_rowkey_info.h"
-#include "share/ob_arbitration_service_status.h" // for ObArbitrationServieStatus
 #include "common/ob_store_format.h"
 #include "share/ob_replica_info.h"
 #include "share/ob_duplicate_scope_define.h"
@@ -405,7 +400,7 @@ enum ObIndexType
   INDEX_TYPE_HEAP_ORGANIZED_TABLE_PRIMARY = 41,
   // sparse vector inverted index
   INDEX_TYPE_VEC_SPIV_DIM_DOCID_VALUE_LOCAL = 42,
-  // hybrid vec hnsw
+  // hybrid vec
   INDEX_TYPE_HYBRID_INDEX_LOG_LOCAL = 43,
   INDEX_TYPE_HYBRID_INDEX_EMBEDDED_LOCAL = 44,
 
@@ -1312,8 +1307,6 @@ typedef enum {
   CATALOG_SCHEMA = 43,
   CCL_RULE_SCHEMA = 44,
   AI_MODEL_SCHEMA = 45,
-  LOCATION_SCHEMA = 46,
-  OBJ_MYSQL_PRIV = 47,
   ///<<< add schema type before this line
   OB_MAX_SCHEMA
 } ObSchemaType;
@@ -1500,7 +1493,6 @@ enum class ObObjectType {
   CONTEXT         = 16,
   CATALOG         = 17,
   AI_MODEL        = 18,
-  LOCATION        = 19,
   MAX_TYPE,
 };
 struct ObSchemaObjVersion
@@ -2117,8 +2109,6 @@ public:
   inline int set_comment(const common::ObString &comment) { return deep_copy_str(comment, comment_); }
   inline int set_locality(const common::ObString &locality) { return deep_copy_str(locality, locality_str_); }
   inline int set_previous_locality(const common::ObString &previous_locality) { return deep_copy_str(previous_locality, previous_locality_str_); }
-  inline void set_arbitration_service_status(const ObArbitrationServiceStatus status) { arbitration_service_status_ = status; }
-  inline int set_arbitration_service_status_from_string(const common::ObString &status) { return arbitration_service_status_.parse_from_string(status); }
   inline void set_charset_type(const common::ObCharsetType type) { charset_type_ = type; }
   inline void set_collation_type(const common::ObCollationType type) { collation_type_ = type; }
   inline void set_name_case_mode(const common::ObNameCaseMode mode) { name_case_mode_ = mode; }
@@ -2150,8 +2140,6 @@ public:
   inline const common::ObString &get_comment_str() const { return comment_; }
   inline const common::ObString &get_locality_str() const { return locality_str_; }
   inline const common::ObString &get_previous_locality_str() const { return previous_locality_str_; }
-  inline const ObArbitrationServiceStatus &get_arbitration_service_status() const { return arbitration_service_status_; }
-  inline const char* get_arbitration_service_status_str() const { return arbitration_service_status_.get_status_str(); }
 
   inline common::ObCharsetType get_charset_type() const { return charset_type_; }
   inline common::ObCollationType get_collation_type() const { return collation_type_; }
@@ -2212,7 +2200,7 @@ public:
                K_(read_only), K_(locality_str),
                K_(zone_replica_attr_array), K_(primary_zone_array), K_(previous_locality_str),
                K_(default_tablegroup_id), K_(default_tablegroup_name), K_(compatibility_mode), K_(drop_tenant_time),
-               K_(status), K_(in_recyclebin), K_(arbitration_service_status));
+               K_(status), K_(in_recyclebin));
 private:
   uint64_t tenant_id_;
   int64_t schema_version_;
@@ -2238,7 +2226,6 @@ private:
   int64_t drop_tenant_time_;
   ObTenantStatus status_;
   bool in_recyclebin_;
-  ObArbitrationServiceStatus arbitration_service_status_;
 };
 
 inline int ObTenantSchema::set_zone_list(const common::ObIArray<common::ObString> &zone_list)
@@ -5780,7 +5767,6 @@ enum ObPrivLevel
   OB_PRIV_OBJ_ORACLE_LEVEL,   /* oracle-mode object privilege */
   OB_PRIV_ROUTINE_LEVEL,
   OB_PRIV_CATALOG_LEVEL,
-  OB_PRIV_OBJECT_LEVEL,
   OB_PRIV_MAX_LEVEL,
 };
 

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -29,8 +25,6 @@
 #include "sql/resolver/ddl/ob_drop_func_resolver.h"
 #include "sql/resolver/ddl/ob_rename_table_resolver.h"
 #include "sql/resolver/ddl/ob_truncate_table_resolver.h"
-#include "sql/resolver/ddl/ob_fork_table_resolver.h"
-#include "sql/resolver/ddl/ob_fork_database_resolver.h"
 #include "sql/resolver/ddl/ob_create_table_like_resolver.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/ddl/ob_drop_table_resolver.h"
@@ -127,16 +121,10 @@
 #include "pl/ob_pl_package.h"
 #include "sql/resolver/ddl/ob_drop_context_resolver.h"
 #include "sql/resolver/cmd/ob_module_data_resolver.h"
-#include "sql/resolver/cmd/ob_tenant_snapshot_resolver.h"
-#include "sql/resolver/cmd/ob_tenant_clone_resolver.h"
 #include "sql/resolver/cmd/ob_olap_async_job_resolver.h"
 #include "sql/resolver/ddl/ob_create_ccl_rule_resolver.h"
 #include "sql/resolver/ddl/ob_drop_ccl_rule_resolver.h"
 #include "sql/resolver/ddl/ob_catalog_resolver.h"
-#include "sql/resolver/ddl/ob_create_location_resolver.h"
-#include "sql/resolver/ddl/ob_alter_location_resolver.h"
-#include "sql/resolver/ddl/ob_drop_location_resolver.h"
-#include "sql/resolver/cmd/ob_location_utils_resolver.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "sql/resolver/cmd/ob_trigger_storage_cache_resolver.h"
 #endif
@@ -339,14 +327,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         REGISTER_STMT_RESOLVER(CreateTableLike);
         break;
       }
-      case T_FORK_TABLE: {
-        REGISTER_STMT_RESOLVER(ForkTable);
-        break;
-      }
-      case T_FORK_DATABASE: {
-        REGISTER_STMT_RESOLVER(ForkDatabase);
-        break;
-      }
       case T_SELECT: {
         REGISTER_SELECT_STMT_RESOLVER(Select);
         break;
@@ -419,14 +399,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_DROP_LOGFILE_GROUP:
       {
         REGISTER_STMT_RESOLVER(Mock);
-        break;
-      }
-      case T_SWITCH_REPLICA_ROLE: {
-        REGISTER_STMT_RESOLVER(SwitchReplicaRole);
-        break;
-      }
-      case T_SWITCH_RS_ROLE: {
-        REGISTER_STMT_RESOLVER(SwitchRSRole);
         break;
       }
       case T_SWITCHOVER: {
@@ -527,42 +499,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_CLEAR_MERGE_ERROR: {
         REGISTER_STMT_RESOLVER(ClearMergeError);
-        break;
-      }
-      case T_ADD_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(AddLSReplica);
-        break;
-      }
-      case T_REMOVE_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(RemoveLSReplica);
-        break;
-      }
-      case T_MIGRATE_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(MigrateLSReplica);
-        break;
-      }
-      case T_MODIFY_LS_REPLICA_TYPE: {
-        REGISTER_STMT_RESOLVER(ModifyLSReplica);
-        break;
-      }
-      case T_MODIFY_LS_PAXOS_REPLICA_NUM: {
-        REGISTER_STMT_RESOLVER(ModifyLSPaxosReplicaNum);
-        break;
-      }
-      case T_CANCEL_LS_REPLICA_TASK: {
-        REGISTER_STMT_RESOLVER(CancelLSReplicaTask);
-        break;
-      }
-      case T_ADD_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(AddArbitrationService);
-        break;
-      }
-      case T_REMOVE_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(RemoveArbitrationService);
-        break;
-      }
-      case T_REPLACE_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(ReplaceArbitrationService);
         break;
       }
       case T_RUN_JOB: {
@@ -756,10 +692,7 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_SHOW_CHECK_TABLE:
       case T_SHOW_CREATE_USER:
       case T_SHOW_CATALOGS:
-      case T_SHOW_CREATE_CATALOG:
-      case T_SHOW_LOCATIONS:
-      case T_SHOW_CREATE_LOCATION:
-      case T_LOCATION_UTILS_LIST: {
+      case T_SHOW_CREATE_CATALOG: {
         REGISTER_STMT_RESOLVER(Show);
         break;
       }
@@ -1139,28 +1072,12 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         REGISTER_STMT_RESOLVER(TableTTL);
         break;
       }
-      case T_CREATE_TENANT_SNAPSHOT: {
-        REGISTER_STMT_RESOLVER(CreateTenantSnapshot);
-        break;
-      }
-      case T_DROP_TENANT_SNAPSHOT: {
-        REGISTER_STMT_RESOLVER(DropTenantSnapshot);
-        break;
-      }
-      case T_CLONE_TENANT: {
-        REGISTER_STMT_RESOLVER(CloneTenant);
-        break;
-      }
       case T_ALTER_SYSTEM_RESET_PARAMETER: {
         REGISTER_STMT_RESOLVER(ResetConfig);
         break;
       }
       case T_ALTER_SYSTEM_RESET: {
         REGISTER_STMT_RESOLVER(AlterSystemReset);
-        break;
-      }
-      case T_CANCEL_CLONE: {
-        REGISTER_STMT_RESOLVER(CancelClone);
         break;
       }
       case T_TRANSFER_PARTITION: {
@@ -1238,22 +1155,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_DROP_CCL_RULE: {
         REGISTER_STMT_RESOLVER(DropCCLRule);
-        break;
-      }
-      case T_CREATE_LOCATION: {
-        REGISTER_STMT_RESOLVER(CreateLocation);
-        break;
-      }
-      case T_ALTER_LOCATION: {
-        REGISTER_STMT_RESOLVER(AlterLocation);
-        break;
-      }
-      case T_DROP_LOCATION: {
-        REGISTER_STMT_RESOLVER(DropLocation);
-        break;
-      }
-      case T_LOCATION_UTILS: {
-        REGISTER_STMT_RESOLVER(LocationUtils);
         break;
       }
       default: {

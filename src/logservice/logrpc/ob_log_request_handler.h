@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_OB_LOG_REQUEST_HANDLER_
@@ -37,9 +33,6 @@ class ObLogServiceRpcProxy;
 
 namespace logservice
 {
-#ifdef OB_BUILD_ARBITRATION
-class ObArbitrationService;
-#endif
 class ObLogFlashbackService;
 class ObLogHandler;
 class ObLogReplayService;
@@ -55,9 +48,6 @@ public:
   int handle_request(const ReqType &req);
 private:
   int get_palf_handle_guard_(const int64_t palf_id, palf::PalfHandleGuard &palf_handle_guard) const;
-#ifdef OB_BUILD_ARBITRATION
-  int get_arb_service_(ObArbitrationService *&arb_service) const;
-#endif
   int get_self_addr_(common::ObAddr &self) const;
   int get_rpc_proxy_(obrpc::ObLogServiceRpcProxy *&rpc_proxy) const;
   int get_flashback_service_(ObLogFlashbackService *&flashback_srv) const;

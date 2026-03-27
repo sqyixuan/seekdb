@@ -1,22 +1,17 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
 #include "ob_tenant_sql_service.h"
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h"  // for ObTenantSnapshotUtil
 #include "sql/ob_sql_utils.h"
 #include "rootserver/ob_rs_job_table_operator.h"
 
@@ -85,19 +80,9 @@ int ObTenantSqlService::delay_to_drop_tenant(
 {
   int ret = OB_SUCCESS;
   const ObSchemaOperationType op = OB_DDL_DEL_TENANT_START;
-  rootserver::ObConflictCaseWithClone case_to_check(rootserver::ObConflictCaseWithClone::DELAY_DROP_TENANT);
-  uint64_t tenant_id_to_check_clone = tenant_schema.get_tenant_id();
   if (!tenant_schema.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
-  } else if (!is_user_tenant(tenant_id_to_check_clone)) {
-    // sys tenant and meta tenant can not in clone procedure
-  } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::lock_status_for_tenant(trans, tenant_id_to_check_clone))) {
-    LOG_WARN("fail to lock __all_tenant for clone check", KR(ret), K(tenant_id_to_check_clone));
-  } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id_to_check_clone, case_to_check))) {
-    LOG_WARN("fail to check whether tenant is cloning", KR(ret), K(tenant_id_to_check_clone), K(case_to_check));
-  }
-  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(replace_tenant(tenant_schema, op, trans, ddl_stmt_str))) {
     LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
   }
@@ -238,29 +223,6 @@ int ObTenantSqlService::replace_tenant(
           || OB_FAIL(dml.add_column("in_recyclebin", tenant_schema.is_in_recyclebin())))) {
         LOG_WARN("add column failed", K(ret));
       }
-#ifndef OB_BUILD_ARBITRATION
-      if (OB_SUCC(ret) && !tenant_schema.get_arbitration_service_status().is_disabled()) {
-        ret = OB_OP_NOT_ALLOW;
-        LOG_WARN("arbitration service is not supported in CE version", KR(ret), K(tenant_schema));
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "create tenant with arbitration service in CE version");
-      }
-#else
-      // If this ddl is a create tenant stmt
-      // (1) Only need to make sure sys tenant data version is above 4.1 to compate with arbitration service.
-      // (2) Do not check data version of the creating tenant and its meta tenant, because we can not get valid tenant config now
-      //
-      // If this ddl is a alter tenant stmt
-      // (1) Need to make sure sys,user,meta tenants all upgraded to 4.1
-      const uint64_t tenant_to_check_data_version = (OB_DDL_ADD_TENANT == op || OB_DDL_ADD_TENANT_START == op)
-                                                  ? OB_SYS_TENANT_ID
-                                                  : tenant_schema.get_tenant_id();
-       if (OB_FAIL(ret)) {
-       } else {
-        if (OB_FAIL(dml.add_column("arbitration_service_status", tenant_schema.get_arbitration_service_status_str()))) {
-          LOG_WARN("fail to add arbitration service status column", KR(ret), K(tenant_schema));
-        }
-       }
-#endif
     }
     // insert into __all_tenant
     if (OB_SUCC(ret)) {

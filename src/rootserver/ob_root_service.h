@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_ROOT_SERVICE_H_
@@ -40,7 +36,6 @@
 #include "rootserver/ob_root_minor_freeze.h"
 #include "rootserver/ob_unit_manager.h"
 #include "rootserver/ob_vtable_location_getter.h"
-#include "rootserver/ob_root_balancer.h"
 #include "rootserver/ob_system_admin_util.h"
 #include "rootserver/ob_root_inspection.h"
 #include "rootserver/ob_rs_event_history_table_operator.h"
@@ -53,14 +48,10 @@
 #include "rootserver/ob_schema_history_recycler.h"
 #include "share/ls/ob_ls_info.h"
 #include "share/ls/ob_ls_table_operator.h"
-#include "rootserver/ob_disaster_recovery_task_mgr.h"
-#include "rootserver/ob_lost_replica_checker.h"
 #include "rootserver/ob_server_zone_op_service.h"
 #include "rootserver/ob_load_sys_package_task.h"
 #include "rootserver/ob_catalog_ddl_service.h"
 #include "rootserver/ob_ccl_ddl_service.h"
-#include "rootserver/ob_location_ddl_service.h"
-#include "rootserver/ob_objpriv_mysql_ddl_service.h"
 
 namespace oceanbase
 {
@@ -175,7 +166,6 @@ public:
     explicit ObStatusChangeCallback(ObRootService &root_service);
     virtual ~ObStatusChangeCallback();
 
-    virtual int wakeup_balancer() override;
     virtual int wakeup_daily_merger() override;
     virtual int on_server_status_change(const common::ObAddr &server) override;
     virtual int on_offline_server(const common::ObAddr &server) override;
@@ -414,7 +404,6 @@ public:
   ObServerManager &get_server_mgr() { return server_manager_; }
   ObZoneManager &get_zone_mgr() { return zone_manager_; }
   ObUnitManager &get_unit_mgr() { return unit_manager_; }
-  ObRootBalancer &get_root_balancer() { return root_balancer_; }
   ObRootInspection &get_root_inspection() { return root_inspection_; }
   common::ObMySQLProxy &get_sql_proxy() { return sql_proxy_; }
   common::ObOracleSqlProxy &get_oracle_sql_proxy() { return oracle_sql_proxy_; }
@@ -461,7 +450,6 @@ public:
   int create_resource_unit(const obrpc::ObCreateResourceUnitArg &arg);
   int alter_resource_unit(const obrpc::ObAlterResourceUnitArg &arg);
   int drop_resource_unit(const obrpc::ObDropResourceUnitArg &arg);
-  int clone_resource_pool(const obrpc::ObCloneResourcePoolArg &arg);
   int create_resource_pool(const obrpc::ObCreateResourcePoolArg &arg);
   int alter_resource_pool(const obrpc::ObAlterResourcePoolArg &arg);
   int drop_resource_pool(const obrpc::ObDropResourcePoolArg &arg);
@@ -471,7 +459,6 @@ public:
   int create_tenant(const obrpc::ObCreateTenantArg &arg, obrpc::ObCreateTenantSchemaResult &tenant_id);
   int parallel_create_normal_tenant(obrpc::ObParallelCreateNormalTenantArg &arg);
   int create_tenant_end(const obrpc::ObCreateTenantEndArg &arg);
-  int commit_alter_tenant_locality(const rootserver::ObCommitAlterTenantLocalityArg &arg);
   int drop_tenant(const obrpc::ObDropTenantArg &arg);
   int flashback_tenant(const obrpc::ObFlashBackTenantArg &arg);
   int purge_tenant(const obrpc::ObPurgeTenantArg &arg);
@@ -508,8 +495,6 @@ public:
   int maintain_obj_dependency_info(const obrpc::ObDependencyObjDDLArg &arg);
   int mview_complete_refresh(const obrpc::ObMViewCompleteRefreshArg &arg, obrpc::ObMViewCompleteRefreshRes &res);
   int rename_table(const obrpc::ObRenameTableArg &arg);
-  int fork_table(const obrpc::ObForkTableArg &arg, obrpc::ObDDLRes &res);
-  int fork_database(const obrpc::ObForkDatabaseArg &arg, obrpc::ObDDLRes &res);
   int truncate_table(const obrpc::ObTruncateTableArg &arg, obrpc::ObDDLRes &res);
   int truncate_table_v2(const obrpc::ObTruncateTableArg &arg, obrpc::ObDDLRes &res);
   int exchange_partition(const obrpc::ObExchangePartitionArg &arg, obrpc::ObAlterTableRes &res);
@@ -527,7 +512,6 @@ public:
   int drop_lob(const obrpc::ObDropLobArg &arg);
   int force_drop_lonely_lob_aux_table(const obrpc::ObForceDropLonelyLobAuxTableArg &drop_table_arg);
   int rebuild_vec_index(const obrpc::ObRebuildIndexArg &arg, obrpc::ObAlterTableRes &res);
-  int clone_tenant(const obrpc::ObCloneTenantArg &arg, obrpc::ObCloneTenantRes &res);
 
   // the interface only for gc splitted source tablet
   int clean_splitted_tablet(const obrpc::ObCleanSplittedTabletArg &arg);
@@ -574,7 +558,6 @@ public:
   int revoke_table(const obrpc::ObRevokeTableArg &arg);
   int revoke_routine(const obrpc::ObRevokeRoutineArg &arg);
   int alter_role(const obrpc::ObAlterRoleArg &arg);
-  int revoke_object(const obrpc::ObRevokeObjMysqlArg &arg);
   //----End of functions for managing privileges----
 
   //----Functions for managing outlines----
@@ -655,11 +638,6 @@ public:
   int drop_ai_model(const obrpc::ObDropAiModelArg &arg);
   //----End of functions for managing ai model----
 
-  //----Functions for location object----
-  int create_location(const obrpc::ObCreateLocationArg &arg);
-  int drop_location(const obrpc::ObDropLocationArg &arg);
-  //----End of functions for location object----
-
   // server related
   int load_server_manager();
   ObStatusChangeCallback &get_status_change_cb() { return status_change_cb_; }
@@ -693,12 +671,6 @@ public:
   int alter_storage(const obrpc::ObAdminStorageArg &arg);
 
   // system admin command (alter system ...)
-  int admin_switch_replica_role(const obrpc::ObAdminSwitchReplicaRoleArg &arg);
-  int admin_switch_rs_role(const obrpc::ObAdminSwitchRSRoleArg &arg);
-  int admin_drop_replica(const obrpc::ObAdminDropReplicaArg &arg);
-  int admin_alter_ls_replica(const obrpc::ObAdminAlterLSReplicaArg &arg);
-  int admin_change_replica(const obrpc::ObAdminChangeReplicaArg &arg);
-  int admin_migrate_replica(const obrpc::ObAdminMigrateReplicaArg &arg);
   int admin_report_replica(const obrpc::ObAdminReportReplicaArg &arg);
   int admin_recycle_replica(const obrpc::ObAdminRecycleReplicaArg &arg);
   int admin_merge(const obrpc::ObAdminMergeArg &arg);
@@ -714,12 +686,6 @@ public:
   int admin_reload_server();
   int admin_reload_zone();
   int admin_clear_merge_error(const obrpc::ObAdminMergeArg &arg);
-#ifdef OB_BUILD_ARBITRATION
-  int admin_add_arbitration_service(const obrpc::ObAdminAddArbitrationServiceArg &arg);
-  int admin_remove_arbitration_service(const obrpc::ObAdminRemoveArbitrationServiceArg &arg);
-  int admin_replace_arbitration_service(const obrpc::ObAdminReplaceArbitrationServiceArg &arg);
-  int remove_cluster_info_from_arb_server(const obrpc::ObRemoveClusterInfoFromArbServerArg &arg);
-#endif
   int admin_upgrade_virtual_schema();
   int run_job(const obrpc::ObRunJobArg &arg);
   int run_upgrade_job(const obrpc::ObUpgradeJobArg &arg);
@@ -894,7 +860,6 @@ private:
   int check_mds_memory_limit_(obrpc::ObAdminSetConfigItem &item);
   int check_freeze_trigger_percentage_(obrpc::ObAdminSetConfigItem &item);
   int check_write_throttle_trigger_percentage(obrpc::ObAdminSetConfigItem &item);
-  int add_rs_event_for_alter_ls_replica_(const obrpc::ObAdminAlterLSReplicaArg &arg, const int ret_val);
   int check_no_logging(obrpc::ObAdminSetConfigItem &item);
   int check_data_disk_write_limit_(obrpc::ObAdminSetConfigItem &item);
   int check_data_disk_usage_limit_(obrpc::ObAdminSetConfigItem &item);
@@ -946,11 +911,6 @@ private:
   // tenant ddl related(create tenant, modify tenant, drop tenant, ...)
   ObTenantDDLService tenant_ddl_service_;
   ObUnitManager unit_manager_;
-
-  ObRootBalancer root_balancer_;
-
-  //check lost LS replica
-  ObLostReplicaChecker lost_replica_checker_;
 
   // virtual table related
   ObVTableLocationGetter vtable_location_getter_;

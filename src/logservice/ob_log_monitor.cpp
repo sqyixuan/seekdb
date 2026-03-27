@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "ob_log_monitor.h"
@@ -345,48 +341,6 @@ int ObLogMonitor::add_log_write_stat(const int64_t palf_id, const int64_t log_wr
   return ret;
 }
 // =========== PALF Performance Statistic ===========
-
-#ifdef OB_BUILD_ARBITRATION
-// =========== Arbitration Event Reporting ===========
-#define ARBSRV_MONITOR_EVENT_FMT_PREFIX "ARB", type_to_string_(event), "TENANT_ID", mtl_id, "LS_ID", palf_id
-int ObLogMonitor::record_degrade_event(const int64_t palf_id, const char *degraded_list, const char *reasons)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  const EventType event = EventType::DEGRADE;
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX,
-      "DEGRADED LIST", degraded_list,
-      "REASONS", reasons);
-  return ret;
-}
-
-int ObLogMonitor::record_upgrade_event(const int64_t palf_id, const char *upgraded_list, const char *reasons)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  const EventType event = EventType::UPGRADE;
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX,
-      "UPGRADED LIST", upgraded_list,
-      "REASONS", reasons);
-  return ret;
-}
-
-int ObLogMonitor::record_election_silent_event(const bool is_silent, const int64_t palf_id)
-{
-  int ret = OB_SUCCESS;
-  const int64_t mtl_id = MTL_ID();
-  EventType event = EventType::UNKNOWN;
-  if (is_silent) {
-    event = EventType::ENTER_ELECTION_SILENT;
-  } else {
-    event = EventType::EXIT_ELECTION_SILENT;
-  }
-  SERVER_EVENT_ADD_WITH_RETRY(ARBSRV_MONITOR_EVENT_FMT_PREFIX);
-  return ret;
-}
-#undef ARBSRV_MONITOR_EVENT_FMT_PREFIX
-// =========== Arbitration Event Reporting ===========
-#endif
 
 #undef LOG_MONITOR_EVENT_FMT_PREFIX
 } // end namespace logservice

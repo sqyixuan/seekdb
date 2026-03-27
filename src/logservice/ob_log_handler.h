@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_OB_LOG_HANDLER_
@@ -113,12 +109,6 @@ public:
   virtual int set_initial_member_list(const common::ObMemberList &member_list,
                                       const int64_t paxos_replica_num,
                                       const common::GlobalLearnerList &learner_list) = 0;
-#ifdef OB_BUILD_ARBITRATION
-  virtual int set_initial_member_list(const common::ObMemberList &member_list,
-                                      const common::ObMember &arb_member,
-                                      const int64_t paxos_replica_num,
-                                      const common::GlobalLearnerList &learner_list) = 0;
-#endif
   virtual int set_election_priority(palf::election::ElectionPriority *priority) = 0;
   virtual int reset_election_priority() = 0;
 
@@ -178,16 +168,6 @@ public:
   virtual int switch_acceptor_to_learner(const common::ObMember &member,
                                          const int64_t paxos_replica_num,
                                          const int64_t timeout_us) = 0;
-#ifdef OB_BUILD_ARBITRATION
-  virtual int add_arbitration_member(const common::ObMember &added_member,
-                                     const int64_t timeout_us) = 0;
-  virtual int remove_arbitration_member(const common::ObMember &removed_member,
-                                        const int64_t timeout_us) = 0;
-  virtual int degrade_acceptor_to_learner(const palf::LogMemberAckInfoList &degrade_servers,
-                                          const int64_t timeout_us) = 0;
-  virtual int upgrade_learner_to_acceptor(const palf::LogMemberAckInfoList &upgrade_servers,
-                                          const int64_t timeout_us) = 0;
-#endif
   virtual int try_lock_config_change(const int64_t lock_owner, const int64_t timeout_us) = 0;
   virtual int unlock_config_change(const int64_t lock_owner, const int64_t timeout_us) = 0;
   virtual int get_config_change_lock_stat(int64_t &lock_owner, bool &is_locked) = 0;
@@ -401,20 +381,6 @@ public:
   int set_initial_member_list(const common::ObMemberList &member_list,
                               const int64_t paxos_replica_num,
                               const common::GlobalLearnerList &learner_list) override final;
-#ifdef OB_BUILD_ARBITRATION
-  // @brief set the initial member list of paxos group which contains arbitration replica
-  // @param[in] ObMemberList, the initial member list, do not include arbitration replica
-  // @param[in] ObMember, the arbitration replica
-  // @param[in] int64_t, the paxos relica num(including arbitration replica)
-  // @param[in] GlobalLearnerList, the initial learner list
-  // @retval
-  //    return OB_SUCCESS if success
-  //    else return other errno
-  int set_initial_member_list(const common::ObMemberList &member_list,
-                              const common::ObMember &arb_member,
-                              const int64_t paxos_replica_num,
-                              const common::GlobalLearnerList &learner_list) override final;
-#endif
   int set_election_priority(palf::election::ElectionPriority *priority) override final;
   int reset_election_priority() override final;
   // @desc: query coarse lsn by ts(ns), that means there is a LogGroupEntry in disk,
@@ -701,55 +667,6 @@ public:
                                  const int64_t new_replica_num,
                                  const int64_t timeout_us) override final;
 
-#ifdef OB_BUILD_ARBITRATION
-  // @brief, add an arbitration member to paxos group
-  // @param[in] common::ObMember &member: arbitration member which will be added
-  // @param[in] const int64_t timeout_us: add member timeout, us
-  // @return
-  // - OB_SUCCESS: add arbitration member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: add arbitration member timeout
-  // - other: bug
-  int add_arbitration_member(const common::ObMember &added_member,
-                             const int64_t timeout_us) override final;
-
-  // @brief, remove an arbitration member from paxos group
-  // @param[in] common::ObMember &member: arbitration member which will be removed
-  // @param[in] const int64_t timeout_us: remove member timeout, us
-  // @return
-  // - OB_SUCCESS: remove arbitration member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: remove arbitration member timeout
-  // - other: bug
-  int remove_arbitration_member(const common::ObMember &arb_member,
-                                const int64_t timeout_us) override final;
-  // @brief: degrade an acceptor(full replica) to learner(special read only replica) in this cluster
-  // @param[in] const common::ObMemberList &member_list: acceptors will be degraded to learner
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: timeout
-  // - OB_NOT_MASTER: not leader
-  // - OB_EAGAIN: need retry
-  // - OB_OP_NOT_ALLOW: can not do degrade because of pre check fails
-  //      if last_ack_ts of any server in LogMemberAckInfoList has changed, can not degrade
-  int degrade_acceptor_to_learner(const palf::LogMemberAckInfoList &degrade_servers, const int64_t timeout_us) override final;
-
-  // @brief: upgrade a learner(special read only replica) to acceptor(full replica) in this cluster
-  // @param[in] const common::ObMemberList &learner_list: learners will be upgraded to acceptors
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: timeout
-  // - OB_NOT_MASTER: not leader
-  // - OB_EAGAIN: need retry
-  // - OB_OB_NOT_ALLOW: can not do upgrade because of pre check fails
-  //      if lsn of any server in LogMemberAckInfoList is less than match_lsn in palf, can not upgrade
-  int upgrade_learner_to_acceptor(const palf::LogMemberAckInfoList &upgrade_servers, const int64_t timeout_us) override final;
-#endif
-
   //---------config change lock related--------//
   //@brief: try lock config change which will forbidden changing on memberlist
   // @param[in] const int64_ lock_owner: owner of locking_config_change operation
@@ -875,10 +792,6 @@ private:
               palf::LSN &lsn,
               share::SCN &scn);
 
-#ifdef OB_BUILD_ARBITRATION
-  int create_arb_member_(const common::ObMember &arb_member, const int64_t timeout_us);
-  int delete_arb_member_(const common::ObMember &arb_member, const int64_t timeout_us);
-#endif
   template<typename StartPoint, typename IteratorType>
   int seek_log_iterator_dispatch_(const StartPoint &start_point,
                                   const int64_t suggested_max_read_buf_size,

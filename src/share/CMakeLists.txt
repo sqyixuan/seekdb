@@ -158,7 +158,6 @@ ob_set_subtarget(ob_share cache
 ob_set_subtarget(ob_share common
   ob_alive_server_tracer.cpp
   ob_all_server_tracer.cpp
-  ob_arbitration_service_status.cpp
   ob_autoincrement_param.cpp
   ob_autoincrement_service.cpp
   ob_bg_thread_monitor.cpp
@@ -170,7 +169,6 @@ ob_set_subtarget(ob_share common
   ob_core_table_proxy.cpp
   ob_ddl_checksum.cpp
   ob_ddl_sim_point.cpp
-  ob_fork_table_util.cpp
   ob_ddl_common.cpp
   ob_ddl_error_message_table_operator.cpp
   ob_tablet_reorganize_history_table_operator.cpp
@@ -244,7 +242,6 @@ ob_set_subtarget(ob_share common
   ob_tablet_replica_checksum_operator.cpp
   ob_tablet_meta_table_compaction_operator.cpp
   ob_task_define.cpp
-  ob_telemetry.cpp
   ob_tenant_info_proxy.cpp
   ob_tenant_role.cpp
   ob_tenant_switchover_status.cpp
@@ -358,10 +355,8 @@ ob_set_subtarget(ob_share common_mixed
   transfer/ob_transfer_task_operator.cpp
   table/ob_table_load_sql_statistics.cpp
   tenant_snapshot/ob_tenant_snapshot_id.cpp
-  tenant_snapshot/ob_tenant_snapshot_table_operator.cpp
   table/ob_ttl_util.cpp
   table/ob_table_config_util.cpp
-  restore/ob_tenant_clone_table_operator.cpp
   index_usage/ob_index_usage_info_mgr.cpp
   index_usage/ob_index_usage_report_task.cpp
   table/ob_table_util.cpp
@@ -555,14 +550,6 @@ ob_set_subtarget(ob_share schema
   
   schema/ob_ai_model_mgr.cpp
   schema/ob_ai_model_sql_service.cpp
-  schema/ob_location_mgr.cpp
-  schema/ob_location_schema_struct.cpp
-  schema/ob_location_sql_service.cpp
-  schema/ob_objpriv_mysql_schema_struct.cpp
-  schema/ob_schema_getter_guard_location.cpp
-  schema/ob_schema_getter_guard_objpriv_mysql.cpp
-  schema/ob_location_schema_struct.cpp
-  schema/ob_schema_getter_guard_location.cpp
 )
 
 ob_set_subtarget(ob_share stat
@@ -602,6 +589,8 @@ ob_set_subtarget(ob_share stat
 )
 
 ob_set_subtarget(ob_share external_table
+  external_table/ob_hdfs_storage_info.cpp
+  external_table/ob_hdfs_table_device.cpp
   external_table/ob_external_table_file_mgr.cpp
   external_table/ob_external_table_file_rpc_processor.cpp
   external_table/ob_external_table_file_task.cpp
@@ -616,6 +605,8 @@ ob_set_subtarget(ob_share catalog
   catalog/ob_catalog_meta_getter.cpp
   catalog/ob_cached_catalog_meta_getter.cpp
   catalog/ob_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog.cpp
 )
 
 
@@ -729,7 +720,7 @@ ob_set_subtarget(ob_share hybrid_search
   hybrid_search/ob_request_base.cpp
   hybrid_search/ob_query_request.cpp
   hybrid_search/ob_query_translator.cpp
-  hybrid_search/ob_hybrid_search_executor.cpp
+  hybrid_search/ob_hybrid_search_exector.cpp
 )
 
 ob_set_subtarget(ob_share domain_id

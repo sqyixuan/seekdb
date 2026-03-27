@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+	/**
+	 * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_SQL_OB_ITEM_TYPE_H_
@@ -1652,8 +1648,6 @@ typedef enum ObItemType
   T_SERVER_TENANT = 3785,
   T_LS_SERVER_TENANT = 3786,
   T_ZONE_TENANT = 3787,
-  T_SWITCH_REPLICA_ROLE = 3788,
-  T_SWITCH_RS_ROLE = 3789,
   T_CREATE_TIMESTAMP = 3790,
   T_RECYCLE_REPLICA = 3791,
   T_MERGE_CONTROL = 3792,
@@ -1674,11 +1668,6 @@ typedef enum ObItemType
   T_TRANSACTION_CHARACTERISTICS = 3807,
   T_RELOAD_SERVER = 3808,
   T_RELOAD_ZONE = 3809,
-  T_MIGRATE_UNIT = 3810,
-  T_ADD_ARBITRATION_SERVICE = 3811,
-  T_REMOVE_ARBITRATION_SERVICE = 3812,
-  T_REPLACE_ARBITRATION_SERVICE = 3813,
-  T_ENABLE_ARBITRATION_SERVICE = 3814,
   T_CLEAR_MERGE_ERROR = 3815,
   T_QEURY_EXPRESSION_LIST = 3816,
   T_UPGRADE_VIRTUAL_SCHEMA = 3817,
@@ -2565,12 +2554,6 @@ typedef enum ObItemType
   T_ALTER_SYSTEM_RESET = 4611,
   T_ALTER_SYSTEM_RESET_PARAMETER = 4612,
 
-  //tenant clone
-  T_CREATE_TENANT_SNAPSHOT = 4613,
-  T_DROP_TENANT_SNAPSHOT = 4614,
-  T_CLONE_TENANT = 4615,
-  T_CANCEL_CLONE = 4616,
-
   // fulltext index
   T_FUN_MATCH_AGAINST = 4617,
   T_ROW_ITER_EXPR = 4618,
@@ -2592,12 +2575,6 @@ typedef enum ObItemType
   T_AUTO_SPLIT_TABLET_SIZE = 4633,
 
   T_DATA_DISK_SIZE = 4634,
-  T_ADD_LS_REPLICA = 4635,
-  T_REMOVE_LS_REPLICA = 4636,
-  T_MIGRATE_LS_REPLICA = 4637,
-  T_MODIFY_LS_REPLICA_TYPE = 4638,
-  T_MODIFY_LS_PAXOS_REPLICA_NUM = 4639,
-  T_CANCEL_LS_REPLICA_TASK = 4640,
   T_COALESCE_AGGR = 4641,
   T_NO_COALESCE_AGGR = 4642,
   T_AUTO_INCREMENT_CACHE_SIZE = 4643,
@@ -2950,8 +2927,6 @@ typedef enum ObItemType
   T_FUN_ES_SCORE = 4913, // fulltext index for ES SQL
   T_FUN_ES_MATCH = 4914, // fulltext index for ES SQL
   T_HYBRID_SEARCH_EXPRESSION = 4915,
-  T_FORK_TABLE = 4916,
-  T_FORK_DATABASE = 4917,
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

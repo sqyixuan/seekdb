@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX CLOG
@@ -54,9 +50,6 @@ ObLogService::ObLogService() :
   reporter_(),
 #ifdef OB_BUILD_SHARED_STORAGE
   shared_log_service_(),
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_(),
 #endif
   flashback_service_(),
   monitor_(),
@@ -162,9 +155,6 @@ void ObLogService::stop()
     shared_log_service_.stop();
   }
 #endif
-#ifdef OB_BUILD_ARBITRATION
-  (void)arb_service_.stop();
-#endif
   FLOG_INFO("ObLogService is stopped");
 }
 
@@ -177,9 +167,6 @@ void ObLogService::wait()
   if (enable_shared_storage_) {
     shared_log_service_.wait();
   }
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_.wait();
 #endif
 }
 
@@ -196,9 +183,6 @@ void ObLogService::destroy()
   reporter_.destroy();
 #ifdef OB_BUILD_SHARED_STORAGE
   shared_log_service_.destroy();
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_.destroy();
 #endif
   flashback_service_.destroy();
   if (NULL != palf_env_) {
@@ -291,10 +275,6 @@ int ObLogService::init(const PalfOptions &options,
              palf_env_->get_palf_env_impl()->get_log_shared_queue_thread()))) {
     CLOG_LOG(WARN, "failed to init shared_log_service_", K(self), K(tenant_id));
 #endif
-#ifdef OB_BUILD_ARBITRATION
-  } else if (OB_FAIL(arb_service_.init(self, palf_env_, &rpc_proxy_, net_keepalive_adapter, &monitor_, &location_adapter_))) {
-    CLOG_LOG(WARN, "failed to init arb_service_", K(ret), K(self), KP(palf_env_));
-#endif
   } else if (OB_FAIL(flashback_service_.init(self, &location_adapter_, &rpc_proxy_, sql_proxy))) {
     CLOG_LOG(WARN, "failed to init flashback_service_", K(ret));
   } else if (OB_FAIL(locality_adapter_.init(locality_manager))) {
@@ -326,7 +306,6 @@ palf::AccessMode ObLogService::get_palf_access_mode(const share::ObTenantRole &t
       break;
     case share::ObTenantRole::STANDBY_TENANT:
     case share::ObTenantRole::RESTORE_TENANT:
-    case share::ObTenantRole::CLONE_TENANT:
       mode = palf::AccessMode::RAW_WRITE;
       break;
     default:
@@ -791,23 +770,6 @@ int ObLogService::diagnose_apply(const share::ObLSID &id,
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int ObLogService::diagnose_arb_srv(const share::ObLSID &id,
-                                   LogArbSrvDiagnoseInfo &diagnose_info)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    CLOG_LOG(WARN, "log_service is not inited", K(ret));
-  } else if (OB_FAIL(arb_service_.diagnose(id, diagnose_info))) {
-    CLOG_LOG(WARN, "arb_service_ diagnose failed", K(ret), K(id));
-  } else {
-    // do nothing
-  }
-  return ret;
-}
-#endif
 
 int ObLogService::get_io_start_time(int64_t &last_working_time)
 {

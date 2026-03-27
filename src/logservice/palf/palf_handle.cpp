@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "palf_handle.h"
@@ -72,29 +68,6 @@ int PalfHandle::set_initial_member_list(const common::ObMemberList &member_list,
   CHECK_VALID;
   return palf_handle_impl_->set_initial_member_list(member_list, paxos_replica_num, learner_list);
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int PalfHandle::set_initial_member_list(const common::ObMemberList &member_list,
-                                        const common::ObMember &arb_member,
-                                        const int64_t paxos_replica_num,
-                                        const common::GlobalLearnerList &learner_list)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->set_initial_member_list(member_list, arb_member, paxos_replica_num, learner_list);
-}
-
-int PalfHandle::get_remote_arb_member_info(ArbMemberInfo &arb_member_info) const
-{
-  CHECK_VALID;
-  return palf_handle_impl_->get_remote_arb_member_info(arb_member_info);
-}
-
-int PalfHandle::get_arbitration_member(common::ObMember &arb_member) const
-{
-  CHECK_VALID;
-  return palf_handle_impl_->get_arbitration_member(arb_member);
-}
-#endif
 
 int PalfHandle::append(const PalfAppendOptions &opts,
                        const void *buffer,
@@ -437,48 +410,6 @@ int PalfHandle::replace_member_with_learner(const common::ObMember &added_member
   CHECK_VALID;
   return palf_handle_impl_->replace_member_with_learner(added_member, removed_member, config_version, timeout_us);
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int PalfHandle::add_arb_member(const common::ObMember &member,
-                               const int64_t timeout_us)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->add_arb_member(member, timeout_us);
-}
-
-int PalfHandle::remove_arb_member(const common::ObMember &member,
-                                  const int64_t timeout_us)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->remove_arb_member(member, timeout_us);
-}
-
-int PalfHandle::degrade_acceptor_to_learner(const LogMemberAckInfoList &degrade_servers,
-                                            const int64_t timeout_us)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->degrade_acceptor_to_learner(degrade_servers, timeout_us);
-}
-
-int PalfHandle::upgrade_learner_to_acceptor(const LogMemberAckInfoList &upgrade_servers,
-                                            const int64_t timeout_us)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->upgrade_learner_to_acceptor(upgrade_servers, timeout_us);
-}
-
-int PalfHandle::set_election_silent_flag(const bool election_silent_flag)
-{
-  CHECK_VALID;
-  return palf_handle_impl_->set_election_silent_flag(election_silent_flag);
-}
-
-bool PalfHandle::is_election_silent() const
-{
-  CHECK_VALID;
-  return palf_handle_impl_->is_election_silent();
-}
-#endif
 
 int PalfHandle::change_leader_to(const common::ObAddr &dst_addr)
 {

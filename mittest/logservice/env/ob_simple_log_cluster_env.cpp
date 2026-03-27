@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define private public
@@ -68,32 +64,6 @@ void PalfHandleImplGuard::reset()
   } 
   palf_handle_impl_ = NULL;  
   palf_env_impl_ = NULL;
-  palf_id_ = -1;
-};
-
-PalfHandleLiteGuard::PalfHandleLiteGuard() : palf_id_(),
-  palf_handle_lite_(NULL),
-  palf_env_lite_(NULL)
-{
-}
-
-PalfHandleLiteGuard::~PalfHandleLiteGuard()
-{
-  reset();
-}
-
-bool PalfHandleLiteGuard::is_valid() const
-{
-  return true == is_valid_palf_id(palf_id_) && NULL != palf_handle_lite_ && NULL != palf_env_lite_;
-}
-
-void PalfHandleLiteGuard::reset()
-{ 
-  if (NULL != palf_handle_lite_ && NULL != palf_env_lite_) {
-    palf_env_lite_->revert_palf_handle_impl(palf_handle_lite_); 
-  } 
-  palf_handle_lite_ = NULL;  
-  palf_env_lite_ = NULL;
   palf_id_ = -1;
 };
 
@@ -410,11 +380,6 @@ int ObSimpleLogClusterTestEnv::create_paxos_group_with_arb(
             mock_election->set_leader(leader_addr, 1);
             palf_handle_impl->state_mgr_.election_ = mock_election;
             palf_handle_impl->config_mgr_.election_ = mock_election;
-          } else {
-            palflite::PalfHandleLite *palf_handle_lite = dynamic_cast<palflite::PalfHandleLite*>(handle);
-            mock_election->set_leader(leader_addr, 1);
-            palf_handle_lite->state_mgr_.election_ = mock_election;
-            palf_handle_lite->config_mgr_.election_ = mock_election;
           }
         }
         handle->set_location_cache_cb(loc_cb);
@@ -650,33 +615,6 @@ int ObSimpleLogClusterTestEnv::get_cluster_palf_handle_guard(const int64_t palf_
       guard->palf_env_impl_ = dynamic_cast<PalfEnvImpl*>(svr->get_palf_env());
       guard->palf_id_ = palf_id;
       palf_list.push_back(guard);
-    }
-  }
-  return ret;
-}
-
-int ObSimpleLogClusterTestEnv::get_arb_member_guard(const int64_t palf_id, PalfHandleLiteGuard &guard)
-{
-  int ret = OB_ENTRY_NOT_EXIST;
-  for (auto svr : get_cluster()) {
-    PALF_LOG(INFO, "current", KPC(svr));
-    IPalfHandleImpl *ipalf_handle_impl = NULL;
-    palflite::PalfEnvLite *palf_env = NULL;
-    ObSimpleArbServer *arb_svr = dynamic_cast<ObSimpleArbServer*>(svr);
-    if (svr->is_arb_server()) {
-      palf_env = dynamic_cast<palflite::PalfEnvLite*>(arb_svr->get_palf_env());
-      if (OB_FAIL(palf_env->get_palf_handle_impl(palf_id, ipalf_handle_impl))) {
-        PALF_LOG(WARN, "open palf failed", K(ret), K(palf_id), KPC(svr));
-      } else {
-        guard.palf_handle_lite_ = dynamic_cast<palflite::PalfHandleLite*>(ipalf_handle_impl);
-        guard.palf_env_lite_ = palf_env;
-        guard.palf_id_ = palf_id;
-        ret = OB_SUCCESS;
-      }
-      if (OB_NOT_NULL(palf_env)) {
-        arb_svr->revert_palf_env(palf_env);
-      }
-      break;
     }
   }
   return ret;

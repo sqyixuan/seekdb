@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_CONFIG_MGR_
@@ -59,9 +55,7 @@ enum LogConfigChangeType
   INVALID_LOG_CONFIG_CHANGE_TYPE = 0,
   CHANGE_REPLICA_NUM,
   ADD_MEMBER,
-  ADD_ARB_MEMBER,
   REMOVE_MEMBER,
-  REMOVE_ARB_MEMBER,
   ADD_MEMBER_AND_NUM,
   REMOVE_MEMBER_AND_NUM,
   ADD_LEARNER,
@@ -86,9 +80,7 @@ inline const char *LogConfigChangeType2Str(const LogConfigChangeType state)
   {
     CHECK_LOG_CONFIG_TYPE_STR(CHANGE_REPLICA_NUM);
     CHECK_LOG_CONFIG_TYPE_STR(ADD_MEMBER);
-    CHECK_LOG_CONFIG_TYPE_STR(ADD_ARB_MEMBER);
     CHECK_LOG_CONFIG_TYPE_STR(REMOVE_MEMBER);
-    CHECK_LOG_CONFIG_TYPE_STR(REMOVE_ARB_MEMBER);
     CHECK_LOG_CONFIG_TYPE_STR(ADD_MEMBER_AND_NUM);
     CHECK_LOG_CONFIG_TYPE_STR(REMOVE_MEMBER_AND_NUM);
     CHECK_LOG_CONFIG_TYPE_STR(ADD_LEARNER);
@@ -135,17 +127,12 @@ inline bool is_remove_log_sync_member_list(const LogConfigChangeType type)
 
 inline bool is_add_member_list(const LogConfigChangeType type)
 {
-  return is_add_log_sync_member_list(type) || ADD_ARB_MEMBER == type;
+  return is_add_log_sync_member_list(type);
 }
 
 inline bool is_remove_member_list(const LogConfigChangeType type)
 {
-  return is_remove_log_sync_member_list(type) || REMOVE_ARB_MEMBER == type;
-}
-
-inline bool is_arb_member_change_type(const LogConfigChangeType type)
-{
-  return ADD_ARB_MEMBER == type || REMOVE_ARB_MEMBER == type;
+  return is_remove_log_sync_member_list(type);
 }
 
 inline bool is_add_learner_list(const LogConfigChangeType type)
@@ -365,13 +352,6 @@ public:
                                       const common::GlobalLearnerList &learner_list,
                                       const int64_t proposal_id,
                                       LogConfigVersion &config_version);
-  // require caller holds WLock in PalfHandleImpl
-  virtual int set_initial_member_list(const common::ObMemberList &member_list,
-                                      const common::ObMember &arb_member,
-                                      const int64_t replica_num,
-                                      const common::GlobalLearnerList &learner_list,
-                                      const int64_t proposal_id,
-                                      LogConfigVersion &config_version);
   // set region for self
   int get_region(common::ObRegion &region) const;
   int set_region(const common::ObRegion &region);
@@ -431,7 +411,6 @@ public:
       int64_t &curr_replica_num,
       bool &is_before_barrier,
       LSN &barrier_lsn) const;
-  virtual int get_arbitration_member(common::ObMember &arb_member) const;
   virtual int get_prev_member_list(common::ObMemberList &member_list) const;
   virtual int get_children_list(LogLearnerList &children) const;
   virtual int get_log_sync_children_list(LogLearnerList &children) const;

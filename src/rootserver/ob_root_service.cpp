@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX RS
@@ -25,9 +21,6 @@
 #include "share/ob_index_builder_util.h"
 #include "observer/ob_server_event_history_table_operator.h"
 #include "share/deadlock/ob_deadlock_inner_table_service.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "share/arbitration_service/ob_arbitration_service_utils.h" // ObArbitrationServiceUtils
-#endif
 #include "share/backup/ob_backup_config.h"
 #include "share/scheduler/ob_partition_auto_split_helper.h"
 
@@ -55,10 +48,6 @@
 #include "rootserver/ddl_task/ob_sys_ddl_util.h" // for ObSysDDLSchedulerUtil
 #include "rootserver/restore/ob_restore_service.h"
 #include "rootserver/ob_ddl_service_launcher.h" // for ObDDLServiceLauncher
-#include "share/tenant_snapshot/ob_tenant_snapshot_table_operator.h"
-#include "rootserver/restore/ob_tenant_clone_util.h"
-#include "ob_disaster_recovery_task_utils.h" // DisasterRecoveryUtils
-#include "rootserver/ob_disaster_recovery_worker.h" // ObDRWorker
 
 #include "parallel_ddl/ob_create_table_helper.h" // ObCreateTableHelper
 #include "parallel_ddl/ob_create_view_helper.h"  // ObCreateViewHelper
@@ -101,18 +90,6 @@ ObRootService::ObStatusChangeCallback::ObStatusChangeCallback(ObRootService &roo
 
 ObRootService::ObStatusChangeCallback::~ObStatusChangeCallback()
 {
-}
-
-int ObRootService::ObStatusChangeCallback::wakeup_balancer()
-{
-  int ret = OB_SUCCESS;
-  if (!root_service_.is_inited()) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("root_service not init", K(ret));
-  } else {
-    root_service_.get_root_balancer().wakeup();
-  }
-  return ret;
 }
 
 int ObRootService::ObStatusChangeCallback::wakeup_daily_merger()
@@ -514,7 +491,6 @@ ObRootService::ObRootService()
     root_minor_freeze_(),
     lst_operator_(NULL),
     zone_manager_(), zone_storage_manager_(), ddl_service_(), unit_manager_(server_manager_, zone_manager_),
-    root_balancer_(), lost_replica_checker_(),
     vtable_location_getter_(unit_manager_),
     addr_agent_(NULL), root_inspection_(),
     upgrade_executor_(),
@@ -648,8 +624,7 @@ int ObRootService::init(ObServerConfig &config,
           common_proxy_, sql_proxy_, *schema_service, lst_operator, zone_manager_))) {
     // init tenant ddl service
     FLOG_WARN("init tenant_ddl_service_ failed", KR(ret));
-  } else if (OB_FAIL(unit_manager_.init(*GCTX.sql_proxy_, *config_, *GCTX.srv_rpc_proxy_, *GCTX.schema_service_,
-                                        root_balancer_, *this))) {
+  } else if (OB_FAIL(unit_manager_.init(*GCTX.sql_proxy_, *config_, *GCTX.srv_rpc_proxy_, *GCTX.schema_service_, *this))) {
     // init unit manager
     FLOG_WARN("init unit_manager failed", KR(ret));
   } else if (OB_FAIL(snapshot_manager_.init(self_addr_))) {
@@ -663,14 +638,6 @@ int ObRootService::init(ObServerConfig &config,
     FLOG_WARN("init upgrade storage format executor failed", KR(ret));
   } else if (OB_FAIL(create_inner_schema_executor_.init(*schema_service_, sql_proxy_, common_proxy_))) {
     FLOG_WARN("init create inner role executor failed", KR(ret));
-#ifndef OB_BUILD_LITE
-  } else if (OB_FAIL(lost_replica_checker_.init(*lst_operator_, *schema_service_))) {
-    FLOG_WARN("init empty server checker failed", KR(ret));
-  } else if (OB_FAIL(root_balancer_.init(*schema_service_, unit_manager_,
-                                           server_manager_, zone_manager_,
-                                           self_addr_, sql_proxy))) {
-    FLOG_WARN("init root balancer failed", KR(ret));
-#endif
   } else if (OB_FAIL(ROOTSERVICE_EVENT_INSTANCE.init(sql_proxy, self_addr_))) {
     FLOG_WARN("init rootservice event history failed", KR(ret));
   } else if (OB_FAIL(THE_RS_JOB_TABLE.init(&sql_proxy, self_addr_))) {
@@ -709,21 +676,7 @@ void ObRootService::destroy()
     }
   }
 
-  if (OB_FAIL(lost_replica_checker_.destroy())) {
-    FLOG_WARN("lost replica checker failed", KR(ret));
-    fail_ret = OB_SUCCESS == fail_ret ? ret : fail_ret;
-  } else {
-    FLOG_INFO("lost replica checker destroy");
-  }
-
   // continue executing while error happen
-  if (OB_FAIL(root_balancer_.destroy())) {
-    FLOG_WARN("root balance destroy failed", KR(ret));
-    fail_ret = OB_SUCCESS == fail_ret ? ret : fail_ret;
-  } else {
-    FLOG_INFO("root balance destroy");
-  }
-
   if (OB_FAIL(schema_history_recycler_.destroy())) {
     FLOG_WARN("schema history recycler destroy failed", KR(ret));
     fail_ret = OB_SUCCESS == fail_ret ? ret : fail_ret;
@@ -961,10 +914,6 @@ int ObRootService::stop()
       FLOG_INFO("task_queue stop");
       inspect_task_queue_.stop();
       FLOG_INFO("inspect queue stop");
-      root_balancer_.stop();
-      FLOG_INFO("root_balancer stop");
-      lost_replica_checker_.stop();
-      FLOG_INFO("lost_replica_checker stop");
       schema_history_recycler_.stop();
       FLOG_INFO("schema_history_recycler stop");
       dbms_job::ObDBMSJobMaster::get_instance().stop();
@@ -987,10 +936,6 @@ void ObRootService::wait()
   FLOG_INFO("[ROOTSERVICE_NOTICE] wait rootservice begin");
   int64_t start_time = ObTimeUtility::current_time();
   FLOG_INFO("start to wait all thread exit");
-  root_balancer_.wait();
-  FLOG_INFO("root balancer exit success");
-  lost_replica_checker_.wait();
-  FLOG_INFO("lost replica checker exit success");
   schema_history_recycler_.wait();
   FLOG_INFO("schema_history_recycler exit success");
   task_queue_.wait();
@@ -2113,35 +2058,6 @@ int ObRootService::drop_resource_unit(const obrpc::ObDropResourceUnitArg &arg)
   return ret;
 }
 
-int ObRootService::clone_resource_pool(const obrpc::ObCloneResourcePoolArg &arg)
-{
-  int ret = OB_SUCCESS;
-  LOG_INFO("receive clone_resource_pool request", K(arg));
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("rootservice not init", KR(ret), K_(inited));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument to clone resource pool", KR(ret), K(arg));
-  } else {
-    share::ObResourcePool pool_to_clone;
-    pool_to_clone.name_ = arg.get_pool_name();
-    pool_to_clone.resource_pool_id_ = arg.get_resource_pool_id();
-    if (OB_FAIL(unit_manager_.clone_resource_pool(pool_to_clone, arg.get_unit_config_name(), arg.get_source_tenant_id()))) {
-      LOG_WARN("clone_resource_pool failed", KR(ret), K(pool_to_clone), K(arg));
-      int tmp_ret = OB_SUCCESS;
-      if (OB_SUCCESS != (tmp_ret = submit_reload_unit_manager_task())) {
-        if (OB_CANCELED != tmp_ret) {
-          LOG_ERROR("fail to reload unit_manager, please try 'alter system reload unit'", K(tmp_ret));
-        }
-      }
-    }
-  }
-  LOG_INFO("finish clone_resource_pool", KR(ret), K(arg));
-  ROOTSERVICE_EVENT_ADD("root_service", "clone_resource_pool", KR(ret), K(arg));
-  return ret;
-}
-
 int ObRootService::create_resource_pool(const obrpc::ObCreateResourcePoolArg &arg)
 {
   int ret = OB_SUCCESS;
@@ -2457,26 +2373,6 @@ int ObRootService::create_tenant_end(const ObCreateTenantEndArg &arg)
   return ret;
 }
 
-int ObRootService::commit_alter_tenant_locality(
-    const rootserver::ObCommitAlterTenantLocalityArg &arg)
-{
-  int ret = OB_SUCCESS;
-  LOG_INFO("commit alter tenant locality", K(arg));
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(arg));
-  } else if (OB_FAIL(tenant_ddl_service_.commit_alter_tenant_locality(arg))) {
-    LOG_WARN("fail to commit alter tenant locality", K(ret));
-  } else {
-    LOG_INFO("commit alter tenant locality succeed", K(ret));
-  }
-  return ret;
-}
-
-
 int ObRootService::drop_tenant(const ObDropTenantArg &arg)
 {
   int ret = OB_SUCCESS;
@@ -2546,8 +2442,6 @@ int ObRootService::modify_tenant(const ObModifyTenantArg &arg)
     LOG_WARN("unsupported tenant name", KR(ret), "new_tenant_name", arg.new_tenant_name_);
   } else if (OB_FAIL(tenant_ddl_service_.modify_tenant(arg))) {
     LOG_WARN("ddl service modify tenant failed", K(arg), K(ret));
-  } else {
-    root_balancer_.wakeup();
   }
   // weak leader coordinator while modify primary zone
   //if (OB_SUCC(ret)
@@ -4829,58 +4723,6 @@ int ObRootService::rename_table(const obrpc::ObRenameTableArg &arg)
   return ret;
 }
 
-int ObRootService::fork_table(const obrpc::ObForkTableArg &arg, obrpc::ObDDLRes &res)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else if (OB_FAIL(ddl_service_.fork_table(arg, res))) {
-    LOG_WARN("fork table failed", K(ret));
-  }
-  char table_names_buffer[512] = {0};
-  snprintf(table_names_buffer, sizeof(table_names_buffer), "%.*s -> %.*s",
-           static_cast<int>(arg.src_table_name_.length()), arg.src_table_name_.ptr(),
-           static_cast<int>(arg.dst_table_name_.length()), arg.dst_table_name_.ptr());
-  ROOTSERVICE_EVENT_ADD("ddl scheduler", "fork table",
-                        "tenant_id", arg.tenant_id_,
-                        "ret", ret,
-                        "trace_id", *ObCurTraceId::get_trace_id(),
-                        "task_id", res.task_id_,
-                        "tables", table_names_buffer);
-  LOG_INFO("finish fork table ddl", K(ret), K(arg), K(res), "ddl_event_info", ObDDLEventInfo());
-  return ret;
-}
-
-int ObRootService::fork_database(const obrpc::ObForkDatabaseArg &arg, obrpc::ObDDLRes &res)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else if (OB_FAIL(ddl_service_.fork_database(arg, res))) {
-    LOG_WARN("fork database failed", K(ret));
-  }
-  char database_names_buffer[512] = {0};
-  snprintf(database_names_buffer, sizeof(database_names_buffer), "%.*s -> %.*s",
-           static_cast<int>(arg.src_database_name_.length()), arg.src_database_name_.ptr(),
-           static_cast<int>(arg.dst_database_name_.length()), arg.dst_database_name_.ptr());
-  ROOTSERVICE_EVENT_ADD("ddl scheduler", "fork database",
-                        "tenant_id", arg.tenant_id_,
-                        "ret", ret,
-                        "trace_id", *ObCurTraceId::get_trace_id(),
-                        "task_id", res.task_id_,
-                        "databases", database_names_buffer);
-  LOG_INFO("finish fork database ddl", K(ret), K(arg), K(res), "ddl_event_info", ObDDLEventInfo());
-  return ret;
-}
-
 int ObRootService::truncate_table(const obrpc::ObTruncateTableArg &arg, obrpc::ObDDLRes &res)
 {
   int ret = OB_SUCCESS;
@@ -5268,149 +5110,6 @@ int ObRootService::update_mview_status(const obrpc::ObUpdateMViewStatusArg &arg)
   return ret;
 }
 
-int ObRootService::clone_tenant(const obrpc::ObCloneTenantArg &arg,
-                                obrpc::ObCloneTenantRes &res)
-{
-  int ret = OB_SUCCESS;
-  res.reset();
-  int64_t refreshed_schema_version = OB_INVALID_VERSION;
-  const ObString &clone_tenant_name = arg.get_new_tenant_name();
-  const ObString &source_tenant_name = arg.get_source_tenant_name();
-  const ObString &tenant_snapshot_name = arg.get_tenant_snapshot_name();
-  const bool is_fork_tenant = tenant_snapshot_name.empty();
-  uint64_t source_tenant_id = OB_INVALID_TENANT_ID;
-  int64_t job_id = OB_INVALID_ID;
-  ObTenantSnapItem tenant_snapshot_item;
-  bool is_unit_config_exist = false;
-  bool is_resource_pool_exist = false;
-  ObCStringHelper helper;
-
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else if (OB_ISNULL(schema_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected schema_service_", KR(ret), KP(schema_service_));
-  } else if (GCONF.in_upgrade_mode()) {
-    ret = OB_OP_NOT_ALLOW;
-    LOG_WARN("clone tenant while in upgrade mode is not allowed", KR(ret));
-    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "clone tenant while in upgrade mode");
-  } else if (OB_FAIL(ObResolverUtils::check_not_supported_tenant_name(clone_tenant_name))) {
-    LOG_WARN("unsupported clone tenant name", KR(ret), K(clone_tenant_name));
-  } else {
-    ObSchemaGetterGuard schema_guard;
-    const ObTenantSchema *clone_tenant_schema = NULL;
-    const ObTenantSchema *source_tenant_schema = NULL;
-    if (OB_FAIL(ddl_service_.get_tenant_schema_guard_with_version_in_inner_table(
-                      OB_SYS_TENANT_ID, schema_guard))) {
-      LOG_WARN("fail to get sys tenant's schema guard", KR(ret));
-    } else if (OB_FAIL(schema_guard.get_schema_version(OB_SYS_TENANT_ID, refreshed_schema_version))) {
-      LOG_WARN("fail to get sys schema version", KR(ret));
-    } else if (OB_FAIL(schema_guard.get_tenant_info(clone_tenant_name, clone_tenant_schema))) {
-      LOG_WARN("fail to get clone tenant schema", KR(ret), K(clone_tenant_name));
-    } else if (OB_NOT_NULL(clone_tenant_schema)) {
-      ret = OB_TENANT_EXIST;
-      LOG_WARN("clone tenant already exists", KR(ret), K(clone_tenant_name));
-      LOG_USER_ERROR(OB_TENANT_EXIST, helper.convert(clone_tenant_name));
-    } else if (OB_FAIL(schema_guard.get_tenant_info(source_tenant_name, source_tenant_schema))) {
-      LOG_WARN("fail to get source tenant info", KR(ret), K(source_tenant_name));
-    } else if (OB_ISNULL(source_tenant_schema)) {
-      ret = OB_TENANT_NOT_EXIST;
-      LOG_WARN("source tenant not exists", KR(ret), K(source_tenant_name));
-      LOG_USER_ERROR(OB_TENANT_NOT_EXIST, source_tenant_name.length(), source_tenant_name.ptr());
-    } else {
-      source_tenant_id = source_tenant_schema->get_tenant_id();
-    }
-  }
-
-  if (FAILEDx(ObTenantSnapshotUtil::check_source_tenant_info(source_tenant_id,
-                                                      ObTenantSnapshotUtil::RESTORE_OP))) {
-    LOG_WARN("source tenant can not do cloning", KR(ret), K(source_tenant_id));
-  } else if (OB_FAIL(unit_manager_.check_unit_config_exist(arg.get_unit_config_name(), is_unit_config_exist))) {
-    LOG_WARN("fail to check unit config exist", KR(ret), K(arg));
-  } else if (!is_unit_config_exist) {
-    ret = OB_RESOURCE_UNIT_NOT_EXIST;
-    LOG_USER_ERROR(OB_RESOURCE_UNIT_NOT_EXIST, helper.convert(arg.get_unit_config_name()));
-    LOG_WARN("config not exist", KR(ret), K(arg));
-  } else if (OB_FAIL(unit_manager_.check_resource_pool_exist(arg.get_resource_pool_name(), is_resource_pool_exist))) {
-    LOG_WARN("fail to check resource pool exist", KR(ret), K(arg));
-  } else if (is_resource_pool_exist) {
-    ret = OB_RESOURCE_POOL_EXIST;
-    LOG_USER_ERROR(OB_RESOURCE_POOL_EXIST, helper.convert(arg.get_resource_pool_name()));
-    LOG_WARN("resource_pool already exist", "name", arg.get_resource_pool_name(), K(ret));
-  } else if (is_fork_tenant) { // fork tenant (clone tenant without snapshot)
-    // precheck
-    if (OB_FAIL(ObTenantSnapshotUtil::check_log_archive_ready(source_tenant_id, source_tenant_name))) {
-      LOG_WARN("check log archive ready failed", KR(ret), K(source_tenant_id), K(source_tenant_name));
-    }
-  } else { // !is_fork_tenant (clone tenant with snapshot)
-    if (OB_FAIL(ObTenantSnapshotUtil::get_tenant_snapshot_info(sql_proxy_, source_tenant_id,
-                                                tenant_snapshot_name, tenant_snapshot_item))) {
-      LOG_WARN("get tenant snapshot info failed", KR(ret), K(source_tenant_id), K(tenant_snapshot_name));
-      if (OB_TENANT_SNAPSHOT_NOT_EXIST == ret) {
-        ret = OB_OP_NOT_ALLOW;
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "tenant snapshot not exist in source tenant, clone tenant");
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    ObCloneJob clone_job;
-    bool has_job = false;
-    SCN gts_scn;
-    ObDDLSQLTransaction trans(schema_service_, false /*end_signal*/);
-    if (OB_FAIL(trans.start(&sql_proxy_, OB_SYS_TENANT_ID, refreshed_schema_version))) {
-      LOG_WARN("failed to start trans", KR(ret));
-    } else if (OB_FAIL(OB_TS_MGR.get_ts_sync(OB_SYS_TENANT_ID, GCONF.rpc_timeout, gts_scn))) {
-      LOG_WARN("fail to get ts sync", KR(ret));
-    } else if (FALSE_IT(job_id = gts_scn.get_val_for_tx())) {
-    } else if (OB_FAIL(ObTenantCloneUtil::fill_clone_job(job_id, arg, source_tenant_id, source_tenant_name,
-                                                tenant_snapshot_item, clone_job))) {
-      LOG_WARN("fail to fill clone job", KR(ret), K(job_id), K(arg), K(source_tenant_id), K(tenant_snapshot_item));
-    } else if (OB_FAIL(ObTenantCloneUtil::record_clone_job(trans, clone_job))) {
-      LOG_WARN("fail to record clone job", KR(ret), K(clone_job));
-    } else {
-      res.set_job_id(job_id);
-    }
-
-    if (trans.is_started()) {
-      int tmp_ret = OB_SUCCESS;
-      if (OB_TMP_FAIL(trans.end(OB_SUCC(ret)))) {
-        LOG_WARN("trans end failed", "is_commit", OB_SUCCESS == ret, KR(tmp_ret), KR(ret));
-        ret = (OB_SUCC(ret)) ? tmp_ret : ret;
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    int tmp_ret = OB_SUCCESS;
-    if (OB_TMP_FAIL(ObTenantCloneUtil::notify_clone_scheduler(OB_SYS_TENANT_ID))) {
-      LOG_WARN("notify clone scheduler failed", KR(tmp_ret));
-    }
-  }
-
-  LOG_INFO("[RESTORE] clone tenant start", KR(ret), K(arg));
-  ROOTSERVICE_EVENT_ADD("clone", "clone_start",
-                        "job_id", job_id,
-                        K(ret),
-                        "clone_tenant_name", clone_tenant_name,
-                        "source_tenant_name", source_tenant_name);
-
-  if (OB_SUCC(ret)) {
-    const char *status_str = ObTenantCloneStatus::get_clone_status_str(
-                                      ObTenantCloneStatus::Status::CLONE_SYS_LOCK);
-    ROOTSERVICE_EVENT_ADD("clone", "change_clone_status",
-                          "job_id", job_id,
-                          K(ret),
-                          "prev_clone_status", "NULL",
-                          "cur_clone_status", status_str);
-  }
-  return ret;
-}
-
 int ObRootService::parallel_update_index_status(const obrpc::ObUpdateIndexStatusArg &arg, obrpc::ObParallelDDLRes &res)
 {
   LOG_TRACE("receive update index status arg", K(arg));
@@ -5650,20 +5349,6 @@ int ObRootService::do_restart()
     FLOG_INFO("success to start schema_history_recycler");
   }
 
-#ifndef OB_BUILD_LITE 
-  if (FAILEDx(root_balancer_.start())) {
-    FLOG_WARN("root balancer start failed", KR(ret));
-  } else {
-    FLOG_INFO("success to start root balancer");
-  }
-
-  if (FAILEDx(lost_replica_checker_.start())) {
-    FLOG_WARN("start lost replica checker failed", KR(ret));
-  } else {
-    FLOG_INFO("start lost replica checker success");
-  }
-#endif 
-
   // broadcast root server address again, this task must be in the end part of do_restart,
   // because system may work properly without it.
   //if (FAILEDx(update_rslist())) {
@@ -5724,7 +5409,6 @@ int ObRootService::do_restart()
     FLOG_INFO("full_service !!! start to work!!");
     ROOTSERVICE_EVENT_ADD("root_service", "full_rootservice",
                           "result", ret, K_(self_addr));
-    root_balancer_.set_active();
     root_minor_freeze_.start();
     FLOG_INFO("root_minor_freeze_ started");
     root_inspection_.start();
@@ -7066,63 +6750,10 @@ int ObRootService::init_sys_admin_ctx(ObSystemAdminCtx &ctx)
     ctx.unit_mgr_ = &unit_manager_;
     ctx.root_inspection_ = &root_inspection_;
     ctx.root_service_ = this;
-    ctx.root_balancer_ = &root_balancer_;
     ctx.upgrade_storage_format_executor_ = &upgrade_storage_format_executor_;
     ctx.create_inner_schema_executor_ = &create_inner_schema_executor_;
     ctx.inited_ = true;
   }
-  return ret;
-}
-
-int ObRootService::admin_switch_replica_role(const obrpc::ObAdminSwitchReplicaRoleArg &arg)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else {
-    ObSystemAdminCtx ctx;
-    if (OB_FAIL(init_sys_admin_ctx(ctx))) {
-      LOG_WARN("init_sys_admin_ctx failed", K(ret));
-    } else {
-      ObAdminSwitchReplicaRole admin_util(ctx);
-      if (OB_FAIL(admin_util.execute(arg))) {
-        LOG_WARN("execute switch replica role failed", K(arg), K(ret));
-      }
-    }
-  }
-  ROOTSERVICE_EVENT_ADD("root_service", "admin_switch_replica_role", K(ret), K(arg));
-  return ret;
-}
-
-int ObRootService::admin_switch_rs_role(const obrpc::ObAdminSwitchRSRoleArg &arg)
-{
-  int ret = OB_NOT_SUPPORTED;
-  UNUSED(arg);
-  return ret;
-}
-
-int ObRootService::admin_change_replica(const obrpc::ObAdminChangeReplicaArg &arg)
-{
-  int ret = OB_NOT_SUPPORTED;
-  UNUSED(arg);
-  return ret;
-}
-
-int ObRootService::admin_drop_replica(const obrpc::ObAdminDropReplicaArg &arg)
-{
-  int ret = OB_NOT_SUPPORTED;
-  UNUSED(arg);
-  return ret;
-}
-
-int ObRootService::admin_migrate_replica(const obrpc::ObAdminMigrateReplicaArg &arg)
-{
-  int ret = OB_NOT_SUPPORTED;
-  UNUSED(arg);
   return ret;
 }
 
@@ -7507,157 +7138,6 @@ int ObRootService::admin_clear_merge_error(const obrpc::ObAdminMergeArg &arg)
       }
       ROOTSERVICE_EVENT_ADD("root_service", "clear_merge_error", KR(ret), K(arg));
     }
-  }
-  return ret;
-}
-
-#ifdef OB_BUILD_ARBITRATION
-int ObRootService::admin_add_arbitration_service(const obrpc::ObAdminAddArbitrationServiceArg &arg)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else if (OB_FAIL(share::ObArbitrationServiceUtils::add_arbitration_service(sql_proxy_, arg))) {
-    LOG_WARN("fail to add arbitration service", KR(ret), K(arg));
-  }
-  ROOTSERVICE_EVENT_ADD("arb_service", "admin_add_arbitration_service", K(ret), K(arg));
-  return ret;
-}
-
-int ObRootService::admin_remove_arbitration_service(const obrpc::ObAdminRemoveArbitrationServiceArg &arg)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else if (OB_FAIL(share::ObArbitrationServiceUtils::remove_arbitration_service(sql_proxy_, arg))) {
-    LOG_WARN("fail to remove arbitration service", KR(ret), K(arg));
-  }
-  ROOTSERVICE_EVENT_ADD("arb_service", "admin_remove_arbitration_service", K(ret), K(arg));
-  return ret;
-}
-
-int ObRootService::admin_replace_arbitration_service(const obrpc::ObAdminReplaceArbitrationServiceArg &arg)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else if (OB_FAIL(share::ObArbitrationServiceUtils::replace_arbitration_service(sql_proxy_, arg))) {
-    LOG_WARN("fail to replace arbitration service", KR(ret), K(arg));
-  }
-  ROOTSERVICE_EVENT_ADD("arb_service", "admin_replace_arbitration_service", K(ret), K(arg));
-  return ret;
-}
-
-int ObRootService::remove_cluster_info_from_arb_server(const obrpc::ObRemoveClusterInfoFromArbServerArg &arg)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else if (OB_FAIL(ObArbitrationServiceUtils::remove_cluster_info_from_arb_server(arg.get_arbitration_service()))) {
-    LOG_WARN("fail to remove cluster info from arb server", KR(ret), K(arg));
-  }
-  return ret;
-}
-#endif
-
-#define ADD_EVENT_FOR_ALTER_LS_REPLICA                                               \
-              "admin_alter_ls_replica", arg.get_alter_task_type().get_type_str(),    \
-              "ret_code", ret_val,                                                   \
-              "tenant_id", arg.get_tenant_id()                                       \
-
-int ObRootService::add_rs_event_for_alter_ls_replica_(
-    const obrpc::ObAdminAlterLSReplicaArg &arg,
-    const int ret_val)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else {
-    char extra_info[MSG_SIZE] = {0};
-    char addr_str_buf[OB_SERVER_ADDR_STR_LEN];
-    if (OB_FAIL(arg.get_data_source().ip_port_to_string(addr_str_buf, OB_SERVER_ADDR_STR_LEN))) {
-      LOG_WARN("data source to string failed", KR(ret), K(arg));
-    } else {
-      snprintf(extra_info, sizeof(extra_info),
-      "data_source: %s, paxos_replica_num: %ld", addr_str_buf, arg.get_paxos_replica_num());
-    }
-    if (OB_FAIL(ret)) {
-    } else if (arg.get_alter_task_type().is_add_task()
-            || arg.get_alter_task_type().is_modify_replica_task()
-            || arg.get_alter_task_type().is_remove_task()) {
-      ROOTSERVICE_EVENT_ADD(ADD_EVENT_FOR_ALTER_LS_REPLICA,
-                            "ls_id", arg.get_ls_id().id(),
-                            "target_replica", arg.get_server_addr(),
-                            "replica_type", share::ObShareUtil::replica_type_to_string(arg.get_replica_type()),
-                            "", NULL,
-                            extra_info);
-    } else if (arg.get_alter_task_type().is_migrate_task()) {
-      ROOTSERVICE_EVENT_ADD(ADD_EVENT_FOR_ALTER_LS_REPLICA,
-                            "ls_id", arg.get_ls_id().id(),
-                            "source_replica", arg.get_server_addr(),
-                            "target_replica", arg.get_destination_addr(),
-                            "", NULL,
-                            extra_info);
-    } else if (arg.get_alter_task_type().is_modify_paxos_replica_num_task()) {
-      ROOTSERVICE_EVENT_ADD(ADD_EVENT_FOR_ALTER_LS_REPLICA,
-                            "ls_id", arg.get_ls_id().id(),
-                            "paxos_replica_num", arg.get_paxos_replica_num());
-    } else if (arg.get_alter_task_type().is_cancel_task()) {
-      ROOTSERVICE_EVENT_ADD(ADD_EVENT_FOR_ALTER_LS_REPLICA,
-                            "task_id", arg.get_task_id());
-    } else {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid argument", KR(ret), K(arg));
-    }
-  }
-  return ret;
-}
-
-int ObRootService::admin_alter_ls_replica(const obrpc::ObAdminAlterLSReplicaArg &arg)
-{
-  int ret = OB_SUCCESS;
-  FLOG_INFO("receive alter ls replica request", K(arg));
-  int64_t start_time = ObTimeUtility::current_time();
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", KR(ret), K(arg));
-  } else {
-    ObDRWorker dr_worker;
-    if (OB_FAIL(dr_worker.execute_manual_dr_task(arg))) {
-      LOG_WARN("failed to execute manual drtask", KR(ret), K(arg));
-    } else if (OB_FAIL(DisasterRecoveryUtils::wakeup_local_service(OB_SYS_TENANT_ID))) {
-      LOG_WARN("fail to wake up", KR(ret), K(arg));
-    }
-  }
-  int64_t cost_time = ObTimeUtility::current_time() - start_time;
-  FLOG_INFO("alter ls replica over", KR(ret), K(arg), K(cost_time));
-  int tmp_ret = OB_SUCCESS;
-  if (OB_SUCCESS != (tmp_ret = add_rs_event_for_alter_ls_replica_(arg, ret))) {
-    // ignore
-    LOG_WARN("add rs event for alter ls replica failed", KR(ret), KR(tmp_ret), K(arg));
   }
   return ret;
 }
@@ -8166,14 +7646,6 @@ bool ObRootService::check_config(const ObConfigItem &item, const char *&err_info
   } else if (0 == STRCMP(item.name(), MIN_OBSERVER_VERSION)) {
     if (OB_SUCCESS != ObClusterVersion::is_valid(item.str())) {
       LOG_WARN_RET(OB_INVALID_ERROR, "fail to parse min_observer_version value");
-      bret = false;
-    }
-  } else if (0 == STRCMP(item.name(), __BALANCE_CONTROLLER)) {
-    ObString balance_troller_str(item.str());
-    ObRootBalanceHelp::BalanceController switch_info;
-    int tmp_ret = ObRootBalanceHelp::parse_balance_info(balance_troller_str, switch_info);
-    if (OB_SUCCESS != tmp_ret) {
-      LOG_WARN_RET(tmp_ret, "fail to parse balance switch", K(balance_troller_str));
       bret = false;
     }
   }
@@ -9961,7 +9433,8 @@ int ObRootService::set_config_after_bootstrap_()
     {"_enable_dbms_job_package", "false"},
     {"_bloom_filter_ratio", "3"},
     {"_enable_mysql_compatible_dates", "true"},
-    {"_ob_enable_pl_dynamic_stack_check", "true"}
+    {"_ob_enable_pl_dynamic_stack_check", "true"},
+    {"_system_trig_enabled", "false"},
   };
   if (OB_FAIL(sql.assign("ALTER SYSTEM SET"))) {
     LOG_WARN("failed to assign sql string", KR(ret));
@@ -10144,7 +9617,7 @@ int ObRootService::create_ai_model(const obrpc::ObCreateAiModelArg &arg)
   }
 
   LOG_TRACE("finish create ai model", K(ret), K(arg));
-
+  
   return ret;
 }
 
@@ -10164,51 +9637,10 @@ int ObRootService::drop_ai_model(const obrpc::ObDropAiModelArg &arg)
   }
 
   LOG_TRACE("finish drop ai model", K(ret), K(arg));
-
+  
   return ret;
 }
 
-
-
-int ObRootService::create_location(const obrpc::ObCreateLocationArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObLocationDDLService location_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(location_ddl_service.create_location(arg, &arg.ddl_stmt_str_))) {
-    LOG_WARN("handle ddl failed", K(arg), K(ret));
-  }
-  return ret;
-}
-
-int ObRootService::drop_location(const obrpc::ObDropLocationArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObLocationDDLService location_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(location_ddl_service.drop_location(arg, &arg.ddl_stmt_str_))) {
-    LOG_WARN("drop location failed", K(arg.location_name_), K(ret));
-  }
-  return ret;
-}
-
-int ObRootService::revoke_object(const ObRevokeObjMysqlArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObObjPrivMysqlDDLService objpriv_mysql_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else {
-    ObObjMysqlPrivSortKey object_key(arg.tenant_id_, arg.user_id_, arg.obj_name_, arg.obj_type_);
-    OZ (objpriv_mysql_ddl_service.revoke_object(object_key, arg.priv_set_, arg.grantor_, arg.grantor_host_));
-  }
-  return ret;
-}
 
 
 } // end namespace rootserver

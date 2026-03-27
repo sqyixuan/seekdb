@@ -1,24 +1,16 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE
-#ifdef OB_BUILD_ARBITRATION
-#include "ob_share_util.h"
-#include "share/arbitration_service/ob_arbitration_service_utils.h" // ObArbitrationServiceUtils
-#endif
 #include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "observer/ob_server_struct.h"
 
@@ -179,29 +171,6 @@ int ObShareUtil::get_ctx_timeout(const int64_t default_timeout, int64_t &timeout
     LOG_WARN("fail to set default timeout ctx", KR(ret), K(default_timeout));
   } else {
     timeout = ctx.get_timeout();
-  }
-  return ret;
-}
-
-int ObShareUtil::generate_arb_replica_num(
-    const uint64_t tenant_id,
-    const ObLSID &ls_id,
-    int64_t &arb_replica_num)
-{
-  int ret = OB_SUCCESS;
-  arb_replica_num = 0;
-  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id
-                  || !ls_id.is_valid()
-                  || !ls_id.is_valid_with_tenant(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_id));
-#ifdef OB_BUILD_ARBITRATION
-  } else if (OB_FAIL(ObArbitrationServiceUtils::generate_arb_replica_num(
-                         tenant_id,
-                         ls_id,
-                         arb_replica_num))) {
-    LOG_WARN("fail to generate arb replica number", KR(ret), K(tenant_id), K(ls_id));
-#endif
   }
   return ret;
 }

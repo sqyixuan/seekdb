@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 #include "ob_log_request_handler.h"
 #include "logservice/ob_log_service.h"
@@ -96,24 +92,6 @@ int LogRequestHandler::get_rpc_proxy_(obrpc::ObLogServiceRpcProxy *&rpc_proxy) c
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int LogRequestHandler::get_arb_service_(ObArbitrationService *&arb_service) const
-{
-  int ret = OB_SUCCESS;
-  logservice::ObLogService *log_service = NULL;
-  if (OB_ISNULL(log_service = MTL(logservice::ObLogService*))) {
-    ret = OB_ERR_UNEXPECTED;
-    CLOG_LOG(WARN, "get_log_service failed", K(ret));
-  } else if (OB_ISNULL(arb_service = log_service->get_arbitration_service())) {
-    ret = OB_ERR_UNEXPECTED;
-    CLOG_LOG(WARN, "log_service.get_arbitration_service failed", K(ret));
-  } else {
-    CLOG_LOG(TRACE, "get_arb_service_", KP(arb_service), KP(log_service), K(MTL_ID()));
-  }
-  return ret;
-}
-#endif
 
 int LogRequestHandler::get_flashback_service_(ObLogFlashbackService *&flashback_srv) const
 {
@@ -261,14 +239,6 @@ int ConfigChangeCmdHandler::handle_config_change_cmd(const LogConfigChangeCmd &r
       case REMOVE_MEMBER_CMD:
         ret = palf_handle_->remove_member(req.removed_member_, req.new_replica_num_, req.timeout_us_);
         break;
-#ifdef OB_BUILD_ARBITRATION
-      case ADD_ARB_MEMBER_CMD:
-        ret = palf_handle_->add_arb_member(req.added_member_, req.timeout_us_);
-        break;
-      case REMOVE_ARB_MEMBER_CMD:
-        ret = palf_handle_->remove_arb_member(req.removed_member_, req.timeout_us_);
-        break;
-#endif
       case REPLACE_MEMBER_CMD:
         ret = palf_handle_->replace_member(req.added_member_, req.removed_member_, req.config_version_, req.timeout_us_);
         break;
@@ -310,27 +280,6 @@ int ConfigChangeCmdHandler::handle_config_change_cmd(const LogConfigChangeCmd &r
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-template <>
-int LogRequestHandler::handle_request<LogServerProbeMsg>(const LogServerProbeMsg &req)
-{
-  int ret = common::OB_SUCCESS;
-  ObArbitrationService *arb_service;
-  const common::ObAddr &server = req.src_;
-  if (false == req.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(ERROR, "Invalid argument!!!", K(ret), K(req));
-  } else if (OB_FAIL(get_arb_service_(arb_service))) {
-    CLOG_LOG(ERROR, "get_arb_service_ failed", K(ret), K(req));
-  } else if (OB_FAIL(arb_service->handle_server_probe_msg(server, req))) {
-    CLOG_LOG(WARN, "handle_server_probe_msg failed", K(ret), K(req));
-  } else {
-    CLOG_LOG(TRACE, "handle_server_probe_msg success", K(ret), K(server), K(req));
-  }
-  return ret;
-}
-#endif
 
 template <>
 int LogRequestHandler::handle_request<LogChangeAccessModeCmd>(const LogChangeAccessModeCmd &req)
@@ -421,36 +370,6 @@ int LogRequestHandler::handle_request<LogFlashbackMsg>(const LogFlashbackMsg &re
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-template<>
-int LogRequestHandler::handle_sync_request<LogProbeRsReq, LogProbeRsResp>(const LogProbeRsReq &req, LogProbeRsResp &resp)
-{
-  int ret = OB_SUCCESS;
-  if (false == req.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(ERROR, "invalid argument!", K(ret), K(req));
-  } else {
-    const common::ObAddr &sender = req.src_;
-    const int64_t palf_id = ObLSID::SYS_LS_ID;
-    int64_t unused_pid = OB_INVALID_TIMESTAMP;
-    common::ObRole role = INVALID_ROLE;
-    palf::PalfHandleGuard palf_handle_guard;
-    if (OB_FAIL(get_palf_handle_guard_(palf_id, palf_handle_guard))) {
-      CLOG_LOG(WARN, "get_palf_handle_guard_ failed", K(ret), K(palf_id));
-    } else if (OB_FAIL(palf_handle_guard.get_role(role, unused_pid))) {
-      CLOG_LOG(WARN, "get_role failed when handling LogProbeRsReq", K(ret));
-    } else if (OB_UNLIKELY(ObRole::LEADER != role)) {
-      resp.ret_ = OB_NOT_MASTER;
-      CLOG_LOG(WARN, "send LogProbeRsReq to wrong addr, this log stream is not rs leader", K_(resp.ret), K(palf_id), K(role));
-    } else {
-      resp.ret_ = OB_SUCCESS;
-      CLOG_LOG(INFO, "the network between the sender and rs is normal",K(sender));
-    }
-  }
-  return ret;
-}
-#endif
 
 template <>
 int LogRequestHandler::handle_sync_request<LogGetCkptReq, LogGetCkptResp>(

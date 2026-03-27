@@ -1,38 +1,28 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/cmd/ob_alter_system_executor.h"
 #include "observer/ob_server.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "share/arbitration_service/ob_arbitration_service_utils.h" //ObArbitrationServiceUtils
-#endif
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "observer/omt/ob_tenant.h" //ObTenant
 #include "rootserver/freeze/ob_major_freeze_helper.h" //ObMajorFreezeHelper
 #include "rootserver/standby/ob_standby_service.h" // ObStandbyService
 #include "pl/pl_cache/ob_pl_cache_mgr.h"
 #include "sql/plan_cache/ob_ps_cache.h"
-#include "rootserver/restore/ob_tenant_clone_util.h"
 
 #include "rootserver/ob_service_name_command.h"
 #include "rootserver/ob_tenant_event_def.h"
-#include "rootserver/ob_disaster_recovery_worker.h" // ObDRWorker
-#include "rootserver/ob_disaster_recovery_task_utils.h" // DisasterRecoveryUtils
 #include "rootserver/backup/ob_backup_param_operator.h" // ObBackupParamOperator
 #include "share/table/ob_redis_importer.h"
 #include "share/ob_timezone_importer.h"
@@ -741,13 +731,6 @@ int ObAdminZoneExecutor::execute(ObExecContext &ctx, ObAdminZoneStmt &stmt)
         } else if (OB_FAIL(wait_leader_switch_out_(*(ctx.get_sql_proxy()), arg))) {
           // check whether all leaders are switched out
           LOG_WARN("fail to wait leader switch out", KR(ret), K(arg));
-#ifdef OB_BUILD_ARBITRATION
-        // check whether all 2f tenant with arb service finished degration
-        } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_2f_tenants_arb_service_degration(
-                               *(ctx.get_sql_proxy()),
-                               server_list))) {
-          LOG_WARN("fail to wait degration for arb service", KR(ret), K(arg), K(server_list));
-#endif
         }
       } else {} // force stop, no need to wait leader switch
     } else if (ObAdminZoneArg::MODIFY == stmt.get_op()) {
@@ -901,54 +884,6 @@ int ObAdminStorageExecutor::execute(ObExecContext &ctx, ObAdminStorageStmt &stmt
     } else {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected op: %ld", "type", stmt.get_op());
-    }
-  }
-  return ret;
-}
-
-int ObSwitchReplicaRoleExecutor::execute(ObExecContext &ctx, ObSwitchReplicaRoleStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-
-  if (OB_ISNULL(ctx.get_my_session())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("session should not be null");
-  } else {
-    ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-    obrpc::ObCommonRpcProxy *common_rpc = NULL;
-    if (OB_ISNULL(task_exec_ctx)) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get task executor context failed");
-    } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-    } else if (OB_FAIL(common_rpc->admin_switch_replica_role(
-                           stmt.get_rpc_arg()))) {
-      LOG_WARN("switch replica role rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
-    }
-  }
-  return ret;
-}
-
-int ObSwitchRSRoleExecutor::execute(ObExecContext &ctx, ObSwitchRSRoleStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-
-  if (OB_ISNULL(ctx.get_my_session())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("session should not be null");
-  } else {
-    ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-    obrpc::ObCommonRpcProxy *common_rpc = NULL;
-    if (OB_ISNULL(task_exec_ctx)) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get task executor context failed");
-    } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-    } else if (OB_FAIL(common_rpc->admin_switch_rs_role(
-                           stmt.get_rpc_arg()))) {
-      LOG_WARN("switch rootserver role rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
     }
   }
   return ret;
@@ -1170,123 +1105,6 @@ int ObSetTPExecutor::execute(ObExecContext &ctx, ObSetTPStmt &stmt)
   }
 
   LOG_INFO("set tracepoint rpc", K(stmt.get_rpc_arg()));
-  return ret;
-}
-
-int ObAlterLSReplicaExecutor::execute(ObExecContext &ctx, ObAlterLSReplicaStmt &stmt) 
-{
-  int ret = OB_SUCCESS;
-  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-  obrpc::ObCommonRpcProxy *common_rpc = NULL;
-  if (OB_UNLIKELY(!stmt.get_rpc_arg().is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("rpc args is invalid", KR(ret), K(stmt));
-  } else {
-    ObDRWorker dr_worker;
-    ObNotifyTenantThreadArg arg;
-    if (OB_FAIL(dr_worker.execute_manual_dr_task(stmt.get_rpc_arg()))) {
-      LOG_WARN("failed to execute manual drtask", KR(ret), K(stmt));
-    } else if (OB_FAIL(arg.init(gen_meta_tenant_id(stmt.get_rpc_arg().get_tenant_id()),
-                                obrpc::ObNotifyTenantThreadArg::DISASTER_RECOVERY_SERVICE))) {
-      LOG_WARN("failed to init arg", KR(ret), K(stmt));
-    } else if (OB_FAIL(DisasterRecoveryUtils::wakeup_tenant_service(arg))) {
-      LOG_WARN("fail to wake up", KR(ret), K(stmt), K(arg));
-    }
-  }
-  return ret;
-}
-
-int ObAddArbitrationServiceExecutor::execute(ObExecContext &ctx, ObAddArbitrationServiceStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-#ifndef OB_BUILD_ARBITRATION
-  UNUSEDx(ctx, stmt);
-  ret = OB_NOT_SUPPORTED;
-  LOG_WARN("not support in CE Version", KR(ret));
-  LOG_USER_ERROR(OB_NOT_SUPPORTED, "add arbitration service in CE version");
-#else
-  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-  obrpc::ObCommonRpcProxy *common_rpc = NULL;
-  if (OB_ISNULL(task_exec_ctx)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get task executor context failed", KR(ret));
-  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
-  } else if (OB_FAIL(common_rpc->admin_add_arbitration_service(stmt.get_rpc_arg()))) {
-    LOG_WARN("add arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
-  }
-#endif
-  return ret;
-}
-
-int ObRemoveArbitrationServiceExecutor::execute(ObExecContext &ctx, ObRemoveArbitrationServiceStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-#ifndef OB_BUILD_ARBITRATION
-  UNUSEDx(ctx, stmt);
-  ret = OB_NOT_SUPPORTED;
-  LOG_WARN("not support in CE Version", KR(ret));
-  LOG_USER_ERROR(OB_NOT_SUPPORTED, "remove arbitration service in CE version");
-#else
-  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-  obrpc::ObCommonRpcProxy *common_rpc = NULL;
-  if (OB_ISNULL(task_exec_ctx)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get task executor context failed", KR(ret));
-  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
-  } else if (OB_FAIL(common_rpc->admin_remove_arbitration_service(stmt.get_rpc_arg()))) {
-    LOG_WARN("remove arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
-  }
-#endif
-  return ret;
-}
-
-int ObReplaceArbitrationServiceExecutor::execute(ObExecContext &ctx, ObReplaceArbitrationServiceStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-#ifndef OB_BUILD_ARBITRATION
-  UNUSEDx(ctx, stmt);
-  ret = OB_NOT_SUPPORTED;
-  LOG_WARN("not support in CE Version", KR(ret));
-  LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace arbitration service in CE version");
-#else
-  ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-  obrpc::ObCommonRpcProxy *common_rpc = NULL;
-  if (OB_ISNULL(task_exec_ctx)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get task executor context failed", KR(ret));
-  } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get common rpc proxy failed", KR(ret), K(task_exec_ctx));
-  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), KP(GCTX.sql_proxy_));
-  } else if (OB_FAIL(common_rpc->admin_replace_arbitration_service(stmt.get_rpc_arg()))) {
-    LOG_WARN("replace arbitration service rpc failed", KR(ret), "rpc_arg", stmt.get_rpc_arg());
-  } else if (OB_FAIL(ObArbitrationServiceUtils::wait_all_tenant_with_arb_has_arb_member(
-                 *GCTX.sql_proxy_,
-                 stmt.get_rpc_arg().get_arbitration_service(),
-                 stmt.get_rpc_arg().get_previous_arbitration_service()))) {
-    LOG_WARN("fail to wait all tenant with arb service has expected arb member",
-             KR(ret), "rpc_arg", stmt.get_rpc_arg());
-  } else {
-    // try clean cluster info from arb server
-    ObRemoveClusterInfoFromArbServerArg remove_cluster_info_arg;
-    int tmp_ret = OB_SUCCESS; // for remove_cluster_info operation
-    if (OB_TMP_FAIL(remove_cluster_info_arg.init(stmt.get_rpc_arg().get_previous_arbitration_service()))) {
-      LOG_WARN("fail to init a rpc arg", K(tmp_ret), "rpc_arg", stmt.get_rpc_arg());
-    } else if (OB_TMP_FAIL(common_rpc->remove_cluster_info_from_arb_server(remove_cluster_info_arg))) {
-      LOG_WARN("fail to remove cluster info from arb server", K(tmp_ret), K(remove_cluster_info_arg));
-    }
-    if (OB_SUCCESS != tmp_ret) {
-      LOG_USER_WARN(OB_CLUSTER_INFO_MAYBE_REMAINED, stmt.get_rpc_arg().get_previous_arbitration_service().length(),
-                    stmt.get_rpc_arg().get_previous_arbitration_service().ptr());
-    }
-  }
-#endif
   return ret;
 }
 
@@ -2611,53 +2429,6 @@ int ObResetConfigExecutor::execute(ObExecContext &ctx, ObResetConfigStmt &stmt)
   } else if (OB_FAIL(GCTX.root_service_->admin_set_config(stmt.get_rpc_arg()))) {
     LOG_WARN("set config rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
   }
-  return ret;
-}
-
-int ObCancelCloneExecutor::execute(ObExecContext &ctx, ObCancelCloneStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-  ObTaskExecutorCtx *task_exec_ctx = NULL;
-  common::ObMySQLProxy *sql_proxy = nullptr;
-  const ObString &clone_tenant_name = stmt.get_clone_tenant_name();
-  bool clone_already_finish = false;
-
-  if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get task executor context failed", KR(ret));
-  } else if (OB_ISNULL(sql_proxy = ctx.get_sql_proxy())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql proxy must not be null", KR(ret));
-  } else {
-    ObSchemaGetterGuard guard;
-    const ObTenantSchema *tenant_schema = nullptr;
-    if (OB_FAIL(GSCHEMASERVICE.get_tenant_schema_guard(OB_SYS_TENANT_ID, guard))) {
-      LOG_WARN("failed to get sys tenant schema guard", KR(ret));
-    } else if (OB_FAIL(guard.get_tenant_info(clone_tenant_name, tenant_schema))) {
-      LOG_WARN("failed to get tenant info", KR(ret), K(stmt));
-    } else if (OB_ISNULL(tenant_schema)) {
-      LOG_INFO("tenant not exist", KR(ret), K(clone_tenant_name));
-    } else if (tenant_schema->is_normal()) {
-      ret = OB_OP_NOT_ALLOW;
-      LOG_WARN("the new tenant has completed the cloning operation", KR(ret), K(clone_tenant_name));
-      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "The new tenant has completed the cloning operation, "
-                                      "or this is not the name of a cloning tenant. "
-                                      "Cancel cloning");
-    }
-  }
-
-  if (FAILEDx(rootserver::ObTenantCloneUtil::cancel_clone_job_by_name(
-                  *sql_proxy, clone_tenant_name, clone_already_finish,
-                  ObCancelCloneJobReason(ObCancelCloneJobReason::CANCEL_BY_USER)))) {
-    LOG_WARN("cancel clone job failed", KR(ret), K(clone_tenant_name));
-  } else if (clone_already_finish) {
-    ret = OB_OP_NOT_ALLOW;
-    LOG_WARN("the new tenant has completed the cloning operation", KR(ret), K(clone_tenant_name));
-    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "The new tenant has completed the cloning operation, "
-                                     "or this is not the name of a cloning tenant. "
-                                     "Cancel cloning");
-  }
-
   return ret;
 }
 

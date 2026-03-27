@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_LOG_REQ_
@@ -487,68 +483,6 @@ public:
   share::SCN max_scn_;
   LSN end_lsn_;
 };
-
-#ifdef OB_BUILD_ARBITRATION
-struct LogGetArbMemberInfoReq {
-  OB_UNIS_VERSION(1);
-public:
-  LogGetArbMemberInfoReq();
-  LogGetArbMemberInfoReq(const int64_t palf_id);
-  ~LogGetArbMemberInfoReq();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(palf_id));
-  int64_t palf_id_;
-};
-
-struct ArbMemberInfo {
-  OB_UNIS_VERSION(1);
-public:
-  ArbMemberInfo();
-  ~ArbMemberInfo() { reset(); }
-  bool is_valid() const;
-  void reset();
-  ArbMemberInfo &operator=(const ArbMemberInfo &other)
-  {
-    this->palf_id_ = other.palf_id_;
-    this->arb_server_ = other.arb_server_;
-    this->log_proposal_id_ = other.log_proposal_id_;
-    this->config_version_ = other.config_version_;
-    this->mode_version_ = other.mode_version_;
-    this->access_mode_ = other.access_mode_;
-    this->paxos_member_list_ = other.paxos_member_list_;
-    this->paxos_replica_num_ = other.paxos_replica_num_;
-    this->arbitration_member_ = other.arbitration_member_;
-    this->degraded_list_ = other.degraded_list_;
-    return *this;
-  }
-  TO_STRING_KV(K_(palf_id), K_(arb_server), K_(log_proposal_id), K_(config_version), K_(mode_version),
-      K_(access_mode), K_(paxos_member_list), K_(paxos_replica_num), K_(arbitration_member),
-      K_(degraded_list));
-public:
-  int64_t palf_id_;
-  common::ObAddr arb_server_;
-  int64_t log_proposal_id_;
-  LogConfigVersion config_version_;
-  int64_t mode_version_;
-  AccessMode access_mode_;
-  ObMemberList paxos_member_list_;
-  int64_t paxos_replica_num_;
-  common::ObMember arbitration_member_;
-  common::GlobalLearnerList degraded_list_;
-};
-
-struct LogGetArbMemberInfoResp {
-  OB_UNIS_VERSION(1);
-public:
-  LogGetArbMemberInfoResp();
-  ~LogGetArbMemberInfoResp();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(arb_member_info));
-  ArbMemberInfo arb_member_info_;
-};
-#endif
 
 } // end namespace palf
 } // end namespace oceanbase
