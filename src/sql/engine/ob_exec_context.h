@@ -800,7 +800,7 @@ protected:
   bool force_local_plan_;
   ObDiagnosisManager diagnosis_manager_;
   common::ObArenaAllocator deterministic_udf_cache_allocator_;
-
+  
   // Granule type for current GI task
   ObGranuleType current_granule_type_;
 
