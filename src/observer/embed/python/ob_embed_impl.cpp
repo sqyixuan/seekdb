@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 #define USING_LOG_PREFIX SERVER
-#ifdef __APPLE__
-#include <libkern/OSByteOrder.h>
-// macOS doesn't have be64toh/htobe64, use OSSwapBigToHostInt64/OSSwapHostToBigInt64
-#define be64toh(x) OSSwapBigToHostInt64(x)
-#define htobe64(x) OSSwapHostToBigInt64(x)
-#elif defined(__linux__)
-#include <endian.h>
-#endif
 #include <pybind11/stl.h>
 #include <memory>
 #include "observer/embed/python/ob_embed_impl.h"
@@ -38,7 +30,7 @@
 #include "lib/charset/ob_charset.h"
 
 PYBIND11_MODULE(PYTHON_MODEL_NAME, m) {
-    m.doc() = "OceanBase seekdb";
+    m.doc() = "OceanBase SeekDB";
     char embed_version_str[oceanbase::common::OB_SERVER_VERSION_LENGTH];
     oceanbase::common::VersionUtil::print_version_str(embed_version_str, sizeof(embed_version_str), DATA_CURRENT_VERSION);
     m.attr("__version__") = embed_version_str;
