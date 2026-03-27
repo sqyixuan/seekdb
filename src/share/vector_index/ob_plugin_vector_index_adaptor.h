@@ -675,7 +675,18 @@ public:
   // Query Processor second
   int check_index_id_table_readnext_status(ObVectorQueryAdaptorResultContext *ctx, 
                                            common::ObNewRowIterator *row_iter,
-                                           SCN query_scn);
+                                           SCN query_scn,
+                                           bool is_async_mode = false,
+                                           ObLSID ls_id = ObLSID());
+  // Async mode only: no read_scn parsing, uses complete_index_mem_data_incremental / build_temp_bitmap
+  int check_index_id_table_readnext_status_async(ObVectorQueryAdaptorResultContext *ctx,
+                                                 common::ObNewRowIterator *row_iter,
+                                                 SCN query_scn,
+                                                 ObLSID ls_id);
+  int build_temp_bitmap_from_index_id_table(ObVectorQueryAdaptorResultContext *ctx,
+                                            common::ObNewRowIterator *row_iter,
+                                            SCN query_scn,
+                                            blocksstable::ObDatumRow *first_row);
   // Query Processor third
   int check_snapshot_table_wait_status(ObVectorQueryAdaptorResultContext *ctx);
 
@@ -702,6 +713,9 @@ public:
                               common::ObNewRowIterator *row_iter, 
                               blocksstable::ObDatumRow *last_row, 
                               ObArray<uint64_t> &i_vids);
+  int complete_index_mem_data_incremental(ObVectorQueryAdaptorResultContext *ctx,
+                                         ObLSID ls_id,
+                                         ObArray<uint64_t> &i_vids);
   int prepare_delta_mem_data(roaring::api::roaring64_bitmap_t *gene_bitmap, 
                              ObArray<uint64_t> &i_vids,
                              ObVectorQueryAdaptorResultContext *ctx);
@@ -766,8 +780,8 @@ public:
     need_be_optimized_ = false;   // single thread modify need_be_optimized_
   }
 
-  void vector_embedding_task_finish()
-  {
+  void vector_embedding_task_finish() 
+  { 
     common::ObSpinLockGuard ctx_guard(opt_task_lock_);
     is_in_opt_task_ = false;  // multiple thread modify is_in_opt_task_
   }

@@ -110,12 +110,12 @@ public:
                                               int64_t extra_info_count,
                                               ObVecExtraInfoObj *output_extra_objs,
                                               bool &get_data);
-  static int read_object_from_embedded_table_iter(ObObj *&input_obj,
+  static int read_object_from_embedded_table_iter(ObObj *&input_obj, 
                                                   int32_t data_table_rowkey_count,
-                                                  uint64_t table_id,
-                                                  storage::ObTableScanParam &scan_param,
+                                                  uint64_t table_id, 
+                                                  storage::ObTableScanParam &scan_param, 
                                                   common::ObNewRowIterator *iter,
-                                                  ObIAllocator &allocator,
+                                                  ObIAllocator &allocator, 
                                                   ObObj &output_vec_obj,
                                                   int64_t extra_column_count,
                                                   ObVecExtraInfoObj *output_extra_info_objs,
@@ -149,7 +149,8 @@ public:
                                common::ObNewRowIterator *&scan_iter,
                                ObIArray<uint64_t> *out_column_ids = nullptr,
                                const bool need_all_columns = false,
-                               const bool need_ora_scn = false);
+                               const bool need_ora_scn = false,
+                               const SCN *min_scn = nullptr);
 
   static int erase_ivf_build_helper(ObLSID ls_id, const ObIvfHelperKey &key);
   static int get_mem_context_detail_info(ObPluginVectorIndexService *service,
