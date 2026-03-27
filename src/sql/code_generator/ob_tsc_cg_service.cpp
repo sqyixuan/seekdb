@@ -1070,46 +1070,30 @@ int ObTscCgService::extract_das_access_exprs(const ObLogTableScan &op,
           && !static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column()
           && !static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()) {
         // do nothing.
-      } else if (!cg_.opt_ctx_->is_online_ddl() &&
-                 expr->is_column_ref_expr() &&
-                 (static_cast<ObColumnRefRawExpr *>(expr)->is_vec_cid_column() ||
-                  static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column() ||
-                  static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column())) {
+      } else if (!cg_.opt_ctx_->is_online_ddl() && expr->is_column_ref_expr() && (static_cast<ObColumnRefRawExpr *>(expr)->is_vec_cid_column() || static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column())) {
         share::schema::ObSchemaGetterGuard *schema_guard = cg_.opt_ctx_->get_schema_guard();
         const ObTableSchema *table_schema = nullptr;
-        uint64_t rowkey_id_tid = OB_INVALID_ID;
+        uint64_t rowkey_cid_tid = OB_INVALID_ID;
         if (OB_ISNULL(schema_guard)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get null schema guard", K(ret));
-        } else if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), op.get_ref_table_id(), table_schema))) {
+        } else if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), static_cast<ObColumnRefRawExpr *>(expr)->get_database_name(), static_cast<ObColumnRefRawExpr *>(expr)->get_table_name(), false, table_schema))) {
           LOG_WARN("failed to get table schema", K(ret));
         } else if (OB_ISNULL(table_schema)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("table schema is null", K(ret));
-        } else if (table_schema->is_index_table()) {
           // select from index table do not need to check rowkey cid table.
           if (OB_FAIL(add_var_to_array_no_dup(tmp_access_exprs, expr))) {
             LOG_WARN("failed to add param expr", K(ret));
           }
-        } else if (OB_FAIL(ObVectorIndexUtil::check_rowkey_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_id_tid))) {
+        } else if (OB_FAIL(ObVectorIndexUtil::check_rowkey_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_cid_tid))) {
           LOG_WARN("failed to check_rowkey_cid_table_readable", K(ret));
-        } else if (static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()
-                   && OB_FAIL(ObVectorIndexUtil::check_hybrid_embedded_vec_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_id_tid))) {
-          LOG_WARN("failed to check_embedded_vec_cid_readable", K(ret));
-        } else if (OB_INVALID_ID == rowkey_id_tid) {
+        } else if (OB_INVALID_ID == rowkey_cid_tid) {
         } else {
           const ObIArray<uint64_t> &domain_tids = op.get_rowkey_domain_tids();
           bool need_add = false;
           for (int i = 0; i < domain_tids.count() && !need_add; i++) {
-            if (rowkey_id_tid == domain_tids.at(i)) {
+            if (rowkey_cid_tid == domain_tids.at(i)) {
               need_add = true;
             }
-          }
-          if (op.is_vec_idx_scan() &&
-              scan_ctdef.ir_scan_type_ == OB_VEC_COM_AUX_SCAN &&
-              expr->is_column_ref_expr() &&
-              static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()) {
-            need_add = true;
           }
           if (need_add && OB_FAIL(add_var_to_array_no_dup(tmp_access_exprs, expr))) {
             LOG_WARN("failed to add param expr", K(ret));
@@ -1978,8 +1962,8 @@ int ObTscCgService::generate_vec_aux_idx_tbl_ctdef(const ObLogTableScan &op,
     ObTSCIRScanType second_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_IDX_ID_SCAN : OB_VEC_IVF_CID_VEC_SCAN;
     ObTSCIRScanType third_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_SNAPSHOT_SCAN : OB_VEC_IVF_ROWKEY_CID_SCAN;
     ObTSCIRScanType forth_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_ROWKEY_VID_SCAN : OB_VEC_IVF_SPECIAL_AUX_SCAN;
-    bool need_fifth_table = vc_info.is_hnsw_vec_scan() && vc_info.is_hybrid_index;
-    ObTSCIRScanType fifth_ir_scan_type = OB_VEC_EMBEDDED_SCAN;
+    bool need_fifth_table = vc_info.is_hnsw_vec_scan() && vc_info.is_hybrid_index; 
+    ObTSCIRScanType fifth_ir_scan_type = OB_VEC_EMBEDDED_SCAN; 
     ObVectorAuxTableIdx hybrid_embedded_tbl_idx = op.need_skip_rowkey_vid() ? VEC_FOURTH_AUX_TBL_IDX : VEC_SIXTH_AUX_TBL_IDX;
     if (OB_FAIL(generate_vec_aux_table_ctdef(op, first_ir_scan_type, vc_info.get_aux_table_id(ObVectorAuxTableIdx::VEC_FIRST_AUX_TBL_IDX), first_aux_ctdef,
                                             pushdown_flag, true))) {
@@ -1995,7 +1979,7 @@ int ObTscCgService::generate_vec_aux_idx_tbl_ctdef(const ObLogTableScan &op,
                OB_FAIL(generate_vec_aux_table_ctdef(op, forth_ir_scan_type, vc_info.get_aux_table_id(ObVectorAuxTableIdx::VEC_FOURTH_AUX_TBL_IDX), forth_aux_ctdef,
                                                                                   pushdown_flag, vc_info.is_hnsw_vec_scan()))) {
       LOG_WARN("failed to generate vec aux idx tbl ctdef", K(ret), K(forth_ir_scan_type));
-    } else if (need_fifth_table && OB_FAIL(generate_vec_aux_table_ctdef(op, fifth_ir_scan_type, vc_info.get_aux_table_id(hybrid_embedded_tbl_idx), fifth_aux_ctdef,
+    } else if (need_fifth_table && OB_FAIL(generate_vec_aux_table_ctdef(op, fifth_ir_scan_type, vc_info.get_aux_table_id(hybrid_embedded_tbl_idx), fifth_aux_ctdef, 
                                                     pushdown_flag, true))) {
       LOG_WARN("failed to generate vec aux idx tbl ctdef", K(ret), K(fifth_ir_scan_type));
     }
@@ -3377,7 +3361,7 @@ int ObTscCgService::extract_vector_das_output_column_ids(const ObTableSchema &in
         }
         break;
       }
-      case ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN:
+      case ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN: 
       case ObTSCIRScanType::OB_VEC_COM_AUX_SCAN: {
         if (OB_FAIL(output_cids.push_back(
             static_cast<ObColumnRefRawExpr *>(vec_info.target_vec_column_)->get_column_id()))) {
@@ -4042,7 +4026,7 @@ int ObTscCgService::generate_text_avg_doc_len_est_ctdef(const ObTextRetrievalInf
   const ObColumnSchemaV2 *col_schema = nullptr;
   ObSqlSchemaGuard *schema_guard = cg_.opt_ctx_->get_sql_schema_guard();
   uint64_t column_id = OB_INVALID_ID;
-  // reuse inv idx scan ctdef here, since we only need to access skip index of sum(token_cnt) on basline major sstable
+  // reuse inv idx scan ctdef here, since we only need to access skip index of sum(token_cnt) on basline major sstable 
   const ObDASScanCtDef *inv_idx_scan_ctdef = text_ir_scan_ctdef.get_inv_idx_scan_ctdef();
   if (OB_ISNULL(tr_info.avg_doc_token_cnt_) || OB_ISNULL(tr_info.token_cnt_column_) || OB_ISNULL(inv_idx_scan_ctdef)) {
     ret = OB_ERR_UNEXPECTED;
@@ -4675,7 +4659,6 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
     scan_ctdef->ref_table_id_ = rowkey_domain_id_tid;
     ObDASTableLocMeta *scan_loc_meta =
       OB_NEWx(ObDASTableLocMeta, &cg_.phy_plan_->get_allocator(), cg_.phy_plan_->get_allocator());
-    share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
     if (OB_ISNULL(scan_loc_meta)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate scan location meta failed", K(ret));
@@ -4689,12 +4672,6 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
       LOG_WARN("generate table loc meta failed", K(ret));
     } else if (OB_FAIL(tsc_ctdef.attach_spec_.attach_loc_metas_.push_back(scan_loc_meta))) {
       LOG_WARN("store scan loc meta failed", K(ret));
-    } else if (cur_type == ObDomainIdUtils::ObDomainIDType::EMB_VEC &&
-               OB_FAIL(semantic_index_info.generate(data_schema,
-                                                    rowkey_domain_id_schema,
-                                                    scan_ctdef->result_output_.count(),
-                                                    OB_NOT_NULL(scan_ctdef->trans_info_expr_)))) {
-      LOG_WARN("fail to generate semantic index info", K(ret));
     } else {
       rowkey_domain_scan_ctdef = scan_ctdef;
     }

@@ -21,7 +21,7 @@
 #include "lib/restore/ob_storage_info.h"
 #include "sql/resolver/dcl/ob_dcl_resolver.h"
 #include "share/external_table/ob_external_table_utils.h"
-
+ 
 namespace oceanbase
 {
 namespace sql
@@ -30,11 +30,11 @@ ObCreateLocationResolver::ObCreateLocationResolver(ObResolverParams &params)
   : ObDDLResolver(params)
 {
 }
-
+ 
 ObCreateLocationResolver::~ObCreateLocationResolver()
 {
 }
-
+ 
 int ObCreateLocationResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
@@ -57,9 +57,9 @@ int ObCreateLocationResolver::resolve(const ParseNode &parse_tree)
   } else {
     stmt_ = create_location_stmt;
     create_location_stmt->set_tenant_id(session_info_->get_effective_tenant_id());
-    create_location_stmt->set_user_id(session_info_->get_user_id());
+    create_location_stmt->set_user_id(session_info_->get_user_id());   
   }
-
+ 
   // or replace
   if (OB_FAIL(ret)) {
   } else if (OB_ISNULL(create_location_stmt)) {
@@ -156,9 +156,15 @@ int ObCreateLocationResolver::resolve(const ParseNode &parse_tree)
   }
   // check url and aksk
   // url like: oss://bucket/...?host=xxxx&access_id=xxx&access_key=xxx
+  const bool is_hdfs_type = location_url.prefix_match(OB_HDFS_PREFIX);
+  ObHDFSStorageInfo hdfs_storage_info;
   ObBackupStorageInfo external_storage_info;
   ObObjectStorageInfo *storage_info = nullptr;
-  storage_info = &external_storage_info;
+  if (is_hdfs_type) {
+    storage_info = &hdfs_storage_info;
+  } else {
+    storage_info = &external_storage_info;
+  }
   char storage_info_buf[OB_MAX_BACKUP_STORAGE_INFO_LENGTH] = { 0 };
   ObString uri_cstr = location_url;
   ObString storage_info_cstr = credential_params.string();
@@ -178,3 +184,4 @@ int ObCreateLocationResolver::resolve(const ParseNode &parse_tree)
 }
 } // end namespace sql
 } // end namespace oceanbase
+

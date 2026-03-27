@@ -355,7 +355,6 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"foreign", FOREIGN},
   {"format", FORMAT},
   {"found", FOUND},
-  {"fork", FORK},
   {"fragmentation", FRAGMENTATION},
   {"freeze", FREEZE},
   {"frequency", FREQUENCY},

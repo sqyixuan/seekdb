@@ -7403,7 +7403,7 @@ all_ai_model_def = dict(
       ('tenant_id', 'int'),
       ('model_id', 'int'),
     ],
-
+    
     in_tenant_space = True,
     is_cluster_private = False,
     meta_record_in_sys = False,
@@ -7428,7 +7428,7 @@ all_ai_model_endpoint_def = dict(
       ('endpoint_id', 'int'),
       ('scope', 'varchar:128')
     ],
-
+    
     in_tenant_space = True,
     is_cluster_private = True,
     meta_record_in_sys = False,
