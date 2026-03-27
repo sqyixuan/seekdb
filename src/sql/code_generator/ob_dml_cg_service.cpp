@@ -4128,7 +4128,7 @@ int ObDmlCgService::check_is_main_table_in_fts_ddl(
     if (OB_SUCC(ret)) {
       if ((has_fts_index && (0 == fts_index_aux_count || 0 == fts_doc_word_aux_count)) // fts aux index count is 0
           || is_main_table_in_fts_ddl // some fts index is building
-          || fts_index_aux_count != fts_doc_word_aux_count) { // fts aux index count not match
+          || fts_index_aux_count != fts_doc_word_aux_count) { // fts aux index count not match 
         das_dml_ctdef.is_main_table_in_fts_ddl_ = true;
       } else {
         das_dml_ctdef.is_main_table_in_fts_ddl_ = false;
