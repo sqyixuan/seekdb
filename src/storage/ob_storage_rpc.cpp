@@ -119,7 +119,12 @@ ObCopyMacroBlockHeader::ObCopyMacroBlockHeader()
 {
 }
 
-
+void ObCopyMacroBlockHeader::reset()
+{
+  is_reuse_macro_block_ = false;
+  occupy_size_ = 0;
+  data_type_ = ObCopyMacroBlockDataType::MACRO_DATA;
+}
 
 OB_SERIALIZE_MEMBER(ObCopyMacroBlockHeader, is_reuse_macro_block_, occupy_size_, data_type_);
 
@@ -324,6 +329,74 @@ ObFetchLSMemberListArg::ObFetchLSMemberListArg()
 
 OB_SERIALIZE_MEMBER(ObFetchLSMemberListArg, tenant_id_, ls_id_);
 
+ObCheckRestorePreconditionResult::ObCheckRestorePreconditionResult()
+  : required_disk_size_(0),
+    total_tablet_size_(0),
+    cluster_version_(0)
+{
+}
+
+OB_SERIALIZE_MEMBER(ObCheckRestorePreconditionResult, required_disk_size_, total_tablet_size_, cluster_version_);
+
+ObRestoreCopyTabletInfoArg::ObRestoreCopyTabletInfoArg()
+  : tablet_id_list_()
+{
+}
+
+ObRestoreCopySSTableMacroRangeInfoArg::ObRestoreCopySSTableMacroRangeInfoArg()
+  : tablet_id_(),
+    copy_table_key_array_(),
+    macro_range_max_marco_count_(0)
+{
+}
+
+ObRestoreCopySSTableMacroRangeInfoArg::~ObRestoreCopySSTableMacroRangeInfoArg()
+{
+}
+
+bool ObRestoreCopySSTableMacroRangeInfoArg::is_valid() const
+{
+  return tablet_id_.is_valid()
+      && copy_table_key_array_.count() > 0
+      && macro_range_max_marco_count_ > 0;
+}
+
+int ObRestoreCopySSTableMacroRangeInfoArg::assign(const ObRestoreCopySSTableMacroRangeInfoArg &arg)
+{
+  int ret = OB_SUCCESS;
+  if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("copy sstable macro range info arg is invalid", K(ret), K(arg));
+  } else if (OB_FAIL(copy_table_key_array_.assign(arg.copy_table_key_array_))) {
+    LOG_WARN("failed to assign copy table key array", K(ret), K(arg));
+  } else {
+    tablet_id_ = arg.tablet_id_;
+    macro_range_max_marco_count_ = arg.macro_range_max_marco_count_;
+  }
+  return ret;
+}
+
+ObRestoreCopyMacroBlockRangeArg::ObRestoreCopyMacroBlockRangeArg()
+  : table_key_(),
+    data_version_(0),
+    backfill_tx_scn_(SCN::min_scn()),
+    copy_macro_range_info_(),
+    copy_macro_block_infos_()
+{
+}
+
+bool ObRestoreCopyMacroBlockRangeArg::is_valid() const
+{
+  return table_key_.is_valid()
+      && data_version_ >= 0
+      && backfill_tx_scn_.is_valid()
+      && copy_macro_range_info_.is_valid();
+}
+
+OB_SERIALIZE_MEMBER(ObRestoreCopyTabletInfoArg, tablet_id_list_);
+OB_SERIALIZE_MEMBER(ObRestoreCopySSTableMacroRangeInfoArg, tablet_id_, copy_table_key_array_, macro_range_max_marco_count_);
+OB_SERIALIZE_MEMBER(ObRestoreCopyMacroBlockRangeArg, table_key_, data_version_, backfill_tx_scn_, copy_macro_range_info_, copy_macro_block_infos_);
+
 ObFetchLSMemberListInfo::ObFetchLSMemberListInfo()
   : member_list_()
 {
@@ -411,7 +484,16 @@ ObCopySSTableMacroRangeInfoHeader::~ObCopySSTableMacroRangeInfoHeader()
 {
 }
 
+bool ObCopySSTableMacroRangeInfoHeader::is_valid() const
+{
+  return copy_table_key_.is_valid() && macro_range_count_ >= 0;
+}
 
+void ObCopySSTableMacroRangeInfoHeader::reset()
+{
+  copy_table_key_.reset();
+  macro_range_count_ = 0;
+}
 
 OB_SERIALIZE_MEMBER(ObCopySSTableMacroRangeInfoHeader,
     copy_table_key_, macro_range_count_);
@@ -547,24 +629,6 @@ ObCopyLSViewArg::ObCopyLSViewArg()
 
 OB_SERIALIZE_MEMBER(ObCopyLSViewArg, tenant_id_, ls_id_);
 
-
-ObUpdateTransferMetaInfoArg::ObUpdateTransferMetaInfoArg()
-  : tenant_id_(OB_INVALID_ID),
-    dest_ls_id_(),
-    transfer_meta_info_()
-{
-}
-
-
-bool ObUpdateTransferMetaInfoArg::is_valid() const
-{
-  return OB_INVALID_ID != tenant_id_
-      && dest_ls_id_.is_valid()
-      && transfer_meta_info_.is_valid();
-}
-
-
-OB_SERIALIZE_MEMBER(ObUpdateTransferMetaInfoArg, tenant_id_, dest_ls_id_, transfer_meta_info_);
 
 template <ObRpcPacketCode RPC_CODE>
 ObStorageStreamRpcP<RPC_CODE>::ObStorageStreamRpcP(common::ObInOutBandwidthThrottle *bandwidth_throttle)
