@@ -18,9 +18,6 @@
 
 #include "ob_unit_getter.h"
 #include "share/ob_server_struct.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 
 namespace oceanbase
 {
@@ -196,8 +193,7 @@ int64_t ObUnitInfoGetter::ObTenantConfig::gen_init_actual_data_disk_size(
 }
 
 ObUnitInfoGetter::ObUnitInfoGetter()
-  : inited_(false),
-    ut_operator_()
+  : inited_(false)
 {
 }
 
@@ -211,8 +207,6 @@ int ObUnitInfoGetter::init(ObMySQLProxy &proxy, common::ObServerConfig *config)
   if (inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret));
-  } else if (OB_FAIL(ut_operator_.init(proxy))) {
-    LOG_WARN("init unit table operator failed", K(ret));
   } else {
     inited_ = true;
   }
@@ -222,8 +216,8 @@ int ObUnitInfoGetter::init(ObMySQLProxy &proxy, common::ObServerConfig *config)
 int ObUnitInfoGetter::get_tenants(common::ObIArray<uint64_t> &tenants)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ut_operator_.get_tenants(tenants))) {
-    LOG_WARN("ut_operator get_resource_pools failed", K(ret));
+  if (OB_FAIL(tenants.push_back(OB_SYS_TENANT_ID))) {
+    LOG_WARN("fail to push back sys tenant id", K(ret));
   }
   return ret;
 }
@@ -357,11 +351,11 @@ int ObUnitInfoGetter::get_tenant_server_configs(const uint64_t tenant_id,
   } else if (OB_INVALID_ID == tenant_id) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tenant_id", K(tenant_id), K(ret));
+  } else if (OB_SYS_TENANT_ID != tenant_id) {
+    // don't need to set ret, just return empty result
+    LOG_DEBUG("tenant doesn't own any pool", K(tenant_id));
   } else if (OB_FAIL(get_pools_of_tenant(tenant_id, pools))) {
     LOG_WARN("get_pools_of_tenant failed", K(tenant_id), K(ret));
-  } else if (pools.count() <= 0) {
-    // don't need to set ret, just return empty result
-    LOG_DEBUG("tenant doesn't own any pool, maybe tenant has been deleted", K(tenant_id));
   } else if (OB_FAIL(get_units_of_pools(pools, units))) {
     LOG_WARN("get_units_of_pools failed", K(pools), K(ret));
   } else if (OB_FAIL(get_configs_of_pools(pools, configs))) {
@@ -405,11 +399,11 @@ int ObUnitInfoGetter::get_tenant_servers(const uint64_t tenant_id,
   } else if (OB_INVALID_ID == tenant_id) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid tenant_id", K(tenant_id), K(ret));
+  } else if (OB_SYS_TENANT_ID != tenant_id) {
+    // don't need to set ret, just return empty result
+    LOG_WARN("tenant doesn't own any pool", K(tenant_id));
   } else if (OB_FAIL(get_pools_of_tenant(tenant_id, pools))) {
     LOG_WARN("get_pools_of_tenant failed", K(tenant_id), K(ret));
-  } else if (pools.count() <= 0) {
-    // don't need to set ret, just return empty result
-    LOG_WARN("tenant doesn't own any pool, maybe tenant has been deleted", K(tenant_id));
   } else if (OB_FAIL(get_units_of_pools(pools, units))) {
     LOG_WARN("get_units_of_pools failed", K(pools), K(ret));
   } else {
@@ -472,8 +466,8 @@ int ObUnitInfoGetter::get_sys_unit_count(int64_t &sys_unit_cnt)
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(ut_operator_.get_sys_unit_count(sys_unit_cnt))) {
-    LOG_WARN("ut_operator get sys unit count failed", KR(ret));
+  } else {
+    sys_unit_cnt = 1;
   }
   return ret;
 }
@@ -483,14 +477,17 @@ int ObUnitInfoGetter::get_units_of_server(const ObAddr &server,
 {
   int ret = OB_SUCCESS;
   units.reuse();
+  ObUnit unit;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else if (!server.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid server", K(server), K(ret));
-  } else if (OB_FAIL(ut_operator_.get_units(server, units))) {
-    LOG_WARN("ut_operator get_units failed", K(server), K(ret));
+  } else if (OB_FAIL(ObShareUtil::gen_sys_unit(unit))) {
+    LOG_WARN("fail to generate sys unit", KR(ret));
+  } else if (OB_FAIL(units.push_back(unit))) {
+    LOG_WARN("fail to push back unit", KR(ret), K(unit));
   }
   return ret;
 }
@@ -500,37 +497,17 @@ int ObUnitInfoGetter::get_pools_of_units(const ObIArray<ObUnit> &units,
 {
   int ret = OB_SUCCESS;
   pools.reuse();
-  ObArray<uint64_t> pool_ids;
+  ObResourcePool resource_pool;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else if (units.count() <= 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("units is empty", K(units), K(ret));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < units.count(); ++i) {
-      int64_t j = 0;
-      for ( ; j < pool_ids.count(); ++j) {
-        if (pool_ids.at(j) == units.at(i).resource_pool_id_) {
-          break;
-        }
-      }
-      if (j == pool_ids.count()) {
-        // not exist in pool_ids, push_back
-        if (OB_FAIL(pool_ids.push_back(units.at(i).resource_pool_id_))) {
-          LOG_WARN("push_back failed", K(ret));
-        }
-      }
-    }
-
-    if (OB_SUCC(ret)) {
-      if (pool_ids.count() <= 0) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("pool_ids is empty", K(pool_ids), K(ret));
-      } else if (OB_FAIL(ut_operator_.get_resource_pools(pool_ids, pools))) {
-        LOG_WARN("ut_operator get_resource_pools failed", K(pool_ids), K(ret));
-      }
-    }
+  } else if (OB_FAIL(ObShareUtil::gen_sys_resource_pool(resource_pool))) {
+    LOG_WARN("fail to generate sys resource pool", KR(ret));
+  } else if (OB_FAIL(pools.push_back(resource_pool))) {
+    LOG_WARN("fail to push back resource pool", KR(ret), K(resource_pool));
   }
   return ret;
 }
@@ -539,38 +516,21 @@ int ObUnitInfoGetter::get_configs_of_pools(const ObIArray<ObResourcePool> &pools
                                            ObIArray<ObUnitConfig> &configs)
 {
   int ret = OB_SUCCESS;
+  ObUnitConfig unit_config;
   configs.reuse();
-  ObArray<uint64_t> unit_config_ids;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else if (pools.count() <= 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("pools is empty", K(pools), K(ret));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < pools.count(); ++i) {
-      int64_t j = 0;
-      for ( ; j < unit_config_ids.count(); ++j) {
-        if (unit_config_ids.at(j) == pools.at(i).unit_config_id_) {
-          break;
-        }
-      }
-      if (j == unit_config_ids.count()) {
-        // not exist in unit_config_ids, push_back
-        if (OB_FAIL(unit_config_ids.push_back(pools.at(i).unit_config_id_))) {
-          LOG_WARN("push_back failed", K(ret));
-        }
-      }
-    }
-
-    if (OB_SUCC(ret)) {
-      if (unit_config_ids.count() <= 0) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unit_config_ids is empty", K(unit_config_ids), K(ret));
-      } else if (OB_FAIL(ut_operator_.get_unit_configs(unit_config_ids, configs))) {
-        LOG_WARN("ut_operator_ get_unit_configs failed", K(unit_config_ids), K(ret));
-      }
-    }
+  } else if (OB_ISNULL(GCTX.log_block_mgr_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(GCTX.log_block_mgr_));
+  } else if (OB_FAIL(unit_config.gen_sys_tenant_unit_config(false/*is_hidden_sys*/, GCTX.log_block_mgr_->get_log_disk_size()))) {
+    LOG_WARN("gen sys tenant unit config fail", KR(ret));
+  } else if (OB_FAIL(configs.push_back(unit_config))) {
+    LOG_WARN("fail to push back sys unit config", KR(ret), K(unit_config));
   }
   return ret;
 }
@@ -580,14 +540,17 @@ int ObUnitInfoGetter::get_pools_of_tenant(const uint64_t tenant_id,
 {
   int ret = OB_SUCCESS;
   pools.reuse();
+  ObResourcePool resource_pool;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else if (OB_INVALID_ID == tenant_id) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(tenant_id), K(ret));
-  } else if (OB_FAIL(ut_operator_.get_resource_pools(tenant_id, pools))) {
-    LOG_WARN("ut_operator get_resource_pools failed", K(tenant_id), K(ret));
+  } else if (OB_FAIL(ObShareUtil::gen_sys_resource_pool(resource_pool))) {
+    LOG_WARN("fail to generate sys resource pool", KR(ret));
+  } else if (OB_FAIL(pools.push_back(resource_pool))) {
+    LOG_WARN("fail to push back resource pool", KR(ret), K(resource_pool));
   }
   return ret;
 }
@@ -596,29 +559,18 @@ int ObUnitInfoGetter::get_units_of_pools(const ObIArray<ObResourcePool> &pools,
                                          ObIArray<ObUnit> &units)
 {
   int ret = OB_SUCCESS;
-  ObArray<uint64_t> pool_ids;
   units.reuse();
+  ObUnit unit;
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else if (pools.count() <= 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("pools is empty", K(pools), K(ret));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < pools.count(); ++i) {
-      if (OB_FAIL(pool_ids.push_back(pools.at(i).resource_pool_id_))) {
-        LOG_WARN("push_back failed", K(ret));
-      }
-    }
-
-    if (OB_SUCC(ret)) {
-      if (pool_ids.count() <= 0) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("pool_ids is empty", K(pool_ids), K(ret));
-      } else if (OB_FAIL(ut_operator_.get_units(pool_ids, units))) {
-        LOG_WARN("get_units failed", K(pool_ids), K(ret));
-      }
-    }
+  } else if (OB_FAIL(ObShareUtil::gen_sys_unit(unit))) {
+    LOG_WARN("fail to generate sys unit", KR(ret));
+  } else if (OB_FAIL(units.push_back(unit))) {
+    LOG_WARN("fail to push back unit", KR(ret), K(unit));
   }
   return ret;
 }
