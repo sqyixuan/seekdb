@@ -26,6 +26,9 @@
 #include "sql/resolver/expr/ob_shared_expr_resolver.h"
 #include <orc/Common.hh>
 #include "parquet/schema.h"
+#ifdef OB_BUILD_CPP_ODPS
+#include "sql/engine/table/ob_odps_table_row_iter.h"
+#endif
 namespace oceanbase
 {
 namespace sql
@@ -508,7 +511,6 @@ protected:
                          TableItem &table_item);
   int resolve_sample_clause(const ParseNode *part_node,
                             TableItem &table_item);
-  int generate_ddl_sample_info_if_needed(TableItem &table_item);
 
 protected:
   int check_basic_column_generated(const ObColumnRefRawExpr *col_expr,
@@ -909,6 +911,13 @@ private:
 public:
   static int resolve_direct_load_hint(const ParseNode &hint_node, ObDirectLoadHint &hint);
   //////////end of functions for sql hint/////////////
+#ifdef OB_BUILD_CPP_ODPS
+  static int build_column_schemas_for_odps(const common::ObIArray<oceanbase::sql::ObODPSTableRowIterator::OdpsColumn> &column_list,
+                                           const common::ObIArray<ObString> &part_col_names,
+                                           ObTableSchema& table_schema);
+  static int set_partition_info_for_odps(ObTableSchema &table_schema,
+                                         const common::ObIArray<ObString> &part_col_names);
+#endif
 
 private:
   int resolve_table_check_constraint_items(const TableItem *table_item,
@@ -980,9 +989,7 @@ private:
                                       common::ObIAllocator &allocator);
   int set_basic_info_for_mocked_table(ObTableSchema &table_schema,
                                       common::ObString table_location,
-                                      const ObExternalFileFormat &format,
-                                      common::ObString sub_path = "",
-                                      bool using_location_object = false);
+                                      const ObExternalFileFormat &format);
   int sample_external_file_name(common::ObIAllocator &allocator,
                                 ObTableSchema &table_schema,
                                 common::ObString &sampled_file_name);
