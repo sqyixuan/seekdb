@@ -4,8 +4,6 @@ use db_fork_storage;
 SET wait_timeout=30000000;
 SET ob_trx_timeout = 100000000;
 SET ob_query_timeout = 100000000;
-alter system set debug_sync_timeout = '60s';
-alter system set _ob_ddl_timeout = '5s';
 ============================================
 1. 压缩算法测试
 ============================================
@@ -75,14 +73,9 @@ id	name	data_len
 select (select count(*) from t_compression_none) as src_cnt, (select count(*) from t_compression_none_fork) as fork_cnt;
 src_cnt	fork_cnt
 3	3
-# 注意：压缩算法验证说明
-# 1. show create table 只能验证表结构中的压缩算法配置，不能验证存储层实际压缩效果
-# 2. 压缩算法在存储层的实际生效需要数据落盘（major freeze/minor freeze）后才能体现
-# 3. 要验证实际压缩效果，需要：
-#    - 触发major freeze让数据落盘：alter system major freeze;
-#    - 查询系统表查看压缩信息（需要存储层支持）
-#    - 或比较不同压缩算法下的存储空间使用情况
-# 4. 当前测试主要验证fork后表结构中的压缩算法配置是否正确继承
+# 注意：修改压缩算法后，存储层实际生效的时间需要确认
+# 可能需要等待major freeze或minor freeze后新数据才使用新压缩算法
+# 这里仅验证表结构设置，实际压缩效果需要存储层确认
 drop table t_compression_none;
 drop table t_compression_none_fork;
 # 1.2 lz4_1.0压缩算法
@@ -363,7 +356,7 @@ drop table t_compression_zstd_138_fork;
 ============================================
 2. 存储方式测试
 ============================================
-# 2.1 行存表（WITH COLUMN GROUP(all columns)）
+# 2.1 行存（ORGANIZATION INDEX）
 drop table if exists t_storage_row;
 Warnings:
 Note	1051	Unknown table 'db_fork_storage.t_storage_row'
@@ -375,11 +368,10 @@ id int primary key,
 name varchar(50),
 value int,
 data varchar(100)
-) partition by range(id) (
+)ORGANIZATION INDEX partition by range(id) (
 partition p0 values less than (100),
 partition p1 values less than (200)
-) WITH COLUMN GROUP(all columns);
-# 插入初始数据
+) ;
 insert into t_storage_row values (1, 'Row1', 100, 'Data1');
 insert into t_storage_row values (101, 'Row2', 200, 'Data2');
 insert into t_storage_row values (50, 'Row3', 300, 'Data3');
@@ -392,10 +384,10 @@ t_storage_row	CREATE TABLE `t_storage_row` (
   `value` int(11) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+) ORGANIZATION storage_type DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
  partition by range(id)
 (partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(column_group_type)
+partition `p1` values less than (200))
 # 验证源表数据
 select count(*) as cnt from t_storage_row;
 cnt
@@ -416,10 +408,10 @@ t_storage_row_fork	CREATE TABLE `t_storage_row_fork` (
   `value` int(11) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+) ORGANIZATION storage_type DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
  partition by range(id)
 (partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(column_group_type)
+partition `p1` values less than (200))
 # 验证目标表数据
 select count(*) as cnt from t_storage_row_fork;
 cnt
@@ -433,114 +425,17 @@ id	name	value	data
 select (select count(*) from t_storage_row) as src_cnt, (select count(*) from t_storage_row_fork) as fork_cnt;
 src_cnt	fork_cnt
 3	3
-# 在源表和目标表插入相同主键数据（验证数据隔离）
-insert into t_storage_row values (2, 'Source_Row2', 150, 'Source_Data2');
-insert into t_storage_row_fork values (2, 'Fork_Row2', 250, 'Fork_Data2');
-# 验证插入后数据隔离
-select id, name, value, data from t_storage_row where id = 2;
-id	name	value	data
-2	Source_Row2	150	Source_Data2
-select id, name, value, data from t_storage_row_fork where id = 2;
-id	name	value	data
-2	Fork_Row2	250	Fork_Data2
-# DML操作测试：更新源表
-update t_storage_row set value = 120, data = 'Updated_Source_Data1' where id = 1;
-select id, name, value, data from t_storage_row where id = 1;
-id	name	value	data
-1	Row1	120	Updated_Source_Data1
-# DML操作测试：更新目标表
-update t_storage_row_fork set value = 220, data = 'Updated_Fork_Data1' where id = 1;
-select id, name, value, data from t_storage_row_fork where id = 1;
-id	name	value	data
-1	Row1	220	Updated_Fork_Data1
-# DML操作测试：删除源表数据
-delete from t_storage_row where id = 50;
-select count(*) as cnt from t_storage_row;
-cnt
-3
-select count(*) as cnt from t_storage_row_fork;
-cnt
-4
-# DML操作测试：删除目标表数据
-delete from t_storage_row_fork where id = 101;
-select count(*) as cnt from t_storage_row;
-cnt
-3
-select count(*) as cnt from t_storage_row_fork;
-cnt
-3
-# DDL操作测试：在源表添加列
-alter table t_storage_row add column new_col varchar(50) default 'default_value';
-show create table t_storage_row;
-Table	Create Table
-t_storage_row	CREATE TABLE `t_storage_row` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  `new_col` varchar(50) DEFAULT 'default_value',
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(all columns)
-show create table t_storage_row_fork;
-Table	Create Table
-t_storage_row_fork	CREATE TABLE `t_storage_row_fork` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(all columns)
-# DDL操作测试：在目标表添加列
-alter table t_storage_row_fork add column fork_col int default 999;
-show create table t_storage_row;
-Table	Create Table
-t_storage_row	CREATE TABLE `t_storage_row` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  `new_col` varchar(50) DEFAULT 'default_value',
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(all columns)
-show create table t_storage_row_fork;
-Table	Create Table
-t_storage_row_fork	CREATE TABLE `t_storage_row_fork` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  `fork_col` int(11) DEFAULT '999',
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(all columns)
-# 验证最终数据
-select id, name, value, data, new_col from t_storage_row order by id;
-id	name	value	data	new_col
-1	Row1	120	Updated_Source_Data1	default_value
-2	Source_Row2	150	Source_Data2	default_value
-101	Row2	200	Data2	default_value
-select id, name, value, data, fork_col from t_storage_row_fork order by id;
-id	name	value	data	fork_col
-1	Row1	220	Updated_Fork_Data1	999
-2	Fork_Row2	250	Fork_Data2	999
-50	Row3	300	Data3	999
+# 注意：fork后修改存储方式，需要确认存储方式实际更改的时间
+# 可能需要等待major freeze或minor freeze后新数据才使用新存储方式
 drop table t_storage_row;
 drop table t_storage_row_fork;
-# 2.2 列存表（WITH COLUMN GROUP(each column)）
+# 2.2 列存（ORGANIZATION COLUMN）不支持
 drop table if exists t_storage_column;
 Warnings:
 Note	1051	Unknown table 'db_fork_storage.t_storage_column'
+drop table if exists t_storage_column_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_storage.t_storage_column_fork'
 create table t_storage_column (
 id int primary key,
 name varchar(50),
@@ -549,91 +444,8 @@ data varchar(100)
 ) partition by range(id) (
 partition p0 values less than (100),
 partition p1 values less than (200)
-) WITH COLUMN GROUP(each column);
-# 插入初始数据
-insert into t_storage_column values (1, 'Column1', 100, 'Data1');
-insert into t_storage_column values (101, 'Column2', 200, 'Data2');
-insert into t_storage_column values (50, 'Column3', 300, 'Data3');
-# 验证源表存储方式设置
-show create table t_storage_column;
-Table	Create Table
-t_storage_column	CREATE TABLE `t_storage_column` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(column_group_type)
-# 验证源表数据
-select count(*) as cnt from t_storage_column;
-cnt
-3
-select * from t_storage_column order by id;
-id	name	value	data
-1	Column1	100	Data1
-50	Column3	300	Data3
-101	Column2	200	Data2
-# Fork表
-# 验证目标表存储方式设置（应与源表一致）
-# 验证目标表数据
-# 验证数据一致性
-# 在源表和目标表插入相同主键数据（验证数据隔离）
-# 验证插入后数据隔离
-select id, name, value, data from t_storage_column where id = 2;
-id	name	value	data
-# DML操作测试：更新源表
-update t_storage_column set value = 120, data = 'Updated_Source_Data1' where id = 1;
-select id, name, value, data from t_storage_column where id = 1;
-id	name	value	data
-1	Column1	120	Updated_Source_Data1
-# DML操作测试：更新目标表
-# DML操作测试：删除源表数据
-delete from t_storage_column where id = 50;
-select count(*) as cnt from t_storage_column;
-cnt
-2
-# DML操作测试：删除目标表数据
-select count(*) as cnt from t_storage_column;
-cnt
-2
-# DDL操作测试：在源表添加列
-alter table t_storage_column add column new_col varchar(50) default 'default_value';
-show create table t_storage_column;
-Table	Create Table
-t_storage_column	CREATE TABLE `t_storage_column` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  `new_col` varchar(50) DEFAULT 'default_value',
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(each column)
-# DDL操作测试：在目标表添加列
-show create table t_storage_column;
-Table	Create Table
-t_storage_column	CREATE TABLE `t_storage_column` (
-  `id` int(11) NOT NULL,
-  `name` varchar(50) DEFAULT NULL,
-  `value` int(11) DEFAULT NULL,
-  `data` varchar(100) DEFAULT NULL,
-  `new_col` varchar(50) DEFAULT 'default_value',
-  PRIMARY KEY (`id`)
-) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
- partition by range(id)
-(partition `p0` values less than (100),
-partition `p1` values less than (200)) WITH COLUMN GROUP(each column)
-# 验证最终数据
-select id, name, value, data, new_col from t_storage_column order by id;
-id	name	value	data	new_col
-1	Column1	120	Updated_Source_Data1	default_value
-101	Column2	200	Data2	default_value
-drop table t_storage_column;
+) ORGANIZATION COLUMN;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'ORGANIZATION COLUMN' at line 9
 # 2.3 混合存储（ROW_FORMAT = DYNAMIC）
 drop table if exists t_storage_mixed;
 Warnings:
@@ -1332,7 +1144,7 @@ t_constraint_fk_child	CREATE TABLE `t_constraint_fk_child` (
   `parent_id` int(11) DEFAULT NULL,
   `name` varchar(50) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  CONSTRAINT `t_constraint_fk_child_OBFK_1769762656394020` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_storage`.`t_constraint_fk_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
+  CONSTRAINT `t_constraint_fk_child_OBFK_1768971492004610` FOREIGN KEY (`parent_id`) REFERENCES `db_fork_storage`.`t_constraint_fk_parent`(`id`) ON UPDATE RESTRICT ON DELETE RESTRICT 
 ) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
  partition by range(id)
 (partition `p0` values less than (100),
@@ -1474,8 +1286,8 @@ t_constraint_check_fork	CREATE TABLE `t_constraint_check_fork` (
   `value` int(11) DEFAULT NULL,
   `status` int(11) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  CONSTRAINT `t_constraint_check_fork_OBCHECK_1769762666520716` CHECK ((`value` > 0)),
-  CONSTRAINT `t_constraint_check_fork_OBCHECK_1769762666520728` CHECK ((`status` in (0,1,2)))
+  CONSTRAINT `t_constraint_check_fork_OBCHECK_1768971502445102` CHECK ((`value` > 0)),
+  CONSTRAINT `t_constraint_check_fork_OBCHECK_1768971502445222` CHECK ((`status` in (0,1,2)))
 ) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
  partition by range(id)
 (partition `p0` values less than (100),

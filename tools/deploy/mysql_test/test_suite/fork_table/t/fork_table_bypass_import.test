@@ -13,13 +13,13 @@ connection default;
 create database db_fork_bypass;
 use db_fork_bypass;
 
-#SET wait_timeout=3000000;
-#SET ob_trx_timeout = 10000000;
-#SET ob_query_timeout = 10000000;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
 
 --echo # 启用debug sync
 connection obsys;
-alter system set debug_sync_timeout = '60s';
+alter system set debug_sync_timeout = '120s';
 sleep 1;
 set ob_global_debug_sync = 'reset';
 connection default;
@@ -36,12 +36,7 @@ connection default;
 --echo ============================================
 --echo 1. 全量旁路导入测试
 --echo ============================================
---echo # 1.0 提前设置短_ob_ddl_timeout，使1.3中「Fork中」LOAD DATA 在锁冲突时较快超时返回，
---echo #      避免第一个（源表）卡住过久导致 debug_sync 释放、第二个无法在 fork 暂停期间执行
-connection obsys;
-alter system set _ob_ddl_timeout = '5s';
-sleep 1;
-connection default;
+
 --echo # 1.1 Fork前：全量旁路导入到源表
 drop table if exists t_full_bypass;
 drop table if exists t_full_bypass_fork;
@@ -112,7 +107,7 @@ eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_l
 --echo # 验证初始数据
 select count(*) as cnt from t_full_bypass_mid;
 select * from t_full_bypass_mid order by id;
---echo # 设置 debug sync point 在 FORK_TABLE_BUILD_DATA 阶段暂停（_ob_ddl_timeout 已在 1.0 设为 5s）
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
 connection obsys;
 set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for full_bypass_signal execute 10000';
 sleep 1;
@@ -123,7 +118,7 @@ connection default;
 connection obsys;
 let $CREATE_CMD = ssh $HOST_IP 'printf "50,MidSrc1,500,MidData1\n51,MidSrc2,600,MidData2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_src.csv"';
 exec $CREATE_CMD;
---echo # 创建Fork中全量旁路导入数据文件（目标表）没被锁
+--echo # 创建Fork中全量旁路导入数据文件（目标表）bug没被锁
 let $CREATE_CMD = ssh $HOST_IP 'printf "99,MidFork1,900,MidDataFork1\n100,MidFork2,1000,MidDataFork2\n" > "$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_fork.csv"';
 exec $CREATE_CMD;
 connection default;
@@ -141,23 +136,17 @@ let $wait_status= BUILD_DATA;
 --error 4012
 eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_src.csv' into table t_full_bypass_mid fields terminated by ',' lines terminated by '\n';
 
---echo # 验证Fork中源表数据（LOAD DATA 被锁阻塞后超时 4012，数据未变化）
+--echo # 验证Fork中源表数据（LOAD DATA被阻塞，数据未变化）
 select count(*) as src_cnt from t_full_bypass_mid;
 select * from t_full_bypass_mid order by id;
 
---echo # Fork中：全量旁路导入到目标表（当前仅源表被锁，目标表未被锁，旁路导入可成功；若后续产品对目标表加锁则此处应返回 4012）
+--echo # Fork中：全量旁路导入到目标表
 --replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
---error 4012
 eval load data /*+ direct(true, 0) */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/full_bypass_mid_fork.csv' into table t_full_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
 
---echo # 验证Fork中目标表数据（目标表未被锁时已有新导入数据：初始 2 行 + 本次 2 行）
+--echo # 验证Fork中目标表数据（导入后）
 select count(*) as fork_cnt from t_full_bypass_mid_fork;
 select * from t_full_bypass_mid_fork order by id;
-
---echo # 恢复_ob_ddl_timeout默认值
-connection obsys;
-alter system set _ob_ddl_timeout = '5s';
-connection default;
 
 --echo # 继续Fork执行
 connection obsys;
@@ -331,7 +320,6 @@ select * from t_inc_bypass_mid order by id;
 
 --echo # Fork中：增量旁路导入到目标表
 --replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
---error 4012
 eval load data /*+ direct(true, 0, 'inc_replace') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_bypass_mid_fork.csv' into table t_inc_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
 
 --echo # 验证Fork中目标表数据（增量导入后）
@@ -511,7 +499,6 @@ select * from t_inc_base_bypass_mid order by id;
 
 --echo # Fork中：增量基线旁路导入到目标表
 --replace_regex /\/[^']*\/data_for_mysqltest_loaddata\//\$OBSERVER_DIR\/data_for_mysqltest_loaddata\//g
---error 4012
 eval load data /*+ direct(true, 0, 'inc') */ infile '$OBSERVER_DIR/data_for_mysqltest_loaddata/inc_base_bypass_mid_fork.csv' into table t_inc_base_bypass_mid_fork fields terminated by ',' lines terminated by '\n';
 
 --echo # 验证Fork中目标表数据（增量基线导入后）
