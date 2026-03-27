@@ -37,7 +37,7 @@ Of course, developers may also perform module-level or multi-module integration 
 
 ## 2.2 Copyright Information
 
-Currently (as of Nov. 2025), all source code files in seekdb must include the following copyright information in the file header:
+Currently (as of Nov. 2025), all source code files in Observer must include the following copyright information in the file header:
 
 ```cpp
 /*
@@ -430,7 +430,7 @@ According to the current code style of OceanBase seekdb, we will define static v
 
 Simply move the definition of several static variables from the header file to the cpp file, and change the header file to extern definition, the effect is quite obvious:
 binary size: 2.6G->2.4G, reduce 200M.
-seekdb initial running memory: 6.3G->5.9G, reduced by 400M.
+Observer initial running memory: 6.3G->5.9G, reduced by 400M.
 
 **Case 2**
 In the example below, different cpps see different copies of global variables. It was originally expected to communicate through global static, but it turned out to be different. This will also result in a "false" singleton implementation.
@@ -2443,8 +2443,8 @@ In version 0.5, there is a problem that the print log format is not uniform and 
 
 | Log Level | User | Level Definition |
 | --------- | ---- | -------- |
-| ERROR     | DBA  | Any unexpected, unrecoverable error requiring human intervention. The seekdb cannot provide normal service exceptions, such as the disk is full and the listening port is occupied. It can also be some internal inspection errors after our productization, such as our 4377 (dml defensive check error), 4103 (data checksum error), etc., which require DBA intervention to restore |
-| WARN      | DBA  | In an unexpected scenario, the seekdb can provide services, but the behavior may not meet expectations, such as our write current limit |
+| ERROR     | DBA  | Any unexpected, unrecoverable error requiring human intervention. The observer cannot provide normal service exceptions, such as the disk is full and the listening port is occupied. It can also be some internal inspection errors after our productization, such as our 4377 (dml defensive check error), 4103 (data checksum error), etc., which require DBA intervention to restore |
+| WARN      | DBA  | In an unexpected scenario, the observer can provide services, but the behavior may not meet expectations, such as our write current limit |
 | INFO      | DBA  | (Startup default level). A small amount of flagged information about system state changes. For example, a user, a table is added, the system enters daily merge, partition migration, etc. |
 | EDIAG     | RD   | Error Diagnosis, diagnostic information to assist in troubleshooting, unexpected logical errors, such as function parameters that do not meet expectations, etc., usually OceanBase program BUG |
 | WDIAG     | RD   | Warning Diagnosis, diagnostic information to assist in troubleshooting, expected errors, such as function return failure |
@@ -2465,7 +2465,7 @@ It should be noted that DEBUG logs are often used for integration testing or onl
 
 The definition of sub-modules under each module will be further refined by each group. The definitions of modules and submodules are placed in the file ob_log_module.h.
 ## 11.3 Setting of Print Range
-Version 1.0 supports users to set the printing level separately by statement, session and global (system) scope. The priority of reference in the system is
+Version 1.0 supports users to set the printing level separately by statement, session and global (system) scope. The priority of reference in the system is 
 1. statement
 2. session
 3. For system global (or server), only when the previous item is not set or the setting is invalid, the system will refer to the subsequent level settings.
@@ -2510,7 +2510,7 @@ User settings do not guarantee atomicity: for example, when there are multiple s
 ## 11.4 Unification of Log Format
 Version 1.0 uses the "key=value" format to print logs uniformly. The log module uniformly provides an interface similar to the following:
 ```cpp
-OB_MOD_LOG(mod,submod, level, "info_string", var1_name, var1, var2, 2.3, current_range,
+OB_MOD_LOG(mod,submod, level, "info_string", var1_name, var1, var2, 2.3, current_range, 
     range, ...);
 ```
 The corresponding print information is

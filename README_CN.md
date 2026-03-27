@@ -119,11 +119,9 @@ pip install -U pyseekdb
 docker run -d \
   --name seekdb \
   -p 2881:2881 \
-  -p 2886:2886 \
-  -v ./data:/var/lib/oceanbase \
+  -v ./data:/var/lib/oceanbase/store \
   oceanbase/seekdb:latest
 ```
-请参考此 docker 镜像的[文档](https://github.com/oceanbase/docker-images/blob/main/seekdb/README_CN.md)获取详细信息。
 
 </details>
 
@@ -412,8 +410,6 @@ seekdb 继承了 OceanBase 单机存储引擎、执行引擎、事务引擎、�
 ## 🛠️ 开发
 
 ### 从源码构建
-
-在构建之前，请先根据你的操作系统安装所需的工具链和依赖。详见 [安装工具链](docs/developer-guide/zh/toolchain.md)。
 
 ```bash
 # Clone the repository
