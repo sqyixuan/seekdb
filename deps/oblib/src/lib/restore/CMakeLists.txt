@@ -1,3 +1,4 @@
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
 oblib_add_library(restore OBJECT
   ob_i_storage.h
   ob_i_storage.cpp
@@ -28,7 +29,7 @@ target_link_libraries(s3
   libaws-c-auth.a
   libaws-c-http.a
   libaws-c-io.a
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:libs2n.a>
+  libs2n.a
   libaws-c-compression.a
   libaws-c-cal.a
   libaws-c-sdkutils.a
