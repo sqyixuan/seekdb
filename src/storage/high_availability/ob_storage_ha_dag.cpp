@@ -345,6 +345,7 @@ int ObStorageHADagUtils::deal_with_fo(
   return ret;
 }
 
+//TODO(xingzhi): remove input parameter ls_id
 int ObStorageHADagUtils::get_ls(const share::ObLSID &ls_id, ObLSHandle &ls_handle)
 {
   int ret = OB_SUCCESS;
