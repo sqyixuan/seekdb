@@ -17,8 +17,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_sub_coord.h"
-#include <algorithm>
-#include <random>
 #include "sql/engine/px/exchange/ob_px_receive_op.h"
 #include "sql/engine/px/exchange/ob_px_transmit_op.h"
 #include "sql/engine/join/ob_join_filter_op.h"
@@ -426,13 +424,7 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
           for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_ctx.interm_result_infos_.count(); ++j) {
             if (sqc.get_exec_addr() == temp_table_ctx.interm_result_infos_.at(j).addr_) {
               ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(j);
-#ifdef __APPLE__
-                std::random_device rd;
-                std::mt19937 g(rd());
-                std::shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end(), g);
-#else
-                std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
-#endif
+              std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
               if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
                 LOG_WARN("failed to assign result ids", K(ret));
               } else {
@@ -473,13 +465,7 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
           for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_ctx.interm_result_infos_.count(); ++j) {
             if (sqc.get_exec_addr() == temp_table_ctx.interm_result_infos_.at(j).addr_) {
               ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(j);
-#ifdef __APPLE__
-                std::random_device rd;
-                std::mt19937 g(rd());
-                std::shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end(), g);
-#else
-                std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
-#endif
+              std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
               if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
                 LOG_WARN("failed to assign result ids", K(ret));
               } else {
