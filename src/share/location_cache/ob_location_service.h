@@ -255,10 +255,6 @@ private:
   };
   RenewType gen_renew_type_(const int error) const;
 
-  static int construct_check_ls_exist_sql_(
-      const uint64_t tenant_id,
-      const ObLSID &ls_id,
-      ObSqlString &sql);
 private:
   bool inited_;
   bool stopped_;

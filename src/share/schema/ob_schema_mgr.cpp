@@ -65,18 +65,10 @@ ObSimpleTenantSchema &ObSimpleTenantSchema::operator =(const ObSimpleTenantSchem
     read_only_ = other.read_only_;
     compatibility_mode_ = other.compatibility_mode_;
     gmt_modified_ = other.gmt_modified_;
-    drop_tenant_time_ = other.drop_tenant_time_;
     status_ = other.status_;
     in_recyclebin_ = other.in_recyclebin_;
-    arbitration_service_status_ = other.arbitration_service_status_;
     if (OB_FAIL(deep_copy_str(other.tenant_name_, tenant_name_))) {
       LOG_WARN("Fail to deep copy tenant_name", K(ret));
-    } else if (OB_FAIL(deep_copy_str(other.primary_zone_, primary_zone_))) {
-      LOG_WARN("Fail to deep copy primary_zone", K(ret));
-    } else if (OB_FAIL(deep_copy_str(other.locality_, locality_))) {
-      LOG_WARN("Fail to deep copy locality", K(ret));
-    } else if (OB_FAIL(deep_copy_str(other.previous_locality_, previous_locality_))) {
-      LOG_WARN("Fail to deep copy previous_locality", K(ret));
     }
     if (OB_FAIL(ret)) {
       error_ret_ = ret;
@@ -95,15 +87,10 @@ void ObSimpleTenantSchema::reset()
   tenant_name_.reset();
   name_case_mode_ = OB_NAME_CASE_INVALID;
   read_only_ = false;
-  primary_zone_.reset();
-  locality_.reset();
-  previous_locality_.reset();
   compatibility_mode_ = ObCompatibilityMode::OCEANBASE_MODE;
   gmt_modified_ = 0;
-  drop_tenant_time_ = 0;
   status_ = TENANT_STATUS_NORMAL;
   in_recyclebin_ = false;
-  arbitration_service_status_ = ObArbitrationServiceStatus::DISABLED;
 }
 
 bool ObSimpleTenantSchema::is_valid() const
@@ -123,9 +110,6 @@ int64_t ObSimpleTenantSchema::get_convert_size() const
 
   convert_size += sizeof(ObSimpleTenantSchema);
   convert_size += tenant_name_.length() + 1;
-  convert_size += primary_zone_.length() + 1;
-  convert_size += locality_.length() + 1;
-  convert_size += previous_locality_.length() + 1;
 
   return convert_size;
 }
@@ -3859,38 +3843,6 @@ int ObSchemaMgr::get_table_schemas_in_tenant(
       } else if (tenant_id != schema->get_tenant_id()) {
         is_stop = true;
       } else if (OB_FAIL(schema_array.push_back(schema))) {
-        LOG_WARN("failed to push back SCHEMA schema", K(ret));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObSchemaMgr::get_vector_index_schemas_in_tenant(
-    const uint64_t tenant_id,
-    ObIArray<const ObSimpleTableSchemaV2*> &schema_array) const
-{
-  int ret = OB_SUCCESS;
-  schema_array.reset();
-  if (!check_inner_stat()) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_INVALID_ID == tenant_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(tenant_id));
-  } else {
-    const ObSimpleTableSchemaV2 *schema = NULL;
-    ObTenantTableId tenant_index_schema_id_lower(tenant_id, OB_MIN_ID);
-    ConstTableIterator iter = index_infos_.lower_bound(tenant_index_schema_id_lower,
-        compare_with_tenant_table_id);
-    bool is_stop = false;
-    for (; OB_SUCC(ret) && iter != index_infos_.end() && !is_stop; iter++) {
-      if (OB_ISNULL(schema = *iter)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("NULL ptr",  K(ret), KP(schema));
-      } else if (tenant_id != schema->get_tenant_id()) {
-        is_stop = true;
-      } else if (schema->is_vec_index() && OB_FAIL(schema_array.push_back(schema))) {
         LOG_WARN("failed to push back SCHEMA schema", K(ret));
       }
     }

@@ -25,7 +25,6 @@
 #include "palf/log_define.h"
 #include "ob_location_adapter.h"
 #include "ob_reporter_adapter.h"
-#include "share/ls/ob_ls_status_operator.h"            // ObLSStatusInfo
 // #include "share/ob_tenant_info_proxy.h"                // ObTenantRole
 
 namespace oceanbase
@@ -342,18 +341,14 @@ private:
   typedef common::ObArray<ObLogFlashbackService::ExecuteFlashbackOperator> FlashbackOpArray;
 
 private:
-  int get_ls_list_(const uint64_t tenant_id,
-                   share::ObLSStatusInfoArray &ls_array);
   // @returns:
   //   - OB_TIMEOUT
   int wait_all_ls_replicas_log_sync_(const uint64_t tenant_id,
                                      const share::SCN &flashback_scn,
-                                     const share::ObLSStatusInfoArray &ls_array,
                                      const int64_t timeout_us) const;
   int get_and_change_access_mode_(const uint64_t tenant_id,
                                   const share::SCN &flashback_scn,
                                   const palf::AccessMode &dst_mode,
-                                  const share::ObLSStatusInfoArray &ls_array,
                                   const int64_t timeout_us,
                                   ChangeModeOpArray &ls_operator_array);
   int do_flashback_(const uint64_t tenant_id,
@@ -366,7 +361,6 @@ private:
   int construct_ls_operator_list_(
       const uint64_t tenant_id,
       const share::SCN &flashback_scn,
-      const share::ObLSStatusInfoArray &ls_array,
       common::ObArray<T> &ls_operator_array) const;
 
   template<typename SRC_T, typename DST_T>

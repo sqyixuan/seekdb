@@ -24,7 +24,6 @@
 #include "lib/container/ob_array.h"//ObArray
 #include "lib/container/ob_iarray.h"//ObIArray
 #include "share/scn.h"
-//#include "share/ls/ob_ls_status_operator.h"
 #include "lib/mysqlclient/ob_mysql_transaction.h"  //ObMySQLTransaction
 #include "share/ls/ob_ls_i_life_manager.h" // share::OB_LS_INVALID_SCN_VALUE
 #include "share/restore/ob_restore_data_mode.h" //share::ObRestoreDataMode
@@ -93,7 +92,6 @@ public:
  bool is_standby() const { return tenant_role_.is_standby(); }
  bool is_primary() const { return tenant_role_.is_primary(); }
  bool is_restore() const { return tenant_role_.is_restore(); }
- bool is_clone() const { return tenant_role_.is_clone(); }
 
  /**
   * @description: 

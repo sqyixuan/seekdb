@@ -17,7 +17,6 @@
 #define USING_LOG_PREFIX SHARE_LOCATION
 
 #include "share/location_cache/ob_location_service.h"
-#include "share/ls/ob_ls_status_operator.h" // ObLSStatus
 #include "share/ob_all_server_tracer.h"
 
 namespace oceanbase
@@ -574,96 +573,6 @@ int ObLocationService::check_ls_exist(
   // errsim for test
   if (EN_CHECK_LS_EXIST_WITH_TENANT_NOT_NORMAL) {
     state.reset();
-  }
-
-  if (OB_FAIL(ret) || state.is_valid()) {
-  } else if (OB_FAIL(construct_check_ls_exist_sql_(tenant_id, ls_id, sql))) {
-    LOG_WARN("construct check ls exist sql failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
-  } else {
-    SMART_VAR(ObISQLClient::ReadResult, result) {
-      int64_t ls_state = -1;
-      common::sqlclient::ObMySQLResult *res = NULL;
-      const uint64_t exec_tenant_id = get_private_table_exec_tenant_id(tenant_id);
-      if (OB_FAIL(GCTX.sql_proxy_->read(result, exec_tenant_id, sql.ptr()))) {
-        LOG_WARN("execute sql failed", KR(ret),
-            K(tenant_id), K(ls_id), K(exec_tenant_id), K(sql));
-      } else if (OB_ISNULL(res = result.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get mysql result failed", KR(ret),
-            K(tenant_id), K(ls_id), K(exec_tenant_id), K(sql));
-      } else if (OB_FAIL(res->next())) {
-        LOG_WARN("next failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
-      } else if (OB_FAIL(res->get_int("ls_state", ls_state))) {
-        LOG_WARN("fail to get ls_state", KR(ret), K(tenant_id), K(ls_id));
-      } else if (OB_UNLIKELY(ls_state <= ObLSExistState::INVALID_STATE
-          || ls_state >= ObLSExistState::MAX_STATE)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected state value", KR(ret), K(ls_state), K(tenant_id), K(ls_id), K(sql));
-      } else {
-        state = ObLSExistState(ObLSExistState::State(ls_state));
-      }
-      LOG_INFO("check ls exist finished", KR(ret), K(tenant_id), K(ls_id), K(ls_state), K(state), K(sql));
-    }
-  }
-  return ret;
-}
-
-// 1.relationship between ObLSStatus and ObLSExistState
-//         <ObLSStatus>     <ObLSExistState>
-//           CREATING   -->   UNCREATED 
-//         CREATE_ABORT -->   DELETED
-//            OTHER     -->   EXISTING
-//
-// 2.check ls exist for sys and meta tenants only accesses __all_ls_status;
-//   for user tenant need access __all_ls_status and __all_tenant_info;
-int ObLocationService::construct_check_ls_exist_sql_(
-    const uint64_t tenant_id,
-    const ObLSID &ls_id,
-    ObSqlString &sql)
-{
-  int ret = OB_SUCCESS;
-  sql.reset();
-  if (OB_UNLIKELY(!ls_id.is_valid_with_tenant(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", KR(ret), K(tenant_id), K(ls_id));
-  } else if (OB_FAIL(sql.append_fmt(
-      "SELECT CASE WHEN exist = 1 THEN "
-      "(CASE WHEN status = '%s' THEN %d WHEN status = '%s' THEN %d ELSE %d END) ",
-      ls_status_to_str(ObLSStatus::OB_LS_CREATING),
-      ObLSExistState::UNCREATED,
-      ls_status_to_str(ObLSStatus::OB_LS_CREATE_ABORT),
-      ObLSExistState::DELETED,
-      ObLSExistState::EXISTING))) {
-    LOG_WARN("assign sql failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
-  } else if (is_sys_tenant(tenant_id) || is_meta_tenant(tenant_id)) {
-    if (OB_FAIL(sql.append_fmt("ELSE %d END AS ls_state ", ObLSExistState::UNCREATED))) {
-      LOG_WARN("assign sql failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
-    }
-  } else if (is_user_tenant(tenant_id)) { // need max_ls_id
-    if (OB_FAIL(sql.append_fmt(
-        "ELSE (SELECT CASE WHEN max_ls_id < %ld THEN %d ELSE %d END FROM %s WHERE tenant_id = %lu) END AS ls_state ",
-        ls_id.id(),
-        ObLSExistState::UNCREATED,
-        ObLSExistState::DELETED,
-        OB_ALL_TENANT_INFO_TNAME,
-        tenant_id))) {
-      LOG_WARN("assign sql failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
-    }
-  } else {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("can't be here", KR(ret), K(tenant_id), K(ls_id), K(sql));
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_UNLIKELY(sql.empty())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql can't be empty", KR(ret), K(tenant_id), K(ls_id), K(sql));
-  } else if (OB_FAIL(sql.append_fmt(
-      "FROM (SELECT COUNT(*) > 0 as exist, status FROM %s WHERE tenant_id = %lu AND ls_id = %ld)",
-      OB_ALL_LS_STATUS_TNAME,
-      tenant_id,
-      ls_id.id()))) {
-    LOG_WARN("assign sql failed", KR(ret), K(tenant_id), K(ls_id), K(sql));
   }
   return ret;
 }
