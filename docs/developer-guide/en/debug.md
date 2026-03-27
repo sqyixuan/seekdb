@@ -4,12 +4,12 @@ title: Debug
 
 # Abstract
 
-This document describes some methods to debug OceanBase seekdb. We have many ways to debug seekdb, such as gdb, logging, etc.
+This document describes some methods to debug OceanBase SeekDB. We have many ways to debug SeekDB, such as gdb, logging, etc.
 
-We suggest you build seekdb with debug mode as it is easy to debug.
+We suggest you build SeekDB with debug mode as it is easy to debug.
 
 # GDB
-GDB is a powerful debugging tool, but it is difficult to debug seekdb by gdb and the scenarios are limited.
+GDB is a powerful debugging tool, but it is difficult to debug SeekDB by gdb and the scenarios are limited.
 
 If you want to debug a single oceanbase process and single thread, you can use gdb, otherwise it is more recommended to use logging.
 
@@ -19,32 +19,25 @@ Debugging oceanbase is similar to debugging other C++ programs, you can use gdb 
 
 1. find the process id
 ```bash
-ps -ef | grep seekdb
+ps -ef | grep observer
 ```
 
 or
 ```bash
-pidof seekdb
+pidof observer
 ```
 
 2. attach the process
-
-Using GDB:
 ```bash
-gdb seekdb <pid>
+gdb observer <pid>
 ```
 
-Or using LLDB (recommended on macOS):
-```bash
-lldb -p <pid>
-```
-
-Then you can set breakpoints, print variables, etc. Please refer to [GDB manual](https://sourceware.org/gdb/current/onlinedocs/gdb.html/) or [LLDB manual](https://lldb.llvm.org/use/tutorial.html) for more information.
+Then you can set breakpoint, print variable, etc. Please refer to [gdb manual](https://sourceware.org/gdb/current/onlinedocs/gdb.html/) for more information.
 
 ## Debug oceanbase with debug-info package
 If you want to debug oceanbase or check the coredump file deployed with oceanbase rpm, you should install or load the debug-info package first. Loading is more recommended although installation is more convenient as there will be many debug-info packages in the system and it is not easy to cleanup.
 
-First, obtain the debug-info package from the website, and then load the package into gdb. Afterward, you will be able to debug seekdb with ease.
+First, obtain the debug-info package from the website, and then load the package into gdb. Afterward, you will be able to debug SeekDB with ease.
 
 Below are some tips.
 
@@ -52,10 +45,10 @@ Below are some tips.
 
 You can get the package revision by the command below.
 ```bash
-# in the seekdb runtime path
-clusters/local/bin [83] $ ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+# in the observer runtime path
+clusters/local/bin [83] $ ./observer -V
+./observer -V
+observer (OceanBase SeekDB 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
 BUILD_BRANCH: HEAD
@@ -68,17 +61,22 @@ Copyright (c) 2011-2022 OceanBase Inc.
 
 If you see the error below
 ```
-./seekdb -V
-./seekdb: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
+./observer -V
+./observer: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
 ```
 
 You can run command below to get the revision
 ```bash
-clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./observer -V
+./observer -V
+observer (OceanBase SeekDB 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
+BUILD_BRANCH: HEAD
+BUILD_TIME: Nov 1 2025 14:26:23
+BUILD_FLAGS: RelWithDebInfo
+BUILD_INFO:
+
 Copyright (c) 2011-2022 OceanBase Inc.
 ```
 
@@ -116,39 +114,39 @@ Then you can get this.
         └── debug
             ├── .build-id
             │   └── ee
-            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/seekdb
-            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/seekdb.debug
+            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/observer
+            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/observer.debug
             └── home
                 └── admin
                     └── oceanbase
                         └── bin
-                            └── seekdb.debug
+                            └── observer.debug
 ```
 
-`seekdb.debug` is the debug-info package we need and `f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` is a symbolic link.
+`observer.debug` is the debug-info package we need and `f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` is a symbolic link.
 
 **Debug oceanbase with debug-info package**
 
 Now, you can attach a process or a coredump file with gdb with commands below.
 ```bash
 # attach a process
-gdb ./seekdb `pidof seekdb`
+gdb ./observer `pidof observer`
 ```
 
 or
 
 ```bash
 # open a coredump file
-gdb ./seekdb <coredump file name>
+gdb ./observer <coredump file name>
 ```
 
 Usually, you will get this message.
 
 ```
 Type "apropos word" to search for commands related to "word"...
-Reading symbols from clusters/local/bin/seekdb...
-(No debugging symbols found in clusters/local/bin/seekdb)
-Attaching to program: clusters/local/bin/seekdb, process 57296
+Reading symbols from clusters/local/bin/observer...
+(No debugging symbols found in clusters/local/bin/observer)
+Attaching to program: clusters/local/bin/observer, process 57296
 ```
 
 This means that there are no debugging symbols.
@@ -170,8 +168,8 @@ We cannot get the source code file name or function parameters information.
 Let's load the debug-info package.
 
 ```bash
-(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug
-Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug...
+(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/observer.debug
+Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/observer.debug...
 ```
 
 > It's better to use the full path of the debug info file.
@@ -192,7 +190,7 @@ Let's run the debug command again and we can get detailed information.
 ```
 
 # Logging
-Logging is the most common way to debug seekdb, and it is easy to use and can be used in most scenarios.
+Logging is the most common way to debug SeekDB, and it is easy to use and can be used in most scenarios.
 In common scenarios, we can add logs in the code and print the variable, then rebuild and redeploy the oceanbase.
 
 ## How to add logs
@@ -256,7 +254,7 @@ lbt()="0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x
 
 Then you can use the command below to get the call stack information:
 ```bash
-addr2line -pCfe ./bin/seekdb 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
+addr2line -pCfe ./bin/observer 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
 ```
 
 I got this:
@@ -319,9 +317,9 @@ obclient> show trace;
 
 # Debug Sync
 
-If you use gdb to debug seekdb, it maybe cannot work normally because gdb will hang the process and seekdb depends on the heartbeat to work normally. So we provide a debug sync mechanism to solve this problem.
+If you use gdb to debug SeekDB, it maybe cannot work normally because gdb will hang the process and SeekDB depends on the heartbeat to work normally. So we provide a debug sync mechanism to solve this problem.
 
-The specific thread of seekdb process will hang on the point if you add a debug sync point in the code, and then you can do something to debug the process, such as attach the process by gdb, or execute some SQL commands to get some information.
+The specific thread of SeekDB process will hang on the point if you add a debug sync point in the code, and then you can do something to debug the process, such as attach the process by gdb, or execute some SQL commands to get some information.
 
 > Debug Sync can work on release mode, so it is enabled on production environment.
 

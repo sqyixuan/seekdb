@@ -4,64 +4,57 @@ title: 调试
 
 # 调试方法
 
-本文档介绍调试 OceanBase seekdb 的常用方法，包括 GDB 调试、日志调试、SQL 调试等。
+本文档介绍调试 OceanBase SeekDB 的常用方法，包括 GDB 调试、日志调试、SQL 调试等。
 
 ## 概述
 
-seekdb 是一个复杂的分布式数据库系统，调试时需要根据不同的场景选择合适的方法。常用的调试方法包括：
+SeekDB 是一个复杂的分布式数据库系统，调试时需要根据不同的场景选择合适的方法。常用的调试方法包括：
 
 - **GDB 调试**：适合单进程、单线程的调试场景
 - **日志调试**：最常用的调试方法，适用于大多数场景
 - **SQL 调试**：使用 SQL 命令获取执行信息
 - **Debug Sync**：特殊的调试同步机制
 
-> **提示**：建议编译 seekdb 时使用 debug 模式，这样更容易调试。
+> **提示**：建议编译 SeekDB 时使用 debug 模式，这样更容易调试。
 
 ## 相关文档
 
 - [编译与运行](build-and-run.md) - 编译 debug 版本
 - [日志系统](logging.md) - 了解日志的详细用法
-- [编程惯例](coding-convention.md) - 了解 seekdb 的编程风格
+- [编程惯例](coding-convention.md) - 了解 SeekDB 的编程风格
 
 ## GDB 调试
 
-GDB 是一个强大的调试工具，但是使用 GDB 调试 seekdb 是比较困难的，而且场景比较有限。
+GDB 是一个强大的调试工具，但是使用 GDB 调试 SeekDB 是比较困难的，而且场景比较有限。
 
 > **适用场景**：如果要调试单进程并且只有某一个线程，可以使用 GDB，否则建议使用日志调试。
 
 假设已经部署了源码编译的 oceanbase。
 
-调试 seekdb 与调试其他 C++ 程序类似，你可以使用 gdb，如下：
+调试 SeekDB 与调试其他 C++ 程序类似，你可以使用 gdb，如下：
 
 1. 找到进程 id
 ```bash
-ps -ef | grep seekdb
+ps -ef | grep observer
 ```
 
 或者
 ```bash
-pidof seekdb
+pidof observer
 ```
 
 2. attach 进程
-
-使用 GDB：
 ```bash
-gdb seekdb <pid>
+gdb observer <pid>
 ```
 
-或者使用 LLDB（macOS 上推荐）：
-```bash
-lldb -p <pid>
-```
+接着就可以设置断点，打印变量等。更多信息请参考 [gdb 手册](https://sourceware.org/gdb/current/onlinedocs/gdb.html/)。
 
-接着就可以设置断点，打印变量等。更多信息请参考 [GDB 手册](https://sourceware.org/gdb/current/onlinedocs/gdb.html/) 或 [LLDB 手册](https://lldb.llvm.org/use/tutorial.html)。
+## 使用 debug-info 包调试 SeekDB
 
-## 使用 debug-info 包调试 seekdb
+要调试RPM部署的SeekDB，或者查看 coredump 文件，需要先安装或者加载 debug-info 包。推荐使用加载的模式，因为系统中会有很多 debug-info 包，而且很难清理。
 
-要调试RPM部署的seekdb，或者查看 coredump 文件，需要先安装或者加载 debug-info 包。推荐使用加载的模式，因为系统中会有很多 debug-info 包，而且很难清理。
-
-首先，从网上下载 debug-info 包，然后加载到gdb。之后，你就可以很容易地调试 seekdb 了。
+首先，从网上下载 debug-info 包，然后加载到gdb。之后，你就可以很容易地调试 SeekDB 了。
 
 下面是一些提示。
 
@@ -69,10 +62,10 @@ lldb -p <pid>
 
 使用下面的命令获取包的revision。
 ```bash
-# in the seekdb runtime path
-clusters/local/bin [83] $ ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+# in the observer runtime path
+clusters/local/bin [83] $ ./observer -V
+./observer -V
+observer (OceanBase SeekDB 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
 BUILD_BRANCH: HEAD
@@ -85,17 +78,22 @@ Copyright (c) 2011-2022 OceanBase Inc.
 
 如果看到下面的错误信息
 ```
-./seekdb -V
-./seekdb: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
+./observer -V
+./observer: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
 ```
 
 就换成这个命令来获取revision
 ```bash
-clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./observer -V
+./observer -V
+observer (OceanBase SeekDB 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
+BUILD_BRANCH: HEAD
+BUILD_TIME: Nov 1 2025 14:26:23
+BUILD_FLAGS: RelWithDebInfo
+BUILD_INFO:
+
 Copyright (c) 2011-2022 OceanBase Inc.
 ```
 
@@ -134,40 +132,40 @@ rpm2cpio seekdb-debuginfo-1.0.0.0-102000042023061314.el7.x86_64.rpm | cpio -div
         └── debug
             ├── .build-id
             │   └── ee
-            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/seekdb
-            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/seekdb.debug
+            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/observer
+            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/observer.debug
             └── home
                 └── admin
                     └── oceanbase
                         └── bin
-                            └── seekdb.debug
+                            └── observer.debug
 ```
 
-`seekdb.debug` 是我们要的 debug-info 包，`f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` 是一个软链接。
+`observer.debug` 是我们要的 debug-info 包，`f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` 是一个软链接。
 
-**使用 debug-info 包调试 seekdb**
+**使用 debug-info 包调试 SeekDB**
 
-使用gdb命令 attach 到一个进程或者打开coredump文件。
+使用gdb命令 attch 到一个进程或者打开coredump文件。
 
 ```bash
 # attach 进程
-gdb ./seekdb `pidof seekdb`
+gdb ./observer `pidof observer`
 ```
 
 或
 
 ```bash
 # 打开coredump文件
-gdb ./seekdb <coredump file name>
+gdb ./observer <coredump file name>
 ```
 
 正常情况下，会看到这个信息
 
 ```
 Type "apropos word" to search for commands related to "word"...
-Reading symbols from clusters/local/bin/seekdb...
-(No debugging symbols found in clusters/local/bin/seekdb)
-Attaching to program: clusters/local/bin/seekdb, process 57296
+Reading symbols from clusters/local/bin/observer...
+(No debugging symbols found in clusters/local/bin/observer)
+Attaching to program: clusters/local/bin/observer, process 57296
 ```
 
 意思是没有调试符号。
@@ -189,8 +187,8 @@ Attaching to program: clusters/local/bin/seekdb, process 57296
 现在加载 debug-info 包。
 
 ```bash
-(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug
-Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug...
+(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/observer.debug
+Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/observer.debug...
 ```
 
 > 使用debug-info文件的全路径更好
@@ -212,9 +210,9 @@ Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug...
 
 ## 日志调试
 
-日志是调试 seekdb 最常用的方法，易于使用，适用于大多数场景。
+日志是调试 SeekDB 最常用的方法，易于使用，适用于大多数场景。
 
-在常见的场景中，可以在代码中添加日志并打印变量，然后重新编译和部署 seekdb。
+在常见的场景中，可以在代码中添加日志并打印变量，然后重新编译和部署 SeekDB。
 
 > **提示**：关于日志的详细用法，请参考 [日志系统](logging.md) 文档。
 
@@ -231,7 +229,7 @@ LOG_DEBUG("insert sql generated", K(insert_sql));
 
 ## 如何搜索日志
 
-日志文件在 seekdb 运行目录的 `log` 目录下。你可以使用 `grep` 命令搜索日志。
+日志文件在 SeekDB 运行目录的 `log` 目录下。你可以使用 `grep` 命令搜索日志。
 
 一个日志的例子。
 ```
@@ -282,7 +280,7 @@ lbt()="0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x
 
 用这个命令查看调用栈信息：
 ```bash
-addr2line -pCfe ./bin/seekdb 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
+addr2line -pCfe ./bin/observer 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
 ```
 
 我测试时看到的是这样的
@@ -347,7 +345,7 @@ obclient> show trace;
 
 ## Debug Sync
 
-在使用 GDB 调试 seekdb 的时候，可能会出现问题，因为 GDB 会挂起进程，而 seekdb 依赖心跳来正常工作。所以我们提供了一个 debug sync 机制来解决这个问题。
+在使用 GDB 调试 SeekDB 的时候，可能会出现问题，因为 GDB 会挂起进程，而 SeekDB 依赖心跳来正常工作。所以我们提供了一个 debug sync 机制来解决这个问题。
 
 > **注意**：Debug Sync 在 release 模式下也可以用，所以它在生产环境中是开启的。
 
