@@ -142,20 +142,11 @@ int ObSqlWorkareaHistoryStat::fill_row(
   common::ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
+  UNUSED(tenant_id);
   ObObj *cells = cur_row_.cells_;
   for (int64_t cell_idx = 0; OB_SUCC(ret) && cell_idx < output_column_ids_.count(); ++cell_idx) {
     uint64_t col_id = output_column_ids_.at(cell_idx);
     switch(col_id) {
-      case SVR_IP: {
-        cells[cell_idx].set_varchar(ipstr_);
-        cells[cell_idx].set_collation_type(
-          ObCharset::get_default_collation(ObCharset::get_default_charset()));
-        break;
-      }
-      case SVR_PORT: {
-        cells[cell_idx].set_int(port_);
-        break;
-      }
       case PLAN_ID: {
         cells[cell_idx].set_int(wa_stat.get_plan_id());
         break;
@@ -195,11 +186,11 @@ int ObSqlWorkareaHistoryStat::fill_row(
         int64_t last_execution = wa_stat.get_last_execution();
         ObString exec_str;
         if (0 == last_execution) {
-          exec_str.assign_ptr(EXECUTION_OPTIMAL, static_cast<ObString::obstr_size_t>(strlen(EXECUTION_OPTIMAL)));
+          exec_str.assign_ptr(EXECUTION_OPTIMAL, strlen(EXECUTION_OPTIMAL));
         } else if (1 == last_execution) {
-          exec_str.assign_ptr(EXECUTION_ONEPASS, static_cast<ObString::obstr_size_t>(strlen(EXECUTION_ONEPASS)));
+          exec_str.assign_ptr(EXECUTION_ONEPASS, strlen(EXECUTION_ONEPASS));
         } else {
-          exec_str.assign_ptr(EXECUTION_MULTIPASSES, static_cast<ObString::obstr_size_t>(strlen(EXECUTION_MULTIPASSES)));
+          exec_str.assign_ptr(EXECUTION_MULTIPASSES, strlen(EXECUTION_MULTIPASSES));
         }
         cells[cell_idx].set_varchar(exec_str);
         cells[cell_idx].set_collation_type(
@@ -238,16 +229,12 @@ int ObSqlWorkareaHistoryStat::fill_row(
         cells[cell_idx].set_int(wa_stat.get_last_temp_size());
         break;
       }
-      case TENAND_ID: {
-        cells[cell_idx].set_int(tenant_id);
-        break;
-      }
       case POLICY: {
         ObString exec_str;
         if (wa_stat.get_auto_policy()) {
-          exec_str.assign_ptr(EXECUTION_AUTO_POLICY, static_cast<ObString::obstr_size_t>(strlen(EXECUTION_AUTO_POLICY)));
+          exec_str.assign_ptr(EXECUTION_AUTO_POLICY, strlen(EXECUTION_AUTO_POLICY));
         } else {
-          exec_str.assign_ptr(EXECUTION_MANUAL_POLICY, static_cast<ObString::obstr_size_t>(strlen(EXECUTION_MANUAL_POLICY)));
+          exec_str.assign_ptr(EXECUTION_MANUAL_POLICY, strlen(EXECUTION_MANUAL_POLICY));
         }
         cells[cell_idx].set_varchar(exec_str);
         cells[cell_idx].set_collation_type(

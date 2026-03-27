@@ -82,7 +82,6 @@ class ObTenantVirtualOutline : public ObTenantVirtualOutlineBase
 {
   enum TENANT_VIRTUAL_OUTLINE_COLUMN
   {
-    TENANT_ID = OB_APP_MIN_COLUMN_ID,
     DATABASE_ID = OB_APP_MIN_COLUMN_ID + 1,
     OUTLINE_ID = OB_APP_MIN_COLUMN_ID + 2,
     DATABASE_NAME = OB_APP_MIN_COLUMN_ID + 3,

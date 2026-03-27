@@ -57,10 +57,10 @@ int ObTenantMemstoreInfoOperator::get(
       } else {} // no more to do
     }
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(sql.assign_fmt("SELECT tenant_id, svr_ip, svr_port, active_span, "
+    } else if (OB_FAIL(sql.assign_fmt("SELECT svr_ip, svr_port, active_span, "
         "memstore_used, freeze_trigger, memstore_limit FROM %s "
-        "WHERE tenant_id = %ld and (%s)",
-        OB_ALL_VIRTUAL_TENANT_MEMSTORE_INFO_TNAME, tenant_id, unit_servers_str.ptr()))) {
+        "WHERE (%s)",
+        OB_ALL_VIRTUAL_TENANT_MEMSTORE_INFO_TNAME, unit_servers_str.ptr()))) {
       LOG_WARN("assign_fmt failed", K(ret));
     } else {
       SMART_VAR(ObMySQLProxy::MySQLResult, res) {
@@ -84,7 +84,7 @@ int ObTenantMemstoreInfoOperator::get(
                 break;
               }
             } else {
-              EXTRACT_INT_FIELD_MYSQL(*result, "tenant_id", mem_info.tenant_id_, uint64_t);
+              mem_info.tenant_id_ = OB_SYS_TENANT_ID;
               EXTRACT_STRBUF_FIELD_MYSQL(*result, "svr_ip", svr_ip, OB_IP_STR_BUFF, tmp_real_str_len);
               (void) tmp_real_str_len; // make compiler happy
               EXTRACT_INT_FIELD_MYSQL(*result, "svr_port", svr_port, int64_t);

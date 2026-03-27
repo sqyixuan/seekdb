@@ -61,9 +61,7 @@ public:
 private:
   enum STORAGE_COLUMN
   {
-    SVR_IP = common::OB_APP_MIN_COLUMN_ID,
-    SVR_PORT,
-    PLAN_ID,
+        PLAN_ID = common::OB_APP_MIN_COLUMN_ID,
     SQL_ID,
     SQL_EXEC_ID,
     OPERATION_TYPE, // OB_APP_MIN_COLUMN_ID + 5
