@@ -497,7 +497,6 @@ int ObLSService::create_ls(const obrpc::ObCreateLSArg &arg)
     palf::PalfBaseInfo palf_base_info;
     prepare_palf_base_info(arg, palf_base_info);
 
-    ObMigrationOpArg mig_arg;
     ObCreateLSCommonArg common_arg;
     common_arg.ls_id_ = arg.get_ls_id();
     common_arg.create_scn_ = arg.get_create_scn();
@@ -511,7 +510,7 @@ int ObLSService::create_ls(const obrpc::ObCreateLSArg &arg)
     common_arg.need_create_inner_tablet_ = need_create_inner_tablets_(arg);
     common_arg.major_mv_merge_info_ = arg.get_major_mv_merge_info();
 
-    if (OB_FAIL(create_ls_(common_arg, mig_arg))) {
+    if (OB_FAIL(create_ls_(common_arg))) {
       LOG_WARN("create ls failed", K(ret), K(arg));
     }
     if (OB_LS_EXIST == ret) {
@@ -563,18 +562,6 @@ int ObLSService::post_create_ls_(const int64_t create_type,
     }
     case ObLSCreateType::MIGRATE: {
       if (OB_FAIL(ls->set_start_ha_state())) {
-        LOG_ERROR("ls set start ha state failed", KR(ret), KPC(ls));
-      }
-      break;
-    }
-    case ObLSCreateType::CLONE: {
-      if (!need_online && ls->is_clone_first_step()) {
-        if (OB_FAIL(ls->get_log_handler()->enable_sync())) {
-          LOG_WARN("failed to enable sync", K(ret));
-        }
-      }
-      if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(ls->set_start_ha_state())) {
         LOG_ERROR("ls set start ha state failed", KR(ret), KPC(ls));
       }
       break;
@@ -714,12 +701,6 @@ int ObLSService::replay_create_ls_commit(const share::ObLSID &ls_id)
         break;
       }
       case ObLSCreateType::MIGRATE: {
-        if (OB_FAIL(ls->set_start_ha_state())) {
-          LOG_ERROR("ls set start ha state failed", KR(ret), K(ls_id));
-        }
-        break;
-      }
-      case ObLSCreateType::CLONE: {
         if (OB_FAIL(ls->set_start_ha_state())) {
           LOG_ERROR("ls set start ha state failed", KR(ret), K(ls_id));
         }
@@ -1147,8 +1128,7 @@ void ObLSService::remove_ls_(ObLS *ls, const bool remove_from_disk, const bool w
   } while (OB_FAIL(ret));
 }
 
-int ObLSService::create_ls_(const ObCreateLSCommonArg &arg,
-                            const ObMigrationOpArg &mig_arg)
+int ObLSService::create_ls_(const ObCreateLSCommonArg &arg)
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
@@ -1239,50 +1219,6 @@ int ObLSService::create_ls_(const ObCreateLSCommonArg &arg,
       del_ls_after_create_ls_failed_(state, ls);
     }
   }
-  return ret;
-}
-
-int ObLSService::create_ls_for_ha(
-    const share::ObTaskId task_id,
-    const ObMigrationOpArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObMigrationStatus migration_status;
-  ObLSRestoreStatus restore_status = ObLSRestoreStatus(ObLSRestoreStatus::NONE);
-
-  if (task_id.is_invalid() || !arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("create ls for ha get invalid argument", K(ret), K(task_id), K(arg));
-  } else if (ObMigrationOpType::MIGRATE_LS_OP != arg.type_ && ObMigrationOpType::ADD_LS_OP != arg.type_) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("create ls for migration get unexpected op type", K(ret), K(task_id), K(arg));
-  } else if (OB_FAIL(ObMigrationStatusHelper::trans_migration_op(arg.type_, migration_status))) {
-    LOG_WARN("failed to trans migration op", K(ret), K(arg), K(task_id));
-  } else if (OB_FAIL(get_restore_status_(restore_status))) {
-    LOG_WARN("failed to get restore status", K(ret), K(arg), K(task_id));
-  } else {
-    palf::PalfBaseInfo palf_base_info;
-    palf_base_info.generate_by_default();
-
-    ObCreateLSCommonArg common_arg;
-    common_arg.ls_id_ = arg.ls_id_;
-    common_arg.create_scn_ = ObScnRange::MIN_SCN;
-    common_arg.palf_base_info_ = palf_base_info;
-    common_arg.tenant_role_ = share::RESTORE_TENANT_ROLE;
-    common_arg.replica_type_ = arg.dst_.get_replica_type();
-    common_arg.compat_mode_ = Worker::CompatMode::INVALID;
-    common_arg.create_type_ = ObLSCreateType::MIGRATE;
-    common_arg.migration_status_ = migration_status;
-    common_arg.restore_status_ = restore_status;
-    common_arg.task_id_ = task_id;
-    common_arg.need_create_inner_tablet_ = false;
-    common_arg.major_mv_merge_info_.reset();
-
-    if (OB_FAIL(create_ls_(common_arg, arg))) {
-      LOG_WARN("failed to create ls", K(ret), K(arg));
-    }
-  }
-  FLOG_INFO("create_ls for ha finish", K(ret), K(task_id), K(arg));
   return ret;
 }
 
@@ -1511,8 +1447,6 @@ ObLSRestoreStatus ObLSService::get_restore_status_by_tenant_role_(const ObTenant
 
   if (tenant_role.is_restore()) {
     restore_status = ObLSRestoreStatus::RESTORE_START;
-  } else if (tenant_role.is_clone()) {
-    restore_status = ObLSRestoreStatus::CLONE_START;
   } else {
     restore_status = ObLSRestoreStatus::NONE;
   }
@@ -1526,8 +1460,6 @@ int64_t ObLSService::get_create_type_by_tenant_role_(const ObTenantRole& tenant_
 
   if (tenant_role.is_restore()) {
     create_type = ObLSCreateType::RESTORE;
-  } else if (tenant_role.is_clone()) {
-    create_type = ObLSCreateType::CLONE;
   } else {
     create_type = ObLSCreateType::NORMAL;
   }
