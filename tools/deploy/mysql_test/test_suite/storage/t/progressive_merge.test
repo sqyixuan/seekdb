@@ -1,0 +1,176 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: lixia.yq
+# owner group: storage
+# description:
+#
+connection default;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(id int primary key, name varchar(65535), age int, description varchar(65535)) progressive_merge_num=10 tablet_size=1048576000 compression='none';
+
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+
+connect (obsys1,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys1;
+let $__table_id__ = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name = 't1', tenant_id, 1);
+let $__tablet_id__ = query_get_value(select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $__table_id__ limit 1, tablet_id, 1);
+let $startup_mode = query_get_value(show parameters where name = 'ob_startup_mode', value, 1);
+connection default;
+
+# prepare data
+
+let $table_size = 0;
+let $pkey=0;
+while($table_size < 10485760)
+{
+  --disable_query_log
+  --disable_result_log
+  let $j = 0;
+  while($j < 5000)
+  {
+    eval insert into t1 values($pkey, repeat(rand(),900), 0, repeat(rand(),900));
+    inc $j;
+    inc $pkey;
+  }
+  --source mysql_test/include/tenant_major_freeze.inc
+  --source mysql_test/include/wait_tenant_major_merge.inc
+  connection obsys1;
+
+if ($startup_mode == 'shared_storage')
+{
+ let $table_size = query_get_value(select size from oceanbase.__all_virtual_table_mgr where tablet_id = $__tablet_id__ and table_type = 10 order by end_log_scn desc, size, 1);
+}
+
+if ($startup_mode != 'shared_storage')
+{
+ let $table_size = query_get_value(select data_size from oceanbase.__all_virtual_tablet_meta_table where tablet_id = $__tablet_id__, data_size, 1);
+}
+  connection default;
+}
+--enable_query_log
+--enable_result_log
+
+connection default;
+# add column, progressive_merge_num=10, first progressive merge 
+alter table t1 add column(c1 int);
+--real_sleep 1
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+--real_sleep 1
+connection obsys1;
+--disable_query_log
+--disable_result_log
+if ($startup_mode == 'shared_storage')
+{
+let $exist = query_get_value(select (((macro_block_count- multiplexed_macro_block_count) > 1.0/8 * macro_block_count) + ((macro_block_count- multiplexed_macro_block_count) < 1.0/12 * macro_block_count)) as exist from (select * from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1), exist, 1);
+--enable_query_log
+if ($exist != 0) {
+  --echo exist=$exist
+ eval select * from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1;
+}
+}
+
+if ($startup_mode != 'shared_storage')
+{
+let $exist = query_get_value(select (((macro_block_count- multiplexed_macro_block_count) > 1.0/8 * macro_block_count) + ((macro_block_count- multiplexed_macro_block_count) < 1.0/12 * macro_block_count)) as exist from (select * from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1), exist, 1);
+--enable_query_log
+--enable_result_log
+if ($exist != 0) {
+  --echo exist=$exist
+ eval select * from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1;
+}
+}
+
+connection default;
+#change progressive merge num to small value
+alter table t1 set progressive_merge_num=5;
+
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+--real_sleep 1
+connection obsys1;
+
+if ($startup_mode == 'shared_storage')
+{
+--disable_query_log
+let $high_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) > 1.0/8 * macro_block_count as high_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1, high_ratio, 1);
+let $low_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) < 1.0/12 * macro_block_count as low_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1, low_ratio, 1);
+--enable_query_log
+echo $high_ratio, $low_ratio;
+}
+
+if ($startup_mode != 'shared_storage')
+{
+--disable_query_log
+let $high_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) > 1.0/8 * macro_block_count as high_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1, high_ratio, 1);
+let $low_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) < 1.0/12 * macro_block_count as low_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1, low_ratio, 1);
+--enable_query_log
+echo $high_ratio, $low_ratio;
+}
+connection default;
+
+#change progressive merge num to large value
+alter table t1 set progressive_merge_num=15;
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+--real_sleep 1
+connection obsys1;
+
+if ($startup_mode == 'shared_storage')
+{
+--disable_query_log
+let $high_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) > 1.0/9 * macro_block_count as high_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1, high_ratio, 1);
+--enable_query_log
+echo $high_ratio;
+}
+
+if ($startup_mode != 'shared_storage')
+{
+--disable_query_log
+let $high_ratio = query_get_value(select (macro_block_count - multiplexed_macro_block_count) > 1.0/9 * macro_block_count as high_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1, high_ratio, 1);
+--enable_query_log
+echo $high_ratio;
+}
+connection default;
+
+#change progressive merge num to 0
+#alter table t1 set progressive_merge_num=0;
+#--source mysql_test/include/tenant_major_freeze.inc
+#--source mysql_test/include/wait_tenant_major_merge.inc
+#--real_sleep 1
+#connection obsys1;
+#let $version = query_get_value(select value from oceanbase.__all_zone where name='last_merged_version' and zone = '', value, 1);
+#eval select a.macro_block_count - a.use_old_macro_block_count as rewrite_macro_block_cnt from oceanbase.__all_virtual_partition_sstable_merge_info a, oceanbase.__all_virtual_table b where b.table_name='t1' and a.table_id=b.table_id and type like '%major%' order by a.version desc limit 1;
+#connection default;
+
+#change progressive merge num to 1
+alter table t1 set progressive_merge_num=1;
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_tenant_major_merge.inc
+--real_sleep 1
+connection obsys1;
+
+if ($startup_mode == 'shared_storage')
+{
+--disable_query_log
+let $multiplexed_macro_block_count = query_get_value(select multiplexed_macro_block_count from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1, multiplexed_macro_block_count, 1);
+--enable_query_log
+echo $multiplexed_macro_block_count;
+}
+
+if ($startup_mode != 'shared_storage')
+{
+--disable_query_log
+let $multiplexed_macro_block_count = query_get_value(select multiplexed_macro_block_count from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$__tablet_id__ and type = 'MAJOR_MERGE' order by compaction_scn desc limit 1, multiplexed_macro_block_count, 1);
+--enable_query_log
+echo $multiplexed_macro_block_count;
+}
+disconnect obsys1;
+connection default;
+
+drop table t1;
