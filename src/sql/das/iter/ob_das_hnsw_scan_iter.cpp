@@ -191,6 +191,7 @@ int ObDASHNSWScanIter::inner_init(ObDASIterParam &param)
     sort_rtdef_ = hnsw_scan_param.sort_rtdef_;
     vec_index_type_ = hnsw_scan_param.vec_index_type_;
     vec_idx_try_path_ = hnsw_scan_param.vec_idx_try_path_;
+    skip_delta_buffer_ = vec_aux_ctdef_->skip_delta_buffer_;
     dim_ = vec_aux_ctdef_->dim_;
     extra_column_count_ = vec_aux_ctdef_->extra_column_count_;
     is_primary_pre_with_rowkey_with_filter_ = vec_aux_ctdef_->can_use_vec_pri_opt();
@@ -281,7 +282,7 @@ int ObDASHNSWScanIter::inner_init(ObDASIterParam &param)
           if (OB_FAIL(ObDasVecScanUtils::get_distance_threshold_hnsw(
               *sort_ctdef_->sort_exprs_[0], search_param_.similarity_threshold_, distance_threshold_))) {
             LOG_WARN("get distance threshold fail", K(ret));
-          }
+          } 
         }
       }
     }
@@ -520,9 +521,9 @@ uint64_t ObDASHNSWScanIter::adjust_batch_count(bool is_vectored, uint64_t batch_
 int ObDASHNSWScanIter::calc_dis_by_vid(const ObObj& vid_obj, double &dis_value)
 {
   int ret = OB_SUCCESS;
-
+  
   ObRowkey vid_rowkey(&const_cast<ObObj&>(vid_obj), 1);
-
+  
   ObRowkey *rowkey = nullptr;
   ObString embedded_vector;
   if (use_vid_ && OB_FAIL(get_rowkey_from_vid_rowkey_table(mem_context_->get_arena_allocator(), vid_rowkey, rowkey))) {
@@ -541,7 +542,7 @@ int ObDASHNSWScanIter::calc_dis_by_vid(const ObObj& vid_obj, double &dis_value)
       const int64_t query_size = query_vector.length() / sizeof(float);
       int64_t vec_dis_type = ObVectorIndexDistAlgorithm::VIDA_MAX;
       ObVectorIndexParam index_param;
-
+      
       if (embedded_size != query_size) {
         ret = OB_ERR_INVALID_VECTOR_DIM;
         LOG_WARN("vector dimensions do not match", K(ret), K(embedded_size), K(query_size));
@@ -557,7 +558,7 @@ int ObDASHNSWScanIter::calc_dis_by_vid(const ObObj& vid_obj, double &dis_value)
       }
     }
   }
-
+  
   return ret;
 }
 
@@ -618,7 +619,7 @@ int ObDASHNSWScanIter::inner_get_next_row()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("should not be one row", K(row->get_count()), K(extra_column_count_), K(ret));
   } else {
-    if (need_save_distance_result()
+    if (need_save_distance_result() 
       && OB_FAIL(save_distance_expr_result(row))) {
       LOG_WARN("failed to set distance", K(ret));
     } else {
@@ -1273,7 +1274,7 @@ int ObDASHNSWScanIter::query_brute_force_distances(ObPluginVectorIndexAdaptor* a
     } else if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(const_cast<char*>(search_vec.ptr())),
                                            brute_vids, brute_cnt, dist_result.distances_snap, true))) {
       LOG_WARN("failed to query snapshot vids", K(ret), K(brute_cnt));
-    }
+    } 
   }
 
   return ret;
@@ -1837,19 +1838,19 @@ int ObDASHNSWScanIter::get_from_embedded_table(ObIAllocator &allocator, ObString
 
   const ObDASScanCtDef *embedded_table_ctdef = vec_aux_ctdef_->get_vec_aux_tbl_ctdef(vec_aux_ctdef_->get_embedded_tbl_idx(), ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN);
   ObDASScanRtDef *embedded_table_rtdef = vec_aux_rtdef_->get_vec_aux_tbl_rtdef(vec_aux_ctdef_->get_embedded_tbl_idx());
-
+  
   if (OB_ISNULL(embedded_table_ctdef) || OB_ISNULL(embedded_table_rtdef)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("embedded table ctdef or rtdef is null", K(ret), KP(embedded_table_ctdef), KP(embedded_table_rtdef));
   } else {
     int output_row_cnt = embedded_table_ctdef->pd_expr_spec_.access_exprs_.count();
-
+    
     if (OB_UNLIKELY(output_row_cnt <= 0)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid output row cnt", K(ret), K(output_row_cnt));
     } else {
       bool found_vector_column = false;
-
+      
       for (int64_t i = 0; OB_SUCC(ret) && i < output_row_cnt; i++) {
         ObExpr *expr = embedded_table_ctdef->pd_expr_spec_.access_exprs_.at(i);
         if (OB_ISNULL(expr)) {
@@ -1873,14 +1874,14 @@ int ObDASHNSWScanIter::get_from_embedded_table(ObIAllocator &allocator, ObString
           }
         }
       }
-
+      
       if (OB_SUCC(ret) && !found_vector_column) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("no vector column found", K(ret), K(output_row_cnt));
       }
     }
   }
-
+  
   return ret;
 }
 
@@ -2968,7 +2969,20 @@ int ObDASHNSWScanIter::process_adaptor_state_post_filter_once(
     ObVidAdaLookupStatus last_state = ObVidAdaLookupStatus::STATES_ERROR;
     ObVidAdaLookupStatus cur_state = ObVidAdaLookupStatus::STATES_INIT;
 
-    if (adaptor->get_can_skip() == SKIP) {
+    if (skip_delta_buffer_) {
+      // HNSW + heap + async mode: skip delta_buffer, directly query index_id_table
+      if (OB_FAIL(ada_ctx->init_bitmaps())) {
+        LOG_WARN("failed to init bitmaps", K(ret));
+      } else {
+        // Force to query index_id_table to build bitmap
+        ada_ctx->set_status(PVQ_LACK_SCN);
+        ada_ctx->set_flag(PVQP_SECOND);
+        cur_state = ObVidAdaLookupStatus::QUERY_INDEX_ID_TBL;
+        LOG_DEBUG("async mode: skip delta_buffer, query index_id_table directly",
+                  K(skip_delta_buffer_));
+      }
+    } else if (adaptor->get_can_skip() == SKIP) {
+      // Normal skip mode: decide path based on rb_flag_
       if (OB_FAIL(ada_ctx->init_bitmaps())) {
         LOG_WARN("failed to init bitmaps", K(ret));
       } else {
@@ -3025,6 +3039,10 @@ int ObDASHNSWScanIter::prepare_state(const ObVidAdaLookupStatus& cur_state, ObVe
 
   switch(cur_state) {
     case ObVidAdaLookupStatus::STATES_INIT: {
+      if (skip_delta_buffer_) {
+        // skip delta buffer scan when HNSW + heap table + sync_mode=async
+        break;
+      }
       if (OB_FAIL(do_delta_buf_table_scan())) {
         LOG_WARN("failed to do delta buf table scan.", K(ret));
       }
@@ -3069,6 +3087,11 @@ int ObDASHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cur_state,
   int ret = OB_SUCCESS;
   switch(cur_state) {
     case ObVidAdaLookupStatus::STATES_INIT: {
+      if (skip_delta_buffer_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("should not reach STATES_INIT when skip_delta_buffer", K(ret));
+        break;
+      }
       ObNewRowIterator *real_delta_buf_iter = delta_buf_iter_->get_output_result_iter();
       if (OB_FAIL(adaptor.check_delta_buffer_table_readnext_status(&ada_ctx, real_delta_buf_iter, delta_buf_scan_param_.snapshot_.core_.version_))) {
         LOG_WARN("failed to check delta buffer table readnext status.", K(ret));
@@ -3076,6 +3099,11 @@ int ObDASHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cur_state,
       break;
     }
     case ObVidAdaLookupStatus::QUERY_ROWKEY_VEC: {
+      if (skip_delta_buffer_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("should not reach QUERY_ROWKEY_VEC when skip_delta_buffer", K(ret));
+        break;
+      }
       if (OB_FAIL(adaptor.complete_delta_buffer_table_data(&ada_ctx))) {
         LOG_WARN("failed to complete delta buffer table data.", K(ret));
       }
@@ -3086,7 +3114,7 @@ int ObDASHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cur_state,
       if (!index_id_scan_param_.snapshot_.is_valid() || !index_id_scan_param_.snapshot_.core_.version_.is_valid()) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get index id scan param invalid.", K(ret));
-      } else if (OB_FAIL(adaptor.check_index_id_table_readnext_status(&ada_ctx, real_index_id_iter, index_id_scan_param_.snapshot_.core_.version_))) {
+      } else if (OB_FAIL(adaptor.check_index_id_table_readnext_status(&ada_ctx, real_index_id_iter, index_id_scan_param_.snapshot_.core_.version_, skip_delta_buffer_, ls_id_))) {
         LOG_WARN("failed to check index id table readnext status.", K(ret));
       }
       break;
@@ -3290,7 +3318,7 @@ int ObDASHNSWScanIter::set_vector_query_condition(ObVectorQueryConditions &query
     } else {
       query_cond.query_vector_ = hybrid_search_vec_;
     }
-    LOG_TRACE("vector index show basic hnsw query cond", K(query_cond.only_complete_data_), K(query_cond.ef_search_), K(query_cond.query_limit_),
+    LOG_TRACE("vector index show basic hnsw query cond", K(query_cond.only_complete_data_), K(query_cond.ef_search_), K(query_cond.query_limit_), 
                                             K(query_cond.extra_column_count_), K(query_cond.query_vector_));
   }
   return ret;
@@ -3448,7 +3476,7 @@ int ObDASHNSWScanIter::prepare_complete_vector_data(ObVectorQueryAdaptorResultCo
       vid.get_obj_ptr()->meta_.set_uint64();
       rowkey = &vid;
     }
-
+    
     if (OB_SUCC(ret)) {
       if (is_hybrid_) {
       // For hybrid index, use embedded table to get vector data
@@ -3464,8 +3492,8 @@ int ObDASHNSWScanIter::prepare_complete_vector_data(ObVectorQueryAdaptorResultCo
           }
         }
       }
-    }
-
+    } 
+    
     if (ret == OB_ITER_END) {
       ada_ctx.set_vector(i, nullptr, 0);
       ret = OB_SUCCESS;
@@ -3719,7 +3747,7 @@ int ObDASHNSWScanIter::do_embedded_table_scan()
   const ObDASScanCtDef *embedded_tbl_ctdef = vec_aux_ctdef_->get_vec_aux_tbl_ctdef(
         vec_aux_ctdef_->get_embedded_tbl_idx(), ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN);
     ObDASScanRtDef *embedded_tbl_rtdef = vec_aux_rtdef_->get_vec_aux_tbl_rtdef(vec_aux_ctdef_->get_embedded_tbl_idx());
-return do_aux_table_scan(embedded_table_iter_first_scan_,
+return do_aux_table_scan(embedded_table_iter_first_scan_, 
                            embedded_table_scan_param_,
                            embedded_tbl_ctdef,
                            embedded_tbl_rtdef,

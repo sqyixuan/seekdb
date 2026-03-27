@@ -5094,15 +5094,17 @@ int ObLSTabletService::insert_vector_index_rows(
     ObPluginVectorIndexAdapterGuard adaptor_guard;
     share::SCN current_scn;
     ObString vec_idx_param = run_ctx.dml_param_.table_param_->get_data_table().get_vec_index_param();
-    if (OB_FAIL(vec_index_service->acquire_adapter_guard(run_ctx.store_ctx_.ls_id_,
-                                                        run_ctx.relative_table_.get_tablet_id(),
-                                                        ObIndexType::INDEX_TYPE_VEC_INDEX_ID_LOCAL,
-                                                        adaptor_guard,
-                                                        &vec_idx_param))) {
-      LOG_WARN("fail to get ObPluginVectorIndexAdapter", K(ret), K(run_ctx.store_ctx_), K(run_ctx.relative_table_));
-    } else {
+    int tmp_ret = vec_index_service->acquire_adapter_guard(run_ctx.store_ctx_.ls_id_,
+                                                           run_ctx.relative_table_.get_tablet_id(),
+                                                           ObIndexType::INDEX_TYPE_VEC_INDEX_ID_LOCAL,
+                                                           adaptor_guard,
+                                                           &vec_idx_param);
+    if (OB_SUCCESS == tmp_ret) {
       adaptor_guard.get_adatper()->update_index_id_dml_scn(run_ctx.store_ctx_.mvcc_acc_ctx_.snapshot_.version_);
       adaptor_guard.get_adatper()->update_can_skip(NOT_SKIP);
+    } else {
+      LOG_WARN("acquire_adapter_guard for index_id table failed, skip adapter update",
+               K(tmp_ret), K(run_ctx.relative_table_.get_tablet_id()));
     }
   }
   return ret;
@@ -6585,10 +6587,11 @@ int ObLSTabletService::get_multi_ranges_cost(
       LOG_WARN("fail to split ranges", K(ret), K(ranges));
     } else {
       ObPartitionMultiRangeSpliter spliter;
-      if (OB_FAIL(spliter.get_multi_range_size(is_splited_range ? new_ranges : ranges,
-                                               iter.get_tablet()->get_rowkey_read_info(),
-                                               *iter.table_iter(),
-                                               total_size))) {
+      if (OB_FAIL(spliter.get_multi_range_size(
+          is_splited_range ? new_ranges : ranges,
+          iter.get_tablet()->get_rowkey_read_info(),
+          *iter.table_iter(),
+          total_size))) {
         LOG_WARN("fail to get multi ranges cost", K(ret), K(ranges));
       }
     }
@@ -6605,43 +6608,36 @@ int ObLSTabletService::split_multi_ranges(
     ObArrayArray<ObStoreRange> &multi_range_split_array)
 {
   int ret = OB_SUCCESS;
-
   ObTabletTableIterator iter;
   const int64_t max_snapshot_version = INT64_MAX;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
-  } else if (OB_FAIL(get_read_tables(tablet_id,
-                                     timeout_us,
-                                     max_snapshot_version,
-                                     max_snapshot_version,
-                                     iter,
-                                     false /*allow_no_ready_read*/,
-                                     true /*need_split_src_table*/,
-                                     true /*need_split_dst_table*/))) {
+  } else if (OB_FAIL(get_read_tables(tablet_id, timeout_us, max_snapshot_version, max_snapshot_version, iter, false/*allow_no_ready_read*/, true/*need_split_src_table*/, true/*need_split_dst_table*/))) {
     LOG_WARN("fail to get all read tables", K(ret), K(tablet_id), K(max_snapshot_version));
   } else {
     ObPartitionSplitQuery split_query;
     ObSEArray<ObStoreRange, 16> new_ranges;
     const ObTabletHandle &tablet_handle = iter.get_tablet_handle();
     bool is_splited_range = false;
-    if (OB_FAIL(split_query.split_multi_ranges_if_need(
-            ranges, new_ranges, allocator, tablet_handle, is_splited_range))) {
+    if (OB_FAIL(split_query.split_multi_ranges_if_need(ranges, new_ranges,
+        allocator,
+        tablet_handle,
+        is_splited_range))) {
       LOG_WARN("fail to split ranges", K(ret), K(ranges));
     } else {
       ObPartitionMultiRangeSpliter spliter;
-      if (OB_FAIL(spliter.get_split_multi_ranges(is_splited_range ? new_ranges : ranges,
-                                                 expected_task_count,
-                                                 iter.get_tablet()->get_rowkey_read_info(),
-                                                 *iter.table_iter(),
-                                                 allocator,
-                                                 multi_range_split_array,
-                                                 /* for compaction */ false))) {
+      if (OB_FAIL(spliter.get_split_multi_ranges(
+          is_splited_range ? new_ranges : ranges,
+          expected_task_count,
+          iter.get_tablet()->get_rowkey_read_info(),
+          *iter.table_iter(),
+          allocator,
+          multi_range_split_array))) {
         LOG_WARN("fail to get splitted ranges", K(ret), K(ranges), K(expected_task_count));
       }
     }
   }
-
   return ret;
 }
 
