@@ -66,8 +66,7 @@ public:
       share::ObIServerTrace &server_trace,
       ObMajorMergeInfoManager &merge_info_mgr) = 0;
   virtual int set_basic_info(
-      const share::ObFreezeInfo &freeze_info,
-      const int64_t expected_epoch) = 0;
+      const share::ObFreezeInfo &freeze_info) = 0;
   virtual int clear_cached_info() = 0;
   virtual int check_progress() = 0;
   virtual void reset_uncompacted_tablets() {};
@@ -98,8 +97,7 @@ public:
       ObMajorMergeInfoManager &merge_info_mgr) override;
 
   virtual int set_basic_info(
-    const share::ObFreezeInfo &freeze_info,
-    const int64_t expected_epoch) override; // For each round major_freeze, need invoke this once.
+    const share::ObFreezeInfo &freeze_info) override; // For each round major_freeze, need invoke this once.
   virtual int clear_cached_info() override;
   virtual int get_uncompacted_tablets(
     common::ObArray<share::ObTabletReplica> &uncompacted_tablets,
@@ -150,13 +148,12 @@ private:
   int loop_index_ckm_validate_array();
   int update_finish_index_cnt_for_data_table(
     const uint64_t data_table_id,
-    const int64_t finish_index_cnt,
+    const uint64_t finish_index_cnt,
     bool &idx_validate_finish);
   int deal_with_validated_table(
     const uint64_t data_table_id,
     const int64_t finish_index_cnt,
     const compaction::ObTableCkmItems &data_table_ckm);
-  int rebuild_table_compaction_map(const int64_t table_id_count);
   bool should_ignore_cur_table(const ObSimpleTableSchemaV2 *simple_schema);
   int deal_with_rest_data_table();
   bool is_extra_check_round() const { return 0 == (loop_cnt_ % 8); } // check every 8 rounds
@@ -166,7 +163,7 @@ private:
     const uint64_t table_id,
     bool &is_table_valid,
     ObIArray<const ObSimpleTableSchemaV2 *> &index_schemas);
-  int rebuild_tablet_status_map();
+  int rebuild_map_by_tablet_cnt();
   int prepare_fts_group(
     const int64_t table_id,
     const ObIArray<const ObSimpleTableSchemaV2 *> &index_schemas);
@@ -187,7 +184,6 @@ private:
   int last_errno_;
   uint64_t tenant_id_;
   share::ObFreezeInfo freeze_info_;
-  uint64_t expected_epoch_;
   common::ObMySQLProxy *sql_proxy_;
   share::schema::ObMultiVersionSchemaService *schema_service_;
   share::ObIServerTrace *server_trace_;

@@ -886,10 +886,6 @@ private:
                                common::ObMySQLTransaction &trans);
   virtual int init_tenant_srs(const uint64_t tenant_id,
                               common::ObMySQLTransaction &trans);
-  virtual int init_sys_tenant_charset(common::ObMySQLTransaction &trans);
-
-  virtual int init_sys_tenant_collation(common::ObMySQLTransaction &trans);
-  virtual int init_sys_tenant_privilege(common::ObMySQLTransaction &trans);
   int check_tenant_exist(share::schema::ObSchemaGetterGuard &schema_guard,
                          const common::ObString &tenant_name,
                          bool &is_exist);

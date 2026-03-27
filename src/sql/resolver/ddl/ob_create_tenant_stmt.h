@@ -44,7 +44,6 @@ public:
   void set_if_not_exist(const bool is_exist);
   void set_charset_type(const common::ObCharsetType type);
   void set_collation_type(const common::ObCollationType type);
-  void set_enable_arbitration_service(const bool enable_arbitration_service);
   void set_read_only(const bool read_only)
   {
     create_tenant_arg_.tenant_schema_.set_read_only(read_only);
@@ -55,7 +54,6 @@ public:
   int assign_variable_nodes(const common::ObIArray<ObVariableSetStmt::VariableSetNode> &other);
   int set_default_tablegroup_name(const common::ObString &tablegroup_name);
   virtual obrpc::ObDDLArg &get_ddl_arg() { return create_tenant_arg_; }
-  void set_create_standby_tenant();
   void set_log_restore_source(const common::ObString &log_restore_source);
 private:
   obrpc::ObCreateTenantArg create_tenant_arg_;

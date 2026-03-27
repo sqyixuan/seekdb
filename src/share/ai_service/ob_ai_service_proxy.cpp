@@ -16,7 +16,6 @@
 
 #include "share/ai_service/ob_ai_service_proxy.h"
 #include "share/ob_server_struct.h"
-#include "share/ob_service_epoch_proxy.h"
 #include "share/ob_max_id_fetcher.h"
 #include "storage/tablelock/ob_lock_inner_connection_util.h"
 #include "observer/ob_inner_sql_connection.h"

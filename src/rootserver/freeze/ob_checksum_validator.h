@@ -80,7 +80,6 @@ public:
       cross_cluster_ckm_sync_finish_(false),
       stop_(stop),
       tenant_id_(tenant_id),
-      expected_epoch_(OB_INVALID_ID),
       table_id_(OB_INVALID_ID),
       freeze_info_(),
       major_merge_start_us_(0),
@@ -107,8 +106,7 @@ public:
     ObMySQLProxy &sql_proxy);
 
   int set_basic_info(
-    const share::ObFreezeInfo &freeze_info,
-    const int64_t expected_epoch);
+    const share::ObFreezeInfo &freeze_info);
   const compaction::ObTableCompactionInfo &get_table_compaction_info() const
   {
     return table_compaction_info_;
@@ -183,7 +181,6 @@ private:
   bool cross_cluster_ckm_sync_finish_;
   volatile bool &stop_;
   uint64_t tenant_id_;
-  int64_t expected_epoch_;
   uint64_t table_id_;
   share::ObFreezeInfo freeze_info_;
   int64_t major_merge_start_us_;

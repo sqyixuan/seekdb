@@ -117,8 +117,8 @@ int ObTTLUtil::parse(const char* str, ObTTLDutyDuration& duration)
       LOG_WARN("fail to parse str", K(ret));
     } else {
       ObString first_param, second_param;
-      first_param.assign_ptr(begin + 1, static_cast<ObString::obstr_size_t>(split - begin - 1));
-      second_param.assign_ptr(split + 1, static_cast<ObString::obstr_size_t>(end - split - 1));
+      first_param.assign_ptr(begin + 1, split - begin - 1);
+      second_param.assign_ptr(split + 1, end - split - 1);
 
       if (OB_FAIL(parse_ttl_daytime(first_param, duration.begin_)) ||
           OB_FAIL(parse_ttl_daytime(second_param, duration.end_))) {
@@ -497,68 +497,6 @@ int ObTTLUtil::read_tenant_ttl_task(uint64_t tenant_id,
                                     ObIAllocator *allocator)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  if (!is_valid_tenant_id(tenant_id)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(sql.assign_fmt("SELECT * FROM %s WHERE table_id = '%ld'%s", OB_ALL_KV_TTL_TASK_TNAME, table_id, for_update ? " FOR UPDATE" : ""))) {
-    LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
-  } else {
-    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-      sqlclient::ObMySQLResult *result = nullptr;
-      if (OB_FAIL(sql_client.read(res, gen_meta_tenant_id(tenant_id), sql.ptr()))) {
-        LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(sql));
-      } else if (OB_ISNULL(result = res.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to get sql result", KR(ret), K(tenant_id), K(sql));
-      } else if (OB_FAIL(result->next())) {
-        if (OB_ITER_END != ret) {
-          LOG_WARN("fail to get next result");
-        }
-      } else {
-        EXTRACT_INT_FIELD_MYSQL(*result, "tenant_id", ttl_record.tenant_id_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "table_id", ttl_record.table_id_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "tablet_id", ttl_record.tablet_id_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "task_id", ttl_record.task_id_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "task_start_time", ttl_record.task_start_time_, int64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "task_update_time", ttl_record.task_update_time_, int64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "trigger_type", ttl_record.trigger_type_, int64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "status", ttl_record.status_, int64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "ttl_del_cnt", ttl_record.ttl_del_cnt_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "max_version_del_cnt", ttl_record.max_version_del_cnt_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "scan_cnt", ttl_record.scan_cnt_, uint64_t);
-        EXTRACT_INT_FIELD_MYSQL(*result, "task_type", ttl_record.task_type_, ObTTLType);
-        if (OB_SUCC(ret) && OB_NOT_NULL(allocator)) {
-          ObString rowkey; 
-          char *rowkey_buf = nullptr;
-          EXTRACT_VARCHAR_FIELD_MYSQL(*result, "row_key", rowkey);
-          if (OB_SUCC(ret) && !rowkey.empty()) {
-            if (OB_ISNULL(rowkey_buf = static_cast<char *>(allocator->alloc(rowkey.length())))) {
-              ret = OB_ALLOCATE_MEMORY_FAILED;
-              LOG_WARN("failt to allocate memory", K(ret), K(rowkey));
-            } else {
-              MEMCPY(rowkey_buf, rowkey.ptr(), rowkey.length());
-              ttl_record.row_key_.assign(rowkey_buf, rowkey.length());
-            }
-          }
-        }
-        if (OB_SUCC(ret) && OB_NOT_NULL(allocator)) {
-          ObString err_msg; 
-          char *err_buf = nullptr;
-          EXTRACT_VARCHAR_FIELD_MYSQL(*result, "ret_code", err_msg);
-          if (OB_SUCC(ret) && !err_msg.empty()) {
-            if (OB_ISNULL(err_buf = static_cast<char *>(allocator->alloc(err_msg.length())))) {
-              ret = OB_ALLOCATE_MEMORY_FAILED;
-              LOG_WARN("failt to allocate memory", K(ret), K(err_msg));
-            } else {
-              MEMCPY(err_buf, err_msg.ptr(), err_msg.length());
-              ttl_record.ret_code_.assign(err_buf, err_msg.length());
-            }
-          }
-        }
-      }
-    } 
-  }
   return ret;
 }
 
@@ -614,34 +552,6 @@ int ObTTLUtil::move_task_to_history_table(uint64_t tenant_id, uint64_t task_id,
                                           int64_t batch_size, int64_t &move_rows)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  int64_t insert_rows = 0;
-  int64_t delete_rows = 0;
-  if (OB_FAIL(sql.assign_fmt("replace into %s select gmt_create, gmt_modified,"
-              " tenant_id, task_id, table_id, tablet_id, task_start_time,"
-              " task_update_time, trigger_type, if(status=4, 4, 3) as status,"
-              " ttl_del_cnt, max_version_del_cnt, scan_cnt, row_key, ret_code, task_type from %s"
-              " where task_id = %ld and tablet_id >= 0  and table_id >= 0"
-              " order by tenant_id, task_id, table_id, tablet_id LIMIT %ld",
-              share::OB_ALL_KV_TTL_TASK_HISTORY_TNAME,
-              share::OB_ALL_KV_TTL_TASK_TNAME,
-              task_id, batch_size))) {
-    LOG_WARN("sql assign fmt failed", K(ret));
-  } else if (OB_FAIL(proxy.write(gen_meta_tenant_id(tenant_id), sql.ptr(), insert_rows))) {
-    LOG_WARN("fail to execute sql", K(ret), K(sql), K(tenant_id));
-  } else if (OB_FAIL(sql.assign_fmt("delete from %s"
-          " where task_id = %ld and tablet_id >= 0 and table_id >= 0"
-          " order by tenant_id, task_id, table_id, tablet_id LIMIT %ld ",
-          share::OB_ALL_KV_TTL_TASK_TNAME,
-          task_id, batch_size))) {
-    LOG_WARN("sql assign fmt failed", K(ret));
-  } else if (OB_FAIL(proxy.write(gen_meta_tenant_id(tenant_id), sql.ptr(), delete_rows))) {
-    LOG_WARN("fail to execute sql", K(ret), K(sql), K(tenant_id));
-  } else {
-    move_rows = delete_rows;
-    LOG_INFO("success to execute sql", K(ret), K(tenant_id), K(sql), K(insert_rows), K(delete_rows));
-  }
-
   return ret;
 }
 
@@ -650,28 +560,6 @@ int ObTTLUtil::move_tenant_task_to_history_table(const ObTTLStatusKey &key,
                                                  common::ObMySQLTransaction& proxy)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  int64_t insert_rows = 0;
-  int64_t delete_rows = 0;
-  if (OB_FAIL(sql.assign_fmt("insert into %s select * from %s "
-              " where task_id = %ld and tablet_id = %ld",
-              share::OB_ALL_KV_TTL_TASK_HISTORY_TNAME,
-              share::OB_ALL_KV_TTL_TASK_TNAME,
-              key.task_id_, key.tablet_id_))) {
-    LOG_WARN("sql assign fmt failed", K(ret));
-  } else if (OB_FAIL(proxy.write(gen_meta_tenant_id(key.tenant_id_), sql.ptr(), insert_rows))) {
-    LOG_WARN("fail to execute sql", K(ret), K(sql), K(key.tenant_id_));
-  } else if (OB_FAIL(sql.assign_fmt("delete from %s"
-          " where task_id = %ld and tablet_id = %ld",
-          share::OB_ALL_KV_TTL_TASK_TNAME,
-          key.task_id_, key.tablet_id_))) {
-    LOG_WARN("sql assign fmt failed", K(ret));
-  } else if (OB_FAIL(proxy.write(gen_meta_tenant_id(key.tenant_id_), sql.ptr(), delete_rows))) {
-    LOG_WARN("fail to execute sql", K(ret), K(sql), K(key.tenant_id_));
-  } else {
-    LOG_INFO("success to execute sql", K(ret), K(key.tenant_id_), K(sql), K(insert_rows), K(delete_rows));
-  }
-
   return ret;
 
 }
@@ -1430,46 +1318,6 @@ int ObTTLUtil::check_task_status_from_sys_table(uint64_t tenant_id, common::ObIS
                                                 ObTabletID& tablet_id, bool &is_exists, bool &is_end_state)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  ObTTLTaskStatus status = ObTTLTaskStatus::OB_TTL_TASK_INVALID;
-  if (OB_FAIL(sql.assign_fmt("(SELECT STATUS FROM %s WHERE tenant_id = %ld AND table_id = %ld"
-    " AND tablet_id = %ld AND task_id = %ld limit 1) UNION (SELECT STATUS FROM %s WHERE"
-    " table_id = %ld AND tablet_id = %ld AND task_id = %ld limit 1)",
-      share::OB_ALL_KV_TTL_TASK_HISTORY_TNAME, tenant_id, table_id, tablet_id.id(), task_id,
-      share::OB_ALL_KV_TTL_TASK_TNAME, table_id, tablet_id.id(), task_id))) {
-    LOG_WARN("sql assign fmt failed", K(ret));
-  } else {
-    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-      sqlclient::ObMySQLResult* result = nullptr;
-      if (OB_FAIL(proxy.read(res, gen_meta_tenant_id(tenant_id), sql.ptr()))) {
-        LOG_WARN("fail to execute sql", KR(ret), K(sql));
-      } else if (OB_ISNULL(result = res.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("error unexpected, query result must not be NULL", K(ret));
-      } else if (OB_FAIL(result->next())) {
-        if (OB_ITER_END == ret) {
-          // not exist, refresh ret
-          ret = OB_SUCCESS;
-        } else {
-          LOG_WARN("fail to get next row", K(ret));
-        }
-        } else {
-          int64_t temp_status = 0;
-        EXTRACT_INT_FIELD_MYSQL(*result, "STATUS", temp_status, int64_t);
-        status = EVAL_TASK_PURE_STATUS(temp_status);
-        if (OB_SUCCESS == result->next()) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected ttl task record count", KR(ret), K(tenant_id), K(task_id), K(table_id), K(tablet_id));
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    is_exists = (status != ObTTLTaskStatus::OB_TTL_TASK_INVALID);  
-    is_end_state = ObTTLUtil::is_ttl_task_status_end_state(status);
-  }
-
   return ret;
 }
 

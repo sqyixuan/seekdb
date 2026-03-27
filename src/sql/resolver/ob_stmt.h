@@ -248,25 +248,11 @@ public:
     return (stmt_type == stmt::T_START_TRANS || stmt_type == stmt::T_END_TRANS);
   }
 
-  static inline bool is_physical_restore_stmt(stmt::StmtType stmt_type)
-  {
-    return (stmt_type == stmt::T_PHYSICAL_RESTORE_TENANT);
-  }
-
   static inline bool is_ddl_stmt(stmt::StmtType stmt_type, bool has_global_variable)
   {
     return (
         // tenant resource
-         stmt_type == stmt::T_CREATE_RESOURCE_POOL
-            || stmt_type == stmt::T_DROP_RESOURCE_POOL
-            || stmt_type == stmt::T_ALTER_RESOURCE_POOL
-            || stmt_type == stmt::T_SPLIT_RESOURCE_POOL
-            || stmt_type == stmt::T_MERGE_RESOURCE_POOL
-            || stmt_type == stmt::T_CREATE_RESOURCE_UNIT
-            || stmt_type == stmt::T_ALTER_RESOURCE_UNIT
-            || stmt_type == stmt::T_DROP_RESOURCE_UNIT
-            || stmt_type == stmt::T_CREATE_TENANT
-            || stmt_type == stmt::T_CREATE_STANDBY_TENANT
+         stmt_type == stmt::T_CREATE_TENANT
             || stmt_type == stmt::T_DROP_TENANT
             || stmt_type == stmt::T_MODIFY_TENANT
             || stmt_type == stmt::T_LOCK_TENANT
@@ -274,7 +260,6 @@ public:
             || stmt_type == stmt::T_CREATE_DATABASE
             || stmt_type == stmt::T_ALTER_DATABASE
             || stmt_type == stmt::T_DROP_DATABASE
-            || stmt_type == stmt::T_FORK_DATABASE
             // tablegroup
             || stmt_type == stmt::T_CREATE_TABLEGROUP
             || stmt_type == stmt::T_ALTER_TABLEGROUP
@@ -285,7 +270,6 @@ public:
             || stmt_type == stmt::T_RENAME_TABLE
             || stmt_type == stmt::T_TRUNCATE_TABLE
             || stmt_type == stmt::T_CREATE_TABLE_LIKE
-            || stmt_type == stmt::T_FORK_TABLE
             || stmt_type == stmt::T_ALTER_TABLE
             || stmt_type == stmt::T_SET_TABLE_COMMENT
             // column
@@ -397,16 +381,7 @@ public:
   {
     return (
         // tenant resource
-        stmt_type == stmt::T_CREATE_RESOURCE_POOL
-        || stmt_type == stmt::T_DROP_RESOURCE_POOL
-        || stmt_type == stmt::T_ALTER_RESOURCE_POOL
-        || stmt_type == stmt::T_SPLIT_RESOURCE_POOL
-        || stmt_type == stmt::T_MERGE_RESOURCE_POOL
-        || stmt_type == stmt::T_CREATE_RESOURCE_UNIT
-        || stmt_type == stmt::T_ALTER_RESOURCE_UNIT
-        || stmt_type == stmt::T_DROP_RESOURCE_UNIT
-        || stmt_type == stmt::T_CREATE_TENANT
-        || stmt_type == stmt::T_CREATE_STANDBY_TENANT
+        stmt_type == stmt::T_CREATE_TENANT
         || stmt_type == stmt::T_DROP_TENANT
         || stmt_type == stmt::T_MODIFY_TENANT
         || stmt_type == stmt::T_LOCK_TENANT
@@ -566,16 +541,7 @@ public:
   static inline bool is_ddl_stmt_allowed_in_dropping_tenant(stmt::StmtType stmt_type, bool has_global_variable)
   {
     return (// tenant resource
-            stmt_type == stmt::T_CREATE_RESOURCE_POOL
-            || stmt_type == stmt::T_DROP_RESOURCE_POOL
-            || stmt_type == stmt::T_ALTER_RESOURCE_POOL
-            || stmt_type == stmt::T_SPLIT_RESOURCE_POOL
-            || stmt_type == stmt::T_MERGE_RESOURCE_POOL
-            || stmt_type == stmt::T_CREATE_RESOURCE_UNIT
-            || stmt_type == stmt::T_ALTER_RESOURCE_UNIT
-            || stmt_type == stmt::T_DROP_RESOURCE_UNIT
-            || stmt_type == stmt::T_CREATE_TENANT
-            || stmt_type == stmt::T_CREATE_STANDBY_TENANT
+            stmt_type == stmt::T_CREATE_TENANT
             || stmt_type == stmt::T_DROP_TENANT
             || stmt_type == stmt::T_MODIFY_TENANT
             || stmt_type == stmt::T_LOCK_TENANT
@@ -624,16 +590,7 @@ public:
   {
     return (
         // tenant resource
-         stmt_type == stmt::T_CREATE_RESOURCE_POOL
-            || stmt_type == stmt::T_DROP_RESOURCE_POOL
-            || stmt_type == stmt::T_ALTER_RESOURCE_POOL
-            || stmt_type == stmt::T_SPLIT_RESOURCE_POOL
-            || stmt_type == stmt::T_MERGE_RESOURCE_POOL
-            || stmt_type == stmt::T_CREATE_RESOURCE_UNIT
-            || stmt_type == stmt::T_ALTER_RESOURCE_UNIT
-            || stmt_type == stmt::T_DROP_RESOURCE_UNIT
-            || stmt_type == stmt::T_CREATE_TENANT
-            || stmt_type == stmt::T_CREATE_STANDBY_TENANT
+            stmt_type == stmt::T_CREATE_TENANT
             || stmt_type == stmt::T_DROP_TENANT
             || stmt_type == stmt::T_MODIFY_TENANT
             || stmt_type == stmt::T_LOCK_TENANT
