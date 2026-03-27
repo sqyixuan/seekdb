@@ -150,14 +150,6 @@ private:
   int get_next_tenant_server_(const common::ObString &table_name,
                               const share::schema::ObTableSchema *table_schema);
   int get_tenant_servers_(const uint64_t tenant_id);
-  int get_replica_type_from_locality_(
-    const share::schema::ZoneLocalityIArray &zone_locality_array,
-    const ObZone &zone,
-    ObReplicaType &replica_type);
-  int fill_tenant_servers_(
-      const uint64_t tenant_id,
-      common::sqlclient::ObMySQLResult &result,
-      ObIArray<int64_t> &first_idx_in_zone);
   int get_tenant_servers_by_join_(
       const uint64_t tenant_id,
       ObIArray<int64_t> &first_idx_in_zone);

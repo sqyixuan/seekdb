@@ -19,7 +19,6 @@
 
 #include <typeinfo>
 #include "share/ob_define.h"
-#include "share/ob_leader_election_waiter.h"
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "rootserver/ob_ddl_service.h"
 #include "rootserver/ob_unit_manager.h"
@@ -38,12 +37,10 @@ class ObISQLClient;
 namespace obrpc
 {
 class ObSrvRpcProxy;
-class ObAdminStorageArg;
 }
 
 namespace share
 {
-class ObLSTableOperator;
 namespace schema
 {
 class ObMultiVersionSchemaService;
@@ -58,7 +55,6 @@ namespace rootserver
 class ObRsGtsManager;
 struct ObSysStat;
 class ObTableCreator;
-class ObServerZoneOpService;
 
 class ObBaseBootstrap
 {
@@ -92,7 +88,6 @@ class ObPreBootstrap : public ObBaseBootstrap
 public:
   explicit ObPreBootstrap(obrpc::ObSrvRpcProxy &rpc_proxy,
                           const obrpc::ObServerInfoList &rs_list,
-                          share::ObLSTableOperator &lst_operator,
                           common::ObServerConfig &config,
                           const obrpc::ObBootstrapArg &arg,
                           obrpc::ObCommonRpcProxy &rs_rpc_proxy);
@@ -106,17 +101,12 @@ private:
 
   virtual int check_is_all_server_empty(bool &is_empty);
   virtual int check_all_server_bootstrap_mode_match(bool &match);
-#ifdef OB_BUILD_SHARED_STORAGE
-  virtual int check_and_notify_shared_storage_info();
-#endif
   virtual int notify_sys_tenant_server_unit_resource();
   virtual int create_ls();
-  virtual int wait_elect_ls(common::ObAddr &master_rs);
 
   int notify_sys_tenant_config_();
 private:
   volatile bool stop_;
-  share::ObLSLeaderElectionWaiter ls_leader_waiter_;
   int64_t begin_ts_;
   const obrpc::ObBootstrapArg &arg_;
   obrpc::ObCommonRpcProxy &common_proxy_;
@@ -138,7 +128,6 @@ private:
     int ret_;
   };
   explicit ObBootstrap(obrpc::ObSrvRpcProxy &rpc_proxy,
-                       share::ObLSTableOperator &lst_operator,
                        ObDDLService &ddl_service,
                        ObTenantDDLService &tenant_ddl_service,
                        ObUnitManager &unit_mgr,
@@ -147,7 +136,7 @@ private:
                        obrpc::ObCommonRpcProxy &rs_rpc_proxy);
 
   virtual ~ObBootstrap() {}
-  virtual int execute_bootstrap(rootserver::ObServerZoneOpService &server_zone_op_service);
+  virtual int execute_bootstrap();
   int load_all_schema(
       ObDDLService &ddl_service,
       common::ObIArray<share::schema::ObTableSchema> &table_schemas);
@@ -183,12 +172,6 @@ private:
   virtual int init_system_data();
   virtual int init_all_zone_table();
   virtual int init_multiple_zone_deployment_table(common::ObISQLClient &sql_client);
-  virtual int add_servers_in_rs_list(rootserver::ObServerZoneOpService &server_zone_op_service);
-#ifdef OB_BUILD_SHARED_STORAGE
-  virtual int write_shared_storage_args();
-  virtual int write_shared_storage_args_for_zone(const ObZone &zone, const ObRegion &region,
-      const obrpc::ObAdminStorageArg &storage_args);
-#endif
   template<typename SCHEMA>
     int set_replica_options(SCHEMA &schema);
   int build_zone_region_list(
@@ -199,19 +182,12 @@ private:
   int create_sys_resource_pool();
   int gen_sys_resource_pool(share::ObResourcePool &pool);
   int create_sys_tenant();
-  int gen_sys_tenant_locality_str(
-      share::schema::ObTenantSchema &tenant_schema);
-  int gen_multiple_zone_deployment_sys_tenant_locality_str(
-      share::schema::ObTenantSchema &tenant_schema);
   int set_in_bootstrap();
   int add_sys_table_lob_aux_table(
       uint64_t data_table_id,
       ObIArray<ObTableSchema> &table_schemas);
-  int insert_sys_ls_(const share::schema::ObTenantSchema &tenant_schema,
-                     const ObIArray<ObZone> &zone_list);
-
+  int insert_all_tenant_table_(); // TODO@jingyu_cr: delete this function after obd ready
 private:
-  share::ObLSTableOperator &lst_operator_;
   ObDDLService &ddl_service_;
   ObTenantDDLService &tenant_ddl_service_;
   ObUnitManager &unit_mgr_;

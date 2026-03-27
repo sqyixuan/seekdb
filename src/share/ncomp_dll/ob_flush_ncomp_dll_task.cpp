@@ -17,7 +17,6 @@
 
 #include "ob_flush_ncomp_dll_task.h"
 
-#include "share/ob_all_server_tracer.h"
 #include "share/stat/ob_dbms_stats_maintenance_window.h" // ObDbmsStatsMaintenanceWindow
 #include "observer/dbms_scheduler/ob_dbms_sched_table_operator.h" // ObDBMSSchedTableOperator
 

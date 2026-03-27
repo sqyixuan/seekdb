@@ -613,11 +613,10 @@ int ObHTableRegionLocatorHandler::get_tablet_location(ObTableExecCtx &ctx)
               int64_t role = 0;
               while (OB_SUCC(ret) && OB_SUCC(result->next())) {
                 svr_ip.reset();
-                svr_port = 0;
+                svr_port = GCTX.self_addr().get_port();
                 role = 0;
                 EXTRACT_INT_FIELD_MYSQL(*result, "tablet_id", tablet_id, int64_t);
                 EXTRACT_VARCHAR_FIELD_MYSQL(*result, "svr_ip", svr_ip);
-                EXTRACT_INT_FIELD_MYSQL(*result, "svr_port", svr_port, int64_t);
                 EXTRACT_INT_FIELD_MYSQL(*result, "role", role, int64_t);
                 ObString svr_ip_deep_copy;
                 TabletLocation *location = nullptr;

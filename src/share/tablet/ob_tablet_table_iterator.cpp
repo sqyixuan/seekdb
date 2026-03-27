@@ -139,8 +139,7 @@ int ObCompactionTabletMetaIterator::next(ObTabletInfo &tablet_info)
 
 int ObCompactionTabletMetaIterator::init(
     const uint64_t tenant_id,
-    const int64_t batch_size,
-    share::ObIServerTrace &server_trace)
+    const int64_t batch_size)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(batch_size <= 0)) {
@@ -148,12 +147,6 @@ int ObCompactionTabletMetaIterator::init(
     LOG_WARN("invalid argument", KR(ret), K(batch_size));
   } else if (OB_FAIL(ObTabletMetaIterator::inner_init(tenant_id))) {
     LOG_WARN("failed to init", KR(ret), K(tenant_id));
-  // Keep set_filter_not_exist_server before setting all the other filters,
-  // otherwise the other filters may return OB_ENTRY_NOT_EXIST error code.
-  } else if (OB_FAIL(filters_.set_filter_not_exist_server(server_trace))) {
-    LOG_WARN("fail to set not exist server filter", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(filters_.set_filter_permanent_offline(server_trace))) {
-    LOG_WARN("fail to set filter", KR(ret), K(tenant_id));
   } else {
     batch_size_ = batch_size;
     is_inited_ = true;
