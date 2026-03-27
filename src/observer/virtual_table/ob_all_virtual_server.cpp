@@ -17,9 +17,6 @@
 #include "observer/virtual_table/ob_all_virtual_server.h"
 
 #include "observer/ob_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 
 using namespace oceanbase;
 using namespace oceanbase::observer;
@@ -27,7 +24,8 @@ using namespace oceanbase::common;
 
 ObAllVirtualServer::ObAllVirtualServer()
     : ObVirtualTableScannerIterator(),
-      addr_()
+      addr_(),
+      config_(nullptr)
 {
   ip_buf_[0] = '\0';
 }
@@ -36,12 +34,14 @@ ObAllVirtualServer::~ObAllVirtualServer()
 {
   addr_.reset();
   ip_buf_[0] = '\0';
+  config_ = nullptr;
 }
 
-int ObAllVirtualServer::init(common::ObAddr &addr)
+int ObAllVirtualServer::init(common::ObAddr &addr, common::ObServerConfig *config)
 {
   addr_ = addr;
   ip_buf_[0] = '\0';
+  config_ = config;
   return OB_SUCCESS;
 }
 
@@ -65,9 +65,9 @@ int ObAllVirtualServer::inner_get_next_row(ObNewRow *&row)
   } else if (OB_ISNULL(cur_row_.cells_)) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(ERROR, "cur row cell is NULL", KR(ret));
-  } else if (OB_ISNULL(GCTX.ob_service_)) {
+  } else if (OB_ISNULL(GCTX.ob_service_) || OB_ISNULL(config_)) {
     ret = OB_ERR_UNEXPECTED;
-    SERVER_LOG(ERROR, "ob_service_ is NULL", KR(ret), KP(GCTX.ob_service_));
+    SERVER_LOG(ERROR, "ob_service_ is NULL", KR(ret), KP(GCTX.ob_service_), KP(config_));
   } else if (OB_FAIL(GCTX.ob_service_->get_server_resource_info(resource_info))) {
     SERVER_LOG(ERROR, "fail to get_server_resource_info", KR(ret));
   } else if (OB_FAIL(ObIOManager::get_instance().get_device_health_status(dhs,
@@ -95,10 +95,6 @@ int ObAllVirtualServer::inner_get_next_row(ObNewRow *&row)
           break;
         case SVR_PORT:
           cur_row_.cells_[i].set_int(addr_.get_port());
-          break;
-        case ZONE:
-          cur_row_.cells_[i].set_varchar(GCONF.zone.str());
-          cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
         case SQL_PORT:
           cur_row_.cells_[i].set_int(GCONF.mysql_port);
@@ -159,19 +155,11 @@ int ObAllVirtualServer::inner_get_next_row(ObNewRow *&row)
         case MEMORY_LIMIT:
           cur_row_.cells_[i].set_int(GMEMCONF.get_server_memory_limit());
           break;
-        case SS_DATA_DISK_OPERATION_SUGGESTED:
-          if (GCTX.is_shared_storage_mode()) {
-            cur_row_.cells_[i].set_varchar(share::DataDiskSuggestedOperationType::get_str(resource_info.report_data_disk_suggested_operation_));
-          } else {
-            cur_row_.cells_[i].set_null();
-          }
+        case START_SERVICE_TIME:
+          cur_row_.cells_[i].set_int(GCTX.start_service_time_);
           break;
-        case SS_DATA_DISK_SIZE_SUGGESTED:
-          if (GCTX.is_shared_storage_mode()) {
-            cur_row_.cells_[i].set_int(resource_info.report_data_disk_suggested_size_);
-          } else {
-            cur_row_.cells_[i].set_null();
-          }
+        case CREATE_TIME:
+          cur_row_.cells_[i].set_int(config_->server_create_time);
           break;
         default: {
           ret = OB_ERR_UNEXPECTED;
