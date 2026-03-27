@@ -238,7 +238,7 @@ protected:
   int64_t lob_inrow_threshold_;
 };
 
-class ObIVFCenterRowIterator : public ObIVFBaseRowIterator
+class ObIVFCenterRowIterator : public ObIVFBaseRowIterator 
 {
 public:
   ObIVFCenterRowIterator()
@@ -282,7 +282,7 @@ private:
   ObIvfSq8BuildHelper *helper_;
 };
 
-class ObIVFPqRowIterator : public ObIVFBaseRowIterator
+class ObIVFPqRowIterator : public ObIVFBaseRowIterator 
 {
 public:
   ObIVFPqRowIterator()
@@ -613,7 +613,7 @@ private:
   ObIVFCenterRowIterator iter_;
 };
 
-class ObIVFSq8MetaAppendBufferOperator : public ObIVFIndexAppendBufferBaseOperator
+class ObIVFSq8MetaAppendBufferOperator : public ObIVFIndexAppendBufferBaseOperator 
 {
 public:
   explicit ObIVFSq8MetaAppendBufferOperator(ObPipeline *pipeline)
@@ -638,7 +638,7 @@ public:
       ObChunk &ouput_chunk) override;
 };
 
-class ObIVFSq8MetaWriteMacroOperator : public ObVectorIndexWriteMacroBaseOperator
+class ObIVFSq8MetaWriteMacroOperator : public ObVectorIndexWriteMacroBaseOperator 
 {
 public:
   explicit ObIVFSq8MetaWriteMacroOperator(ObPipeline *pipeline)
@@ -685,7 +685,7 @@ public:
       ObChunk &ouput_chunk) override;
 };
 
-class ObIVFPqWriteMacroOperator : public ObVectorIndexWriteMacroBaseOperator
+class ObIVFPqWriteMacroOperator : public ObVectorIndexWriteMacroBaseOperator 
 {
 public:
   explicit ObIVFPqWriteMacroOperator(ObPipeline *pipeline)
@@ -725,7 +725,7 @@ public:
   explicit ObHNSWEmbeddingOperator(ObPipeline *pipeline)
     : ObVectorIndexBaseOperator(pipeline), embedmgr_(nullptr), vec_dim_(-1), rowkey_cnt_(-1),
       text_col_idx_(-1), is_inited_(false), error_ret_code_(OB_SUCCESS),
-      batch_size_(0), current_batch_(nullptr)
+      batch_size_(0), current_batch_(nullptr), http_timeout_us_(20 * 1000 * 1000) /* 20s */
   {}
   ~ObHNSWEmbeddingOperator();
   int init(const ObTabletID &tablet_id);
@@ -771,6 +771,7 @@ private:
   blocksstable::ObBatchDatumRows *cur_datum_rows_;
   int64_t cur_row_in_batch_;
   bool chunk_exhausted_;
+  int64_t http_timeout_us_;
   DISALLOW_COPY_AND_ASSIGN(ObHNSWEmbeddingOperator);
 };
 
@@ -796,7 +797,7 @@ public:
     batch_info_ = nullptr;
     cur_result_pos_ = 0;
     extra_column_idxs_.reset();
-  }
+  }  
 private:
   bool is_embedding_col_invalid(const int64_t column_cnt) const {
     return vector_col_idx_ < 0 || vector_col_idx_ >= column_cnt;
@@ -863,8 +864,8 @@ public:
     }
     return ret;
   }
-
-  virtual int set_remain_block() override {
+  
+  virtual int set_remain_block() override { 
     if (OB_ISNULL(ddl_slice_)) {
       return OB_NOT_INIT;
     } else {
