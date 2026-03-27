@@ -1,0 +1,97 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: chaser.ch
+# owner group: storage
+# tags: emergency operation
+# description:
+#
+--disable_warnings
+drop table if exists t1_emer, t2_emer, t3_emer;
+--enable_warnings
+
+# test create table with row_format option
+create table t1_emer(a int, b varchar(100)) row_format= dynamic;
+create table t2_emer(a int, b varchar(100)) row_format= dynamic;
+connect (obsys_emer,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection obsys_emer;
+let $t1_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't1_emer', table_id, 1);
+let $t2_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't2_emer', table_id, 1);
+
+connection default;
+let $tablet_id1=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_tablet_to_ls where table_id = $t1_id, tablet_id, 1);
+let $tablet_id2=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_tablet_to_ls where table_id = $t2_id, tablet_id, 1);
+let $ls_id=1;
+
+connection obsys_emer;
+--disable_query_log
+eval alter system set _force_skip_encoding_partition_id = "$tablet_id1#1@1";
+--enable_query_log
+sleep 3;
+
+
+connection default;
+insert into t1_emer values(1, repeat('a', 25));
+insert into t2_emer values(1, repeat('a', 25));
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+
+connection obsys_emer;
+let $major_version = query_get_value(select frozen_scn from oceanbase.__all_virtual_freeze_info order by frozen_scn desc limit 1, frozen_scn, 1);
+let $cnt = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ count(1) as cnt from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $tablet_id1 and macro_logic_version = $major_version and row_store_type like '%encoding%', cnt, 1);
+if ($cnt > 0)
+{
+  --echo skip encoding for emergency failed for t1_emer
+}
+
+let $cnt = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ count(1) as cnt from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $tablet_id2 and macro_logic_version = $major_version and row_store_type like '%encoding%', cnt, 1);
+if ($cnt == 0)
+{
+  --echo skip encoding for emergency set for wrong table
+}
+
+connection default;
+
+create table t3_emer(a int, b varchar(100)) row_format= dynamic;
+insert into t3_emer values(1, repeat('a', 25));
+update t1_emer set b =repeat('b', 25);
+update t2_emer set b =repeat('b', 25);
+
+connection obsys_emer;
+let $t3_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't3_emer', table_id, 1);
+alter system set _force_skip_encoding_partition_id = '0#0@0';
+sleep 3;
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+connection default;
+let $__tablet_id3__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_tablet_to_ls where table_id = $t3_id, tablet_id, 1);
+
+connection obsys_emer;
+let $major_version = query_get_value(select frozen_scn from oceanbase.__all_virtual_freeze_info order by frozen_scn desc limit 1, frozen_scn, 1);
+
+let $cnt = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ count(1) as cnt from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $tablet_id1 and macro_logic_version = $major_version and row_store_type like '%encoding%', cnt, 1);
+if ($cnt > 0)
+{
+  --echo skip encoding for emergency failed for all partition
+}
+let $cnt = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ count(1) as cnt from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $tablet_id2 and macro_logic_version = $major_version and row_store_type like '%encoding%', cnt, 1);
+if ($cnt > 0)
+{
+  --echo skip encoding for emergency failed for all partition
+}
+let $cnt = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ count(1) as cnt from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $__tablet_id3__ and macro_logic_version = $major_version and row_store_type like '%encoding%', cnt, 1);
+if ($cnt > 0)
+{
+  --echo skip encoding for emergency failed for all partition
+}
+
+--disable_query_log
+alter system set _force_skip_encoding_partition_id = '';
+--enable_query_log
+
+connection default;
+drop table if exists t1_emer, t2_emer, t3_emer;

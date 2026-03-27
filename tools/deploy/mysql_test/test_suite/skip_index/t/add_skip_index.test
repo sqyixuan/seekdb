@@ -1,0 +1,184 @@
+# owner: baichangmin.bcm
+# tags: storage
+# description: Post-build skip index and reuse non-aggregate-row macro block
+
+
+connect (obsys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, TEST, $OBMYSQL_PORT);
+connect (test, $OBMYSQL_MS0, admin, admin, test, $OBMYSQL_PORT);
+
+
+--disable_query_log
+--disable_warnings
+
+
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+sleep 1;
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+
+--enable_warnings
+--enable_query_log
+
+
+# 定义常量
+let $table_name= tt;
+let $batch_row_count = 1496;
+
+
+# 创建表
+connection test;
+--disable_warnings
+eval DROP TABLE IF EXISTS $table_name;
+--enable_warnings
+eval CREATE TABLE $table_name (
+    id VARCHAR(2000) PRIMARY KEY,
+    val_int INT,
+    val_0 VARCHAR(2000),
+    val_1 VARCHAR(2000),
+    val_2 VARCHAR(2000),
+    val_3 VARCHAR(2000),
+    val_4 VARCHAR(2000),
+    val_5 VARCHAR(2000),
+    val_6 VARCHAR(2000),
+    val_7 VARCHAR(2000),
+    val_8 VARCHAR(2000),
+    val_9 VARCHAR(2000)
+)
+row_format = redundant compression = 'none';
+
+
+# 插入 A 打头的数据
+connection test;
+--disable_query_log
+--disable_result_log
+let $padding_val = LPAD("", 2000, "_");
+let $i = 1;
+while ($i <= $batch_row_count)
+{
+  let $random_value = floor(1 + (rand() * 10000));
+  let $varchar_key = concat("A", LPAD(concat("", $i), 1999, "0"));
+  eval insert into $table_name (id, val_int, val_0, val_1, val_2, val_3, val_4, val_5, val_6, val_7, val_8, val_9) values ($varchar_key, $random_value, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val);
+  inc $i;
+}
+echo "finish insert 1496 rows with A header";
+--enable_query_log
+--enable_result_log
+# eval select count(*) from $table_name;
+
+
+# 获取 tenant_id 和 tablet_id
+connection obsys;
+let $svr_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_server_stat limit 1, svr_ip, 1);
+let $svr_port = query_get_value(select svr_port from oceanbase.__all_virtual_server_stat limit 1, svr_port, 1);
+#let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name='$table_name', tenant_id, 1);
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='$table_name', table_id, 1);
+let $tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id='$table_id', tablet_id, 1);
+
+
+# 等待 major compaction 并且检查中间层宏块 meta 落盘
+connection test;
+alter system major freeze;
+connection obsys;
+sleep 2;
+let $frozen_scn = query_get_value(select FROZEN_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where FROZEN_SCN != LAST_SCN, FROZEN_SCN, 1);
+--disable_query_log
+--disable_result_log
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+--enable_result_log
+
+sleep 2;
+connection obsys;
+--disable_query_log
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "A%";
+# eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "A%";
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'index_block';
+--enable_query_log
+
+
+# 插入 C 打头的数据
+connection test;
+--disable_query_log
+--disable_result_log
+let $padding_val = LPAD("", 2000, "_");
+let $i = 1;
+while ($i <= $batch_row_count)
+{
+  let $random_value = floor(1 + (rand() * 10000));
+  let $varchar_key = concat("C", LPAD(concat("", $i), 1999, "0"));
+  eval insert into $table_name (id, val_int, val_0, val_1, val_2, val_3, val_4, val_5, val_6, val_7, val_8, val_9) values ($varchar_key, $random_value, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val);
+  inc $i;
+}
+echo "finish insert 1496 rows with C header";
+--enable_query_log
+--enable_result_log
+# eval select count(*) from $table_name;
+
+
+# 等待 major compaction 并且检查中间层宏块 meta 落盘
+connection test;
+alter system major freeze;
+connection obsys;
+sleep 2;
+let $frozen_scn = query_get_value(select FROZEN_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where FROZEN_SCN != LAST_SCN, FROZEN_SCN, 1);
+--disable_query_log
+--disable_result_log
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+--enable_result_log
+
+sleep 2;
+connection obsys;
+--disable_query_log
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "C%";
+# eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "C%";
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'index_block';
+--enable_query_log
+
+
+# 在 int 列后建 skip index
+connection test;
+eval alter table $table_name modify column val_int INT SKIP_INDEX(MIN_MAX);
+
+
+# 插入 B 打头的数据
+connection test;
+--disable_query_log
+--disable_result_log
+let $padding_val = LPAD("", 2000, "_");
+let $i = 1;
+while ($i <= $batch_row_count)
+{
+  let $random_value = floor(1 + (rand() * 10000));
+  let $varchar_key = concat("B", LPAD(concat("", $i), 1999, "0"));
+  eval insert into $table_name (id, val_int, val_0, val_1, val_2, val_3, val_4, val_5, val_6, val_7, val_8, val_9) values ($varchar_key, $random_value, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val, $padding_val);
+  inc $i;
+}
+echo "finish insert 1496 rows with B header";
+--enable_query_log
+--enable_result_log
+# eval select count(*) from $table_name;
+
+
+# 等待 major compaction 并且检查中间层宏块 meta 落盘
+connection test;
+alter system major freeze;
+connection obsys;
+sleep 2;
+let $frozen_scn = query_get_value(select FROZEN_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where FROZEN_SCN != LAST_SCN, FROZEN_SCN, 1);
+--disable_query_log
+--disable_result_log
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+--enable_result_log
+
+sleep 2;
+connection obsys;
+--disable_query_log
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "B%";
+# eval select sum(row_count) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'data_block' and end_key like "B%";
+# eval select count(*) from oceanbase.__all_virtual_tablet_sstable_macro_info where svr_ip="$svr_ip" and svr_port=$svr_port and tablet_id=$tablet_id and macro_logic_version = '$frozen_scn' and macro_block_type = 'index_block';
+--enable_query_log

@@ -1,0 +1,202 @@
+# owner: lihongqin.lhq
+# owner group: storage
+# description: this case is use for testing parallel ddl with online split partition
+#
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t2x;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+alter system set debug_sync_timeout = '60s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn3,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn4,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn5,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default;
+
+--echo
+--echo # parallel split on the different partitions
+create table t1(c1 int, c2 int, c3 char(10), c4 int, c5 text, primary key(c1)) partition by range(c1) (
+  partition p0 values less than (10),
+  partition p1 values less than (20),
+  partition p2 values less than (maxvalue));
+create index i1 on t1(c1) local;
+create index i2 on t1(c2) global;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000';
+connection conn1;
+send alter table t1 reorganize partition p0 into (partition p00 values less than (5), partition p01 values less than (10));
+connection conn2;
+sleep 3;
+--error 1493
+alter table t1 reorganize partition p1 into (partition p10 values less than (7), partition p11 values less than (20));
+send alter table t1 reorganize partition p2 into (partition p20 values less than (25), partition p21 values less than (maxvalue));
+connection conn3;
+sleep 3;
+--error 1493
+alter table t1 reorganize partition p1 into (partition p10 values less than (13), partition p11 values less than (16), partition p12 values less than (19));
+send alter table t1 reorganize partition p1 into (partition p10 values less than (13), partition p11 values less than (16), partition p12 values less than (20));
+connection obsys;
+sleep 3;
+select count(*), lock_mode, op_type, obj_type from __all_virtual_obj_lock where owner_id in (select task_id from __all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+select ddl_type from __all_virtual_ddl_task_status;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+set ob_global_debug_sync = 'now signal continue_signal';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+reap;
+connection conn2;
+reap;
+connection conn3;
+reap;
+connection default;
+drop table t1;
+
+--echo
+--echo # split partition and add/drop index
+create table t1(c1 int, c2 int, c3 char(10), c4 int, c5 text, primary key(c1)) partition by range(c1) (
+  partition p0 values less than (10),
+  partition p1 values less than (20),
+  partition p2 values less than (maxvalue));
+create index i1 on t1(c1) local;
+create index i2 on t1(c2) global;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000';
+connection default;
+send alter table t1 reorganize partition p0 into (partition p00 values less than (5), partition p01 values less than (10));
+connection conn1;
+sleep 3;
+send create index i3 on t1(c3) local;
+connection conn2;
+send create index i4 on t1(c3) global;
+connection conn3;
+send drop index i1 on t1;
+connection conn4;
+send drop index i2 on t1;
+connection obsys;
+sleep 3;
+select count(*), lock_mode, op_type, obj_type from __all_virtual_obj_lock where owner_id in (select task_id from __all_virtual_ddl_task_status) group by lock_id, lock_mode, op_type, obj_type order by 1, 2, 3, 4;
+select ddl_type from __all_virtual_ddl_task_status;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+connection conn1;
+reap;
+connection conn2;
+reap;
+connection conn3;
+reap;
+connection conn4;
+reap;
+--error 1091
+drop index i1 on t1;
+--error 1091
+drop index i2 on t1;
+drop index i3 on t1;
+drop index i4 on t1;
+drop table t1;
+
+--echo
+--echo # split partition and add/drop/truncate partition with global index
+create table t1(c1 int, c2 int, c3 char(10), c4 int, c5 text, primary key(c1)) partition by range(c1) (
+  partition p0 values less than (10),
+  partition p1 values less than (20),
+  partition p2 values less than (30));
+create index i1 on t1(c1) local;
+create index i2 on t1(c2) global;
+insert into t1 values (1, 11, 'p0', 21, 'a');
+insert into t1 values (11, 21, 'p1', 31, 'b');
+insert into t1 values (21, 31, 'p2', 41, 'c');
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000';
+connection default;
+send alter table t1 reorganize partition p0 into (partition p00 values less than (5), partition p01 values less than (10));
+connection conn1;
+sleep 3;
+send alter table t1 truncate partition p1;
+connection conn2;
+alter table t1 add partition (partition p3 values less than (maxvalue));
+insert into t1 values (31, 41, 'p3', 51, 'd');
+sleep 3;
+select * from t1 order by c1;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+connection conn1;
+reap;
+select * from t1 order by c1;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000';
+connection default;
+send alter table t1 reorganize partition p00 into (partition p000 values less than (3), partition p001 values less than (5));
+connection conn1;
+sleep 3;
+send alter table t1 drop partition p2;
+connection conn2;
+sleep 3;
+select * from t1 order by c1;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+connection conn1;
+reap;
+select * from t1 order by c1;
+drop table t1;
+
+--echo
+--echo # split partition and add/drop/truncate partition without global index
+create table t1(c1 int, c2 int, c3 char(10), c4 int, c5 text, primary key(c1)) partition by range(c1) (
+  partition p0 values less than (10),
+  partition p1 values less than (20),
+  partition p2 values less than (30));
+create index i1 on t1(c1) local;
+insert into t1 values (1, 11, 'p0', 21, 'a');
+insert into t1 values (11, 21, 'p1', 31, 'b');
+insert into t1 values (21, 31, 'p2', 41, 'c');
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'PARTITION_SPLIT_WAIT_FREEZE_END wait_for continue_signal execute 10000';
+connection default;
+send alter table t1 reorganize partition p0 into (partition p00 values less than (5), partition p01 values less than (10));
+connection conn1;
+sleep 3;
+send alter table t1 truncate partition p1;
+connection conn2;
+send alter table t1 drop partition p2;
+connection conn3;
+send alter table t1 add partition (partition p3 values less than (maxvalue));
+connection conn4;
+sleep 3;
+insert into t1 values (31, 41, 'p3', 51, 'd');
+select * from t1 order by c1;
+connection conn1;
+reap;
+connection conn2;
+reap;
+connection conn3;
+reap;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+select * from t1 order by c1;
+drop table t1;
+
