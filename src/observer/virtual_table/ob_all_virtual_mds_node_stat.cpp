@@ -181,22 +181,18 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_int(GCTX.self_addr().get_port());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 5: {// unit_id
-        cur_row_.cells_[i].set_int(node_info.unit_id_);
-        break;
-      }
-      case OB_APP_MIN_COLUMN_ID + 6: {// user_key
+      case OB_APP_MIN_COLUMN_ID + 5: {// user_key
         int64_t write_n = node_info.user_key_.to_string(buffer, buffer_size);
         buffer += write_n;
         buffer_size -= write_n;
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(write_n, buffer - write_n));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 7: {// version_idx
+      case OB_APP_MIN_COLUMN_ID + 6: {// version_idx
         cur_row_.cells_[i].set_int(node_info.version_idx_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 8: {// writer_type
+      case OB_APP_MIN_COLUMN_ID + 7: {// writer_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.writer_.writer_type_));
         buffer += pos;
@@ -204,27 +200,27 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 9: {// writer_id
+      case OB_APP_MIN_COLUMN_ID + 8: {// writer_id
         cur_row_.cells_[i].set_int(node_info.writer_.writer_id_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 10: {// seq_no
+      case OB_APP_MIN_COLUMN_ID + 9: {// seq_no
         cur_row_.cells_[i].set_int(node_info.seq_no_.cast_to_int());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 11: {// redo_scn
+      case OB_APP_MIN_COLUMN_ID + 10: {// redo_scn
         cur_row_.cells_[i].set_uint64(node_info.redo_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 12: {// end_scn
+      case OB_APP_MIN_COLUMN_ID + 11: {// end_scn
         cur_row_.cells_[i].set_uint64(node_info.end_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 13: {// trans_version
+      case OB_APP_MIN_COLUMN_ID + 12: {// trans_version
         cur_row_.cells_[i].set_uint64(node_info.trans_version_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 14: {// node_type
+      case OB_APP_MIN_COLUMN_ID + 13: {// node_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.node_type_));
         buffer += pos;
@@ -232,7 +228,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 15: {// state
+      case OB_APP_MIN_COLUMN_ID + 14: {// state
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.state_));
         buffer += pos;
@@ -240,7 +236,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 16: {// position
+      case OB_APP_MIN_COLUMN_ID + 15: {// position
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.position_));
         buffer += pos;
@@ -248,7 +244,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 17: {// user_data
+      case OB_APP_MIN_COLUMN_ID + 16: {// user_data
         int64_t write_n = node_info.user_data_.to_string(buffer, buffer_size);
         buffer += write_n;
         buffer_size -= write_n;

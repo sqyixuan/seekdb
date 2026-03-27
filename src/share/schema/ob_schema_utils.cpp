@@ -412,8 +412,6 @@ int ObSchemaUtils::convert_sys_param_to_sysvar_schema(const ObSysParam &sysparam
     LOG_WARN("set sysvar schema max val failed", K(ret));
   } else if (OB_FAIL(sysvar_schema.set_info(ObString::make_string(sysparam.info_)))) {
     LOG_WARN("set sysvar schema info failed", K(ret));
-  } else if (OB_FAIL(sysvar_schema.set_zone(sysparam.zone_))) {
-    LOG_WARN("set sysvar schema zone failed", K(ret));
   } else {
     sysvar_schema.set_flags(sysparam.flags_);
     sysvar_schema.set_tenant_id(sysparam.tenant_id_);

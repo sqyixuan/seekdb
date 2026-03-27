@@ -88,11 +88,6 @@ int ObAllVirtualServerCompactionEventHistory::fill_cells()
       //svr_port
       cells[i].set_int(ObServerConfig::get_instance().self_addr_.get_port());
       break;
-    case ZONE:
-      //zone
-      cells[i].set_varchar(GCONF.zone);
-      cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-      break;
     case TENANT_ID:
       cells[i].set_int(event_.tenant_id_);
       break;

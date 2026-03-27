@@ -56,7 +56,6 @@ int ObAllVirtualServerStorage::inner_open()
           STRCPY(item.path_, tmp_device_config.path_);
           STRCPY(item.endpoint_, tmp_device_config.endpoint_);
           STRCPY(item.used_for_, tmp_device_config.used_for_);
-          STRCPY(item.zone_, GCONF.zone.str());
           item.storage_id_ = tmp_device_config.storage_id_;
           item.max_iops_ = tmp_device_config.max_iops_;
           item.max_bandwidth_ = tmp_device_config.max_bandwidth_;
@@ -125,12 +124,6 @@ int ObAllVirtualServerStorage::inner_get_next_row(ObNewRow *&row)
         }
         case USED_FOR: {
           cells[i].set_varchar(item.used_for_);
-          cells[i].set_collation_type(
-            ObCharset::get_default_collation(ObCharset::get_default_charset()));
-          break;
-        }
-        case ZONE: {
-          cells[i].set_varchar(item.zone_);
           cells[i].set_collation_type(
             ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;

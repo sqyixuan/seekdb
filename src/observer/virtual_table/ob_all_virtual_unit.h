@@ -32,9 +32,7 @@ class ObAllVirtualUnit : public common::ObVirtualTableScannerIterator
   {
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
-    UNIT_ID,
     TENANT_ID,
-    ZONE,
     MIN_CPU,
     MAX_CPU,
     MEMORY_SIZE,
@@ -46,8 +44,6 @@ class ObAllVirtualUnit : public common::ObVirtualTableScannerIterator
     DATA_DISK_IN_USE,
     STATUS,
     CREATE_TIME,
-    ZONE_TYPE,
-    REGION,
     DATA_DISK_SIZE,
     MAX_NET_BANDWIDTH,
     NET_BANDWIDTH_WEIGHT
@@ -65,10 +61,6 @@ private:
 private:
   char ip_buf_[common::OB_IP_STR_BUFF];
   common::ObAddr addr_;
-  common::ObZoneType zone_type_;
-  common::ObRegion region_;
-  bool is_zone_type_set_;
-  bool is_region_set_;
   int64_t tenant_idx_;
   common::ObArray<omt::ObTenantMeta> tenant_meta_arr_;
 
