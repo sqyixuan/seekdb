@@ -289,7 +289,7 @@ int ObReqExpr::translate_alias(ObObjPrintParams &print_params_, char *buf_, int6
   int ret = OB_SUCCESS;
   if (!alias_name.empty()) {
     DATA_PRINTF(" as ");
-    PRINT_IDENT_WITH_QUOT(alias_name);
+    PRINT_IDENT(alias_name);
   }
   return ret;
 }
@@ -322,15 +322,10 @@ int ObReqColumnExpr::translate_expr(ObObjPrintParams &print_params_, char *buf_,
 {
   int ret = OB_SUCCESS;
   if (!table_name.empty()) {
-    PRINT_IDENT_WITH_QUOT(table_name);
+    PRINT_IDENT(table_name);
     DATA_PRINTF(".");
   }
-
-  PRINT_IDENT_WITH_QUOT(expr_name);
-  // For ES mode MATCH field, output weight in format: `column`^weight
-  if (OB_SUCC(ret) && print_weight_ && weight_ >= 0) {
-    DATA_PRINTF("^%.15g", weight_);
-  }
+  PRINT_IDENT(expr_name);
   if (OB_SUCC(ret) && need_alias && translate_alias(print_params_, buf_, buf_len_, pos_)) {
     LOG_WARN("fail to translate expr alias", K(ret));
   }
@@ -448,7 +443,7 @@ int OrderInfo::translate(ObObjPrintParams &print_params_, char *buf_, int64_t bu
       LOG_WARN("fail to translate expr", K(ret));
     }
   } else {
-    PRINT_IDENT_WITH_QUOT(order_item->alias_name);
+    PRINT_IDENT(order_item->alias_name);
   }
   if (OB_FAIL(ret)) {
   } else if (ascent == false) {
@@ -520,7 +515,7 @@ int ObReqOpExpr::translate_expr(ObObjPrintParams &print_params_, char *buf_, int
 {
   int ret = OB_SUCCESS;
   ObString symbol;
-
+  
   if (op_type_ == T_OP_IN) {
     if (OB_FAIL(translate_in_expr(print_params_, buf_, buf_len_, pos_, scope, need_alias))) {
       LOG_WARN("fail to translate IN expr", K(ret));
@@ -553,7 +548,7 @@ int ObReqOpExpr::translate_expr(ObObjPrintParams &print_params_, char *buf_, int
         }
       } else if (OB_FAIL(param->translate_expr(print_params_, buf_, buf_len_, pos_, scope, false))) {
         LOG_WARN("fail to translate expr", K(ret));
-      }
+      } 
       if (OB_SUCC(ret) && i + 1 < params.count()) {
         if (op_type_ == T_OP_NOT) {
           DATA_PRINTF(" AND ");
@@ -736,20 +731,20 @@ int ObReqExpr::construct_expr(ObReqExpr *&expr, ObIAllocator &alloc, const ObStr
   return ret;
 }
 
-int ObReqColumnExpr::construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, double weight, bool print_weight)
+int ObReqColumnExpr::construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, double weight)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(expr = OB_NEWx(ObReqColumnExpr, &alloc, expr_name, ObString(), weight, print_weight))) {
+  if (OB_ISNULL(expr = OB_NEWx(ObReqColumnExpr, &alloc, expr_name, ObString(), weight))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to create column expr", K(ret));
   }
   return ret;
 }
 
-int ObReqColumnExpr::construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, const ObString &table_name, double weight, bool print_weight)
+int ObReqColumnExpr::construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, const ObString &table_name, double weight)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(expr = OB_NEWx(ObReqColumnExpr, &alloc, expr_name, table_name, weight, print_weight))) {
+  if (OB_ISNULL(expr = OB_NEWx(ObReqColumnExpr, &alloc, expr_name, table_name, weight))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to create column expr", K(ret));
   }
@@ -813,7 +808,7 @@ int ObReqConstExpr::set_numeric(ObIAllocator &alloc, double numeric_value, ObObj
         len = snprintf(buf, sizeof(buf), "%.15g", numeric_value);
         break;
     }
-    char *num_str = static_cast<char *>(alloc.alloc(len));
+    char *num_str = static_cast<char *>(alloc.alloc(len)); 
     if (OB_ISNULL(num_str)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to allocate memory for numeric string", K(ret), K(len));
@@ -935,19 +930,19 @@ int ObReqOpExpr::construct_op_expr(ObReqOpExpr *&expr, ObIAllocator &alloc, ObIt
   return ret;
 }
 
-int ObReqOpExpr::construct_in_expr(ObIAllocator &alloc, ObReqExpr *key_expr, common::ObIArray<ObReqConstExpr *> &value_exprs, ObReqOpExpr *&in_expr)
+int ObReqOpExpr::construct_in_expr(ObIAllocator &alloc, ObReqColumnExpr *col_expr, common::ObIArray<ObReqConstExpr *> &value_exprs, ObReqOpExpr *&in_expr)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(key_expr) || value_exprs.count() == 0) {
+  if (OB_ISNULL(col_expr) || value_exprs.count() == 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret));
   } else if (OB_ISNULL(in_expr = OB_NEWx(ObReqOpExpr, &alloc, T_OP_IN))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to create in expr", K(ret));
-  } else if (OB_ISNULL(key_expr)) {
+  } else if (OB_ISNULL(col_expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpectd null ptr", K(ret));
-  } else if (OB_FAIL(in_expr->params.push_back(key_expr))) {
+  } else if (OB_FAIL(in_expr->params.push_back(col_expr))) {
     LOG_WARN("fail to push in expr param", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < value_exprs.count(); i++) {
