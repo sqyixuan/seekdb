@@ -362,20 +362,5 @@ static int varchar_to_empty_string(const ObObj &src, ObObj &dst, ObIAllocator &a
   dst.set_varchar("");
   return ret;
 }
-
-int ObIteratePrivateVirtualTable::set_convert_func(convert_func_t &func,
-            const schema::ObColumnSchemaV2 &col, const schema::ObColumnSchemaV2 &base_col)
-{
-  int ret = OB_SUCCESS;
-  if (!is_sys_tenant(effective_tenant_id_)) {
-    if (OB_ALL_RECOVER_TABLE_JOB_TID == base_table_id_ ||
-        OB_ALL_RECOVER_TABLE_JOB_HISTORY_TID == base_table_id_) {
-      if (base_col.get_column_name_str() == ObString::make_string("external_kms_info")) {
-        func = varchar_to_empty_string;
-      }
-    }
-  }
-  return ret;
-}
 } // end namespace observer
 } // end namespace oceanbase
