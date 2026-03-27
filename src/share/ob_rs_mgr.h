@@ -49,7 +49,6 @@ class ObRootService;
 namespace share
 {
 class IHeartBeatProcess;
-class ObLSInfo;
 
 class ObUnifiedAddrAgent : public ObRootAddrAgent
 {

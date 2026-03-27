@@ -42,7 +42,6 @@
 #ifndef OB_BUILD_OBSERVER_LITE
 #include "close_modules/observer_lite/logservice/archiveservice/ob_archive_file_utils.h"
 #endif
-#include "share/ls/ob_ls_table_operator.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "storage/ob_storage_rpc.h"
 #include "storage/blocksstable/ob_logic_macro_id.h"

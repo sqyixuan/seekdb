@@ -278,41 +278,9 @@ int ObRootMinorFreeze::init_params_by_tenant(const ObIArray<uint64_t> &tenant_id
                                              ParamsContainer &params) const
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObAddr, 256> target_server_list;
-
-  for (int i = 0; i < tenant_ids.count() && OB_SUCC(ret); ++i) {
-    if (server_list.count() > 0) {
-      for (int j = 0; j < server_list.count() && OB_SUCC(ret); ++j) {
-        if (is_server_alive(server_list.at(j))) {
-          if (OB_FAIL(params.push_back_param(server_list.at(j), tenant_ids.at(i)))) {
-            LOG_WARN("fail to add tenant & server, ", K(ret));
-          }
-        } else {
-          ret = OB_SERVER_NOT_ACTIVE;
-          LOG_WARN("server not alive or invalid", "server", server_list.at(j), K(ret));
-        }
-      }
-    } else {
-      // TODO: filter servers according to tenant_id
-      if (OB_ISNULL(unit_manager_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unit_manager_ is null", KR(ret), KP(unit_manager_));
-      } else if (OB_FAIL(unit_manager_->get_tenant_alive_servers_non_block(tenant_ids.at(i), target_server_list))) {
-        LOG_WARN("fail to get tenant server list, ", K(ret));
-      } else {
-        bool server_in_zone = false;
-        for (int j = 0; j < target_server_list.count() && OB_SUCC(ret); ++j) {
-          const ObAddr &server = target_server_list.at(j);
-          if (OB_FAIL(is_server_belongs_to_zone(server, zone, server_in_zone))) {
-            LOG_WARN("fail to check server", K(ret));
-          } else if (server_in_zone && OB_FAIL(params.push_back_param(server, tenant_ids.at(i)))) {
-            LOG_WARN("fail to add tenant & server", K(ret));
-          }
-        }
-      }
-    }
+  if (OB_FAIL(params.push_back_param(GCTX.self_addr(), OB_SYS_TENANT_ID))) {
+    LOG_WARN("fail to add tenant & server", KR(ret));
   }
-
   return ret;
 }
 

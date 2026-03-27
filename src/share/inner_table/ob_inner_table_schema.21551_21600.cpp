@@ -539,108 +539,6 @@ int ObInnerTableSchema::gv_ob_group_io_stat_schema(ObTableSchema &table_schema)
   return ret;
 }
 
-int ObInnerTableSchema::dba_ob_storage_io_usage_schema(ObTableSchema &table_schema)
-{
-  int ret = OB_SUCCESS;
-  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
-
-  //generated fields:
-  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
-  table_schema.set_tablegroup_id(OB_INVALID_ID);
-  table_schema.set_database_id(OB_SYS_DATABASE_ID);
-  table_schema.set_table_id(OB_DBA_OB_STORAGE_IO_USAGE_TID);
-  table_schema.set_rowkey_split_pos(0);
-  table_schema.set_is_use_bloomfilter(false);
-  table_schema.set_progressive_merge_num(0);
-  table_schema.set_rowkey_column_num(0);
-  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
-  table_schema.set_table_type(SYSTEM_VIEW);
-  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
-  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_table_name(OB_DBA_OB_STORAGE_IO_USAGE_TNAME))) {
-      LOG_ERROR("fail to set table_name", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
-      LOG_ERROR("fail to set compress_func_name", K(ret));
-    }
-  }
-  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
-  table_schema.set_charset_type(ObCharset::get_default_charset());
-  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(   (   SELECT     A.TENANT_ID AS TENANT_ID,     IFNULL(B.PATH, 'LOCAL://') AS PATH,     IFNULL(B.ENDPOINT, '') AS ENDPOINT,     A.TYPE AS TYPE,     A.TOTAL AS TOTAL   FROM     OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A   LEFT JOIN     OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO AS B   ON     A.DEST_ID = B.DEST_ID     AND     A.TENANT_ID = B.TENANT_ID   WHERE     A.TENANT_ID = EFFECTIVE_TENANT_ID()     AND     A.STORAGE_MOD ='BACKUP/ARCHIVE/RESTORE'   )   UNION   (   SELECT     A.TENANT_ID,     IFNULL(B.PATH, 'LOCAL://') AS PATH,     IFNULL(B.ENDPOINT, '') AS ENDPOINT,     A.TYPE,     A.TOTAL   FROM     OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A    JOIN     OCEANBASE.__ALL_VIRTUAL_ZONE_STORAGE_MYSQL_SYS_AGENT AS B   ON     A.STORAGE_ID = B.STORAGE_ID   WHERE     A.TENANT_ID = EFFECTIVE_TENANT_ID()     AND       A.STORAGE_MOD ='CLOG/DATA'   ) )__"))) {
-      LOG_ERROR("fail to set view_definition", K(ret));
-    }
-  }
-  table_schema.set_index_using_type(USING_BTREE);
-  table_schema.set_row_store_type(ENCODING_ROW_STORE);
-  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
-  table_schema.set_progressive_merge_round(1);
-  table_schema.set_storage_format_version(3);
-  table_schema.set_tablet_id(0);
-  table_schema.set_micro_index_clustered(false);
-
-  table_schema.set_max_used_column_id(column_id);
-  return ret;
-}
-
-int ObInnerTableSchema::cdb_ob_storage_io_usage_schema(ObTableSchema &table_schema)
-{
-  int ret = OB_SUCCESS;
-  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
-
-  //generated fields:
-  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
-  table_schema.set_tablegroup_id(OB_INVALID_ID);
-  table_schema.set_database_id(OB_SYS_DATABASE_ID);
-  table_schema.set_table_id(OB_CDB_OB_STORAGE_IO_USAGE_TID);
-  table_schema.set_rowkey_split_pos(0);
-  table_schema.set_is_use_bloomfilter(false);
-  table_schema.set_progressive_merge_num(0);
-  table_schema.set_rowkey_column_num(0);
-  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
-  table_schema.set_table_type(SYSTEM_VIEW);
-  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
-  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_table_name(OB_CDB_OB_STORAGE_IO_USAGE_TNAME))) {
-      LOG_ERROR("fail to set table_name", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
-      LOG_ERROR("fail to set compress_func_name", K(ret));
-    }
-  }
-  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
-  table_schema.set_charset_type(ObCharset::get_default_charset());
-  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(   (   SELECT     A.TENANT_ID AS TENANT_ID,     IFNULL(B.PATH, 'LOCAL://') AS PATH,     IFNULL(B.ENDPOINT, '') AS ENDPOINT,     A.TYPE AS TYPE,     A.TOTAL AS TOTAL   FROM     OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A   LEFT JOIN     OCEANBASE.__ALL_VIRTUAL_BACKUP_STORAGE_INFO AS B   ON     A.DEST_ID = B.DEST_ID     AND     A.TENANT_ID = B.TENANT_ID   WHERE     A.STORAGE_MOD ='BACKUP/ARCHIVE/RESTORE'   )   UNION   (   SELECT     A.TENANT_ID,     IFNULL(B.PATH, 'LOCAL://') AS PATH,     IFNULL(B.ENDPOINT, '') AS ENDPOINT,     A.TYPE,     A.TOTAL   FROM     OCEANBASE.__ALL_VIRTUAL_STORAGE_IO_USAGE AS A    JOIN     OCEANBASE.__ALL_VIRTUAL_ZONE_STORAGE_MYSQL_SYS_AGENT AS B   ON     A.STORAGE_ID = B.STORAGE_ID   WHERE     A.STORAGE_MOD ='CLOG/DATA'   ) )__"))) {
-      LOG_ERROR("fail to set view_definition", K(ret));
-    }
-  }
-  table_schema.set_index_using_type(USING_BTREE);
-  table_schema.set_row_store_type(ENCODING_ROW_STORE);
-  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
-  table_schema.set_progressive_merge_round(1);
-  table_schema.set_storage_format_version(3);
-  table_schema.set_tablet_id(0);
-  table_schema.set_micro_index_clustered(false);
-
-  table_schema.set_max_used_column_id(column_id);
-  return ret;
-}
-
 int ObInnerTableSchema::tablespaces_schema(ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
@@ -2120,108 +2018,6 @@ int ObInnerTableSchema::cdb_scheduler_job_run_details_schema(ObTableSchema &tabl
   return ret;
 }
 
-int ObInnerTableSchema::cdb_ob_server_space_usage_schema(ObTableSchema &table_schema)
-{
-  int ret = OB_SUCCESS;
-  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
-
-  //generated fields:
-  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
-  table_schema.set_tablegroup_id(OB_INVALID_ID);
-  table_schema.set_database_id(OB_SYS_DATABASE_ID);
-  table_schema.set_table_id(OB_CDB_OB_SERVER_SPACE_USAGE_TID);
-  table_schema.set_rowkey_split_pos(0);
-  table_schema.set_is_use_bloomfilter(false);
-  table_schema.set_progressive_merge_num(0);
-  table_schema.set_rowkey_column_num(0);
-  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
-  table_schema.set_table_type(SYSTEM_VIEW);
-  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
-  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_table_name(OB_CDB_OB_SERVER_SPACE_USAGE_TNAME))) {
-      LOG_ERROR("fail to set table_name", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
-      LOG_ERROR("fail to set compress_func_name", K(ret));
-    }
-  }
-  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
-  table_schema.set_charset_type(ObCharset::get_default_charset());
-  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     select        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       asu.svr_ip as SERVER_IP,        asu.svr_port as SERVER_PORT,        CASE          WHEN asu.file_type IN ('tenant tmp data')                            THEN 'Tmp Data'         WHEN asu.file_type IN ('tenant clog data')                            THEN 'Clog Data'         WHEN asu.file_type IN ('tenant meta data')                            THEN 'Meta Data'         WHEN asu.file_type IN ('tenant slog data')                            THEN 'Slog Data'       END AS SPACE_TYPE,       sum(asu.data_size) as DATA_BYTES,        sum(asu.used_size) as USAGE_BYTES     from oceanbase.__all_space_usage asu     INNER JOIN oceanbase.__all_tenant atnt       ON    atnt.tenant_id = asu.tenant_id         AND asu.file_type in ('tenant tmp data',                                'tenant clog data',                                'tenant meta data',                               'tenant slog data')     group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE     UNION     select        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       avtps.svr_ip as SERVER_IP,        avtps.svr_port as SERVER_PORT,        'Index Data' as SPACE_TYPE,       sum(avtps.occupy_size) as DATA_BYTES,       sum(avtps.required_size) as USAGE_BYTES     from      oceanbase.__all_virtual_tablet_pointer_status avtps     INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl       ON      avttl.tenant_id = avtps.tenant_id         AND 	avttl.tablet_id = avtps.tablet_id     INNER JOIN oceanbase.__all_tenant atnt       ON      atnt.tenant_id = avttl.tenant_id     INNER JOIN oceanbase.__all_virtual_table avt       ON      avt.tenant_id = atnt.tenant_id         AND   avt.table_type = 5          AND 	avt.table_id = avttl.table_id     group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE     UNION     select        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       avtps.svr_ip as SERVER_IP,        avtps.svr_port as SERVER_PORT,        'Table Data' as SPACE_TYPE,       sum(avtps.occupy_size) as DATA_BYTES,       sum(avtps.required_size) as USAGE_BYTES     from      oceanbase.__all_virtual_tablet_pointer_status avtps     INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl       ON      avttl.tenant_id = avtps.tenant_id         AND 	avttl.tablet_id = avtps.tablet_id     INNER JOIN oceanbase.__all_tenant atnt       ON      atnt.tenant_id = avttl.tenant_id     INNER JOIN oceanbase.__all_virtual_table avt       ON      avt.tenant_id = atnt.tenant_id         AND   avt.table_id = avttl.table_id         AND   avt.table_type in (3, 12, 13)      group by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE     order by TENANT_ID, SERVER_IP, SERVER_PORT, SPACE_TYPE )__"))) {
-      LOG_ERROR("fail to set view_definition", K(ret));
-    }
-  }
-  table_schema.set_index_using_type(USING_BTREE);
-  table_schema.set_row_store_type(ENCODING_ROW_STORE);
-  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
-  table_schema.set_progressive_merge_round(1);
-  table_schema.set_storage_format_version(3);
-  table_schema.set_tablet_id(0);
-  table_schema.set_micro_index_clustered(false);
-
-  table_schema.set_max_used_column_id(column_id);
-  return ret;
-}
-
-int ObInnerTableSchema::cdb_ob_space_usage_schema(ObTableSchema &table_schema)
-{
-  int ret = OB_SUCCESS;
-  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
-
-  //generated fields:
-  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
-  table_schema.set_tablegroup_id(OB_INVALID_ID);
-  table_schema.set_database_id(OB_SYS_DATABASE_ID);
-  table_schema.set_table_id(OB_CDB_OB_SPACE_USAGE_TID);
-  table_schema.set_rowkey_split_pos(0);
-  table_schema.set_is_use_bloomfilter(false);
-  table_schema.set_progressive_merge_num(0);
-  table_schema.set_rowkey_column_num(0);
-  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
-  table_schema.set_table_type(SYSTEM_VIEW);
-  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
-  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_table_name(OB_CDB_OB_SPACE_USAGE_TNAME))) {
-      LOG_ERROR("fail to set table_name", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
-      LOG_ERROR("fail to set compress_func_name", K(ret));
-    }
-  }
-  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
-  table_schema.set_charset_type(ObCharset::get_default_charset());
-  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       azs.endpoint AS ENDPOINT,       azs.path AS PATH,       CASE          WHEN asu.file_type IN ('tenant local data',                                'tenant tmp data')                            THEN 'Local Data'         WHEN asu.file_type IN ('tenant shared_major data')                            THEN 'Shared Data'         WHEN asu.file_type IN ('tenant clog data')                            THEN 'Clog Data'       END AS SPACE_TYPE,       SUM(asu.used_size) AS USAGE_BYTES     from oceanbase.__all_space_usage asu     INNER JOIN oceanbase.__all_tenant atnt       ON atnt.tenant_id = asu.tenant_id     INNER JOIN oceanbase.__all_server alls       ON alls.svr_ip = asu.svr_ip         and alls.svr_port = asu.svr_port     LEFT JOIN oceanbase.__all_zone_storage azs       ON azs.zone = alls.zone     where asu.file_type in ('tenant shared_major data',                              'tenant local data',                              'tenant clog data',                              'tenant tmp data')     GROUP BY TENANT_ID, ENDPOINT, PATH, SPACE_TYPE     ORDER BY TENANT_ID )__"))) {
-      LOG_ERROR("fail to set view_definition", K(ret));
-    }
-  }
-  table_schema.set_index_using_type(USING_BTREE);
-  table_schema.set_row_store_type(ENCODING_ROW_STORE);
-  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
-  table_schema.set_progressive_merge_round(1);
-  table_schema.set_storage_format_version(3);
-  table_schema.set_tablet_id(0);
-  table_schema.set_micro_index_clustered(false);
-
-  table_schema.set_max_used_column_id(column_id);
-  return ret;
-}
-
 int ObInnerTableSchema::dba_ob_table_space_usage_schema(ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
@@ -2257,7 +2053,7 @@ int ObInnerTableSchema::dba_ob_table_space_usage_schema(ObTableSchema &table_sch
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     select        subquery.TABLE_ID AS TABLE_ID,       subquery.DATABASE_NAME AS DATABASE_NAME,       at_name.TABLE_NAME AS TABLE_NAME,       subquery.OCCUPY_SIZE AS OCCUPY_SIZE,       subquery.REQUIRED_SIZE AS REQUIRED_SIZE     from      (       select          CASE            WHEN at.table_type in (12, 13) THEN at.data_table_id           ELSE at.table_id         END as TABLE_ID,               ad.database_name as DATABASE_NAME,            sum(avtps.occupy_size) as OCCUPY_SIZE,         sum(avtps.required_size) as REQUIRED_SIZE       from        oceanbase.__all_virtual_tablet_pointer_status avtps       INNER JOIN oceanbase.__all_tablet_to_ls attl         ON      attl.tablet_id = avtps.tablet_id       INNER JOIN oceanbase.__all_table at         ON      at.table_id = attl.table_id           and   at.table_id > 500000       INNER JOIN oceanbase.__all_database ad         ON      ad.database_id = at.database_id       INNER JOIN oceanbase.__all_virtual_ls_meta_table avlmt         ON     avtps.ls_id = avlmt.ls_id           AND  avtps.svr_ip = avlmt.svr_ip           AND  avtps.svr_port = avlmt.svr_port           AND  avlmt.role = 1       group by table_id     ) as subquery     INNER JOIN oceanbase.__all_table at_name       ON    subquery.TABLE_ID = at_name.table_id     order by table_id )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     select        subquery.TABLE_ID AS TABLE_ID,       subquery.DATABASE_NAME AS DATABASE_NAME,       at_name.TABLE_NAME AS TABLE_NAME,       subquery.OCCUPY_SIZE AS OCCUPY_SIZE,       subquery.REQUIRED_SIZE AS REQUIRED_SIZE     from      (       select          CASE            WHEN at.table_type in (12, 13) THEN at.data_table_id           ELSE at.table_id         END as TABLE_ID,               ad.database_name as DATABASE_NAME,            sum(avtps.occupy_size) as OCCUPY_SIZE,         sum(avtps.required_size) as REQUIRED_SIZE       from        oceanbase.__all_virtual_tablet_pointer_status avtps       INNER JOIN oceanbase.__all_tablet_to_ls attl         ON      attl.tablet_id = avtps.tablet_id       INNER JOIN oceanbase.__all_table at         ON      at.table_id = attl.table_id           and   at.table_id > 500000       INNER JOIN oceanbase.__all_database ad         ON      ad.database_id = at.database_id       group by table_id     ) as subquery     INNER JOIN oceanbase.__all_table at_name       ON    subquery.TABLE_ID = at_name.table_id     order by table_id )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -2308,7 +2104,7 @@ int ObInnerTableSchema::cdb_ob_table_space_usage_schema(ObTableSchema &table_sch
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     select        subquery.TENANT_ID AS TENANT_ID,       subquery.TABLE_ID AS TABLE_ID,       subquery.TENANT_NAME AS TENANT_NAME,       subquery.DATABASE_NAME AS DATABASE_NAME,       avt_name.TABLE_NAME AS TABLE_NAME,       subquery.OCCUPY_SIZE AS OCCUPY_SIZE,       subquery.REQUIRED_SIZE AS REQUIRED_SIZE     from      (select        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE        	WHEN avt.table_type in (12, 13) THEN avt.data_table_id       	ELSE avt.table_id       END as TABLE_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       ad.database_name as DATABASE_NAME,       sum(avtps.occupy_size) as OCCUPY_SIZE,       sum(avtps.required_size) as REQUIRED_SIZE     from      oceanbase.__all_virtual_tablet_pointer_status avtps     INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl       ON      avttl.tenant_id = avtps.tenant_id         AND 	avttl.tablet_id = avtps.tablet_id     INNER JOIN oceanbase.__all_tenant atnt       ON      atnt.tenant_id = avttl.tenant_id     INNER JOIN oceanbase.__all_virtual_table avt       ON      avt.tenant_id = avttl.tenant_id         AND   avt.table_id = avttl.table_id     INNER JOIN oceanbase.__all_virtual_database ad       ON      ad.tenant_id = atnt.tenant_id         AND   ad.database_id = avt.database_id     INNER JOIN oceanbase.__all_virtual_ls_meta_table avlmt       ON      avtps.tenant_id = avlmt.tenant_id         AND   avtps.ls_id = avlmt.ls_id         AND   avtps.svr_ip = avlmt.svr_ip         AND   avtps.svr_port = avlmt.svr_port         AND   avlmt.role = 1     group by tenant_id, table_id     ) as subquery     INNER JOIN oceanbase.__all_virtual_table avt_name       ON    subquery.TENANT_ID = avt_name.tenant_id         AND subquery.TABLE_ID = avt_name.table_id     order by tenant_id, table_id )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     select        subquery.TENANT_ID AS TENANT_ID,       subquery.TABLE_ID AS TABLE_ID,       subquery.TENANT_NAME AS TENANT_NAME,       subquery.DATABASE_NAME AS DATABASE_NAME,       avt_name.TABLE_NAME AS TABLE_NAME,       subquery.OCCUPY_SIZE AS OCCUPY_SIZE,       subquery.REQUIRED_SIZE AS REQUIRED_SIZE     from      (select        CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN REPLACE(atnt.tenant_name, 'META$', '')          ELSE atnt.tenant_id        END AS TENANT_ID,       CASE        	WHEN avt.table_type in (12, 13) THEN avt.data_table_id       	ELSE avt.table_id       END as TABLE_ID,       CASE          WHEN atnt.tenant_name LIKE 'META$%' THEN            (SELECT t.tenant_name            FROM oceanbase.__all_tenant t            WHERE t.tenant_id = REPLACE(atnt.tenant_name, 'META$', ''))         ELSE atnt.tenant_name        END AS TENANT_NAME,       ad.database_name as DATABASE_NAME,       sum(avtps.occupy_size) as OCCUPY_SIZE,       sum(avtps.required_size) as REQUIRED_SIZE     from      oceanbase.__all_virtual_tablet_pointer_status avtps     INNER JOIN oceanbase.__all_virtual_tablet_to_ls avttl       ON      avttl.tenant_id = avtps.tenant_id         AND 	avttl.tablet_id = avtps.tablet_id     INNER JOIN oceanbase.__all_tenant atnt       ON      atnt.tenant_id = avttl.tenant_id     INNER JOIN oceanbase.__all_virtual_table avt       ON      avt.tenant_id = avttl.tenant_id         AND   avt.table_id = avttl.table_id     INNER JOIN oceanbase.__all_virtual_database ad       ON      ad.tenant_id = atnt.tenant_id         AND   ad.database_id = avt.database_id     group by tenant_id, table_id     ) as subquery     INNER JOIN oceanbase.__all_virtual_table avt_name       ON    subquery.TENANT_ID = avt_name.tenant_id         AND subquery.TABLE_ID = avt_name.table_id     order by tenant_id, table_id )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }

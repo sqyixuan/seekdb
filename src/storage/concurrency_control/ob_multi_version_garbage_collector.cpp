@@ -18,8 +18,8 @@
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx/wrs/ob_weak_read_util.h"
+#include "share/ob_all_server_tracer.h" // for ObAllServerTracer
 #include "rootserver/mview/ob_mview_maintenance_service.h"
-#include "share/ob_io_device_helper.h"
 
 namespace oceanbase
 {

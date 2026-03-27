@@ -261,7 +261,7 @@ int64_t ObTabletTableUpdater::cal_thread_count_()
       LOG_WARN_RET(tmp_ret, "fail to get tenant cpu", K(tmp_ret), K(min_cpu), K(max_cpu));
     } else {
       thread_cnt = std::max(MIN_UPDATE_TASK_THREAD_CNT, 
-          static_cast<int64_t>(lround(MIN_UPDATE_TASK_THREAD_CNT * UPDATE_TASK_THREAD_RATIO * max_cpu)));
+          lround(MIN_UPDATE_TASK_THREAD_CNT * UPDATE_TASK_THREAD_RATIO * max_cpu));
       thread_cnt = std::min(thread_cnt, MAX_UPDATE_TASK_THREAD_CNT);
     }
   }
@@ -504,61 +504,6 @@ void ObTabletTableUpdater::diagnose_batch_tasks_(
   }
 }
 
-void ObTabletTableUpdater::prepare_locality_cache_(
-    share::ObCompactionLocalityCache &locality_cache,
-    bool &locality_is_valid)
-{
-  int ret = OB_SUCCESS;
-  locality_is_valid = false;
-#ifdef OB_BUILD_SHARED_STORAGE
-  if (!GCTX.is_shared_storage_mode()) {
-    // do nothing
-  } else if (OB_FAIL(locality_cache.init(tenant_id_))) {
-    LOG_WARN("failed to init locality cache for ss report", K(ret), K_(tenant_id));
-  } else if (OB_FAIL(locality_cache.refresh_ls_locality(true/*force_refresh*/))) {
-    LOG_WARN("failed to refresh ls locality cache", K(ret), K_(tenant_id));
-  } else {
-    locality_is_valid = true;
-  }
-#endif
-}
-
-void ObTabletTableUpdater::check_remove_task_(
-    const share::ObLSID &ls_id,
-    const bool is_ls_not_exist,
-    const bool locality_is_valid,
-    share::ObCompactionLocalityCache &locality_cache,
-    bool &is_remove_task)
-{
-  int ret = OB_SUCCESS;
-  is_remove_task = false;
-
-  if (!GCTX.is_shared_storage_mode()) {
-    is_remove_task = true;
-  } else {
-#ifdef OB_BUILD_SHARED_STORAGE
-    share::ObLSInfo ls_info;
-    const ObLSReplica *replica = nullptr;
-
-    if (!locality_is_valid) {
-      // locality cache not valid, ignore to check the remove task temporarily
-    } else if (OB_FAIL(locality_cache.get_ls_info(ls_id, ls_info))) {
-      if (OB_HASH_NOT_EXIST == ret) {
-        is_remove_task = true;
-      } else {
-        LOG_WARN("failed to get ls info", K(ret), K(ls_id));
-      }
-    } else if (is_ls_not_exist) {
-      // no need to check whether ls is leader
-    } else if (OB_FAIL(ls_info.find_leader(replica))) {
-      LOG_WARN("failed to find leader", K(ret), K(ls_id), K(ls_info));
-    } else if (replica->get_server() == GCTX.self_addr()) {
-      is_remove_task = true; // ls leader is on cur server
-    }
-#endif
-  }
-}
-
 int ObTabletTableUpdater::push_task_info_(
     const ObTabletTableUpdateTask &task,
     const share::ObTabletReplica &replica,
@@ -590,8 +535,6 @@ int ObTabletTableUpdater::generate_tasks_(
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
-  ObCompactionLocalityCache locality_cache;
-  bool locality_is_valid = false;
   int64_t retry_tablet_replica_count = 0;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -602,8 +545,6 @@ int ObTabletTableUpdater::generate_tasks_(
   } else if (OB_UNLIKELY(batch_tasks.count() <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("batch_tasks count <= 0", KR(ret), "tasks_count", batch_tasks.count());
-  } else {
-    prepare_locality_cache_(locality_cache, locality_is_valid);
   }
 
   ObTabletReplica replica;
@@ -636,7 +577,7 @@ int ObTabletTableUpdater::generate_tasks_(
         ret = OB_SUCCESS;
       } else {
         bool is_ls_not_exist = OB_LS_NOT_EXIST == ret;
-        check_remove_task_(task->get_ls_id(), is_ls_not_exist, locality_is_valid, locality_cache, is_remove_task);
+        is_remove_task = true;
         ret = OB_SUCCESS;
       }
 

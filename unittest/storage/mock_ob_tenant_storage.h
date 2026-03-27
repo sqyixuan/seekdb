@@ -26,7 +26,6 @@
 #include "storage/slog/ob_storage_logger.h"
 #include "storage/blocksstable/ob_log_file_spec.h"
 #include "lib/file/file_directory_utils.h"
-#include "storage/mock_ob_meta_report.h"
 
 namespace oceanbase
 {
@@ -74,7 +73,6 @@ private:
   share::ObAliveServerTracer server_tracer_;
   palf::PalfDiskOptions disk_options_;
   rpc::frame::ObReqTransport req_transport_;
-  MockObMetaReport reporter_;
   ObAddr self_addr_;
   char dir_[128];
   blocksstable::ObLogFileSpec log_file_spec_;

@@ -483,58 +483,14 @@ int ObLogRestoreProxyUtil::get_compatibility_mode(const uint64_t tenant_id, ObCo
 int ObLogRestoreProxyUtil::check_begin_lsn(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-
-  if (!is_user_tenant(tenant_id)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else {
-    RESTORE_RETRY(
-      SMART_VAR(ObMySQLProxy::MySQLResult, result) {
-        ObSqlString sql;
-        if (OB_FAIL(sql.assign_fmt("SELECT COUNT(*) AS CNT FROM %s OB_LS LEFT JOIN"
-              "(SELECT TENANT_ID, LS_ID, BEGIN_LSN FROM %s WHERE ROLE= 'LEADER' AND TENANT_ID = %lu) LOG_STAT "
-                    "ON OB_LS.LS_ID = LOG_STAT.LS_ID "
-                    "WHERE (BEGIN_LSN IS NULL OR BEGIN_LSN != 0)"
-                    "AND OB_LS.STATUS NOT IN ('TENANT_DROPPING', 'CREATE_ABORT', 'PRE_TENANT_DROPPING')",
-                    OB_DBA_OB_LS_TNAME, OB_GV_OB_LOG_STAT_TNAME, tenant_id))) {
-          LOG_WARN("fail to generate sql", KR(ret), K(tenant_id));
-        } else if (OB_FAIL(sql_proxy_.read(result, sql.ptr()))) {
-          LOG_WARN("check_begin_lsn failed", KR(ret), K(tenant_id), K(sql));
-          RESTORE_PROXY_USER_ERROR("tenant ls begin_lsn failed");
-          ret = OB_INVALID_ARGUMENT;
-        } else if (OB_ISNULL(result.get_result())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("config result is null", KR(ret), K(tenant_id), K(sql));
-        } else if (OB_FAIL(result.get_result()->next())) {
-          LOG_WARN("get result next failed", K(sql));
-        } else {
-          uint64_t cnt = 0;
-          EXTRACT_INT_FIELD_MYSQL(*result.get_result(), "CNT", cnt, uint64_t);
-          if (OB_FAIL(ret)) {
-            LOG_WARN("failed to get result", KR(ret), K(tenant_id), K(sql));
-          } else if (cnt > 0) {
-            ret = OB_OP_NOT_ALLOW;
-            LOG_WARN("primary tenant LS log may be recycled, create standby tenant is not allow", KR(ret), K(tenant_id), K(sql));
-            LOG_USER_ERROR(OB_OP_NOT_ALLOW, "primary tenant LS log may be recycled, create standby tenant is");
-          }
-          LOG_INFO("check begion lsn", K(cnt), K(sql));
-        }
-      }
-    )
-  }
   return ret;
 }
 
 int ObLogRestoreProxyUtil::get_server_ip_list(const uint64_t tenant_id, common::ObArray<common::ObAddr> &addrs)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  if (OB_FAIL(
-          sql.assign_fmt("SELECT SVR_IP, SQL_PORT AS SVR_PORT FROM %s WHERE TENANT_ID=%ld",
-                         OB_DBA_OB_ACCESS_POINT_TNAME, tenant_id))) {
-    LOG_WARN("fail to generate sql");
-  } else if (OB_FAIL(construct_server_ip_list(sql, addrs))) {
-    LOG_WARN("failed to get server ip list", KR(ret), K(sql));
+  if (OB_FAIL(addrs.push_back(GCTX.self_addr()))) {
+    LOG_WARN("fail to push back self addr", KR(ret));
   }
   return ret;
 }

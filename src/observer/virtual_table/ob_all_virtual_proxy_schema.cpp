@@ -624,43 +624,6 @@ int ObAllVirtualProxySchema::batch_refresh_required_locations_(
     const ObIArray<ObString> &input_table_names)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(location_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("location_service_ is null", KR(ret));
-  } else {
-    // only requires 100ms of effectiveness, no need for real-time.
-    const int64_t expire_renew_time =
-        ObTimeUtility::current_time() - GCONF.location_cache_refresh_min_interval;
-    bool is_nonblock = false;
-    ObList<ObTabletID, ObIAllocator> tablet_list(convert_alloc_);
-    ARRAY_FOREACH(actual_tablet_ids_, idx) {
-      if (!actual_tablet_ids_.at(idx).is_valid()) {
-        // skip
-      } else if (OB_FAIL(tablet_list.push_back(actual_tablet_ids_.at(idx)))) {
-        LOG_WARN("push_back failed", KR(ret));
-      }
-    }
-
-    if (OB_SUCC(ret) && !tablet_list.empty()) {
-      if (OB_FAIL(location_service_->batch_renew_tablet_locations(
-        tenant_id,
-        tablet_list,
-        OB_SUCCESS,
-        is_nonblock,
-        expire_renew_time))) {
-        if (OB_GET_LOCATION_TIME_OUT == ret) {
-          // ignore ret
-          LOG_WARN("batch_renew_tablet_locations failed due to timeout, ignoring error code", 
-              KR(ret), K(input_tenant_name_), K(input_db_name_), K(input_table_names),
-              K(input_tablet_ids), K(tablet_ids_), K(table_names_), K(actual_tablet_ids_), 
-              "need refresh tablet", tablet_list);
-          ret = OB_SUCCESS;
-        } else {
-          LOG_WARN("failed to batch_refresh_required_locations_", KR(ret), K(tenant_id), K(tablet_list));
-        }
-      }
-    }
-  }
   return ret;
 }
 
@@ -991,43 +954,6 @@ int ObAllVirtualProxySchema::get_next_tenant_server_(
   return ret;
 }
 
-int ObAllVirtualProxySchema::get_replica_type_from_locality_(
-    const ZoneLocalityIArray &zone_locality_array,
-    const ObZone &zone,
-    ObReplicaType &replica_type)
-{
-  int ret = OB_SUCCESS;
-  replica_type = REPLICA_TYPE_FULL;
-  if (OB_UNLIKELY(zone_locality_array.empty() || zone.is_empty())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(zone_locality_array), K(zone));
-  } else {
-    bool zone_found = false;
-    FOREACH_CNT_X(zone_locality, zone_locality_array, !zone_found && OB_SUCCESS == ret) {
-      if (zone_locality->get_zone_set().at(0) == zone) {
-        zone_found = true;
-        if (zone_locality->get_readonly_replica_num() > 0) {
-          replica_type = REPLICA_TYPE_READONLY;
-        } else if (zone_locality->get_columnstore_replica_num() > 0) {
-          replica_type = REPLICA_TYPE_COLUMNSTORE;
-        } else if (zone_locality->get_full_replica_num() > 0) {
-          replica_type = REPLICA_TYPE_FULL;
-        } else {
-          // unrecognized replica_type
-          ret = OB_ERR_UNEXPECTED;
-          replica_type = REPLICA_TYPE_INVALID;
-          LOG_WARN("unrecognized replica type", KR(ret), KPC(zone_locality));
-        }
-      }
-    }
-    if (!zone_found) {
-      // tenant locality does not include this zone, regard as FULL
-      replica_type = REPLICA_TYPE_FULL;
-    }
-  }
-  return ret;
-}
-
 int ObAllVirtualProxySchema::fill_tenant_servers_(
     const uint64_t tenant_id,
     ObMySQLResult &result,
@@ -1050,15 +976,12 @@ int ObAllVirtualProxySchema::fill_tenant_servers_(
   first_idx_in_zone.reset();
   tenant_servers_.reset();
   const ObTenantSchema *tenant_schema = NULL;
-  ObArray<share::ObZoneReplicaNumSet> zone_locality;
 
   if (OB_FAIL(schema_guard_.get_tenant_info(tenant_id, tenant_schema))) {
     LOG_WARN("fail to get tenant info", KR(ret), K(tenant_id));
   } else if (OB_ISNULL(tenant_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tenant not exist", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(tenant_schema->get_zone_replica_attr_array(zone_locality))) {
-    LOG_WARN("fail to get zone_locality_array");
   }
 
   while (OB_SUCC(ret) && OB_SUCC(result.next())) {
@@ -1069,8 +992,7 @@ int ObAllVirtualProxySchema::fill_tenant_servers_(
     EXTRACT_INT_FIELD_MYSQL(result, "svr_port", svr_port, int32_t);
     EXTRACT_INT_FIELD_MYSQL(result, "inner_port", sql_port, int64_t);
     EXTRACT_VARCHAR_FIELD_MYSQL(result, "zone", zone);
-    if (FAILEDx(get_replica_type_from_locality_(zone_locality, zone, replica_type))) {
-      LOG_WARN("failed to get replica_type", KR(ret), K(zone_locality), K(zone));
+    if (OB_FAIL(ret)) {
     } else if (OB_UNLIKELY(!server.set_ip_addr(svr_ip, svr_port))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("failed to set_ip_addr", KR(ret), K(svr_ip), K(svr_port));
@@ -1239,7 +1161,7 @@ int ObAllVirtualProxySchema::fill_row_(
   int ret = OB_SUCCESS;
   ObObj *cells = NULL;
   const int64_t col_count = output_column_ids_.count();
-  int64_t paxos_replica_num = OB_INVALID_COUNT;
+  int64_t paxos_replica_num = 1;
   ObCollationType coll_type = ObCharset::get_default_collation(ObCharset::get_default_charset());
   if (OB_ISNULL(cells = cur_row_.cells_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -1259,23 +1181,9 @@ int ObAllVirtualProxySchema::fill_row_(
         LOG_WARN("fail to get table schema", KR(ret), K(data_table_id), K(table_schema));
       } else {
         part_num = main_table_schema->get_all_part_num();
-        if (OB_FAIL(main_table_schema->get_paxos_replica_num(schema_guard, paxos_replica_num))) {
-          LOG_WARN("fail to get table paxos replica_num", KR(ret), KPC(main_table_schema));
-        }
       }
     } else {
       part_num = table_schema.get_all_part_num();
-      if (OB_FAIL(table_schema.get_paxos_replica_num(schema_guard, paxos_replica_num))) {
-        LOG_WARN("fail to get table paxos replica_num", KR(ret));
-      }
-    }
-
-    if (OB_SUCC(ret)) {
-      if (OB_UNLIKELY(paxos_replica_num < 0)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("paxos replica num error", KR(ret),
-            K(paxos_replica_num), "table_id", table_schema.get_table_id());
-      }
     }
 
     uint64_t cell_idx = 0;

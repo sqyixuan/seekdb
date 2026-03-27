@@ -51,12 +51,8 @@ ObLogService::ObLogService() :
   location_adapter_(),
   ls_adapter_(),
   rpc_proxy_(),
-  reporter_(),
 #ifdef OB_BUILD_SHARED_STORAGE
   shared_log_service_(),
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_(),
 #endif
   flashback_service_(),
   monitor_(),
@@ -79,7 +75,6 @@ int ObLogService::mtl_init(ObLogService* &logservice)
   const char *tenant_clog_dir = MTL_INIT_CTX()->tenant_clog_dir_;
   const char *clog_dir = OB_FILE_SYSTEM_ROUTER.get_clog_dir();
   ObLocationService *location_service = GCTX.location_service_;
-  observer::ObIMetaReport *reporter = GCTX.ob_service_;
   ObServerLogBlockMgr *log_block_mgr = GCTX.log_block_mgr_;
   common::ObILogAllocator *alloc_mgr = NULL;
   common::ObMySQLProxy *mysql_proxy = GCTX.sql_proxy_;
@@ -99,7 +94,6 @@ int ObLogService::mtl_init(ObLogService* &logservice)
                                       GCTX.batch_rpc_,
                                       MTL(ObLSService*),
                                       location_service,
-                                      reporter,
                                       log_block_mgr,
                                       mysql_proxy,
                                       net_keepalive_adapter,
@@ -162,9 +156,6 @@ void ObLogService::stop()
     shared_log_service_.stop();
   }
 #endif
-#ifdef OB_BUILD_ARBITRATION
-  (void)arb_service_.stop();
-#endif
   FLOG_INFO("ObLogService is stopped");
 }
 
@@ -178,9 +169,6 @@ void ObLogService::wait()
     shared_log_service_.wait();
   }
 #endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_.wait();
-#endif
 }
 
 void ObLogService::destroy()
@@ -193,12 +181,8 @@ void ObLogService::destroy()
   location_adapter_.destroy();
   ls_adapter_.destroy();
   rpc_proxy_.destroy();
-  reporter_.destroy();
 #ifdef OB_BUILD_SHARED_STORAGE
   shared_log_service_.destroy();
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  arb_service_.destroy();
 #endif
   flashback_service_.destroy();
   if (NULL != palf_env_) {
@@ -240,7 +224,6 @@ int ObLogService::init(const PalfOptions &options,
                        obrpc::ObBatchRpc *batch_rpc,
                        ObLSService *ls_service,
                        ObLocationService *location_service,
-                       observer::ObIMetaReport *reporter,
                        palf::ILogBlockPool *log_block_pool,
                        common::ObMySQLProxy *sql_proxy,
                        IObNetKeepAliveAdapter *net_keepalive_adapter,
@@ -256,11 +239,11 @@ int ObLogService::init(const PalfOptions &options,
     CLOG_LOG(WARN, "ObLogService init twice", K(ret));
   } else if (false == options.is_valid() || OB_ISNULL(base_dir) || OB_UNLIKELY(!self.is_valid())
       || OB_ISNULL(alloc_mgr) || OB_ISNULL(transport) || OB_ISNULL(batch_rpc) || OB_ISNULL(ls_service)
-      || OB_ISNULL(location_service) || OB_ISNULL(reporter) || OB_ISNULL(log_block_pool)
+      || OB_ISNULL(location_service) || OB_ISNULL(log_block_pool)
       || OB_ISNULL(sql_proxy) || OB_ISNULL(net_keepalive_adapter) || OB_ISNULL(locality_manager)) {
     ret = OB_INVALID_ARGUMENT;
     CLOG_LOG(WARN, "invalid arguments", K(ret), K(options), KP(base_dir), K(self),
-             KP(alloc_mgr), KP(transport), KP(batch_rpc), KP(ls_service), KP(location_service), KP(reporter),
+             KP(alloc_mgr), KP(transport), KP(batch_rpc), KP(ls_service), KP(location_service),
              KP(log_block_pool), KP(sql_proxy), KP(net_keepalive_adapter));
   } else if (OB_FAIL(PalfEnv::create_palf_env(options, base_dir, self, transport, batch_rpc,
                                               alloc_mgr, log_block_pool, &monitor_, LOG_IO_DEVICE_WRAPPER.get_local_device(), 
@@ -281,8 +264,6 @@ int ObLogService::init(const PalfOptions &options,
     CLOG_LOG(WARN, "failed to init location_adapter_", K(ret));
   } else if (OB_FAIL(rpc_proxy_.init(transport))) {
     CLOG_LOG(WARN, "LogServiceRpcProxy init failed", K(ret));
-  } else if (OB_FAIL(reporter_.init(reporter))) {
-    CLOG_LOG(WARN, "ReporterAdapter init failed", K(ret));
 #ifdef OB_BUILD_SHARED_STORAGE
   } else if (FALSE_IT(enable_shared_storage_ = GCTX.is_shared_storage_mode())) {
   } else if (enable_shared_storage_ &&
@@ -290,10 +271,6 @@ int ObLogService::init(const PalfOptions &options,
              &rpc_proxy_, &location_adapter_, alloc_mgr,
              palf_env_->get_palf_env_impl()->get_log_shared_queue_thread()))) {
     CLOG_LOG(WARN, "failed to init shared_log_service_", K(self), K(tenant_id));
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  } else if (OB_FAIL(arb_service_.init(self, palf_env_, &rpc_proxy_, net_keepalive_adapter, &monitor_, &location_adapter_))) {
-    CLOG_LOG(WARN, "failed to init arb_service_", K(ret), K(self), KP(palf_env_));
 #endif
   } else if (OB_FAIL(flashback_service_.init(self, &location_adapter_, &rpc_proxy_, sql_proxy))) {
     CLOG_LOG(WARN, "failed to init flashback_service_", K(ret));
@@ -326,7 +303,6 @@ palf::AccessMode ObLogService::get_palf_access_mode(const share::ObTenantRole &t
       break;
     case share::ObTenantRole::STANDBY_TENANT:
     case share::ObTenantRole::RESTORE_TENANT:
-    case share::ObTenantRole::CLONE_TENANT:
       mode = palf::AccessMode::RAW_WRITE;
       break;
     default:
@@ -791,23 +767,6 @@ int ObLogService::diagnose_apply(const share::ObLSID &id,
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int ObLogService::diagnose_arb_srv(const share::ObLSID &id,
-                                   LogArbSrvDiagnoseInfo &diagnose_info)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    CLOG_LOG(WARN, "log_service is not inited", K(ret));
-  } else if (OB_FAIL(arb_service_.diagnose(id, diagnose_info))) {
-    CLOG_LOG(WARN, "arb_service_ diagnose failed", K(ret), K(id));
-  } else {
-    // do nothing
-  }
-  return ret;
-}
-#endif
 
 int ObLogService::get_io_start_time(int64_t &last_working_time)
 {
