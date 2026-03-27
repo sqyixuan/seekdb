@@ -1,0 +1,116 @@
+drop table if exists t1;
+drop table if exists t2;
+========== 1. Basic refresh test ==========
+create table t1(
+c1 int primary key,
+c2 vector(3),
+vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap;
+insert into t1 values (1, '[1,2,3]');
+insert into t1 values (2, '[4,5,6]');
+insert into t1 values (3, '[7,8,9]');
+call dbms_index_manager.refresh();
+select c1, c2 from t1 order by l2_distance(c2, '[1,2,3]') approximate limit 3;
+c1	c2
+1	[1,2,3]
+2	[4,5,6]
+3	[7,8,9]
+
+========== 2. Batch DML + refresh test ==========
+call dbms_index_manager.refresh();
+select count(*) from t1;
+count(*)
+13
+select c1 from t1 order by l2_distance(c2, '[15.0, 15.0, 15.0]') approximate limit 5;
+c1
+15
+14
+16
+13
+17
+
+========== 3. Mixed DML operations + refresh ==========
+update t1 set c2 = '[100, 100, 100]' where c1 = 1;
+delete from t1 where c1 = 2;
+insert into t1 values (100, '[200, 200, 200]');
+call dbms_index_manager.refresh();
+select c1, c2 from t1 where c1 in (1, 2, 100);
+c1	c2
+1	[100,100,100]
+100	[200,200,200]
+select c1 from t1 order by l2_distance(c2, '[100, 100, 100]') approximate limit 3;
+c1
+1
+19
+18
+
+========== 4. Multi-table scenario ==========
+create table t2(
+id int primary key,
+vec vector(3),
+vector index idx2(vec) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap;
+insert into t1 values (200, '[1,1,1]');
+insert into t2 values (1, '[2,2,2]');
+insert into t2 values (2, '[3,3,3]');
+call dbms_index_manager.refresh();
+select c1 from t1 where c1 = 200;
+c1
+200
+select id from t2 order by cosine_distance(vec, '[2,2,2]') approximate limit 2;
+id
+2
+1
+
+========== 5. Check sync statistics after refresh ==========
+select 
+b.table_name,
+SUBSTRING_INDEX(SUBSTRING_INDEX(a.sync_info, 'incr_cnt=', -1),';',1) as incr_cnt,
+SUBSTRING_INDEX(SUBSTRING_INDEX(a.sync_info, 'sync_total_cnt=', -1),';',1) as sync_total_cnt
+from oceanbase.__all_virtual_vector_index_info a
+join oceanbase.__all_virtual_table b 
+on a.data_table_id = b.table_id 
+where b.table_name in ('t1', 't2')
+order by b.table_name;
+table_name	incr_cnt	sync_total_cnt
+t1	0	0
+t2	0	0
+
+========== 6. Transaction scenario ==========
+begin;
+insert into t1 values (300, '[5,5,5]');
+call dbms_index_manager.refresh();
+select c1 from t1 where c1 = 300;
+c1
+300
+commit;
+call dbms_index_manager.refresh();
+select c1 from t1 order by l2_distance(c2, '[5,5,5]') approximate limit 3;
+c1
+300
+3
+200
+
+========== 7. Partition table scenario ==========
+create table t3(
+pk int primary key,
+v vector(3),
+vector index idx3(v) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap
+partition by range(pk) (
+partition p0 values less than (100),
+partition p1 values less than (200),
+partition p2 values less than (300)
+);
+insert into t3 values (10, '[1,1,1]');
+insert into t3 values (110, '[2,2,2]');
+insert into t3 values (210, '[3,3,3]');
+call dbms_index_manager.refresh();
+select pk from t3 order by l2_distance(v, '[2,2,2]') approximate limit 3;
+pk
+110
+10
+210
+drop table t1;
+drop table t2;
+drop table t3;
