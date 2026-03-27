@@ -22,17 +22,6 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <netinet/in.h>
-// Platform-specific headers
-#ifdef __APPLE__
-#include <pthread.h>
-#endif
-// Define __INT64_C if not available (e.g., on macOS)
-#ifndef __INT64_C
-#define __INT64_C(c) c##LL
-#endif
-#ifndef __UINT64_C
-#define __UINT64_C(c) c##ULL
-#endif
 // basic headers, do not add other headers here
 #include "lib/coro/co_var.h"
 #include "lib/utility/ob_macro_utils.h"
@@ -203,7 +192,7 @@ const uint64_t OB_INTERNAL_CATALOG_ID = 0;
 const char *const OB_INTERNAL_CATALOG_NAME = "internal";
 const char *const OB_INTERNAL_CATALOG_NAME_UPPER = "INTERNAL";
 const char *const OB_OCEANBASE_NAME = "OceanBase";
-const char *const OB_SEEKDB_NAME = "seekdb";
+const char *const OB_SEEKDB_NAME = "SeekDB";
 const char *const OB_COMPATIBILITY_VERSION = "4.3.5.3";
 
 OB_INLINE bool is_valid_group(const uint64_t group_id)
@@ -2671,24 +2660,11 @@ OB_INLINE void reset_tid_cache()
   get_tid_cache() = -1;
 }
 
-// Platform-specific thread ID getter
-OB_INLINE int64_t ob_syscall_gettid()
-{
-#ifdef __APPLE__
-  // macOS doesn't have gettid, use pthread_threadid_np instead
-  uint64_t thread_id = 0;
-  pthread_threadid_np(NULL, &thread_id);
-  return static_cast<int64_t>(thread_id);
-#else
-  return static_cast<int64_t>(syscall(__NR_gettid));
-#endif
-}
-
 OB_INLINE int64_t ob_gettid()
 {
   int64_t &tid = get_tid_cache();
   if (OB_UNLIKELY(tid <= 0)) {
-    tid = ob_syscall_gettid();
+    tid = static_cast<int64_t>(syscall(__NR_gettid));
   }
   return tid;
 }
@@ -2788,15 +2764,6 @@ extern int ob_pthread_cond_wait(pthread_cond_t *__restrict __cond,
 extern int ob_pthread_cond_timedwait(pthread_cond_t *__restrict __cond,
                                      pthread_mutex_t *__restrict __mutex,
                                      const struct timespec *__restrict __abstime);
-// Portable timed wait with relative timeout in microseconds.
-// On macOS, uses pthread_cond_timedwait_relative_np to avoid clock drift issues.
-// On Linux, computes absolute time using the specified clock and uses ob_pthread_cond_timedwait.
-// use_monotonic: true for CLOCK_MONOTONIC (when pthread_cond uses pthread_condattr_setclock),
-//                false for CLOCK_REALTIME (when pthread_cond uses default attr).
-extern int ob_pthread_cond_timedwait_us(pthread_cond_t *__restrict __cond,
-                                        pthread_mutex_t *__restrict __mutex,
-                                        int64_t timeout_us,
-                                        bool use_monotonic = false);
 }
 
 

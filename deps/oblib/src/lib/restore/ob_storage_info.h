@@ -43,7 +43,7 @@ const int64_t OB_MAX_BACKUP_ENCRYPTKEY_LENGTH = OB_MAX_BACKUP_ACCESSKEY_LENGTH +
 const int64_t OB_MAX_BACKUP_SERIALIZEKEY_LENGTH = OB_MAX_BACKUP_ENCRYPTKEY_LENGTH * 2;
 // We have agreed with OCP that the maximum role_arn length shall not exceed 256
 static constexpr int64_t OB_MAX_ROLE_ARN_LENGTH = 256;
-// The limit on the maximum length of external_id in obs/s3 is 128
+// The limit on the maximum length of external_id in obs/cos/oss/s3 is 128
 static constexpr int64_t OB_MAX_EXTERNAL_ID_LENGTH = 128;
 static constexpr int64_t OB_MAX_ASSUME_ROLE_JSON_DATA_LENGTH = 1024;
 // STS_AK and STS_SK are used to connect to STS service of OCP.
@@ -115,6 +115,8 @@ enum ObStorageChecksumType : uint8_t
   OB_STORAGE_CHECKSUM_MAX_TYPE = 3
 };
 
+bool is_oss_supported_checksum(const ObStorageChecksumType checksum_type);
+bool is_cos_supported_checksum(const ObStorageChecksumType checksum_type);
 bool is_s3_supported_checksum(const ObStorageChecksumType checksum_type);
 const char *get_storage_checksum_type_str(const ObStorageChecksumType &type);
 bool is_use_obdal();
@@ -253,6 +255,7 @@ public:
   ObStorageChecksumType get_checksum_type() const;
   const char *get_checksum_type_str() const;
 
+  bool is_hdfs_storage() const { return OB_STORAGE_HDFS == device_type_; }
   bool is_enable_worm() const;
   bool is_assume_role_mode() const;
   virtual bool is_valid() const;
@@ -291,6 +294,7 @@ public:
   // to be an optional parameter
   common::ObStorageType device_type_;
   // Optional parameter. If not provided, the default value OB_MD5_ALGO will be used.
+  // For OSS/COS, OB_NO_CHECKSUM_ALGO indicates that no checksum algorithm will be used.
   // For Object Storage Services accessed via the S3 protocol,
   // OB_NO_CHECKSUM_ALGO is not supported.
   ObStorageChecksumType checksum_type_;                                 // Repeated in extension_

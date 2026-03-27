@@ -674,12 +674,12 @@ int ObSchemaPrinter::print_single_index_definition(const ObTableSchema *index_sc
           } else if (index_schema->is_fts_index() &&
                      (col->is_doc_id_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
             // skip doc id / hidden pk column(for doc id optimization) for fts index.
-          } else if (index_schema->is_multivalue_index_aux() &&
+          } else if (index_schema->is_multivalue_index_aux() && 
                      (col->is_doc_id_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
             // skip doc id / hidden pk column(for doc id optimization)
-          } else if (index_schema->is_vec_index() &&
+          } else if (index_schema->is_vec_index() && 
                      (col->is_vec_hnsw_vid_column() || col->is_hidden_pk_column_id(col->get_column_id()))) {
-            // only need vec_type column to show index key,
+            // only need vec_type column to show index key, 
             // here skip vec_vid column / hidden pk column(for vid optimization)
           } else if (!col->is_shadow_column()) {
             const ObColumnSchemaV2 *tmp_column = NULL;
@@ -5795,8 +5795,8 @@ int ObSchemaPrinter::print_location_definiton(const uint64_t tenant_id,
     } else if (OB_FAIL(databuff_printf(buf, buf_len, pos,
                                        "CREATE LOCATION "))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print location definition", K(ret));
-    } else if (OB_FAIL(print_identifier(buf, buf_len, pos,
-                                        location_schema->get_location_name_str(),
+    } else if (OB_FAIL(print_identifier(buf, buf_len, pos, 
+                                        location_schema->get_location_name_str(), 
                                         lib::is_oracle_mode()))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print location definition", K(ret));
     }
@@ -5811,7 +5811,7 @@ int ObSchemaPrinter::print_location_definiton(const uint64_t tenant_id,
   if (OB_SUCC(ret) && OB_FAIL(databuff_printf(buf, buf_len, pos, "\nURL = '%.*s'", location_url.length(), location_url.ptr()))) {
     SHARE_SCHEMA_LOG(WARN, "fail to print url", K(ret), K(*location_schema));
   }
-
+  
   if(OB_SUCC(ret) && !location_access_info.empty()) {
     if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\nCREDENTIAL = ("))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print credential", K(ret), K(*location_schema));
@@ -5853,6 +5853,26 @@ int ObSchemaPrinter::print_location_definiton(const uint64_t tenant_id,
         length = strlen(REGION);
         if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  S3_REGION = "))) {
           SHARE_SCHEMA_LOG(WARN, "fail to print s3_region", K(ret), K(*location_schema));
+        }
+      } else if (0 == strncmp(PRINCIPAL, token, strlen(PRINCIPAL))) {
+        length = strlen(PRINCIPAL);
+        if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  PRINCIPAL = "))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to print principal", K(ret), K(*location_schema));
+        }
+      } else if (0 == strncmp(KEYTAB, token, strlen(KEYTAB))) {
+        length = strlen(KEYTAB);
+        if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  KEYTAB = "))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to print keytab", K(ret), K(*location_schema));
+        }
+      } else if (0 == strncmp(KRB5CONF, token, strlen(KRB5CONF))) {
+        length = strlen(KRB5CONF);
+        if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  KRB5CONF = "))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to print krb5conf", K(ret), K(*location_schema));
+        }
+      } else if (0 == strncmp(HDFS_CONFIGS, token, strlen(HDFS_CONFIGS))) {
+        length = strlen(HDFS_CONFIGS);
+        if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  CONFIGS = "))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to print configs", K(ret), K(*location_schema));
         }
       }
 

@@ -78,12 +78,12 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
         SHARE_SCHEMA_LOG(WARN, "fail to print LOCATION OBJ", K(ret));
       } else if (!sub_path.empty() && OB_FAIL(databuff_printf(buf, buf_len, pos, "'%.*s'", sub_path.length(), sub_path.ptr()))){
         SHARE_SCHEMA_LOG(WARN, "fail to print SUB_PATH", K(ret));
-      }
+      } 
     } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\nLOCATION='%.*s'", location.length(), location.ptr()))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print LOCATION", K(ret));
     }
   }
-
+  
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (!is_odps_external_table && !pattern.empty() && OB_FAIL(databuff_printf(buf, buf_len, pos, "\nPATTERN='%.*s'", pattern.length(), pattern.ptr()))) {

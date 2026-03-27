@@ -131,8 +131,13 @@ int ObDDLResolver::resolve_external_file_location(ObResolverParams &params,
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "location option");
   } else {
     ObString url = table_location;
+    const bool is_hdfs_type = url.prefix_match(OB_HDFS_PREFIX);
+
+    ObHDFSStorageInfo hdfs_storage_info;
     ObBackupStorageInfo backup_storage_info;
-    ObObjectStorageInfo *storage_info = static_cast<ObObjectStorageInfo *>(&backup_storage_info);
+    ObObjectStorageInfo *storage_info = is_hdfs_type
+                                        ? static_cast<ObObjectStorageInfo *>(&hdfs_storage_info)
+                                        : static_cast<ObObjectStorageInfo *>(&backup_storage_info);
     char storage_info_buf[OB_MAX_BACKUP_STORAGE_INFO_LENGTH] = { 0 };
     ObString path = url.split_on('?');
     if (OB_FAIL(ret)) {
@@ -141,7 +146,7 @@ int ObDDLResolver::resolve_external_file_location(ObResolverParams &params,
       // url like: oss://ak:sk@host/bucket/...
       ObSqlString tmp_location;
       ObSqlString prefix;
-
+      
       if (OB_FAIL(resolve_file_prefix(url, prefix, storage_info->device_type_, params))) {
         LOG_WARN("failed to resolve file prefix", K(ret));
       } else if (OB_FAIL(tmp_location.append(prefix.string()))) {
@@ -151,7 +156,8 @@ int ObDDLResolver::resolve_external_file_location(ObResolverParams &params,
       }
 
       if (OB_SUCC(ret)) {
-        if (OB_STORAGE_FILE != storage_info->device_type_) {
+        if (OB_STORAGE_FILE != storage_info->device_type_  &&
+            OB_STORAGE_HDFS != storage_info->device_type_ /* hdfs with simple auth*/) {
           if (OB_FAIL(ObSQLUtils::split_remote_object_storage_url(url, storage_info))) {
             LOG_WARN("failed to split remote object storage url", K(ret));
           }
@@ -194,7 +200,7 @@ int ObDDLResolver::resolve_external_file_location(ObResolverParams &params,
 int ObDDLResolver::resolve_external_file_location_object(ObResolverParams &params,
                                                          ObTableSchema &table_schema,
                                                          common::ObString location_obj,
-                                                         common::ObString sub_path)
+                                                         common::ObString sub_path) 
 {
   int ret = OB_SUCCESS;
   if (!table_schema.is_external_table()) {
@@ -222,3 +228,4 @@ int ObDDLResolver::resolve_external_file_location_object(ObResolverParams &param
 }
 }
 }
+
