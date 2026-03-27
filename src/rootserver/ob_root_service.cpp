@@ -10144,7 +10144,7 @@ int ObRootService::create_ai_model(const obrpc::ObCreateAiModelArg &arg)
   }
 
   LOG_TRACE("finish create ai model", K(ret), K(arg));
-
+  
   return ret;
 }
 
@@ -10164,7 +10164,7 @@ int ObRootService::drop_ai_model(const obrpc::ObDropAiModelArg &arg)
   }
 
   LOG_TRACE("finish drop ai model", K(ret), K(arg));
-
+  
   return ret;
 }
 
