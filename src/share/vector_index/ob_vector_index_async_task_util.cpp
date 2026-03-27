@@ -315,7 +315,7 @@ int ObVecIndexAsyncTaskUtil::move_task_to_history_table(
   } else if (OB_FAIL(proxy.write(tenant_id, sql.ptr(), insert_rows))) {
     LOG_WARN("fail to execute sql", K(ret), K(sql), K(tenant_id));
   } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s"
-          " WHERE tenant_id = %ld AND status = 3 AND gmt_modified <= (SELECT gmt_modified FROM %s ORDER BY gmt_modified desc LIMIT 1)",
+          " WHERE tenant_id = %ld AND status = 3 AND gmt_create <= (SELECT gmt_create FROM %s ORDER BY gmt_create desc LIMIT 1)",
           share::OB_ALL_VECTOR_INDEX_TASK_TNAME,
           ObSchemaUtils::get_extract_tenant_id(tenant_id, tenant_id),
           share::OB_ALL_VECTOR_INDEX_TASK_HISTORY_TNAME))) {
@@ -969,7 +969,7 @@ int ObVecIndexAsyncTaskHandler::push_task(
       task = nullptr;
     }
     if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(task) &&
+    } else if (OB_NOT_NULL(task) && 
         (task->current_status() == ObHybridVectorRefreshTaskStatus::TASK_PREPARE || task->current_status() == ObHybridVectorRefreshTaskStatus::TASK_FINISH)) {
       task->reset_status();
       handle_ls_process_task_cnt(task->get_ls_id(), true);
@@ -1043,7 +1043,7 @@ void ObVecIndexAsyncTaskHandler::handle(void *task)
   } else {
     async_task = static_cast<ObVecIndexIAsyncTask *>(task);
     ObPluginVectorIndexService *vector_index_service = MTL(ObPluginVectorIndexService *);
-    if (async_task->get_task_type() == ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_INDEX_OPTINAL
+    if (async_task->get_task_type() == ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_INDEX_OPTINAL 
     || async_task->get_task_type() == ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_HYBRID_VECTOR_EMBEDDING
     || async_task->get_task_type() == ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_INDEX_IVF_LOAD
     || async_task->get_task_type() == ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_INDEX_IVF_CLEAN) {
@@ -1070,7 +1070,7 @@ void ObVecIndexAsyncTaskHandler::handle(void *task)
       LOG_WARN("unexpected task type", K(ret), KPC(async_task));
     }
   }
-  if (OB_NOT_NULL(async_task)
+  if (OB_NOT_NULL(async_task) 
       && (async_task->get_task_type() != ObVecIndexAsyncTaskType::OB_VECTOR_ASYNC_HYBRID_VECTOR_EMBEDDING || async_task->all_finished())) {
     handle_ls_process_task_cnt(async_task->get_ls_id(), false);
     dec_async_task_ref();
@@ -1180,47 +1180,6 @@ int ObVecIndexIAsyncTask::init(
     ls_id_ = ls_id;
     task_type_ = task_type;
     is_inited_ = true;
-  }
-  return ret;
-}
-
-int ObVecIndexATaskUpdIterator::init() {
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(old_row_.init())) {
-    LOG_WARN("fail to init old rows iter", K(ret));
-  } else if (OB_FAIL(new_row_.init())) {
-    LOG_WARN("fail to init new rows iter", K(ret));
-  }
-  return ret;
-}
-
-int ObVecIndexATaskUpdIterator::add_row(blocksstable::ObDatumRow &old_datum_row, blocksstable::ObDatumRow &new_datum_row) {
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(old_row_.add_row(old_datum_row))) {
-    LOG_WARN("failed to add row to iter", K(ret));
-  } else if (OB_FAIL(new_row_.add_row(new_datum_row))) {
-    LOG_WARN("fail to init new rows iter", K(ret));
-  }
-  return ret;
-}
-
-int ObVecIndexATaskUpdIterator::get_next_row(blocksstable::ObDatumRow *&row)
-{
-  int ret = OB_SUCCESS;
-  if (!got_old_row_) {
-    got_old_row_ = true;
-    if (OB_FAIL(old_row_.get_next_row(row))) {
-      if (OB_ITER_END != ret) {
-        LOG_WARN("fail to get next old row", K(ret));
-      }
-    }
-  } else {
-    got_old_row_ = false;
-    if (OB_FAIL(new_row_.get_next_row(row))) {
-      if (OB_ITER_END != ret) {
-        LOG_WARN("fail to get next new row", K(ret));
-      }
-    }
   }
   return ret;
 }
@@ -1383,7 +1342,7 @@ int ObVecIndexAsyncTask::process_data_for_index(ObPluginVectorIndexAdaptor &adap
     } else if (OB_ISNULL(vectors = static_cast<float *>(allocator_.alloc(sizeof(float) * dim * VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to alloc new mem.", K(ret));
-    }
+    } 
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(vids = static_cast<int64_t *>(allocator_.alloc(sizeof(int64_t) * VEC_INDEX_HNSWSQ_BUILD_COUNT_THRESHOLD)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1699,7 +1658,6 @@ int ObVecIndexAsyncTask::refresh_snapshot_index_data(ObPluginVectorIndexAdaptor 
   int64_t vector_data_col_idx = -1;
   int64_t vector_vid_col_idx = -1;
   int64_t vector_col_idx = -1;
-  int64_t pk_increment_col_idx = -1;
   ObSEArray<int64_t, 4> extra_column_idxs;
   int64_t key_col_id = -1;
   int64_t data_col_id = -1;
@@ -1737,9 +1695,7 @@ int ObVecIndexAsyncTask::refresh_snapshot_index_data(ObPluginVectorIndexAdaptor 
       } else {
         for (uint64_t i = 0; i < all_column_ids.count() && OB_SUCC(ret); i++) {
           const ObColumnSchemaV2 *column_schema;
-          if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
-            LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
-          } else if (OB_ISNULL(column_schema = data_table_schema->get_column_schema(all_column_ids.at(i)))) {
+          if (OB_ISNULL(column_schema = data_table_schema->get_column_schema(all_column_ids.at(i)))) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("fail to get column schema", K(ret), K(all_column_ids.at(i)));
           } else if (column_schema->is_vec_hnsw_vid_column() ) {
@@ -1752,36 +1708,40 @@ int ObVecIndexAsyncTask::refresh_snapshot_index_data(ObPluginVectorIndexAdaptor 
                 ret = OB_NOT_SUPPORTED;
                 LOG_INFO("vector index created before 4.3.5.2 do not support vector index optimize task, please rebuild vector index.", K(ret), K(index_name));
               }
+            } else if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
             }
           } else if (column_schema->is_hidden_pk_column_id(all_column_ids.at(i))) {
-            pk_increment_col_idx = i;
+            vector_vid_col_idx = i;
+            if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
+            }
           } else if (column_schema->is_vec_hnsw_vector_column()) {
             vector_col_idx = i;
+            if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
+            }
           } else if (column_schema->is_vec_hnsw_key_column()) {
             vector_key_col_idx = i;
             key_col_id = all_column_ids.at(i);
+            if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
+            }
           } else if (column_schema->is_vec_hnsw_data_column()) {
             vector_data_col_idx = i;
             data_col_id = all_column_ids.at(i);
             cs_type = column_schema->get_collation_type();
+            if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
+            }
           } else { // set extra column id
             if (OB_FAIL(extra_column_idxs.push_back(i))) {
               LOG_WARN("failed to push back extra column idx", K(ret), K(i));
+            } else if (OB_FAIL(dml_column_ids.push_back(all_column_ids.at(i)))) {
+              LOG_WARN("fail to push back column id", K(ret), K(all_column_ids.at(i)));
             }
           }
         } // end for.
-
-        if (OB_FAIL(ret)) {
-        } else if (vector_vid_col_idx == -1 && pk_increment_col_idx == -1) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_vid_col_idx), K(pk_increment_col_idx), K(all_column_ids));
-        } else if (vector_vid_col_idx == -1 && pk_increment_col_idx != -1) {
-          vector_vid_col_idx = pk_increment_col_idx;
-        } else if (vector_vid_col_idx != -1 && pk_increment_col_idx != -1) {
-          if (OB_FAIL(extra_column_idxs.push_back(pk_increment_col_idx))) {
-            LOG_WARN("failed to push back extra column idx", K(ret), K(pk_increment_col_idx));
-          }
-        }
         if (OB_SUCC(ret)) {
           if (vector_vid_col_idx == -1 || vector_col_idx == -1 || vector_key_col_idx == -1 || vector_data_col_idx == -1) {
             ret = OB_ERR_UNEXPECTED;
