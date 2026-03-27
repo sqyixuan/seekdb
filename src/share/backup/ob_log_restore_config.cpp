@@ -28,7 +28,7 @@ int ObLogRestoreSourceLocationConfigParser::update_inner_config_table(common::Ob
   int ret = OB_SUCCESS;
   ObBackupDestMgr dest_mgr;
   ObLogRestoreSourceMgr restore_source_mgr;
-  ObAllTenantInfo tenant_info;
+  bool is_primary_cluster = true;
 
   if (!type_.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
@@ -57,12 +57,14 @@ int ObLogRestoreSourceLocationConfigParser::update_inner_config_table(common::Ob
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("invalid archive source", KR(ret), KPC(this));
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "set log_restore_source");
-      } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, &trans, 
-                                                                true /* for update */, tenant_info))) {
-        LOG_WARN("failed to load tenant info", KR(ret), K_(tenant_id));
-      } else if (OB_FAIL(restore_source_mgr.add_location_source(tenant_info.get_recovery_until_scn(), 
-                                                                value_string))) {
-        LOG_WARN("failed to add log restore source", KR(ret), K(tenant_info), K(value_string), KPC(this));
+      } else if (OB_FAIL(ObShareUtil::is_primary_cluster(is_primary_cluster))) {
+        LOG_WARN("fail to check whether is primary cluster", KR(ret), K(is_primary_cluster));
+      } else if (!is_primary_cluster) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("tenant is standby, not supported now", K(is_primary_cluster));
+      //} else if (OB_FAIL(restore_source_mgr.add_location_source(tenant_info.get_recovery_until_scn(), 
+      //                                                          value_string))) {
+      //  LOG_WARN("failed to add log restore source", KR(ret), K(tenant_info), K(value_string), KPC(this));
       }
     }
   } 
@@ -166,7 +168,7 @@ int ObLogRestoreSourceServiceConfigParser::update_inner_config_table(common::ObI
 {
   int ret = OB_SUCCESS;
   ObLogRestoreSourceMgr restore_source_mgr;
-  ObAllTenantInfo tenant_info;
+  bool is_primary_cluster = true;
 
   if (!type_.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
@@ -196,12 +198,17 @@ int ObLogRestoreSourceServiceConfigParser::update_inner_config_table(common::ObI
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "log_restore_source");
     } else if (OB_FAIL(service_attr_.gen_service_attr_str(value_string, OB_MAX_BACKUP_DEST_LENGTH))) {
       LOG_WARN("failed gen service attr str", K_(tenant_id));
-    } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, &trans, 
-                                                            true /* for update */, tenant_info))) {
-      LOG_WARN("failed to load tenant info", K_(tenant_id));
-    } else if (OB_FAIL(restore_source_mgr.add_service_source(tenant_info.get_recovery_until_scn(), 
-                                                            value_string))) {
-      LOG_WARN("failed to add log restore source", K(tenant_info), K(value_string), KPC(this));
+    } else if (OB_FAIL(ObShareUtil::is_primary_cluster(is_primary_cluster))) {
+      LOG_WARN("fail to check whether is primary cluster", KR(ret), K(is_primary_cluster));
+    } else if (!is_primary_cluster) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("tenant is standby", K(is_primary_cluster));
+    //} else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, &trans, 
+    //                                                        true /* for update */, tenant_info))) {
+    //  LOG_WARN("failed to load tenant info", K_(tenant_id));
+    //} else if (OB_FAIL(restore_source_mgr.add_service_source(tenant_info.get_recovery_until_scn(), 
+    //                                                        value_string))) {
+    //  LOG_WARN("failed to add log restore source", K(tenant_info), K(value_string), KPC(this));
     }
   }
   return ret;

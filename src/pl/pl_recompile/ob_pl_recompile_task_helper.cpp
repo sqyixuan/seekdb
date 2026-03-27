@@ -16,7 +16,6 @@
 #define USING_LOG_PREFIX PL
 
 #include "ob_pl_recompile_task_helper.h"
-#include "share/ob_tenant_info_proxy.h"
 #include "share/ob_define.h"
 #include "share/ob_errno.h"
 #include "pl/ob_pl.h"

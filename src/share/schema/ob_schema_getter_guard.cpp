@@ -179,24 +179,6 @@ int ObSchemaGetterGuard::get_schema_version(const uint64_t tenant_id, int64_t &s
   } else {
     schema_version = schema_mgr_info->get_snapshot_version();
   }
-  if (OB_FAIL(ret)
-      && OB_TENANT_HAS_BEEN_DROPPED != ret
-      && ObSchemaService::g_liboblog_mode_) {
-    int tmp_ret = OB_SUCCESS;
-    if (OB_ISNULL(schema_service_))  {
-      tmp_ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("schema_service is null", KR(ret));
-    } else {
-      TenantStatus tenant_status = TENANT_STATUS_INVALID;
-      tmp_ret = schema_service_->query_tenant_status(tenant_id, tenant_status);
-      if (OB_SUCCESS != tmp_ret){
-        LOG_WARN("query tenant status failed", KR(ret), K(tmp_ret), K(tenant_id));
-      } else if (TENANT_DELETED == tenant_status) {
-        LOG_INFO("tenant has been dropped, no need retry", KR(ret), K(tenant_id));
-        ret = OB_TENANT_HAS_BEEN_DROPPED; //overwrite ret
-      }
-    }
-  }
   return ret;
 }
 
@@ -3474,28 +3456,6 @@ int ObSchemaGetterGuard::get_schema(
     }
   }
 
-  if (OB_FAIL(ret)
-      && OB_TENANT_HAS_BEEN_DROPPED != ret
-      && ObSchemaService::g_liboblog_mode_) {
-    int tmp_ret = OB_SUCCESS;
-    if (OB_ISNULL(schema_service_))  {
-      tmp_ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("schema_service is null", KR(ret), K(tmp_ret));
-    } else {
-      uint64_t query_tenant_id = (TENANT_SCHEMA == schema_type) ?
-                                 schema_id : tenant_id;
-      TenantStatus tenant_status = TENANT_STATUS_INVALID;
-      tmp_ret = schema_service_->query_tenant_status(query_tenant_id, tenant_status);
-      if (OB_SUCCESS != tmp_ret){
-        LOG_WARN("query tenant status failed", KR(ret), K(tmp_ret),
-                 K(query_tenant_id), K(tenant_id), K_(tenant_id));
-      } else if (TENANT_DELETED == tenant_status) {
-        LOG_INFO("tenant has been dropped, no need retry", KR(ret),
-                 K(query_tenant_id), K(tenant_id), K_(tenant_id));
-        ret = OB_TENANT_HAS_BEEN_DROPPED; //overwrite ret
-      }
-    }
-  }
   return ret;
 }
 
@@ -6309,51 +6269,6 @@ GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DEFINE(outline, ObSimpleOutlineSchema);
 GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DEFINE(package, ObSimplePackageSchema);
 GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DEFINE(routine, ObSimpleRoutineSchema);
 GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DEFINE(mock_fk_parent_table, ObSimpleMockFKParentTableSchema);
-
-int ObSchemaGetterGuard::get_vector_info_index_ids_in_tenant(const uint64_t tenant_id,
-                                                             bool &has_ivf_index,
-                                                             ObIArray<uint64_t> &table_ids)
-{
-  int ret = OB_SUCCESS;
-  const ObSchemaMgr *mgr = NULL;
-  ObArray<const ObSimpleTableSchemaV2 *> schemas;
-  table_ids.reset();
-  has_ivf_index = false;
-  if (!check_inner_stat()) {
-    ret = OB_INNER_STAT_ERROR;
-    LOG_WARN("inner stat error", KR(ret));
-  } else if (OB_INVALID_ID == tenant_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
-    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
-  } else if (OB_FAIL(get_schema_mgr(tenant_id, mgr))) {
-    if (OB_TENANT_NOT_EXIST == ret) {
-      ret = ignore_tenant_not_exist_error(tenant_id) ? OB_SUCCESS : ret;
-    }
-    if (OB_FAIL(ret)) {
-      LOG_WARN("fail to get schema mgr", KR(ret), K(tenant_id));
-    }
-  } else if (OB_ISNULL(mgr)) {
-    ret = OB_SCHEMA_EAGAIN;
-    LOG_WARN("get simple schema in lazy mode not supported", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(mgr->get_vector_index_schemas_in_tenant(tenant_id, schemas))) {
-    LOG_WARN("get table schemas in tenant failed", KR(ret), K(tenant_id));
-  } else {
-    FOREACH_CNT_X(schema, schemas, OB_SUCC(ret)) {
-      const ObSimpleTableSchemaV2 *tmp_schema = *schema;
-      if (OB_ISNULL(tmp_schema)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("NULL ptr", KR(ret), KP(tmp_schema));
-      } else if (OB_FAIL(table_ids.push_back(tmp_schema->get_table_id()))) {
-        LOG_WARN("push back table id failed", KR(ret));
-      } else if (!has_ivf_index && tmp_schema->is_vec_ivf_index()) {
-        has_ivf_index = true;
-      }
-    }
-  }
-  return ret;
-}
 
 } //end of namespace schema
 } //end of namespace share
