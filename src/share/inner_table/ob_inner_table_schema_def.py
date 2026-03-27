@@ -7403,7 +7403,7 @@ all_ai_model_def = dict(
       ('tenant_id', 'int'),
       ('model_id', 'int'),
     ],
-
+    
     in_tenant_space = True,
     is_cluster_private = False,
     meta_record_in_sys = False,
@@ -7428,7 +7428,7 @@ all_ai_model_endpoint_def = dict(
       ('endpoint_id', 'int'),
       ('scope', 'varchar:128')
     ],
-
+    
     in_tenant_space = True,
     is_cluster_private = True,
     meta_record_in_sys = False,
@@ -15150,6 +15150,26 @@ def_table_schema(
   normal_columns = [
   ('file_name', 'varchar:16384'),
   ('file_size', 'int')
+  ],
+)
+
+# 12560: __all_virtual_change_stream_refresh_stat
+def_table_schema(
+  owner = 'xiebaoma.xbm',
+  table_name    = '__all_virtual_change_stream_refresh_stat',
+  table_id      = '12560',
+  table_type = 'VIRTUAL_TABLE',
+  gm_columns = [],
+  rowkey_columns = [],
+  in_tenant_space=True,
+  normal_columns = [
+    ('tenant_id', 'int'),
+    ('change_stream_refresh_scn', 'int'),
+    ('change_stream_min_dep_lsn', 'int'),
+    ('change_stream_pending_tx_count', 'int'),
+    ('change_stream_fetch_tx', 'int'),
+    ('change_stream_fetch_lsn', 'int'),
+    ('change_stream_fetch_scn', 'int'),
   ],
 )
 
@@ -40354,6 +40374,30 @@ def_table_schema(
       RESPONSE_TRANSFORM_FN
     FROM oceanbase.__all_virtual_ai_model_endpoint
     WHERE ENDPOINT_ID != -1;
+  """.replace("\n", " ")
+)
+
+# 21667: DBA_OB_CHANGE_STREAM_REFRESH_STAT
+def_table_schema(
+  owner = 'xiebaoma.xbm',
+  table_name      = 'DBA_OB_CHANGE_STREAM_REFRESH_STAT',
+  table_id        = '21667',
+  table_type      = 'SYSTEM_VIEW',
+  gm_columns      = [],
+  rowkey_columns  = [],
+  normal_columns  = [],
+  in_tenant_space = True,
+  view_definition =
+  """
+    SELECT
+      CHANGE_STREAM_REFRESH_SCN,
+      CHANGE_STREAM_MIN_DEP_LSN,
+      CHANGE_STREAM_PENDING_TX_COUNT,
+      CHANGE_STREAM_FETCH_TX,
+      CHANGE_STREAM_FETCH_LSN,
+      CHANGE_STREAM_FETCH_SCN
+    FROM oceanbase.__all_virtual_change_stream_refresh_stat
+    WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
   """.replace("\n", " ")
 )
 
