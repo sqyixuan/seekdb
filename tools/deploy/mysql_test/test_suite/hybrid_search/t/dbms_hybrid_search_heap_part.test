@@ -1,0 +1,2755 @@
+#owner: lanhangrun.lhr
+#owner group: shenzhen
+--echo # ----------------------------------------------------------------------
+--echo # Test of hybrid search in heap table with partitions.
+--echo # ----------------------------------------------------------------------
+alter system set _enable_index_merge=false;
+
+--disable_warnings
+# HASH - RANGE (with expression in partition key)
+drop table if exists t1_hash_range;
+create table t1_hash_range (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    subpart_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by hash(part_key1 + part_key2) partitions 2
+  subpartition by range(subpart_key) subpartition template (
+    subpartition sp0 values less than (100),
+    subpartition sp1 values less than (200),
+    subpartition sp2 values less than maxvalue);
+
+insert into t1_hash_range values
+(1, 10, 20, 50, 'Fiction Novel', 'A great fiction story about adventure', '[0.1,0.2,0.3,0.4]'),
+(2, 10, 20, 150, 'Science Book', 'Introduction to quantum physics', '[0.5,0.6,0.7,0.8]'),
+(3, 30, 40, 250, 'History Book', 'World war history', '[0.9,0.1,0.2,0.3]'),
+(4, 30, 40, 50, 'Math Book', 'Advanced calculus', '[0.4,0.5,0.6,0.7]'),
+(5, 50, 60, 150, 'Art Book', 'Renaissance art history', '[0.8,0.9,0.1,0.2]'),
+(6, 10, 20, 80, 'Mystery Thriller', 'Suspenseful detective investigation', '[0.2,0.3,0.4,0.5]'),
+(7, 10, 20, 120, 'Romance Story', 'Love and relationships narrative', '[0.3,0.4,0.5,0.6]'),
+(8, 30, 40, 180, 'Biography Memoir', 'Personal life experiences', '[0.6,0.7,0.8,0.9]'),
+(9, 30, 40, 220, 'Science Fiction', 'Future technology and space', '[0.7,0.8,0.9,0.1]'),
+(10, 50, 60, 100, 'Poetry Collection', 'Emotional verses and rhymes', '[0.2,0.4,0.6,0.8]'),
+(11, 50, 60, 200, 'Cookbook Guide', 'Recipes and cooking techniques', '[0.1,0.3,0.5,0.7]'),
+(12, 70, 80, 60, 'Travel Guide', 'Destination recommendations', '[0.4,0.6,0.8,0.2]'),
+(13, 70, 80, 140, 'Self Help Book', 'Personal development strategies', '[0.5,0.7,0.9,0.3]'),
+(14, 90, 100, 90, 'Children Story', 'Fairy tales and adventures', '[0.3,0.5,0.7,0.9]'),
+(15, 90, 100, 160, 'Business Guide', 'Entrepreneurship and management', '[0.6,0.8,0.2,0.4]');
+
+# t1_hash_range queries
+set @t1_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "fiction adventure story",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t1_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t1_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t1_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t1_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "fiction adventure story",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t1_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "fiction adventure story",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t1_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t1_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t1_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t1_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "fiction adventure story",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t1_hash_range query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_fts_query);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_vec_query1);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_vec_query2);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_multi_vec_query);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_hybrid_query);
+
+select dbms_hybrid_search.search('t1_hash_range', @t1_fts_query);
+select dbms_hybrid_search.search('t1_hash_range', @t1_vec_query1);
+select dbms_hybrid_search.search('t1_hash_range', @t1_vec_query2);
+select dbms_hybrid_search.search('t1_hash_range', @t1_multi_vec_query);
+select dbms_hybrid_search.search('t1_hash_range', @t1_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t1_hash_range', @t1_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t1_hash_range', @t1_fts_query_no_pk);
+select dbms_hybrid_search.search('t1_hash_range', @t1_vec_query1_no_pk);
+select dbms_hybrid_search.search('t1_hash_range', @t1_vec_query2_no_pk);
+select dbms_hybrid_search.search('t1_hash_range', @t1_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t1_hash_range', @t1_hybrid_query_no_pk);
+
+# KEY - LIST (simple column partition key)
+drop table if exists t2_key_list;
+create table t2_key_list (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    subpart_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by key(part_key1, part_key2) partitions 2
+  subpartition by list(subpart_key) subpartition template (
+    subpartition sp0 values in (1, 2, 3),
+    subpartition sp1 values in (4, 5, 6),
+    subpartition sp2 values in (7, 8, 9));
+
+insert into t2_key_list values
+(1, 100, 200, 1, 'Tech Article', 'Latest technology trends', '[0.1,0.2,0.3,0.4]'),
+(2, 100, 200, 5, 'Business News', 'Market analysis report', '[0.5,0.6,0.7,0.8]'),
+(3, 300, 400, 8, 'Sports News', 'Football match results', '[0.9,0.1,0.2,0.3]'),
+(4, 300, 400, 2, 'Health Guide', 'Nutrition and wellness', '[0.4,0.5,0.6,0.7]'),
+(5, 500, 600, 6, 'Travel Blog', 'Best travel destinations', '[0.8,0.9,0.1,0.2]'),
+(6, 100, 200, 3, 'Finance Report', 'Investment strategies and analysis', '[0.2,0.3,0.4,0.5]'),
+(7, 100, 200, 4, 'Education News', 'Academic achievements and research', '[0.3,0.4,0.5,0.6]'),
+(8, 300, 400, 7, 'Entertainment Review', 'Movie and music critiques', '[0.6,0.7,0.8,0.9]'),
+(9, 300, 400, 9, 'Weather Update', 'Climate patterns and forecasts', '[0.7,0.8,0.9,0.1]'),
+(10, 500, 600, 1, 'Food Recipe', 'Culinary techniques and dishes', '[0.2,0.4,0.6,0.8]'),
+(11, 500, 600, 2, 'Fashion Trends', 'Style and design updates', '[0.1,0.3,0.5,0.7]'),
+(12, 700, 800, 3, 'Science Discovery', 'Research breakthroughs', '[0.4,0.6,0.8,0.2]'),
+(13, 700, 800, 5, 'Political News', 'Government policies and events', '[0.5,0.7,0.9,0.3]'),
+(14, 900, 1000, 4, 'Art Exhibition', 'Gallery shows and artists', '[0.3,0.5,0.7,0.9]'),
+(15, 900, 1000, 7, 'Tech Innovation', 'Startup and product launches', '[0.6,0.8,0.2,0.4]');
+
+# t2_key_list queries
+set @t2_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "technology trends innovation",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t2_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t2_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t2_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t2_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "technology trends innovation",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t2_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "technology trends innovation",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t2_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t2_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t2_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t2_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "technology trends innovation",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t2_key_list query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_fts_query);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_vec_query1);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_vec_query2);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_multi_vec_query);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_hybrid_query);
+
+select dbms_hybrid_search.search('t2_key_list', @t2_fts_query);
+select dbms_hybrid_search.search('t2_key_list', @t2_vec_query1);
+select dbms_hybrid_search.search('t2_key_list', @t2_vec_query2);
+select dbms_hybrid_search.search('t2_key_list', @t2_multi_vec_query);
+select dbms_hybrid_search.search('t2_key_list', @t2_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t2_key_list', @t2_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t2_key_list', @t2_fts_query_no_pk);
+select dbms_hybrid_search.search('t2_key_list', @t2_vec_query1_no_pk);
+select dbms_hybrid_search.search('t2_key_list', @t2_vec_query2_no_pk);
+select dbms_hybrid_search.search('t2_key_list', @t2_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t2_key_list', @t2_hybrid_query_no_pk);
+
+# RANGE (with expression) - HASH
+drop table if exists t3_range_hash;
+create table t3_range_hash (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    subpart_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by range(part_key1 * part_key2)
+  subpartition by hash(subpart_key) subpartitions 3 (
+    partition p0 values less than (1000),
+    partition p1 values less than (5000),
+    partition p2 values less than maxvalue);
+
+insert into t3_range_hash values
+(1, 10, 20, 1, 'Literature Review', 'Classic literature analysis', '[0.1,0.2,0.3,0.4]'),
+(2, 30, 40, 2, 'Science Paper', 'Research findings', '[0.5,0.6,0.7,0.8]'),
+(3, 50, 60, 3, 'Philosophy Essay', 'Deep philosophical thoughts', '[0.9,0.1,0.2,0.3]'),
+(4, 70, 80, 4, 'Economics Report', 'Economic indicators', '[0.4,0.5,0.6,0.7]'),
+(5, 90, 100, 5, 'Psychology Study', 'Human behavior research', '[0.8,0.9,0.1,0.2]');
+
+# t3_range_hash queries
+insert into t3_range_hash values
+(6, 15, 25, 6, 'Literary Criticism', 'Textual interpretation methods', '[0.2,0.3,0.4,0.5]'),
+(7, 25, 35, 7, 'Academic Journal', 'Scholarly publication research', '[0.3,0.4,0.5,0.6]'),
+(8, 55, 65, 8, 'Theoretical Framework', 'Conceptual analysis approach', '[0.6,0.7,0.8,0.9]'),
+(9, 75, 85, 9, 'Market Research', 'Consumer behavior studies', '[0.7,0.8,0.9,0.1]'),
+(10, 95, 105, 10, 'Cognitive Science', 'Mental process investigation', '[0.2,0.4,0.6,0.8]'),
+(11, 20, 30, 11, 'Literary Theory', 'Critical analysis techniques', '[0.1,0.3,0.5,0.7]'),
+(12, 40, 50, 12, 'Scientific Method', 'Experimental design principles', '[0.4,0.6,0.8,0.2]'),
+(13, 60, 70, 13, 'Ethical Philosophy', 'Moral reasoning concepts', '[0.5,0.7,0.9,0.3]'),
+(14, 80, 90, 14, 'Financial Analysis', 'Investment evaluation metrics', '[0.3,0.5,0.7,0.9]'),
+(15, 100, 110, 15, 'Behavioral Psychology', 'Cognitive assessment tools', '[0.6,0.8,0.2,0.4]');
+
+# t3_range_hash queries
+set @t3_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "literature analysis review",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t3_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t3_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t3_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t3_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "literature analysis review",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t3_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "literature analysis review",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t3_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t3_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t3_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t3_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "literature analysis review",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t3_range_hash query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_fts_query);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_vec_query1);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_vec_query2);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_multi_vec_query);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_hybrid_query);
+
+select dbms_hybrid_search.search('t3_range_hash', @t3_fts_query);
+select dbms_hybrid_search.search('t3_range_hash', @t3_vec_query1);
+select dbms_hybrid_search.search('t3_range_hash', @t3_vec_query2);
+select dbms_hybrid_search.search('t3_range_hash', @t3_multi_vec_query);
+select dbms_hybrid_search.search('t3_range_hash', @t3_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t3_range_hash', @t3_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t3_range_hash', @t3_fts_query_no_pk);
+select dbms_hybrid_search.search('t3_range_hash', @t3_vec_query1_no_pk);
+select dbms_hybrid_search.search('t3_range_hash', @t3_vec_query2_no_pk);
+select dbms_hybrid_search.search('t3_range_hash', @t3_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t3_range_hash', @t3_hybrid_query_no_pk);
+
+# RANGE COLUMNS - RANGE COLUMNS
+drop table if exists t4_range_cols_key;
+create table t4_range_cols_key (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    subpart_key1 int,
+    subpart_key2 int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by range columns(part_key1, part_key2)
+  subpartition by range columns(subpart_key1, subpart_key2) subpartition template (
+    subpartition sp0 values less than (50, 50),
+    subpartition sp1 values less than (100, 100),
+    subpartition sp2 values less than (maxvalue, maxvalue)
+  ) (
+    partition p0 values less than (100, 100),
+    partition p1 values less than (200, 200),
+    partition p2 values less than (maxvalue, maxvalue));
+
+insert into t4_range_cols_key values
+(1, 50, 50, 1, 1, 'Music Theory', 'Harmony and composition', '[0.1,0.2,0.3,0.4]'),
+(2, 50, 50, 2, 2, 'Film Review', 'Movie critique', '[0.5,0.6,0.7,0.8]'),
+(3, 150, 150, 3, 3, 'Architecture Design', 'Building structures', '[0.9,0.1,0.2,0.3]'),
+(4, 150, 150, 4, 4, 'Fashion Guide', 'Style trends', '[0.4,0.5,0.6,0.7]'),
+(5, 250, 250, 5, 5, 'Cooking Recipe', 'Delicious dishes', '[0.8,0.9,0.1,0.2]'),
+(6, 50, 50, 3, 3, 'Jazz Performance', 'Improvisation techniques', '[0.2,0.3,0.4,0.5]'),
+(7, 50, 50, 4, 4, 'Classical Music', 'Symphony orchestration', '[0.3,0.4,0.5,0.6]'),
+(8, 150, 150, 5, 5, 'Cinema Analysis', 'Film narrative structure', '[0.6,0.7,0.8,0.9]'),
+(9, 150, 150, 6, 6, 'Urban Planning', 'City development strategies', '[0.7,0.8,0.9,0.1]'),
+(10, 250, 250, 7, 7, 'Textile Design', 'Fabric patterns and colors', '[0.2,0.4,0.6,0.8]'),
+(11, 250, 250, 8, 8, 'Culinary Arts', 'Gourmet cooking methods', '[0.1,0.3,0.5,0.7]'),
+(12, 50, 50, 9, 9, 'Music Composition', 'Songwriting and arrangement', '[0.4,0.6,0.8,0.2]'),
+(13, 150, 150, 10, 10, 'Theater Review', 'Stage performance critique', '[0.5,0.7,0.9,0.3]'),
+(14, 250, 250, 11, 11, 'Interior Design', 'Space decoration concepts', '[0.3,0.5,0.7,0.9]'),
+(15, 250, 250, 12, 12, 'Restaurant Menu', 'Fine dining selections', '[0.6,0.8,0.2,0.4]');
+
+# t4_range_cols_key queries
+set @t4_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "music harmony composition",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t4_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 3
+}';
+
+set @t4_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t4_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t4_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "music harmony composition",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t4_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "music harmony composition",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t4_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t4_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t4_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t4_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "music harmony composition",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t4_range_cols_key query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_fts_query);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_vec_query1);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_vec_query2);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_multi_vec_query);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_hybrid_query);
+
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_fts_query);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_vec_query1);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_vec_query2);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_multi_vec_query);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t4_range_cols_key', @t4_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_fts_query_no_pk);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_vec_query1_no_pk);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_vec_query2_no_pk);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t4_range_cols_key', @t4_hybrid_query_no_pk);
+
+# LIST (with expression) - RANGE COLUMNS
+drop table if exists t5_list_range_cols;
+create table t5_list_range_cols (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    subpart_key1 int,
+    subpart_key2 varchar(50),
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by list(part_key1 + part_key2)
+  subpartition by range columns(subpart_key1, subpart_key2) subpartition template (
+    subpartition sp0 values less than (10, 'm'),
+    subpartition sp1 values less than (20, 'z'),
+    subpartition sp2 values less than (maxvalue, maxvalue)
+  ) (
+    partition p0 values in (100, 200, 300),
+    partition p1 values in (400, 500, 600),
+    partition p2 values in (700, 800, 900));
+
+insert into t5_list_range_cols values
+(1, 50, 50, 5, 'a', 'Biology Textbook', 'Cell structure and function', '[0.1,0.2,0.3,0.4]'),
+(2, 50, 50, 15, 'n', 'Chemistry Guide', 'Chemical reactions', '[0.5,0.6,0.7,0.8]'),
+(3, 150, 150, 25, 'z', 'Physics Manual', 'Mechanics and thermodynamics', '[0.9,0.1,0.2,0.3]'),
+(4, 200, 200, 5, 'a', 'Geography Atlas', 'World maps and regions', '[0.4,0.5,0.6,0.7]'),
+(5, 250, 250, 15, 'n', 'Astronomy Book', 'Stars and galaxies', '[0.8,0.9,0.1,0.2]'),
+(6, 50, 50, 8, 'b', 'Genetics Study', 'DNA and inheritance patterns', '[0.2,0.3,0.4,0.5]'),
+(7, 50, 50, 12, 'o', 'Organic Chemistry', 'Molecular bonding structures', '[0.3,0.4,0.5,0.6]'),
+(8, 150, 150, 18, 'p', 'Quantum Physics', 'Particle behavior analysis', '[0.6,0.7,0.8,0.9]'),
+(9, 200, 200, 8, 'b', 'Cartography Guide', 'Map making techniques', '[0.7,0.8,0.9,0.1]'),
+(10, 250, 250, 12, 'o', 'Cosmology Book', 'Universe expansion theory', '[0.2,0.4,0.6,0.8]'),
+(11, 300, 300, 5, 'a', 'Microbiology Text', 'Bacterial classification', '[0.1,0.3,0.5,0.7]'),
+(12, 400, 400, 15, 'n', 'Inorganic Chemistry', 'Element properties study', '[0.4,0.6,0.8,0.2]'),
+(13, 350, 150, 25, 'z', 'Astrophysics Manual', 'Star formation processes', '[0.5,0.7,0.9,0.3]'),
+(14, 400, 200, 5, 'a', 'Geology Atlas', 'Rock formations guide', '[0.3,0.5,0.7,0.9]'),
+(15, 350, 350, 15, 'n', 'Planetary Science', 'Solar system exploration', '[0.6,0.8,0.2,0.4]');
+
+# t5_list_range_cols queries
+set @t5_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "biology cell structure",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t5_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 3
+}';
+
+set @t5_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t5_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t5_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "biology cell structure",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t5_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "biology cell structure",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t5_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t5_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t5_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t5_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "biology cell structure",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t5_list_range_cols query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_fts_query);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_vec_query1);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_vec_query2);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_multi_vec_query);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_hybrid_query);
+
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_fts_query);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_vec_query1);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_vec_query2);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_multi_vec_query);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t5_list_range_cols', @t5_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_fts_query_no_pk);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_vec_query1_no_pk);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_vec_query2_no_pk);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t5_list_range_cols', @t5_hybrid_query_no_pk);
+
+# HASH (expression with multiple columns) - RANGE (expression)
+drop table if exists t6_hash_expr_range_expr;
+create table t6_hash_expr_range_expr (
+    id int,
+    part_key1 int,
+    part_key2 int,
+    part_key3 int,
+    subpart_key1 int,
+    subpart_key2 int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by hash(part_key1 + part_key2 * part_key3) partitions 2
+  subpartition by range(subpart_key1 - subpart_key2) subpartition template (
+    subpartition sp0 values less than (0),
+    subpartition sp1 values less than (50),
+    subpartition sp2 values less than maxvalue);
+
+insert into t6_hash_expr_range_expr values
+(1, 10, 5, 2, 100, 50, 'Engineering Book', 'Mechanical engineering principles', '[0.1,0.2,0.3,0.4]'),
+(2, 10, 5, 2, 200, 100, 'Computer Science', 'Algorithms and data structures', '[0.5,0.6,0.7,0.8]'),
+(3, 20, 3, 4, 50, 100, 'Medicine Guide', 'Human anatomy', '[0.9,0.1,0.2,0.3]'),
+(4, 20, 3, 4, 150, 50, 'Law Textbook', 'Constitutional law', '[0.4,0.5,0.6,0.7]'),
+(5, 30, 2, 5, 200, 100, 'Education Manual', 'Teaching methods', '[0.8,0.9,0.1,0.2]'),
+(6, 10, 5, 2, 150, 75, 'Civil Engineering', 'Infrastructure design principles', '[0.2,0.3,0.4,0.5]'),
+(7, 10, 5, 2, 250, 125, 'Software Development', 'Programming best practices', '[0.3,0.4,0.5,0.6]'),
+(8, 20, 3, 4, 80, 120, 'Medical Research', 'Clinical trial methodologies', '[0.6,0.7,0.8,0.9]'),
+(9, 20, 3, 4, 180, 60, 'Legal Analysis', 'Case law interpretation', '[0.7,0.8,0.9,0.1]'),
+(10, 30, 2, 5, 220, 110, 'Pedagogy Guide', 'Learning theory applications', '[0.2,0.4,0.6,0.8]'),
+(11, 40, 4, 3, 120, 80, 'Electrical Engineering', 'Circuit design fundamentals', '[0.1,0.3,0.5,0.7]'),
+(12, 40, 4, 3, 160, 90, 'Data Structures', 'Algorithm complexity analysis', '[0.4,0.6,0.8,0.2]'),
+(13, 50, 6, 2, 90, 130, 'Surgery Manual', 'Operative procedures guide', '[0.5,0.7,0.9,0.3]'),
+(14, 50, 6, 2, 190, 70, 'Criminal Law', 'Legal defense strategies', '[0.3,0.5,0.7,0.9]'),
+(15, 60, 3, 4, 210, 95, 'Curriculum Design', 'Educational program development', '[0.6,0.8,0.2,0.4]');
+
+# t6_hash_expr_range_expr queries
+set @t6_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "engineering principles design",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "part_key3", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t6_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "part_key3", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 3
+}';
+
+set @t6_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "part_key3", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t6_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "part_key3", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t6_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "engineering principles design",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "part_key3", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t6_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "engineering principles design",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t6_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t6_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t6_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t6_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "engineering principles design",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t6_hash_expr_range_expr query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_fts_query);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_vec_query1);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_vec_query2);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_multi_vec_query);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_hybrid_query);
+
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_fts_query);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_vec_query1);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_vec_query2);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_multi_vec_query);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t6_hash_expr_range_expr', @t6_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_fts_query_no_pk);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_vec_query1_no_pk);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_vec_query2_no_pk);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t6_hash_expr_range_expr', @t6_hybrid_query_no_pk);
+
+# RANGE COLUMNS - LIST COLUMNS
+drop table if exists t7_range_cols_list_cols;
+create table t7_range_cols_list_cols (
+    id int,
+    part_key1 int,
+    part_key2 varchar(50),
+    subpart_key1 int,
+    subpart_key2 varchar(50),
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by range columns(part_key1, part_key2)
+  subpartition by list columns(subpart_key1, subpart_key2) subpartition template (
+    subpartition sp0 values in ((1, 'a'), (2, 'b')),
+    subpartition sp1 values in ((3, 'c'), (4, 'd')),
+    subpartition sp2 values in ((5, 'e'), (6, 'f'))
+  ) (
+    partition p0 values less than (100, 'm'),
+    partition p1 values less than (200, 'z'),
+    partition p2 values less than (maxvalue, maxvalue));
+
+insert into t7_range_cols_list_cols values
+(1, 50, 'a', 1, 'a', 'Sociology Study', 'Social behavior patterns', '[0.1,0.2,0.3,0.4]'),
+(2, 50, 'a', 3, 'c', 'Anthropology Book', 'Human evolution', '[0.5,0.6,0.7,0.8]'),
+(3, 150, 'n', 5, 'e', 'Linguistics Guide', 'Language structure', '[0.9,0.1,0.2,0.3]'),
+(4, 150, 'n', 2, 'b', 'Archaeology Report', 'Ancient civilizations', '[0.4,0.5,0.6,0.7]'),
+(5, 250, 'z', 4, 'd', 'Mythology Book', 'Ancient myths', '[0.8,0.9,0.1,0.2]'),
+(6, 50, 'a', 2, 'b', 'Cultural Studies', 'Traditions and customs', '[0.2,0.3,0.4,0.5]'),
+(7, 50, 'a', 4, 'd', 'Ethnography Guide', 'Field research methods', '[0.3,0.4,0.5,0.6]'),
+(8, 150, 'n', 6, 'f', 'Syntax Analysis', 'Grammar rule systems', '[0.6,0.7,0.8,0.9]'),
+(9, 150, 'n', 1, 'a', 'Historical Research', 'Document analysis techniques', '[0.7,0.8,0.9,0.1]'),
+(10, 250, 'z', 3, 'c', 'Folklore Collection', 'Oral tradition stories', '[0.2,0.4,0.6,0.8]'),
+(11, 50, 'b', 1, 'a', 'Social Psychology', 'Group dynamics study', '[0.1,0.3,0.5,0.7]'),
+(12, 150, 'o', 2, 'b', 'Phonetics Manual', 'Speech sound analysis', '[0.4,0.6,0.8,0.2]'),
+(13, 150, 'o', 4, 'd', 'Excavation Report', 'Archaeological findings', '[0.5,0.7,0.9,0.3]'),
+(14, 250, 'y', 5, 'e', 'Legend Collection', 'Heroic tale narratives', '[0.3,0.5,0.7,0.9]'),
+(15, 250, 'y', 6, 'f', 'Myth Analysis', 'Symbolic interpretation', '[0.6,0.8,0.2,0.4]');
+
+# t7_range_cols_list_cols queries
+set @t7_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "social behavior psychology",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t7_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 3
+}';
+
+set @t7_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t7_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t7_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "social behavior psychology",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key1", "subpart_key2", "__pk_increment"],
+  "size": 5
+}';
+
+set @t7_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "social behavior psychology",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t7_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t7_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t7_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t7_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "social behavior psychology",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t7_range_cols_list_cols query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_fts_query);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_vec_query1);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_vec_query2);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_multi_vec_query);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_hybrid_query);
+
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_fts_query);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_vec_query1);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_vec_query2);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_multi_vec_query);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t7_range_cols_list_cols', @t7_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_fts_query_no_pk);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_vec_query1_no_pk);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_vec_query2_no_pk);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t7_range_cols_list_cols', @t7_hybrid_query_no_pk);
+
+# LIST COLUMNS - HASH
+drop table if exists t8_list_cols_hash;
+create table t8_list_cols_hash (
+    id int,
+    part_key1 int,
+    part_key2 varchar(50),
+    subpart_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by list columns(part_key1, part_key2)
+  subpartition by hash(subpart_key) subpartitions 3 (
+    partition p0 values in ((1, 'x'), (2, 'y')),
+    partition p1 values in ((3, 'z'), (4, 'w')),
+    partition p2 values in ((5, 'v'), (6, 'u')));
+
+insert into t8_list_cols_hash values
+(1, 1, 'x', 10, 'Poetry Collection', 'Modern poetry', '[0.1,0.2,0.3,0.4]'),
+(2, 2, 'y', 20, 'Drama Script', 'Theater plays', '[0.5,0.6,0.7,0.8]'),
+(3, 3, 'z', 30, 'Novel Series', 'Epic fantasy', '[0.9,0.1,0.2,0.3]'),
+(4, 4, 'w', 40, 'Short Stories', 'Collection of tales', '[0.4,0.5,0.6,0.7]'),
+(5, 5, 'v', 50, 'Biography', 'Famous personalities', '[0.8,0.9,0.1,0.2]'),
+(6, 1, 'x', 15, 'Haiku Poems', 'Japanese verse forms', '[0.2,0.3,0.4,0.5]'),
+(7, 2, 'y', 25, 'Comedy Play', 'Humorous theatrical works', '[0.3,0.4,0.5,0.6]'),
+(8, 3, 'z', 35, 'Science Fiction', 'Future world narratives', '[0.6,0.7,0.8,0.9]'),
+(9, 4, 'w', 45, 'Fairy Tales', 'Children story collections', '[0.7,0.8,0.9,0.1]'),
+(10, 5, 'v', 55, 'Autobiography', 'Personal life accounts', '[0.2,0.4,0.6,0.8]'),
+(11, 6, 'u', 12, 'Sonnet Collection', 'Fourteen line poems', '[0.1,0.3,0.5,0.7]'),
+(12, 1, 'x', 18, 'Tragedy Script', 'Dramatic conflict stories', '[0.4,0.6,0.8,0.2]'),
+(13, 2, 'y', 22, 'Mystery Novel', 'Detective investigation plots', '[0.5,0.7,0.9,0.3]'),
+(14, 3, 'z', 28, 'Romance Fiction', 'Love story narratives', '[0.3,0.5,0.7,0.9]'),
+(15, 4, 'w', 38, 'Fable Stories', 'Moral lesson tales', '[0.6,0.8,0.2,0.4]');
+
+# t8_list_cols_hash queries
+set @t8_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "poetry collection tales",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t8_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t8_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t8_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t8_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "poetry collection tales",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key1", "part_key2", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t8_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "poetry collection tales",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t8_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t8_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t8_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t8_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "poetry collection tales",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t8_list_cols_hash query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_fts_query);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_vec_query1);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_vec_query2);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_multi_vec_query);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_hybrid_query);
+
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_fts_query);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_vec_query1);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_vec_query2);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_multi_vec_query);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t8_list_cols_hash', @t8_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_fts_query_no_pk);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_vec_query1_no_pk);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_vec_query2_no_pk);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t8_list_cols_hash', @t8_hybrid_query_no_pk);
+
+# Same column used in both partition and subpartition
+drop table if exists t9_same_col_part;
+create table t9_same_col_part (
+    id int,
+    part_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by hash(part_key) partitions 2
+  subpartition by range(part_key) subpartition template (
+    subpartition sp0 values less than (100),
+    subpartition sp1 values less than (200),
+    subpartition sp2 values less than maxvalue);
+
+insert into t9_same_col_part values
+(1, 50, 'Machine Learning Algorithms', 'Deep learning neural networks and artificial intelligence research', '[0.1,0.2,0.3,0.4]'),
+(2, 150, 'Cloud Computing Infrastructure', 'Distributed systems and scalable architecture design patterns', '[0.5,0.6,0.7,0.8]'),
+(3, 250, 'Quantum Physics Theory', 'Quantum mechanics and particle physics experimental results', '[0.9,0.1,0.2,0.3]'),
+(4, 80, 'Financial Market Analysis', 'Stock trading strategies and economic forecasting models', '[0.4,0.5,0.6,0.7]'),
+(5, 180, 'Renewable Energy Solutions', 'Solar power technology and wind energy generation systems', '[0.8,0.9,0.1,0.2]'),
+(6, 60, 'Neural Network Design', 'Backpropagation and gradient descent optimization', '[0.2,0.3,0.4,0.5]'),
+(7, 120, 'Microservices Architecture', 'Container orchestration and service mesh', '[0.3,0.4,0.5,0.6]'),
+(8, 220, 'Quantum Computing', 'Qubit manipulation and quantum gates', '[0.6,0.7,0.8,0.9]'),
+(9, 70, 'Investment Strategies', 'Portfolio diversification techniques', '[0.7,0.8,0.9,0.1]'),
+(10, 160, 'Hydroelectric Power', 'Dam construction and turbine systems', '[0.2,0.4,0.6,0.8]'),
+(11, 40, 'Deep Reinforcement Learning', 'Q-learning and policy gradients', '[0.1,0.3,0.5,0.7]'),
+(12, 110, 'Serverless Computing', 'Function as a service platforms', '[0.4,0.6,0.8,0.2]'),
+(13, 210, 'Quantum Entanglement', 'Bell state measurements', '[0.5,0.7,0.9,0.3]'),
+(14, 90, 'Derivatives Trading', 'Options and futures contracts', '[0.3,0.5,0.7,0.9]'),
+(15, 170, 'Geothermal Energy', 'Underground heat extraction', '[0.6,0.8,0.2,0.4]');
+
+# t9_same_col_part queries
+set @t9_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "machine learning algorithms",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t9_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t9_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t9_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t9_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "machine learning algorithms",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t9_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "machine learning algorithms",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t9_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t9_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t9_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t9_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "machine learning algorithms",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t9_same_col_part query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_fts_query);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_vec_query1);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_vec_query2);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_multi_vec_query);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_hybrid_query);
+
+select dbms_hybrid_search.search('t9_same_col_part', @t9_fts_query);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_vec_query1);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_vec_query2);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_multi_vec_query);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t9_same_col_part', @t9_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t9_same_col_part', @t9_fts_query_no_pk);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_vec_query1_no_pk);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_vec_query2_no_pk);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t9_same_col_part', @t9_hybrid_query_no_pk);
+
+# Date function expression: YEAR(part_key) + 1
+drop table if exists t10_year_expr;
+create table t10_year_expr (
+    id int,
+    part_key date,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by range(year(part_key) + 1)
+  subpartition by hash(day(part_key)) subpartitions 3 (
+    partition p0 values less than (2020),
+    partition p1 values less than (2025),
+    partition p2 values less than maxvalue);
+
+insert into t10_year_expr values
+(1, '2018-01-15', 'Blockchain Technology Revolution', 'Cryptocurrency and decentralized finance innovation trends', '[0.1,0.2,0.3,0.4]'),
+(2, '2020-06-20', 'Cybersecurity Best Practices', 'Network security protocols and data protection mechanisms', '[0.5,0.6,0.7,0.8]'),
+(3, '2023-12-25', 'Space Exploration Missions', 'Mars colonization plans and asteroid mining projects', '[0.9,0.1,0.2,0.3]'),
+(4, '2019-03-10', 'Biotechnology Advancements', 'Gene editing techniques and medical research breakthroughs', '[0.4,0.5,0.6,0.7]'),
+(5, '2024-08-30', 'Autonomous Vehicle Development', 'Self-driving cars and intelligent transportation networks', '[0.8,0.9,0.1,0.2]'),
+(6, '2018-05-20', 'Smart Contract Development', 'Ethereum and Solidity programming', '[0.2,0.3,0.4,0.5]'),
+(7, '2020-08-15', 'Firewall Configuration', 'Network perimeter defense', '[0.3,0.4,0.5,0.6]'),
+(8, '2023-10-10', 'Lunar Base Construction', 'Moon habitat design plans', '[0.6,0.7,0.8,0.9]'),
+(9, '2019-07-25', 'CRISPR Technology', 'Gene modification tools', '[0.7,0.8,0.9,0.1]'),
+(10, '2024-11-05', 'Electric Vehicle Networks', 'Charging infrastructure systems', '[0.2,0.4,0.6,0.8]'),
+(11, '2018-09-12', 'Distributed Ledger Systems', 'Consensus algorithm mechanisms', '[0.1,0.3,0.5,0.7]'),
+(12, '2020-12-30', 'Encryption Standards', 'Public key cryptography', '[0.4,0.6,0.8,0.2]'),
+(13, '2023-08-18', 'Asteroid Mining Operations', 'Resource extraction methods', '[0.5,0.7,0.9,0.3]'),
+(14, '2019-11-22', 'Stem Cell Research', 'Regenerative medicine applications', '[0.3,0.5,0.7,0.9]'),
+(15, '2024-02-14', 'Autonomous Navigation', 'GPS and sensor fusion', '[0.6,0.8,0.2,0.4]');
+
+# t10_year_expr queries
+set @t10_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "blockchain technology cryptocurrency",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t10_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t10_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t10_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t10_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "blockchain technology cryptocurrency",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t10_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "blockchain technology cryptocurrency",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t10_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t10_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t10_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t10_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "blockchain technology cryptocurrency",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t10_year_expr query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_fts_query);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_vec_query1);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_vec_query2);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_multi_vec_query);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_hybrid_query);
+
+select dbms_hybrid_search.search('t10_year_expr', @t10_fts_query);
+select dbms_hybrid_search.search('t10_year_expr', @t10_vec_query1);
+select dbms_hybrid_search.search('t10_year_expr', @t10_vec_query2);
+select dbms_hybrid_search.search('t10_year_expr', @t10_multi_vec_query);
+select dbms_hybrid_search.search('t10_year_expr', @t10_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t10_year_expr', @t10_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t10_year_expr', @t10_fts_query_no_pk);
+select dbms_hybrid_search.search('t10_year_expr', @t10_vec_query1_no_pk);
+select dbms_hybrid_search.search('t10_year_expr', @t10_vec_query2_no_pk);
+select dbms_hybrid_search.search('t10_year_expr', @t10_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t10_year_expr', @t10_hybrid_query_no_pk);
+
+# Date function expression: TO_DAYS(part_key) in partition
+drop table if exists t11_todays_expr;
+create table t11_todays_expr (
+    id int,
+    part_key date,
+    subpart_key date,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by hash(to_days(part_key)) partitions 2
+  subpartition by range(month(subpart_key)) subpartition template (
+    subpartition sp0 values less than (4),
+    subpartition sp1 values less than (7),
+    subpartition sp2 values less than (10),
+    subpartition sp3 values less than maxvalue);
+
+insert into t11_todays_expr values
+(1, '2020-01-15', '2020-02-10', 'Virtual Reality Gaming', 'Immersive gaming experiences and VR headset technology', '[0.1,0.2,0.3,0.4]'),
+(2, '2021-05-20', '2021-06-15', 'Internet of Things Devices', 'Smart home automation and connected device ecosystems', '[0.5,0.6,0.7,0.8]'),
+(3, '2022-09-25', '2022-10-20', 'Augmented Reality Applications', 'AR glasses and mixed reality development platforms', '[0.9,0.1,0.2,0.3]'),
+(4, '2023-03-10', '2023-12-25', 'Edge Computing Architecture', 'Distributed computing and latency optimization strategies', '[0.4,0.5,0.6,0.7]'),
+(5, '2024-07-30', '2024-01-05', '5G Network Deployment', 'Next generation wireless communication infrastructure', '[0.8,0.9,0.1,0.2]'),
+(6, '2020-03-20', '2020-03-15', 'VR Training Simulations', 'Professional skill development', '[0.2,0.3,0.4,0.5]'),
+(7, '2021-08-10', '2021-09-05', 'IoT Sensor Networks', 'Environmental monitoring systems', '[0.3,0.4,0.5,0.6]'),
+(8, '2022-11-30', '2022-12-25', 'AR Navigation Systems', 'Location-based services', '[0.6,0.7,0.8,0.9]'),
+(9, '2023-05-15', '2023-01-10', 'Fog Computing', 'Edge device coordination', '[0.7,0.8,0.9,0.1]'),
+(10, '2024-10-12', '2024-02-20', '6G Technology', 'Ultra-fast wireless networks', '[0.2,0.4,0.6,0.8]'),
+(11, '2020-06-05', '2020-01-25', 'VR Therapy Applications', 'Mental health treatments', '[0.1,0.3,0.5,0.7]'),
+(12, '2021-11-18', '2021-08-20', 'Smart City IoT', 'Urban infrastructure monitoring', '[0.4,0.6,0.8,0.2]'),
+(13, '2022-12-10', '2022-11-15', 'AR Shopping Experiences', 'Retail visualization tools', '[0.5,0.7,0.9,0.3]'),
+(14, '2023-08-22', '2023-06-30', 'Edge AI Processing', 'On-device machine learning', '[0.3,0.5,0.7,0.9]'),
+(15, '2024-12-08', '2024-03-12', 'Satellite Internet', 'Global connectivity solutions', '[0.6,0.8,0.2,0.4]');
+
+# t11_todays_expr queries
+set @t11_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "virtual reality simulation",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t11_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key", "subpart_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t11_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t11_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t11_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "virtual reality simulation",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "subpart_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t11_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "virtual reality simulation",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t11_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t11_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t11_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t11_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "virtual reality simulation",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t11_todays_expr query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_fts_query);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_vec_query1);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_vec_query2);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_multi_vec_query);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_hybrid_query);
+
+select dbms_hybrid_search.search('t11_todays_expr', @t11_fts_query);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_vec_query1);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_vec_query2);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_multi_vec_query);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t11_todays_expr', @t11_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t11_todays_expr', @t11_fts_query_no_pk);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_vec_query1_no_pk);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_vec_query2_no_pk);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t11_todays_expr', @t11_hybrid_query_no_pk);
+
+# Complex expression: YEAR(part_key) * 10 + MONTH(part_key)
+drop table if exists t12_complex_date_expr;
+create table t12_complex_date_expr (
+    id int,
+    part_key datetime,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by range(year(part_key) * 10 + month(part_key))
+  subpartition by hash(day(part_key) + hour(part_key)) subpartitions 3 (
+    partition p0 values less than (20200),
+    partition p1 values less than (20250),
+    partition p2 values less than maxvalue);
+
+insert into t12_complex_date_expr values
+(1, '2020-01-15 10:30:00', 'Robotics and Automation', 'Industrial robots and manufacturing automation systems', '[0.1,0.2,0.3,0.4]'),
+(2, '2020-06-20 14:45:00', 'Data Science Analytics', 'Big data processing and statistical analysis methods', '[0.5,0.6,0.7,0.8]'),
+(3, '2023-12-25 08:15:00', 'Sustainable Agriculture', 'Organic farming and precision agriculture techniques', '[0.9,0.1,0.2,0.3]'),
+(4, '2024-03-10 16:20:00', 'Smart City Planning', 'Urban development and intelligent infrastructure design', '[0.4,0.5,0.6,0.7]'),
+(5, '2024-08-30 22:00:00', 'Healthcare Technology', 'Telemedicine and digital health monitoring solutions', '[0.8,0.9,0.1,0.2]'),
+(6, '2020-02-18 11:45:00', 'Automated Assembly Lines', 'Production efficiency systems', '[0.2,0.3,0.4,0.5]'),
+(7, '2020-07-25 15:30:00', 'Machine Learning Models', 'Predictive analytics frameworks', '[0.3,0.4,0.5,0.6]'),
+(8, '2023-11-20 09:00:00', 'Hydroponic Farming', 'Soil-free cultivation methods', '[0.6,0.7,0.8,0.9]'),
+(9, '2024-04-15 17:50:00', 'Traffic Management Systems', 'Intelligent signal control', '[0.7,0.8,0.9,0.1]'),
+(10, '2024-09-12 23:15:00', 'Remote Patient Monitoring', 'Wearable health devices', '[0.2,0.4,0.6,0.8]'),
+(11, '2020-03-22 12:00:00', 'Collaborative Robots', 'Human-robot interaction', '[0.1,0.3,0.5,0.7]'),
+(12, '2020-08-30 16:00:00', 'Data Mining Techniques', 'Pattern recognition algorithms', '[0.4,0.6,0.8,0.2]'),
+(13, '2023-10-28 07:30:00', 'Vertical Farming', 'Indoor crop production', '[0.5,0.7,0.9,0.3]'),
+(14, '2024-05-20 18:40:00', 'Energy Grid Optimization', 'Smart power distribution', '[0.3,0.5,0.7,0.9]'),
+(15, '2024-10-05 21:30:00', 'Mobile Health Apps', 'Patient engagement platforms', '[0.6,0.8,0.2,0.4]');
+
+# t12_complex_date_expr queries
+set @t12_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "robotics automation systems",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t12_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t12_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t12_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t12_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "robotics automation systems",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t12_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "robotics automation systems",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t12_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t12_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t12_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t12_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "robotics automation systems",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t12_complex_date_expr query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_fts_query);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_vec_query1);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_vec_query2);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_multi_vec_query);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_hybrid_query);
+
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_fts_query);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_vec_query1);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_vec_query2);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_multi_vec_query);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t12_complex_date_expr', @t12_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_fts_query_no_pk);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_vec_query1_no_pk);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_vec_query2_no_pk);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t12_complex_date_expr', @t12_hybrid_query_no_pk);
+
+# Same column with different expressions in partition and subpartition
+drop table if exists t13_same_col_diff_expr;
+create table t13_same_col_diff_expr (
+    id int,
+    part_key int,
+    title varchar(200),
+    content text,
+    vector_emb vector(4),
+    fulltext index idx_title(title),
+    fulltext index idx_content(content),
+    vector index idx_vector(vector_emb) with (distance=l2, type=hnsw, lib=vsag)
+) ORGANIZATION HEAP partition by hash(part_key + 10) partitions 2
+  subpartition by range(part_key * 2) subpartition template (
+    subpartition sp0 values less than (100),
+    subpartition sp1 values less than (200),
+    subpartition sp2 values less than maxvalue);
+
+insert into t13_same_col_diff_expr values
+(1, 20, 'Natural Language Processing', 'ChatGPT and large language model training methodologies', '[0.1,0.2,0.3,0.4]'),
+(2, 50, 'Computer Vision Systems', 'Image recognition and object detection algorithms', '[0.5,0.6,0.7,0.8]'),
+(3, 80, 'Microservices Architecture', 'Container orchestration and service mesh technologies', '[0.9,0.1,0.2,0.3]'),
+(4, 120, 'Cryptography and Encryption', 'Public key infrastructure and secure communication protocols', '[0.4,0.5,0.6,0.7]'),
+(5, 150, 'Database Optimization', 'Query performance tuning and index design strategies', '[0.8,0.9,0.1,0.2]'),
+(6, 30, 'Text Generation Models', 'Transformer architecture training', '[0.2,0.3,0.4,0.5]'),
+(7, 60, 'Object Detection Networks', 'YOLO and R-CNN algorithms', '[0.3,0.4,0.5,0.6]'),
+(8, 90, 'Kubernetes Deployment', 'Pod scheduling and scaling', '[0.6,0.7,0.8,0.9]'),
+(9, 110, 'Digital Signatures', 'RSA and ECC implementations', '[0.7,0.8,0.9,0.1]'),
+(10, 140, 'Index Selection', 'B-tree and hash index strategies', '[0.2,0.4,0.6,0.8]'),
+(11, 25, 'Sentiment Analysis', 'Emotion classification models', '[0.1,0.3,0.5,0.7]'),
+(12, 55, 'Face Recognition Systems', 'Biometric identification', '[0.4,0.6,0.8,0.2]'),
+(13, 85, 'Docker Containerization', 'Image management and networking', '[0.5,0.7,0.9,0.3]'),
+(14, 115, 'Hash Functions', 'SHA and MD5 algorithms', '[0.3,0.5,0.7,0.9]'),
+(15, 145, 'Query Plan Optimization', 'Cost-based query planning', '[0.6,0.8,0.2,0.4]');
+
+# t13_same_col_diff_expr queries
+set @t13_fts_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "language processing natural",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t13_vec_query1 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 3
+}';
+
+set @t13_vec_query2 = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t13_multi_vec_query = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t13_hybrid_query = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "language processing natural",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id", "part_key", "__pk_increment"],
+  "size": 5
+}';
+
+set @t13_fts_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "language processing natural",
+      "minimum_should_match": 2
+    }
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t13_vec_query1_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 3,
+    "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+  },
+  "_source": ["id"],
+  "size": 3
+}';
+
+set @t13_vec_query2_no_pk = '{
+  "knn": {
+    "field": "vector_emb",
+    "k": 5,
+    "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+  },
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t13_multi_vec_query_no_pk = '{
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+set @t13_hybrid_query_no_pk = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "content"],
+      "query": "language processing natural",
+      "minimum_should_match": 2
+    }
+  },
+  "knn": [
+    {
+      "field": "vector_emb",
+      "k": 3,
+      "query_vector": [0.1234, 0.2345, 0.3456, 0.4567]
+    },
+    {
+      "field": "vector_emb",
+      "k": 5,
+      "query_vector": [0.5678, 0.6789, 0.7890, 0.8901]
+    }
+  ],
+  "_source": ["id"],
+  "size": 5
+}';
+
+# t13_same_col_diff_expr query execution
+call dbms_index_manager.refresh();
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_fts_query);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_vec_query1);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_vec_query2);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_multi_vec_query);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_hybrid_query);
+
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_fts_query);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_vec_query1);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_vec_query2);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_multi_vec_query);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_hybrid_query);
+
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_fts_query_no_pk);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_vec_query1_no_pk);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_vec_query2_no_pk);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_multi_vec_query_no_pk);
+select dbms_hybrid_search.get_sql('t13_same_col_diff_expr', @t13_hybrid_query_no_pk);
+
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_fts_query_no_pk);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_vec_query1_no_pk);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_vec_query2_no_pk);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_multi_vec_query_no_pk);
+select dbms_hybrid_search.search('t13_same_col_diff_expr', @t13_hybrid_query_no_pk);
+
+--enable_warnings
+
+# Clean up: drop all test tables
+drop table if exists t1_hash_range;
+drop table if exists t2_key_list;
+drop table if exists t3_range_hash;
+drop table if exists t4_range_cols_key;
+drop table if exists t5_list_range_cols;
+drop table if exists t6_hash_expr_range_expr;
+drop table if exists t7_range_cols_list_cols;
+drop table if exists t8_list_cols_hash;
+drop table if exists t9_same_col_part;
+drop table if exists t10_year_expr;
+drop table if exists t11_todays_expr;
+drop table if exists t12_complex_date_expr;
+drop table if exists t13_same_col_diff_expr;
+
+alter system set _enable_index_merge=true;

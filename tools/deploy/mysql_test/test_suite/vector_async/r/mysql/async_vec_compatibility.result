@@ -1,0 +1,417 @@
+alter system set ob_vector_memory_limit_percentage = 30;
+========== setup ==========
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+
+========== 8.1 sync_mode Mixing ==========
+
+=== 8.1.1 Multiple indexes with different sync_mode on same table ===
+create table t1 (
+id int primary key,
+vec1 vector(3),
+vec2 vector(3),
+name varchar(50)
+) organization heap;
+--- Create async index on vec1 ---
+create vector index idx1_async on t1(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Create immediate index on vec2 ---
+create vector index idx1_immediate on t1(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=immediate);
+--- Verify both indexes created ---
+show index from t1;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t1	1	idx1_async	1	vec1	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+t1	1	idx1_immediate	1	vec2	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+--- Insert test data ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]', '[10.0, 10.0, 10.0]', 'item1');
+insert into t1 values (2, '[2.0, 2.0, 2.0]', '[20.0, 20.0, 20.0]', 'item2');
+insert into t1 values (3, '[3.0, 3.0, 3.0]', '[30.0, 30.0, 30.0]', 'item3');
+--- Immediate index should work immediately ---
+select id, name from t1 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id	name
+1	item1
+2	item2
+3	item3
+--- Wait for async index CDC sync ---
+call dbms_index_manager.refresh();
+--- Both indexes should work independently ---
+select id, name from t1 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id	name
+1	item1
+2	item2
+3	item3
+select id, name from t1 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id	name
+1	item1
+2	item2
+3	item3
+--- Insert more data ---
+insert into t1 values (4, '[4.0, 4.0, 4.0]', '[40.0, 40.0, 40.0]', 'item4');
+--- Immediate index works right away ---
+select count(*) from (
+select id from t1 order by cosine_distance(vec2, '[40.0, 40.0, 40.0]') approximate limit 1
+) as tmp;
+count(*)
+1
+--- Wait for async index sync ---
+call dbms_index_manager.refresh();
+--- Async index now sees new data ---
+select count(*) from (
+select id from t1 order by l2_distance(vec1, '[4.0, 4.0, 4.0]') approximate limit 1
+) as tmp;
+count(*)
+1
+drop table t1;
+
+=== 8.1.2 sync_mode switching: async → immediate ===
+create table t2 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create async index ---
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert data with async index ---
+insert into t2 values (1, '[1.0, 1.0, 1.0]');
+insert into t2 values (2, '[2.0, 2.0, 2.0]');
+insert into t2 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Verify async index works ---
+select id from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- DROP async index ---
+drop index idx2 on t2;
+--- Recreate as immediate index ---
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=immediate);
+--- Verify immediate index works with existing data ---
+select id from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- Insert new data (should be immediately available) ---
+insert into t2 values (4, '[4.0, 4.0, 4.0]');
+select id from t2 order by l2_distance(vec, '[4.0, 4.0, 4.0]') approximate limit 1;
+id
+4
+drop table t2;
+
+=== 8.1.3 sync_mode switching: immediate → async ===
+create table t3 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create immediate index ---
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=immediate);
+--- Insert data with immediate index ---
+insert into t3 values (1, '[1.0, 1.0, 1.0]');
+insert into t3 values (2, '[2.0, 2.0, 2.0]');
+--- Verify immediate index works ---
+select id from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+id
+1
+2
+--- DROP immediate index ---
+drop index idx3 on t3;
+--- Recreate as async index ---
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+call dbms_index_manager.refresh();
+--- Verify async index works with existing data ---
+select id from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+id
+1
+2
+--- Insert new data (needs CDC sync) ---
+insert into t3 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Verify new data visible after sync ---
+select id from t3 order by l2_distance(vec, '[3.0, 3.0, 3.0]') approximate limit 3;
+id
+3
+2
+1
+drop table t3;
+
+========== 8.2 Mixing with Other Index Types ==========
+
+=== 8.2.1 B-Tree index + async vector index ===
+create table t4 (
+id int primary key,
+vec vector(3),
+category int,
+score int
+) organization heap;
+--- Create B-Tree indexes ---
+create index idx4_category on t4(category);
+create index idx4_score on t4(score);
+--- Create async vector index ---
+create vector index idx4_vec on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert test data ---
+call dbms_index_manager.refresh();
+--- Verify all indexes work ---
+show index from t4;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t4	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t4	1	idx4_category	1	category	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t4	1	idx4_score	1	score	A	NULL	NULL	NULL	YES	BTREE	available		YES	NULL
+t4	1	idx4_vec	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+--- Query using B-Tree index ---
+select id, category from t4 where category = 1 order by id;
+id	category
+1	1
+6	1
+11	1
+16	1
+21	1
+26	1
+--- Query using async vector index ---
+select id from t4 order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5;
+id
+15
+14
+16
+13
+17
+--- Query using both (B-Tree pre-filter + vector search) ---
+select /*+index(t4 idx4_category)*/ id, category 
+from t4 
+where category = 2 
+order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+id	category
+12	2
+7	2
+17	2
+2	2
+22	2
+--- Query using both (score index + vector search) ---
+select /*+index(t4 idx4_score)*/ id, score 
+from t4 
+where score > 100 
+order by l2_distance(vec, '[20.0, 20.0, 20.0]') approximate limit 5;
+id	score
+20	200
+21	210
+19	190
+22	220
+18	180
+drop table t4;
+
+=== 8.2.2 Multiple regular indexes + async vector index on partitioned table ===
+create table t5 (
+id int primary key,
+vec vector(3),
+col1 int,
+col2 varchar(50)
+) organization heap
+partition by hash(id) partitions 4;
+--- Create regular indexes ---
+create index idx5_col1 on t5(col1);
+create index idx5_col2 on t5(col2);
+--- Create async vector index ---
+create vector index idx5_vec on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert data across partitions ---
+insert into t5 values (1, '[1.0, 1.0, 1.0]', 100, 'data1');
+insert into t5 values (101, '[2.0, 2.0, 2.0]', 200, 'data2');
+insert into t5 values (201, '[3.0, 3.0, 3.0]', 300, 'data3');
+insert into t5 values (301, '[4.0, 4.0, 4.0]', 400, 'data4');
+call dbms_index_manager.refresh();
+--- Verify all indexes work across partitions ---
+--- Combined query with regular index and vector search ---
+select /*+index(t5 idx5_col1)*/ id, col1 
+from t5 
+where col1 >= 200 
+order by l2_distance(vec, '[3.0, 3.0, 3.0]') approximate limit 3;
+id	col1
+201	300
+101	200
+301	400
+drop table t5;
+
+========== 8.3 Mixing with HNSW Variants ==========
+
+=== 8.3.1 Standard HNSW with async mode ===
+create table t6 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create async HNSW index ---
+create vector index idx6_hnsw on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert test data ---
+call dbms_index_manager.refresh();
+--- Verify HNSW async index works ---
+select id from t6 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+id
+10
+9
+11
+8
+12
+drop table t6;
+
+=== 8.3.2 HNSW_BQ with async mode (if supported) ===
+create table t7 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Attempt to create async HNSW_BQ index ---
+--- Note: Check if async mode is supported for hnsw_bq ---
+create vector index idx7_hnsw_bq on t7(vec) with (distance=l2, type=hnsw_bq, lib=vsag, sync_mode=async);
+--- Insert test data ---
+insert into t7 values (1, '[1.0, 1.0, 1.0]');
+insert into t7 values (2, '[2.0, 2.0, 2.0]');
+insert into t7 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Verify HNSW_BQ async index works ---
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t7;
+
+=== 8.3.3 Different HNSW types on same table ===
+create table t8 (
+id int primary key,
+vec1 vector(3),
+vec2 vector(3)
+) organization heap;
+--- Create standard HNSW async index on vec1 ---
+create vector index idx8_hnsw on t8(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Create HNSW_BQ async index on vec2 ---
+create vector index idx8_hnsw_bq on t8(vec2) with (distance=l2, type=hnsw_bq, lib=vsag, sync_mode=async);
+--- Insert test data ---
+insert into t8 values (1, '[1.0, 1.0, 1.0]', '[10.0, 10.0, 10.0]');
+insert into t8 values (2, '[2.0, 2.0, 2.0]', '[20.0, 20.0, 20.0]');
+insert into t8 values (3, '[3.0, 3.0, 3.0]', '[30.0, 30.0, 30.0]');
+call dbms_index_manager.refresh();
+--- Verify both HNSW variants work independently ---
+select id from t8 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+select id from t8 order by l2_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t8;
+
+=== 8.3.4 Different distance functions with async mode ===
+create table t9 (
+id int primary key,
+vec1 vector(3),
+vec2 vector(3),
+vec3 vector(3)
+) organization heap;
+--- Create async indexes with different distance functions ---
+create vector index idx9_l2 on t9(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+create vector index idx9_cosine on t9(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async);
+create vector index idx9_ip on t9(vec3) with (distance=inner_product, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert test data ---
+insert into t9 values (1, '[1.0, 1.0, 1.0]', '[1.0, 1.0, 1.0]', '[1.0, 1.0, 1.0]');
+insert into t9 values (2, '[2.0, 2.0, 2.0]', '[2.0, 2.0, 2.0]', '[2.0, 2.0, 2.0]');
+insert into t9 values (3, '[3.0, 3.0, 3.0]', '[3.0, 3.0, 3.0]', '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+--- Verify all distance functions work ---
+select id from t9 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+select id from t9 order by cosine_distance(vec2, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+3
+1
+2
+select id from t9 order by inner_product(vec3, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t9;
+
+=== 8.3.5 CDC sync behavior verification for different HNSW types ===
+create table t10 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Create async HNSW index ---
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Insert initial data ---
+insert into t10 values (1, '[1.0, 1.0, 1.0]');
+insert into t10 values (2, '[2.0, 2.0, 2.0]');
+call dbms_index_manager.refresh();
+--- DROP and recreate with HNSW_BQ ---
+drop index idx10 on t10;
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw_bq, lib=vsag, sync_mode=async);
+call dbms_index_manager.refresh();
+--- Verify both types handle CDC sync correctly ---
+insert into t10 values (3, '[3.0, 3.0, 3.0]');
+call dbms_index_manager.refresh();
+select id from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t10;
+
+=== 8.3.6 Complex scenario: Mixed indexes with async/immediate/different types ===
+create table t11 (
+id int primary key,
+vec1 vector(3),
+vec2 vector(3),
+col1 int,
+col2 varchar(50)
+) organization heap;
+--- Create mixed indexes ---
+create index idx11_col1 on t11(col1);
+create vector index idx11_vec1_async on t11(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+create vector index idx11_vec2_immediate on t11(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=immediate);
+--- Insert test data ---
+insert into t11 values (1, '[1.0, 1.0, 1.0]', '[10.0, 10.0, 10.0]', 100, 'data1');
+insert into t11 values (2, '[2.0, 2.0, 2.0]', '[20.0, 20.0, 20.0]', 200, 'data2');
+insert into t11 values (3, '[3.0, 3.0, 3.0]', '[30.0, 30.0, 30.0]', 300, 'data3');
+--- Immediate index works right away ---
+select id from t11 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+--- Wait for async index sync ---
+call dbms_index_manager.refresh();
+--- Verify all indexes work ---
+select id from t11 where col1 >= 200 order by id;
+id
+2
+3
+select id from t11 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+select id from t11 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+--- Complex query with multiple index types ---
+select /*+index(t11 idx11_col1)*/ id, col1 
+from t11 
+where col1 >= 200 
+order by l2_distance(vec1, '[2.0, 2.0, 2.0]') approximate limit 2;
+id	col1
+2	200
+3	300
+drop table t11;
+
+========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
