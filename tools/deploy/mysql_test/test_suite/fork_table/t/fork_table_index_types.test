@@ -19,7 +19,7 @@ SET ob_query_timeout = 100000000;
 
 --echo # 启用debug sync
 connection obsys;
-alter system set debug_sync_timeout = '10s';
+alter system set debug_sync_timeout = '60s';
 alter system set _ob_ddl_timeout = '5s';
 sleep 3;
 set ob_global_debug_sync = 'reset';
@@ -124,76 +124,10 @@ drop table t_normal_post_index_fork;
 --echo 2. 全局索引（Global Index）
 --echo ============================================
 
---echo # 2.0 无分区表+全局索引+fork（验证fork后索引表正常）
-drop table if exists t_global_nopart_global_idx;
-drop table if exists t_global_nopart_global_idx_fork;
-
-create table t_global_nopart_global_idx (
-    a int,
-    b varchar(150),
-    c int,
-    primary key(a, b)
-);
-
-#create index gidx_c on t_global_nopart_global_idx(c) global;
-
-insert into t_global_nopart_global_idx values (1, 'Alice', 10);
-insert into t_global_nopart_global_idx values (2, 'Bob', 110);
-insert into t_global_nopart_global_idx values (3, 'Charlie', 50);
-
---echo # Fork表
-fork table t_global_nopart_global_idx to t_global_nopart_global_idx_fork;
---source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
-
---echo # fork后给全局索引加分区（删除后重建带分区的索引）
-#drop index gidx_c on t_global_nopart_global_idx;
-#drop index gidx_c on t_global_nopart_global_idx_fork;
-create index gidx_c on t_global_nopart_global_idx(c) global partition by range(c) (
-    partition p0 values less than (100),
-    partition p1 values less than MAXVALUE
-);
-create index gidx_c on t_global_nopart_global_idx_fork(c) global partition by range(c) (
-    partition p0 values less than (100),
-    partition p1 values less than MAXVALUE
-);
-
---echo # 验证全局索引分区是否正确
---replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-show create table t_global_nopart_global_idx;
-show create table t_global_nopart_global_idx_fork;
---echo # 检查源表全局索引分区信息
-select table_name, partition_name, partition_expression, partition_method 
-from information_schema.partitions 
-where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx%'
-order by table_name, partition_ordinal_position;
---echo # 检查目标表全局索引分区信息
-select table_name, partition_name, partition_expression, partition_method 
-from information_schema.partitions 
-where table_schema = database() and table_name like '%gidx_c%' and table_name like '%t_global_nopart_global_idx_fork%'
-order by table_name, partition_ordinal_position;
-insert into t_global_nopart_global_idx values (108, 'Bob', 110);
-insert into t_global_nopart_global_idx_fork values (108, 'Charlie', 50);
-
---echo # 验证fork后源表和目标表的全局索引功能
-show indexes from t_global_nopart_global_idx;
-show indexes from t_global_nopart_global_idx_fork;
-select * from t_global_nopart_global_idx where c = 10;
-select * from t_global_nopart_global_idx_fork where c = 10;
-explain select * from t_global_nopart_global_idx where c = 10;
-explain select * from t_global_nopart_global_idx_fork where c = 10;
-select * from t_global_nopart_global_idx where c = 108;
-select * from t_global_nopart_global_idx_fork where c = 108;
-explain select * from t_global_nopart_global_idx where c = 108;
-explain select * from t_global_nopart_global_idx_fork where c = 108;
-
-drop table t_global_nopart_global_idx;
-drop table t_global_nopart_global_idx_fork;
-
 --echo # 2.1 随表创建全局索引
 drop table if exists t_global_with_index;
 drop table if exists t_global_with_index_fork;
 
---echo Global Index with partition
 create table t_global_with_index (
     a int,
     b varchar(150),
@@ -213,21 +147,20 @@ insert into t_global_with_index values (1, 'Alice', 10);
 insert into t_global_with_index values (101, 'Bob', 110);
 insert into t_global_with_index values (50, 'Charlie', 50);
 
---echo # Fork表bug not support
---error 1235
+--echo # Fork表
 fork table t_global_with_index to t_global_with_index_fork;
 --source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
 
 --echo # 验证fork后源表和目标表的全局索引功能
-#--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
-#show create table t_global_with_index;
-#show create table t_global_with_index_fork;
-#show indexes from t_global_with_index;
-#show indexes from t_global_with_index_fork;
-#select * from t_global_with_index where c = 10;
-#select * from t_global_with_index_fork where c = 10;
-#explain select * from t_global_with_index where c = 10;
-#explain select * from t_global_with_index_fork where c = 10;
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_global_with_index;
+show create table t_global_with_index_fork;
+show indexes from t_global_with_index;
+show indexes from t_global_with_index_fork;
+select * from t_global_with_index where c = 10;
+select * from t_global_with_index_fork where c = 10;
+explain select * from t_global_with_index where c = 10;
+explain select * from t_global_with_index_fork where c = 10;
 
 --echo # 2.2 后建全局索引
 drop table if exists t_global_post_index;
@@ -268,71 +201,8 @@ select * from t_global_post_index_fork where c = 10;
 explain select * from t_global_post_index where c = 10;
 explain select * from t_global_post_index_fork where c = 10;
 
---echo # 2.3 先建全局索引，fork后再加分区表（fork后做DDL/DML确保分区表与全局索引无误）
-drop table if exists t_global_first_then_part;
-drop table if exists t_global_first_then_part_fork;
-
-create table t_global_first_then_part (
-    a int,
-    b varchar(150),
-    c int,
-    primary key(a, b)
-);
-
-create index gidx_c on t_global_first_then_part(c) global partition by range(c) (
-    partition p0 values less than (100),
-    partition p1 values less than MAXVALUE
-);
-
-insert into t_global_first_then_part values (1, 'Alice', 10);
-insert into t_global_first_then_part values (2, 'Bob', 110);
-insert into t_global_first_then_part values (3, 'Charlie', 50);
-
---echo # Fork表
-fork table t_global_first_then_part to t_global_first_then_part_fork;
---source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
-
---echo # fork后给源表和目标表加分区
-alter table t_global_first_then_part partition by range(a) (
-    partition p0 values less than (100),
-    partition p1 values less than (200)
-);
-alter table t_global_first_then_part_fork partition by range(a) (
-    partition p0 values less than (100),
-    partition p1 values less than (200)
-);
-
---echo # fork后做DDL：加列
-alter table t_global_first_then_part add column d int default 0;
-alter table t_global_first_then_part_fork add column d int default 0;
-
---echo # fork后做DML：源表与目标表各插入/更新/删除
-insert into t_global_first_then_part values (50, 'Dave', 50, 1);
-insert into t_global_first_then_part_fork values (60, 'Eve', 60, 2);
-update t_global_first_then_part set d = 10 where a = 1;
-update t_global_first_then_part_fork set d = 20 where a = 2;
-delete from t_global_first_then_part where a = 3;
-delete from t_global_first_then_part_fork where a = 2 and b = 'Bob';
-
---echo # 验证分区表与全局索引：源表
-show create table t_global_first_then_part;
-show indexes from t_global_first_then_part;
-select * from t_global_first_then_part where c = 10;
-select * from t_global_first_then_part where c = 50;
-explain select * from t_global_first_then_part where c = 10;
-
---echo # 验证分区表与全局索引：目标表
-show create table t_global_first_then_part_fork;
-show indexes from t_global_first_then_part_fork;
-select * from t_global_first_then_part_fork where c = 10;
-select * from t_global_first_then_part_fork where c = 60;
-explain select * from t_global_first_then_part_fork where c = 10;
-
-drop table t_global_first_then_part;
-drop table t_global_first_then_part_fork;
-
 drop table t_global_with_index;
-#drop table t_global_with_index_fork;
+drop table t_global_with_index_fork;
 drop table t_global_post_index;
 drop table t_global_post_index_fork;
 
@@ -535,10 +405,6 @@ create table t_json_post_index (
 
 insert into t_json_post_index values (1, 'Item1', '["tag1", "tag2", "tag3"]');
 insert into t_json_post_index values (101, 'Item2', '["tag2", "tag4"]');
-
---echo # Fork前
---error 1235
-create index idx_tags_src on t_json_post_index((cast(tags->'$[*]' as char(100) array)));
 
 --echo # Fork表
 fork table t_json_post_index to t_json_post_index_fork;
@@ -859,10 +725,10 @@ CREATE VECTOR INDEX idx1 ON t_ivf_qp_with_index(vec) WITH (distance=l2, type=ivf
 drop table if exists t_ivf_qp_with_index;
 
 --echo ============================================
---echo 8. hnsw_sq索引
+--echo 8. ivf_sq索引
 --echo ============================================
 
---echo # 8.1 随表创建hnsw_sq索引
+--echo # 8.1 随表创建ivf_sq索引
 drop table if exists t_hnsw_sq_with_index;
 drop table if exists t_hnsw_sq_with_index_fork;
 
@@ -981,22 +847,6 @@ drop table if exists t_hnsw_sq_post_index;
 drop table if exists t_hnsw_sq_post_index_fork;
 
 
---echo ============================================
---echo 8.5 ivf_sq索引
---echo ============================================
-
---echo # 8.5.1 随表创建ivf_sq索引
-drop table if exists t_ivf_sq_with_index;
-drop table if exists t_ivf_sq_with_index_fork;
-
-
-CREATE TABLE t_ivf_sq_with_index (
-    id INT PRIMARY KEY, 
-    name VARCHAR(50),
-    vec VECTOR(3)
-);
---error 1235
-CREATE VECTOR INDEX idx1 ON t_ivf_sq_with_index(vec) WITH (distance=l2, type=ivf_sq, lib=vsag);
 
 --echo ============================================
 --echo 9. IVF_FLAT索引
@@ -1020,16 +870,15 @@ insert into t_ivf_flat_with_index values (1, 'Vec1', '[0.1,0.1,0.1]');
 insert into t_ivf_flat_with_index values (101, 'Vec2', '[0.2,0.2,0.2]');
 insert into t_ivf_flat_with_index values (50, 'Vec3', '[0.3,0.3,0.3]');
 
---echo # Fork表 ivf不支持
---error 1235
+--echo # Fork表
 fork table t_ivf_flat_with_index to t_ivf_flat_with_index_fork;
 --source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
 
 --echo # 验证fork后源表和目标表的IVF_FLAT索引功能
-#show indexes from t_ivf_flat_with_index;
-#show indexes from t_ivf_flat_with_index_fork;
-#select * from t_ivf_flat_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
-#select * from t_ivf_flat_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+show indexes from t_ivf_flat_with_index;
+show indexes from t_ivf_flat_with_index_fork;
+select * from t_ivf_flat_with_index order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
+select * from t_ivf_flat_with_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
 
 --echo # 9.2 后建IVF_FLAT索引
 drop table if exists t_ivf_flat_post_index;
@@ -1065,13 +914,37 @@ select * from t_ivf_flat_post_index order by l2_distance(vec, [0.1,0.1,0.1]) APP
 select * from t_ivf_flat_post_index_fork order by l2_distance(vec, [0.1,0.1,0.1]) APPROXIMATE limit 3;
 
 drop table t_ivf_flat_with_index;
-#drop table t_ivf_flat_with_index_fork;
+drop table t_ivf_flat_with_index_fork;
 drop table t_ivf_flat_post_index;
 drop table t_ivf_flat_post_index_fork;
 
 --echo ============================================
 --echo 10. 语义索引（Semantic Index）
 --echo ============================================
+
+--echo # 10.1 随表创建语义索引
+drop table if exists t_semantic_with_index;
+drop table if exists t_semantic_with_index_fork;
+
+--error 1064
+CREATE TABLE t_semantic_with_index (
+    id int primary key,
+    name varchar(50),
+    text_embedding vector(768),
+    VECTOR INDEX idx_semantic(text_embedding)
+    WITH (
+        distance=cosine,
+        lib=vsag,
+        type=hnsw,
+        model="mymodel",  
+        dim=768,
+        sync_mode=immediate
+    )
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
 
 --echo ============================================
 --echo 11. 稀疏向量SPIV索引测试

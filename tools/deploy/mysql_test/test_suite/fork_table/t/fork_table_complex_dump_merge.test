@@ -1,0 +1,475 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table与复杂转储合并场景测试（多种存储形态）
+##tags: fork_table complex_dump_merge multi_sstable
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_complex_dump;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_complex_dump;
+use db_fork_complex_dump;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '120s';
+--echo # 设置DDL超时为5秒
+alter system set _ob_ddl_timeout = '50s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo # 加速major freeze
+--source mysql_test/test_suite/fork_table/include/quick_major.inc
+
+--echo ============================================
+--echo 1. 复杂存储形态：合并->转储->写入->Fork
+--echo ============================================
+
+drop table if exists t_complex1;
+drop table if exists t_complex1_fork;
+
+create table t_complex1 (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text,
+    extra_info varchar(200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # Step 1: 初始写入数据
+insert into t_complex1 values (1, 'Step1_Init1', 10, repeat('A', 500), 'Initial data');
+insert into t_complex1 values (101, 'Step1_Init2', 20, repeat('B', 500), 'Initial data');
+insert into t_complex1 values (201, 'Step1_Init3', 30, repeat('C', 500), 'Initial data');
+
+--echo # 验证Step1数据
+select count(*) as step1_cnt from t_complex1;
+select id, name, value, length(data) as data_len from t_complex1 order by id;
+
+--echo # Step 2: 触发major freeze（合并）
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Step2 major freeze后的数据
+select count(*) as step2_cnt from t_complex1;
+select id, name, value, length(data) as data_len from t_complex1 order by id;
+
+--echo # Step 3: 写入新数据
+insert into t_complex1 values (2, 'Step3_New1', 100, repeat('D', 500), 'After major freeze');
+insert into t_complex1 values (102, 'Step3_New2', 200, repeat('E', 500), 'After major freeze');
+insert into t_complex1 values (202, 'Step3_New3', 300, repeat('F', 500), 'After major freeze');
+
+--echo # 验证Step3数据
+select count(*) as step3_cnt from t_complex1;
+select id, name, value, length(data) as data_len from t_complex1 order by id;
+
+--echo # Step 4: 触发minor freeze（转储）
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Step4 minor freeze后的数据
+select count(*) as step4_cnt from t_complex1;
+select id, name, value, length(data) as data_len from t_complex1 order by id;
+
+--echo # Step 5: 继续写入数据（Memtable）
+insert into t_complex1 values (3, 'Step5_Mem1', 400, repeat('G', 500), 'After minor freeze');
+insert into t_complex1 values (103, 'Step5_Mem2', 500, repeat('H', 500), 'After minor freeze');
+insert into t_complex1 values (203, 'Step5_Mem3', 600, repeat('I', 500), 'After minor freeze');
+
+--echo # 验证Step5数据（包含Major SSTable + Minor SSTable + Memtable）
+select count(*) as step5_cnt from t_complex1;
+select id, name, value, length(data) as data_len from t_complex1 order by id;
+
+--echo # Step 6: Fork表（此时表包含多种存储形态）
+fork table t_complex1 to t_complex1_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据完整性
+select count(*) as src_cnt from t_complex1;
+select count(*) as fork_cnt from t_complex1_fork;
+select id, name, value, length(data) as data_len, extra_info from t_complex1 order by id;
+select id, name, value, length(data) as data_len, extra_info from t_complex1_fork order by id;
+
+--echo # Fork后：验证数据隔离
+insert into t_complex1 values (4, 'PostFork_Src', 700, repeat('J', 500), 'After fork');
+insert into t_complex1_fork values (5, 'PostFork_Fork', 800, repeat('K', 500), 'After fork');
+select count(*) as src_cnt from t_complex1;
+select count(*) as fork_cnt from t_complex1_fork;
+select id, name, value from t_complex1 order by id;
+select id, name, value from t_complex1_fork order by id;
+
+drop table t_complex1;
+drop table t_complex1_fork;
+
+--echo ============================================
+--echo 2. 复杂存储形态：多次合并和转储->Fork
+--echo ============================================
+
+drop table if exists t_complex2;
+drop table if exists t_complex2_fork;
+
+create table t_complex2 (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 第一轮：写入->Major Freeze->写入->Minor Freeze
+insert into t_complex2 values (1, 'Round1_Init1', 10, repeat('A', 500));
+insert into t_complex2 values (101, 'Round1_Init2', 20, repeat('B', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+insert into t_complex2 values (2, 'Round1_AfterMajor1', 100, repeat('C', 500));
+insert into t_complex2 values (102, 'Round1_AfterMajor2', 200, repeat('D', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证第一轮数据
+select count(*) as round1_cnt from t_complex2;
+select id, name, value, length(data) as data_len from t_complex2 order by id;
+
+--echo # 第二轮：写入->Major Freeze->写入->Minor Freeze
+insert into t_complex2 values (3, 'Round2_AfterMinor1', 300, repeat('E', 500));
+insert into t_complex2 values (103, 'Round2_AfterMinor2', 400, repeat('F', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+insert into t_complex2 values (4, 'Round2_AfterMajor1', 500, repeat('G', 500));
+insert into t_complex2 values (104, 'Round2_AfterMajor2', 600, repeat('H', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证第二轮数据
+select count(*) as round2_cnt from t_complex2;
+select id, name, value, length(data) as data_len from t_complex2 order by id;
+
+--echo # 第三轮：写入（Memtable）
+insert into t_complex2 values (5, 'Round3_Mem1', 700, repeat('I', 500));
+insert into t_complex2 values (105, 'Round3_Mem2', 800, repeat('J', 500));
+
+--echo # 验证第三轮数据（包含多个Major和Minor SSTable + Memtable）
+select count(*) as round3_cnt from t_complex2;
+select id, name, value, length(data) as data_len from t_complex2 order by id;
+
+--echo # Fork表（此时表包含多个Major SSTable、多个Minor SSTable和Memtable）
+fork table t_complex2 to t_complex2_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据完整性
+select count(*) as src_cnt from t_complex2;
+select count(*) as fork_cnt from t_complex2_fork;
+select id, name, value, length(data) as data_len from t_complex2 order by id;
+select id, name, value, length(data) as data_len from t_complex2_fork order by id;
+
+--echo # Fork后：继续操作验证隔离
+insert into t_complex2 values (6, 'PostFork_Src', 900, repeat('K', 500));
+insert into t_complex2_fork values (7, 'PostFork_Fork', 1000, repeat('L', 500));
+select count(*) as src_cnt from t_complex2;
+select count(*) as fork_cnt from t_complex2_fork;
+select id, name, value from t_complex2 order by id;
+select id, name, value from t_complex2_fork order by id;
+
+drop table t_complex2;
+drop table t_complex2_fork;
+
+--echo ============================================
+--echo 3. 复杂存储形态：Fork前中后都进行合并转储
+--echo ============================================
+
+drop table if exists t_complex3;
+drop table if exists t_complex3_fork;
+
+create table t_complex3 (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # Fork前：构造复杂存储形态
+--echo # 插入数据并触发major freeze（转储）
+insert into t_complex3 values (1, 'PreMajor1', 10, repeat('A', 500));
+insert into t_complex3 values (101, 'PreMajor2', 20, repeat('B', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork前major freeze后的数据
+select count(*) as cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # Fork前：插入数据并触发minor freeze（转储）
+--echo # 注意：确保之前的数据已清理，避免主键冲突
+delete from t_complex3 where id in (2, 102);
+insert into t_complex3 values (2, 'PreMinor1', 100, repeat('C', 500));
+insert into t_complex3 values (102, 'PreMinor2', 200, repeat('D', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork前minor freeze后的数据
+select count(*) as cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # 在fork开始前，先确保之前的merge已完成，并记录初始状态
+connection obsys;
+--replace_column 2 FROZEN_SCN 3 LAST_SCN
+select tenant_id, frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = 1;
+connection default;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for complex_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_complex3 to t_complex3_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：对源表执行major freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+delete from t_complex3 where id in (4, 104);
+insert into t_complex3 values (4, 'MidSrcMajor1', 300, repeat('E', 500));
+insert into t_complex3 values (104, 'MidSrcMajor2', 400, repeat('F', 500));
+alter system major freeze;
+#--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 等待一小段时间，确保系统已经处理freeze命令并更新frozen_scn
+sleep 2;
+
+--echo # 验证Fork中源表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as src_cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # 验证major merge确实被阻塞
+--echo # 说明：执行alter system major freeze后，有两种可能的情况：
+--echo # 1. 如果frozen_scn != last_scn（merge_pending=1），说明新的freeze已设置，但merge尚未完成（被fork阻塞）
+--echo # 2. 如果frozen_scn == last_scn（merge_pending=0），可能是新的freeze还没有被处理（因为fork阻塞了freeze的处理）
+--echo # 无论哪种情况，都说明merge操作被阻塞，无法继续完成
+connection obsys;
+--replace_column 2 FROZEN_SCN 3 LAST_SCN 4 MERGE_PENDING
+select tenant_id, frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = 1;
+connection default;
+
+--echo # Fork中：对目标表执行major freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_complex3_fork values (10, 'MidForkMajor1', 1000, repeat('G', 500));
+insert into t_complex3_fork values (110, 'MidForkMajor2', 2000, repeat('H', 500));
+alter system major freeze;
+#--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中目标表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # 再次验证major merge确实被阻塞
+--echo # 说明：执行alter system major freeze后，有两种可能的情况：
+--echo # 1. 如果frozen_scn != last_scn（merge_pending=1），说明新的freeze已设置，但merge尚未完成（被fork阻塞）
+--echo # 2. 如果frozen_scn == last_scn（merge_pending=0），可能是新的freeze还没有被处理（因为fork阻塞了freeze的处理）
+--echo # 无论哪种情况，都说明merge操作被阻塞，无法继续完成
+connection obsys;
+--replace_column 2 FROZEN_SCN 3 LAST_SCN 4 MERGE_PENDING
+select tenant_id, frozen_scn, last_scn, (frozen_scn != last_scn) as merge_pending from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = 1;
+connection default;
+
+--echo # Fork中：对源表执行minor freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+delete from t_complex3 where id in (5, 105);
+insert into t_complex3 values (5, 'MidSrcMinor1', 500, repeat('I', 500));
+insert into t_complex3 values (105, 'MidSrcMinor2', 600, repeat('J', 500));
+alter system minor freeze;
+#--source mysql_test/include/wait_minor_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中源表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as src_cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # 验证minor merge确实被阻塞（存在is_active='NO'的memstore表示minor merge尚未完成）
+connection obsys;
+--replace_column 1 COUNT_VALUE
+select count(*) as pending_minor_merge from oceanbase.__all_virtual_memstore_info where is_active='NO';
+connection default;
+
+--echo # Fork中：对目标表执行minor freeze命令（merge操作会被阻塞，等待fork完成后才能继续）
+insert into t_complex3_fork values (11, 'MidForkMinor1', 3000, repeat('K', 500));
+insert into t_complex3_fork values (111, 'MidForkMinor2', 4000, repeat('L', 500));
+alter system minor freeze;
+#--source mysql_test/include/wait_minor_merge.inc
+# 注意：在fork过程中不等待merge完成，因为merge操作会被阻塞，等待fork完成后才能继续
+
+--echo # 验证Fork中目标表数据（此时merge操作尚未完成，只是验证插入的数据）
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # 再次验证minor merge确实被阻塞（存在is_active='NO'的memstore表示minor merge尚未完成）
+connection obsys;
+--replace_column 1 COUNT_VALUE
+select count(*) as pending_minor_merge from oceanbase.__all_virtual_memstore_info where is_active='NO';
+connection default;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal complex_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+select count(*) as src_cnt from t_complex3;
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # 等待major merge完成（在fork过程中执行的major freeze需要等待fork完成后才能继续）
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 等待minor merge完成（在fork过程中执行的minor freeze需要等待fork完成后才能继续）
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork完成后major、minor freeze后的数据
+select count(*) as src_cnt from t_complex3;
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # Fork后：对源表进行major freeze（转储）
+delete from t_complex3 where id in (6, 106);
+insert into t_complex3 values (6, 'PostSrcMajor1', 700, repeat('M', 500));
+insert into t_complex3 values (106, 'PostSrcMajor2', 800, repeat('N', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork后源表major freeze后的数据
+select count(*) as src_cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # Fork后：对目标表进行major freeze（转储）
+insert into t_complex3_fork values (12, 'PostForkMajor1', 5000, repeat('O', 500));
+insert into t_complex3_fork values (112, 'PostForkMajor2', 6000, repeat('P', 500));
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # 验证Fork后目标表major freeze后的数据
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # Fork后：对源表进行minor freeze（转储）
+delete from t_complex3 where id in (7, 107);
+insert into t_complex3 values (7, 'PostSrcMinor1', 900, repeat('Q', 500));
+insert into t_complex3 values (107, 'PostSrcMinor2', 1000, repeat('R', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork后源表minor freeze后的数据
+select count(*) as src_cnt from t_complex3;
+select id, name, value, length(data) as data_len from t_complex3 order by id;
+
+--echo # Fork后：对目标表进行minor freeze（转储）
+insert into t_complex3_fork values (13, 'PostForkMinor1', 7000, repeat('S', 500));
+insert into t_complex3_fork values (113, 'PostForkMinor2', 8000, repeat('T', 500));
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # 验证Fork后目标表minor freeze后的数据
+select count(*) as fork_cnt from t_complex3_fork;
+select id, name, value, length(data) as data_len from t_complex3_fork order by id;
+
+--echo # 最终验证：源表和目标表数据隔离
+select count(*) as final_src_cnt from t_complex3;
+select count(*) as final_fork_cnt from t_complex3_fork;
+select id, name, value from t_complex3 order by id;
+select id, name, value from t_complex3_fork order by id;
+
+drop table t_complex3;
+drop table t_complex3_fork;
+
+--echo ============================================
+--echo 4. 复杂存储形态：更新和删除操作->合并转储->Fork
+--echo ============================================
+
+drop table if exists t_complex4;
+drop table if exists t_complex4_fork;
+
+create table t_complex4 (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data text
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # Step 1: 初始写入
+insert into t_complex4 values (1, 'Init1', 10, repeat('A', 500));
+insert into t_complex4 values (2, 'Init2', 20, repeat('B', 500));
+insert into t_complex4 values (101, 'Init3', 30, repeat('C', 500));
+insert into t_complex4 values (102, 'Init4', 40, repeat('D', 500));
+
+--echo # Step 2: Major freeze
+alter system major freeze;
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+--echo # Step 3: 更新和删除操作
+update t_complex4 set value = 100, data = repeat('E', 500) where id = 1;
+update t_complex4 set value = 200, data = repeat('F', 500) where id = 101;
+delete from t_complex4 where id = 2;
+
+--echo # Step 4: Minor freeze
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 5: 继续写入
+insert into t_complex4 values (3, 'AfterUpdate1', 300, repeat('G', 500));
+insert into t_complex4 values (103, 'AfterUpdate2', 400, repeat('H', 500));
+
+--echo # 验证复杂操作后的数据
+select count(*) as complex_cnt from t_complex4;
+select id, name, value, length(data) as data_len from t_complex4 order by id;
+
+--echo # Fork表（包含更新、删除后的多种存储形态）
+fork table t_complex4 to t_complex4_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据完整性
+select count(*) as src_cnt from t_complex4;
+select count(*) as fork_cnt from t_complex4_fork;
+select id, name, value, length(data) as data_len from t_complex4 order by id;
+select id, name, value, length(data) as data_len from t_complex4_fork order by id;
+
+--echo # 验证更新和删除操作的正确性
+select * from t_complex4 where id = 1;
+select * from t_complex4_fork where id = 1;
+select * from t_complex4 where id = 2;
+select * from t_complex4_fork where id = 2;
+select * from t_complex4 where id = 101;
+select * from t_complex4_fork where id = 101;
+
+drop table t_complex4;
+drop table t_complex4_fork;
+
+--echo ============================================
+--echo 5. 清理
+--echo ============================================
+
+drop database if exists db_fork_complex_dump;
+
