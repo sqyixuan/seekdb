@@ -20,8 +20,8 @@
 #include "ob_unit_table_operator.h"
 #include "observer/ob_sql_client_decorator.h"
 #include "share/ob_all_server_tracer.h" // for SVR_TRACER
+#include "rootserver/ob_root_utils.h" // ObRootUtils
 #include "src/share/ob_common_rpc_proxy.h"
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" // ObTenantSnapshotUtil
 
 namespace oceanbase
 {
@@ -209,14 +209,12 @@ int ObUnitTableOperator::get_units(const common::ObIArray<uint64_t> &pool_ids,
 }
 
 int ObUnitTableOperator::update_unit(common::ObISQLClient &client,
-                                     const ObUnit &unit,
-                                     const bool need_check_conflict_with_clone)
+                                     const ObUnit &unit)
 {
   int ret = OB_SUCCESS;
   char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
   char migrate_from_svr_ip[OB_MAX_SERVER_ADDR_SIZE] = "";
   const char *unit_status_str = NULL;
-  rootserver::ObConflictCaseWithClone case_to_check(rootserver::ObConflictCaseWithClone::MODIFY_UNIT);
   uint64_t tenant_id = OB_INVALID_TENANT_ID;
   if (!inited_) {
     ret = OB_NOT_INIT;
@@ -238,16 +236,6 @@ int ObUnitTableOperator::update_unit(common::ObISQLClient &client,
     }
   }
 
-  if (OB_FAIL(ret)) {
-  } else if (need_check_conflict_with_clone) {
-    if (OB_FAIL(rootserver::ObTenantSnapshotUtil::lock_unit_for_tenant(client, unit, tenant_id))) {
-      LOG_WARN("fail to lock __all_unit_table for clone check", KR(ret), K(unit), K(need_check_conflict_with_clone));
-    } else if (!is_valid_tenant_id(tenant_id)) {
-      // this unit is not granted to tenant, just ignore
-    } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id, case_to_check))) {
-      LOG_WARN("fail to check whether tenant is cloning", KR(ret), K(tenant_id), K(case_to_check), K(need_check_conflict_with_clone));
-    }
-  }
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(unit.get_unit_status_str(unit_status_str))) {
     LOG_WARN("fail to get unit status", K(ret));
@@ -281,84 +269,6 @@ int ObUnitTableOperator::update_unit(common::ObISQLClient &client,
   }
   return ret;
 }
-
-int ObUnitTableOperator::remove_units(common::ObISQLClient &client,
-                                      const uint64_t resource_pool_id)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_INVALID_ID == resource_pool_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(resource_pool_id), K(ret));
-  } else {
-    ObSqlString sql;
-    int64_t affected_rows = 0;
-    if (OB_FAIL(sql.append_fmt("delete from %s where resource_pool_id = %ld",
-        OB_ALL_UNIT_TNAME, resource_pool_id))) {
-      LOG_WARN("append_fmt failed", K(ret));
-    } else if (OB_FAIL(client.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(sql), K(ret));
-    }
-  }
-  return ret;
-}
-
-int ObUnitTableOperator::remove_unit(
-    common::ObISQLClient &client,
-    const ObUnit &unit)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_UNLIKELY(!unit.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(unit));
-  } else {
-    ObSqlString sql;
-    int64_t affected_rows = 0;
-    if (OB_FAIL(sql.append_fmt("delete from %s where unit_id = %ld",
-            OB_ALL_UNIT_TNAME, unit.unit_id_))) {
-      LOG_WARN("append fmt failed", K(ret));
-    } else if (OB_FAIL(client.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(sql), K(ret));
-    } else {} // no more to do
-  }
-  return ret;
-}
-
-int ObUnitTableOperator::remove_units_in_zones(
-    common::ObISQLClient &client,
-    const uint64_t resource_pool_id,
-    const common::ObIArray<common::ObZone> &to_be_removed_zones)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_UNLIKELY(OB_INVALID_ID == resource_pool_id)
-             || OB_UNLIKELY(to_be_removed_zones.count() <= 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(resource_pool_id), K(to_be_removed_zones));
-  } else {
-    ObSqlString sql;
-    for (int64_t i = 0; OB_SUCC(ret) && i < to_be_removed_zones.count(); ++i) {
-      int64_t affected_rows = 0;
-      sql.reset();
-      const common::ObZone &zone = to_be_removed_zones.at(i);
-      if (OB_FAIL(sql.append_fmt("delete from %s where resource_pool_id = %ld "
-              "and zone = '%s'", OB_ALL_UNIT_TNAME, resource_pool_id, zone.ptr()))) {
-        LOG_WARN("append_fmt failed", K(ret));
-      } else if (OB_FAIL(client.write(sql.ptr(), affected_rows))) {
-        LOG_WARN("fail to execute sql", K(ret), K(sql));
-      } else {} // no more to do
-    }
-  }
-  return ret;
-}
-
 
 int ObUnitTableOperator::get_resource_pools(common::ObIArray<ObResourcePool> &pools) const
 {
@@ -467,12 +377,10 @@ int ObUnitTableOperator::get_resource_pool(common::ObISQLClient &sql_client,
 }
 
 int ObUnitTableOperator::update_resource_pool(common::ObISQLClient &client,
-                                              const ObResourcePool &resource_pool,
-                                              const bool need_check_conflict_with_clone)
+                                              const ObResourcePool &resource_pool)
 {
   int ret = OB_SUCCESS;
   ObResourcePool resource_pool_to_lock;
-  rootserver::ObConflictCaseWithClone case_to_check(rootserver::ObConflictCaseWithClone::MODIFY_RESOURCE_POOL);
   SMART_VAR(char[MAX_ZONE_LIST_LENGTH], zone_list_str) {
     zone_list_str[0] = '\0';
 
@@ -488,21 +396,6 @@ int ObUnitTableOperator::update_resource_pool(common::ObISQLClient &client,
     } else if (OB_FAIL(zone_list2str(resource_pool.zone_list_,
         zone_list_str, MAX_ZONE_LIST_LENGTH))) {
       LOG_WARN("zone_list2str failed", "zone_list", resource_pool.zone_list_, K(ret));
-    // try lock resource pool to update for clone tenant conflict check
-    } else if (need_check_conflict_with_clone) {
-      if (!is_valid_tenant_id(resource_pool.tenant_id_)) {
-        // this resource pool has not granted to any tenant, just ignore
-      } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::lock_resource_pool_for_tenant(
-                      client, resource_pool))) {
-        LOG_WARN("fail to lock the resource pool to update", KR(ret), K(resource_pool), K(need_check_conflict_with_clone));
-      } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(
-                            resource_pool.tenant_id_,
-                            case_to_check))) {
-        LOG_WARN("fail to check whether tenant is in cloning procedure", KR(ret), K(resource_pool),
-                 K(case_to_check), K(need_check_conflict_with_clone));
-      }
-    }
-    if (OB_FAIL(ret)) {
     } else {
       ObDMLSqlSplicer dml;
       ObString resource_pool_name(strlen(resource_pool.name_.ptr()), resource_pool.name_.ptr());
@@ -712,32 +605,6 @@ int ObUnitTableOperator::update_unit_config(common::ObISQLClient &client,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("expect update single row", K(affected_rows), KR(ret));
       }
-    }
-  }
-  return ret;
-}
-
-int ObUnitTableOperator::remove_unit_config(common::ObISQLClient &client,
-                                            const uint64_t unit_config_id)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_INVALID_ID == unit_config_id) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(unit_config_id), K(ret));
-  } else {
-    ObSqlString sql;
-    int64_t affected_rows = 0;
-    if (OB_FAIL(sql.append_fmt("delete from %s where unit_config_id = %ld",
-        OB_ALL_UNIT_CONFIG_TNAME, unit_config_id))) {
-      LOG_WARN("append_fmt failed", K(ret));
-    } else if (OB_FAIL(client.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(sql), K(ret));
-    } else if (!is_single_row(affected_rows)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows not one", K(affected_rows), K(ret));
     }
   }
   return ret;

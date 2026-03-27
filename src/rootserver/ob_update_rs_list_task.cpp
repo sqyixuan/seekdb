@@ -150,10 +150,7 @@ int ObUpdateRsListTask::process()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
   } else {
-  if (!ObRootServiceRoleChecker::is_rootserver()) {
-    ret = OB_NOT_MASTER;
-    LOG_WARN("not master", K(ret));
-  } else if (OB_FAIL(process_without_lock())) {
+  if (OB_FAIL(process_without_lock())) {
     LOG_WARN("task process failed", K(ret));
   }
   if (OB_SUCC(ret)) {

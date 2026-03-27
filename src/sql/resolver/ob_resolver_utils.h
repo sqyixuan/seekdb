@@ -302,10 +302,6 @@ public:
                                ObRawExpr &expr,
                                ObQueryCtx &ctx);
 
-  // Wait for sys package to be loaded if not ready yet
-  // Returns OB_SCHEMA_EAGAIN if waiting succeeded and retry is needed, OB_SUCCESS if no waiting needed or already ready
-  static int wait_for_sys_package_ready(ObSQLSessionInfo &session_info);
-
   static int resolve_external_symbol(common::ObIAllocator &allocator,
                                      sql::ObRawExprFactory &expr_factory,
                                      sql::ObSQLSessionInfo &session_info,
@@ -870,7 +866,6 @@ public:
                             ObObjParam &obj_param,
                             bool &is_param,
                             const bool enable_decimal_int);
-  static int check_not_supported_tenant_name(const common::ObString &tenant_name);
   static int check_allowed_alter_operations_for_mlog(const obrpc::ObAlterTableArg &arg,
                                                   const share::schema::ObTableSchema &table_schema);
   static int fast_get_param_type(const ParseNode &parse_node,

@@ -7,6 +7,8 @@ use test;
 grant all on *.* to 'admin' WITH GRANT OPTION;
 
 
+create user if not exists 'proxyro' IDENTIFIED BY '3u^0kCdpE';
+grant select on oceanbase.* to proxyro IDENTIFIED BY '3u^0kCdpE';
 
 alter system set _use_odps_jni_connector = false;
 set @@session.ob_query_timeout = 200000000;
@@ -72,9 +74,9 @@ source init_create_tenant_routines.sql;
 /***********************************************************************/
 set @@session.ob_query_timeout = 10000000;
 system sleep 5;
-alter tenant sys set variables recyclebin = 'on';
-alter tenant sys set variables ob_enable_truncate_flashback = 'on';
-alter tenant sys set variables _nlj_batching_enabled = true;
+set global recyclebin = 'on';
+set global ob_enable_truncate_flashback = 'on';
+set global _nlj_batching_enabled = true;
 -- alter tenant oracle set variables _nlj_batching_enabled = true;
 -- alter tenant mysql set variables _nlj_batching_enabled = true;
 -- call test.set_specify_create_tenant();

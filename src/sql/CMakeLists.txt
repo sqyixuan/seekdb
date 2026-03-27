@@ -275,9 +275,6 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_outline_executor.cpp
   engine/cmd/ob_package_executor.cpp
   engine/cmd/ob_partition_executor_utils.cpp
-  engine/cmd/ob_resource_executor.cpp
-  engine/cmd/ob_restore_executor.cpp
-  engine/cmd/ob_clone_executor.cpp
   engine/cmd/ob_role_cmd_executor.cpp
   engine/cmd/ob_routine_executor.cpp
   engine/cmd/ob_sequence_executor.cpp
@@ -297,13 +294,21 @@ ob_set_subtarget(ob_sql engine_cmd
   engine/cmd/ob_event_executor.cpp
   engine/cmd/ob_table_direct_insert_ctx.cpp
   engine/cmd/ob_table_direct_insert_service.cpp
-  engine/cmd/ob_tenant_snapshot_executor.cpp
   engine/cmd/ob_mock_executor.cpp
   engine/cmd/ob_olap_async_job_executor.cpp
   engine/cmd/ob_catalog_executor.cpp
   engine/cmd/ob_trigger_storage_cache_executor.cpp
   engine/cmd/ob_sys_dispatch_call_executor.cpp
   engine/cmd/ob_ccl_rule_executor.cpp
+)
+
+ob_set_subtarget(ob_sql engine_connector
+  engine/connector/ob_java_native_method.cpp
+  engine/connector/ob_java_env.cpp
+  engine/connector/ob_java_helper.cpp
+  engine/connector/ob_jni_connector.cpp
+  engine/connector/ob_jni_scanner.cpp
+  engine/connector/ob_jni_writer.cpp
 )
 
 ob_set_subtarget(ob_sql engine_dml
@@ -769,6 +774,7 @@ ob_set_subtarget(ob_sql engine_expr
   engine/expr/ob_expr_func_ceil.cpp
   engine/expr/ob_expr_eval_functions.cpp
   engine/expr/ob_expr_in.cpp
+  engine/expr/ob_expr_calc_odps_size.cpp
   engine/expr/ob_expr_to_pinyin_tab.cpp
   engine/expr/ob_expr_to_pinyin.cpp
   engine/expr/ob_expr_url_codec.cpp
@@ -977,7 +983,10 @@ ob_set_subtarget(ob_sql engine_table
   engine/table/ob_csv_table_row_iter.cpp
   engine/table/ob_orc_table_row_iter.cpp
   engine/table/ob_parquet_table_row_iter.cpp
+  engine/table/ob_odps_table_row_iter.cpp
   engine/table/ob_file_prefetch_buffer.cpp
+  engine/table/ob_odps_jni_table_row_iter.cpp
+  engine/table/ob_odps_table_utils.cpp
   engine/table/ob_ddl_block_sample_scan_op.cpp
 )
 
@@ -1172,7 +1181,6 @@ ob_set_subtarget(ob_sql resolver
 )
 
 ob_set_subtarget(ob_sql resolver_cmd
-  resolver/cmd/ob_switch_tenant_resolver.cpp
   resolver/cmd/ob_alter_system_resolver.cpp
   resolver/cmd/ob_alter_system_stmt.cpp
   resolver/cmd/ob_anonymous_block_resolver.cpp
@@ -1191,15 +1199,12 @@ ob_set_subtarget(ob_sql resolver_cmd
   resolver/cmd/ob_load_data_resolver.cpp
   resolver/cmd/ob_load_data_stmt.cpp
   resolver/cmd/ob_location_utils_resolver.cpp
-  resolver/cmd/ob_resource_resolver.cpp
   resolver/cmd/ob_set_names_resolver.cpp
   resolver/cmd/ob_set_transaction_resolver.cpp
   resolver/cmd/ob_show_resolver.cpp
   resolver/cmd/ob_variable_set_resolver.cpp
   resolver/cmd/ob_variable_set_stmt.cpp
   resolver/cmd/ob_alter_system_resolver.cpp
-  resolver/cmd/ob_tenant_snapshot_resolver.cpp
-  resolver/cmd/ob_tenant_clone_resolver.cpp
   resolver/cmd/ob_olap_async_job_resolver.cpp
   resolver/cmd/ob_olap_async_job_stmt.cpp
   resolver/cmd/ob_module_data_resolver.cpp
@@ -1212,8 +1217,6 @@ ob_set_subtarget(ob_sql resolver_cmd
 ob_set_subtarget(ob_sql resolver_dcl
   resolver/dcl/ob_alter_role_resolver.cpp
   resolver/dcl/ob_alter_role_stmt.cpp
-  resolver/dcl/ob_alter_user_primary_zone_resolver.cpp
-  resolver/dcl/ob_alter_user_primary_zone_stmt.cpp
   resolver/dcl/ob_alter_user_profile_resolver.cpp
   resolver/dcl/ob_alter_user_profile_stmt.cpp
   resolver/dcl/ob_create_role_resolver.cpp
@@ -1274,9 +1277,6 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_create_table_stmt.cpp
   resolver/ddl/ob_create_tablegroup_resolver.cpp
   resolver/ddl/ob_create_tablegroup_stmt.cpp
-  resolver/ddl/ob_create_tenant_resolver.cpp
-  resolver/ddl/ob_create_tenant_stmt.cpp
-  resolver/ddl/ob_create_standby_tenant_resolver.cpp
   resolver/ddl/ob_create_view_resolver.cpp
   resolver/ddl/ob_ddl_resolver.cpp
   resolver/ddl/ob_ddl_stmt.cpp
@@ -1297,20 +1297,12 @@ ob_set_subtarget(ob_sql resolver_ddl
   resolver/ddl/ob_drop_table_resolver.cpp
   resolver/ddl/ob_drop_table_stmt.cpp
   resolver/ddl/ob_drop_tablegroup_resolver.cpp
-  resolver/ddl/ob_drop_tenant_resolver.cpp
-  resolver/ddl/ob_drop_tenant_stmt.cpp
   resolver/ddl/ob_explain_resolver.cpp
   resolver/ddl/ob_explain_stmt.cpp
   resolver/ddl/ob_external_file_ddl_resolver.cpp
   resolver/ddl/ob_flashback_resolver.cpp
-  resolver/ddl/ob_fork_table_resolver.cpp
-  resolver/ddl/ob_fork_table_stmt.cpp
   resolver/ddl/ob_lock_table_resolver.cpp
   resolver/ddl/ob_lock_table_stmt.cpp
-  resolver/ddl/ob_lock_tenant_resolver.cpp
-  resolver/ddl/ob_lock_tenant_stmt.cpp
-  resolver/ddl/ob_modify_tenant_resolver.cpp
-  resolver/ddl/ob_modify_tenant_stmt.cpp
   resolver/ddl/ob_optimize_resolver.cpp
   resolver/ddl/ob_optimize_stmt.cpp
   resolver/ddl/ob_outline_resolver.cpp
@@ -1463,6 +1455,8 @@ ob_set_subtarget(ob_sql udr
   udr/ob_udr_callback.cpp
   udr/ob_udr_utils.cpp
 )
+
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
 
 ob_add_new_object_target(ob_sql ob_sql)
 ob_add_new_object_target(ob_sql_extra ob_sql_extra)

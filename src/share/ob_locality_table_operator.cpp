@@ -17,8 +17,6 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "share/ob_locality_table_operator.h"
-#include "share/ob_locality_priority.h"
-#include "share/ob_primary_zone_util.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
 
@@ -327,30 +325,6 @@ int ObLocalityTableOperator::load_region(const ObAddr &addr,
               } else {
                 tenant_primary_region_array.reset();
                 region_priority = UINT64_MAX;
-                if (ObPrimaryZoneUtil::no_need_to_check_primary_zone(tenant_schema->get_primary_zone())
-                    || !is_self_cluster) {
-                  //FIXME: do not process the semantics of leader balance of primary_zone
-                  LOG_INFO( "tenant_schema primary_zone is NULL, or no need calc region priority", K(tenant_id),
-                           "primary_zone", tenant_schema->get_primary_zone());
-                } else {
-                  if (OB_FAIL(ObLocalityPriority::get_primary_region_prioriry(tenant_schema->get_primary_zone().ptr(),
-                                                                              locality_info.locality_region_array_, tenant_primary_region_array))) {
-                    LOG_WARN("get_primary_zone_prioriry error", K(ret),
-                             "primary_zone", tenant_schema->get_primary_zone(),
-                             "locality_region_array", locality_info.locality_region_array_);
-                  } else {
-                    LOG_INFO("get_primary_zone_prioriry",
-                             "primary_zone", tenant_schema->get_primary_zone(),
-                             K(tenant_primary_region_array), K(locality_info));
-                    region_priority = UINT64_MAX;
-                    if (OB_FAIL(ObLocalityPriority::get_region_priority(locality_info,
-                                                                        tenant_primary_region_array, region_priority))) {
-                      LOG_WARN("ObLocalityPriority get_region_priority error", K(ret), K(locality_info),
-                               K(tenant_primary_region_array));
-                    }
-                  }
-                }
-
                 if (OB_SUCC(ret)) {
                   ObLocalityZone locality_zone;
                   if (OB_FAIL(locality_zone.init(tenant_id, region_priority))) {

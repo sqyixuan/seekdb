@@ -29,7 +29,6 @@
 
 #include "sql/optimizer/ob_storage_estimator.h"
 #include "rootserver/ob_bootstrap.h"
-#include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "rootserver/ob_tenant_event_history_table_operator.h" // TENANT_EVENT_INSTANCE
 #include "observer/ob_server.h"
 #include "ob_server_event_history_table_operator.h"
@@ -42,13 +41,9 @@
 #include "storage/backup/ob_ls_backup_clean_mgr.h"
 #include "share/backup/ob_backup_connectivity.h"
 #include "share/ob_ddl_sim_point.h" // for DDL_SIM
-#include "rootserver/ob_service_name_command.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
 #include "share/ob_cluster_event_history_table_operator.h"//CLUSTER_EVENT_INSTANCE
 #include "storage/meta_store/ob_server_storage_meta_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 #include "storage/column_store/ob_column_store_replica_util.h"
 #include "share/backup/ob_backup_config.h"
 
@@ -63,11 +58,6 @@ using namespace share::schema;
 using namespace storage;
 using namespace backup;
 using namespace palf;
-
-namespace share
-{
-extern int report_telemetry(const char *reporter, const char *event_name);
-}
 
 namespace observer
 {
@@ -154,17 +144,6 @@ void ObRemoteMasterRsUpdateTask::runTimerTask()
   }
 }
 
-TelemetryTask::TelemetryTask(bool embed_mode)
-  : embed_mode_(embed_mode)
-{}
-
-void TelemetryTask::runTimerTask()
-{
-  const char *env_reporter = std::getenv("REPORTER");
-  const char *reporter = env_reporter ? env_reporter : (embed_mode_ ? "embed" : "server");
-  share::report_telemetry(reporter, "bootstraped");
-}
-
 //////////////////////////////////////
 
 // here gctx may hasn't been initialized already
@@ -175,7 +154,6 @@ ObService::ObService(const ObGlobalContext &gctx)
     lease_state_mgr_(), heartbeat_process_(gctx, schema_updater_, lease_state_mgr_),
     gctx_(gctx), server_trace_task_(), schema_release_task_(),
     schema_status_task_(), remote_master_rs_update_task_(gctx), ls_table_updater_(),
-    meta_table_checker_(), telemetry_task_(false),
     need_bootstrap_(false)
   {
   }
@@ -220,12 +198,6 @@ int ObService::init(common::ObMySQLProxy &sql_proxy,
     FLOG_WARN("init remote master rs update task failed", KR(ret));
   } else if (OB_FAIL(ls_table_updater_.init())) {
     FLOG_WARN("init log stream table updater failed", KR(ret));
-  } else if (OB_FAIL(meta_table_checker_.init(
-      gctx_.lst_operator_,
-      gctx_.tablet_operator_,
-      gctx_.omt_,
-      gctx_.schema_service_))) {
-    FLOG_WARN("init meta table checker failed", KR(ret));
   } else {
     need_bootstrap_ = need_bootstrap;
     inited_ = true;
@@ -261,7 +233,7 @@ int ObService::register_self()
   return ret;
 }
 
-int ObService::start(bool embed_mode)
+int ObService::start()
 {
   int ret = OB_SUCCESS;
   FLOG_INFO("[OBSERVICE_NOTICE] start ob_service begin");
@@ -271,13 +243,6 @@ int ObService::start(bool embed_mode)
   } else if (need_bootstrap_) {
     if (OB_FAIL(bootstrap())) {
       LOG_ERROR("bootstrap failed", KR(ret));
-    }
-    if (OB_SUCC(ret)) {
-      telemetry_task_.embed_mode_ = embed_mode;
-      if (OB_SUCCESS != TG_SCHEDULE(lib::TGDefIDs::ServerGTimer, telemetry_task_,
-          1L * 1000 * 1000, false)) {
-        FLOG_ERROR("fail to schedule telemetry task");
-      }
     }
     need_bootstrap_ = false;
   }
@@ -291,9 +256,6 @@ int ObService::start(bool embed_mode)
     LOG_ERROR("register self failed", KR(ret));
   } else {
     FLOG_INFO("regist to rs success");
-  }
-  if (FAILEDx(meta_table_checker_.start())) {
-    LOG_ERROR("start meta table checker failed", KR(ret));
   }
   FLOG_INFO("[OBSERVICE_NOTICE] start ob_service end", KR(ret));
   if (OB_FAIL(ret)) {
@@ -329,10 +291,6 @@ void ObService::stop()
     FLOG_INFO("begin to stop ls table updater");
     ls_table_updater_.stop();
     FLOG_INFO("ls table updater stopped");
-
-    FLOG_INFO("begin to stop meta table checker");
-    meta_table_checker_.stop();
-    FLOG_INFO("meta table checker stopped");
 
     FLOG_INFO("begin to stop heartbeat process");
     heartbeat_process_.stop();
@@ -370,10 +328,6 @@ void ObService::wait()
     FLOG_INFO("begin to wait ls table updater");
     ls_table_updater_.wait();
     FLOG_INFO("wait ls table updater success");
-
-    FLOG_INFO("begin to wait meta table checker");
-    meta_table_checker_.wait();
-    FLOG_INFO("wait meta table checker success");
 
     FLOG_INFO("begin to wait heartbeat process");
     heartbeat_process_.wait();
@@ -425,10 +379,6 @@ int ObService::destroy()
     FLOG_INFO("begin to destroy server event instance");
     SERVER_EVENT_INSTANCE.destroy();
     FLOG_INFO("server event instance destroyed");
-
-    FLOG_INFO("begin to destroy meta table checker");
-    meta_table_checker_.destroy();
-    FLOG_INFO("meta table checker destroyed");
 
     FLOG_INFO("begin to destroy heartbeat process");
     heartbeat_process_.destroy();
@@ -1696,26 +1646,6 @@ int ObService::prepare_server_for_adding_server(
       LOG_WARN("fail to get build_version", KR(ret));
     }
 
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (OB_FAIL(ret) || !GCTX.is_shared_storage_mode()) {
-    } else {
-      const ObSArray<share::ObZoneStorageTableInfo>& storage_infos = arg.get_zone_storage_infos();
-      if (GCTX.is_shared_storage_mode()) {
-        if (OB_UNLIKELY(storage_infos.empty())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("observer shared_storage start, but zone_storage_info is empty", KR(ret), K(arg));
-        } else if (OB_FAIL(ObDeviceManifestTask::get_instance().add_new_device_configs(storage_infos))) {
-          LOG_WARN("fail to add new device configs", KR(ret));
-        }
-      } else {
-        if (!storage_infos.empty()) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("observer shared_nothing start, but zone_storage_info is not empty", KR(ret), K(arg));
-        } else {}
-      }
-    }
-#endif
-
     if (OB_FAIL(ret)) {
     } else if (is_bootstrap) {
       // If adding server during bootstrap, server is expected to be not empty.
@@ -1802,9 +1732,8 @@ int ObService::get_server_resource_info(share::ObServerResourceInfo &resource_in
     LOG_WARN("log_block_mgr is null", KR(ret), K(GCTX.log_block_mgr_));
   } else if (OB_FAIL(omt::ObTenantNodeBalancer::get_instance().get_server_allocated_resource(svr_res_assigned))) {
     LOG_WARN("fail to get server allocated resource", KR(ret));
-  } else if (OB_FAIL(log_block_mgr->get_disk_usage(clog_in_use_size_byte))) {
+  } else if (OB_FAIL(log_block_mgr->get_disk_usage(clog_in_use_size_byte, clog_total_size_byte))) {
     LOG_WARN("Failed to get clog stat ", KR(ret));
-  } else if (FALSE_IT(clog_total_size_byte = log_block_mgr->get_log_disk_size())) {
   } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.get_reserved_size(reserved_size))) {
     LOG_WARN("Failed to get reserved size ", KR(ret), K(reserved_size));
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -1875,170 +1804,6 @@ int ObService::get_partition_count(obrpc::ObGetPartitionCountResult &result)
   return ret;
 }
 
-int ObService::do_migrate_ls_replica(const obrpc::ObLSMigrateReplicaArg &arg)
-{
-  int ret = OB_SUCCESS;
-  uint64_t tenant_id = arg.tenant_id_;
-  ObLSService *ls_service = nullptr;
-  bool is_exist = false;
-  ObMigrationOpArg migration_op_arg;
-  if (tenant_id != MTL_ID()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("ObRpcLSMigrateReplicaP::process tenant not match", KR(ret), K(tenant_id));
-  }
-  ObCurTraceId::set(arg.task_id_);
-  if (OB_SUCC(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "schedule_ls_migration start", "tenant_id", arg.tenant_id_, "ls_id", arg.ls_id_.id(),
-                     "data_src", arg.force_data_source_.get_server(), "dest", arg.dst_.get_server());
-    ls_service = MTL(ObLSService*);
-    if (OB_ISNULL(ls_service)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("mtl ObLSService should not be null", KR(ret));
-    } else if (OB_FAIL(ls_service->check_ls_exist(arg.ls_id_, is_exist))) {
-      LOG_WARN("failed to check ls exist", KR(ret), K(arg));
-    } else if (is_exist) {
-      ret = OB_LS_EXIST;
-      LOG_WARN("can not migrate ls which local ls is exist", KR(ret), K(arg), K(is_exist));
-    } else {
-      migration_op_arg.cluster_id_ = GCONF.cluster_id;
-      migration_op_arg.data_src_ = arg.force_data_source_;
-      migration_op_arg.dst_ = arg.dst_;
-      migration_op_arg.ls_id_ = arg.ls_id_;
-      //TODO(muwei.ym) need check priority
-      migration_op_arg.priority_ = ObMigrationOpPriority::PRIO_HIGH;
-      migration_op_arg.paxos_replica_number_ = arg.paxos_replica_number_;
-      migration_op_arg.src_ = arg.src_;
-      migration_op_arg.type_ = ObMigrationOpType::MIGRATE_LS_OP;
-      migration_op_arg.prioritize_same_zone_src_ = arg.prioritize_same_zone_src_;
-#ifdef ERRSIM
-      migration_op_arg.prioritize_same_zone_src_ = GCONF.enable_parallel_migration;
-#endif
-      if (OB_FAIL(ls_service->create_ls_for_ha(arg.task_id_, migration_op_arg))) {
-        LOG_WARN("failed to create ls for ha", KR(ret), K(arg), K(migration_op_arg));
-      }
-    }
-  }
-  if (OB_FAIL(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "schedule_ls_migration failed", "ls_id", arg.ls_id_.id(), "result", ret);
-  }
-  return ret;
-}
-
-int ObService::do_add_ls_replica(const obrpc::ObLSAddReplicaArg &arg)
-{
-  int ret = OB_SUCCESS;
-  uint64_t tenant_id = arg.tenant_id_;
-  ObLSService *ls_service = nullptr;
-  bool is_exist = false;
-  ObMigrationOpArg migration_op_arg;
-  if (tenant_id != MTL_ID()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("ObRpcLSAddReplicaP::process tenant not match", KR(ret), K(tenant_id));
-  }
-  ObCurTraceId::set(arg.task_id_);
-  if (OB_SUCC(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "schedule_ls_add start", "tenant_id", arg.tenant_id_, "ls_id", arg.ls_id_.id(),
-                     "data_src", arg.force_data_source_.get_server(), "dest", arg.dst_.get_server());
-    ls_service = MTL(ObLSService*);
-    if (OB_ISNULL(ls_service)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("mtl ObLSService should not be null", KR(ret));
-    } else if (OB_FAIL(ls_service->check_ls_exist(arg.ls_id_, is_exist))) {
-      LOG_WARN("failed to check ls exist", KR(ret), K(arg));
-    } else if (is_exist) {
-      ret = OB_LS_EXIST;
-      LOG_WARN("can not add ls which local ls is exist", KR(ret), K(arg), K(is_exist));
-    } else {
-      migration_op_arg.cluster_id_ = GCONF.cluster_id;
-      migration_op_arg.data_src_ = arg.force_data_source_;
-      migration_op_arg.dst_ = arg.dst_;
-      migration_op_arg.ls_id_ = arg.ls_id_;
-      //TODO(muwei.ym) need check priority
-      migration_op_arg.priority_ = ObMigrationOpPriority::PRIO_HIGH;
-      migration_op_arg.paxos_replica_number_ = arg.new_paxos_replica_number_;
-      // for add tasks, the src_ field is useless, but must be valid
-      migration_op_arg.src_ = arg.dst_;
-      migration_op_arg.type_ = ObMigrationOpType::ADD_LS_OP;
-      if (OB_FAIL(ls_service->create_ls_for_ha(arg.task_id_, migration_op_arg))) {
-        LOG_WARN("failed to create ls for ha", KR(ret), K(arg), K(migration_op_arg));
-      }
-    }
-  }
-  if (OB_FAIL(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "schedule_ls_add failed", "tenant_id", arg.tenant_id_,
-        "ls_id", arg.ls_id_, "result", ret);
-  }
-  return ret;
-}
-
-int ObService::do_remove_ls_paxos_replica(const obrpc::ObLSDropPaxosReplicaArg &arg)
-{
-  int ret = OB_SUCCESS;
-  uint64_t tenant_id = arg.tenant_id_;
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-  ObLSService *ls_service = nullptr;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-  if (tenant_id != MTL_ID()) {
-    ret = guard.switch_to(tenant_id);
-  }
-  ObCurTraceId::set(arg.task_id_);
-  if (OB_SUCC(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "remove_ls_paxos_member start", "tenant_id", arg.tenant_id_, "ls_id", arg.ls_id_.id(),
-                     "dest", arg.remove_member_.get_server());
-    LOG_INFO("start do remove ls paxos member", K(arg));
-    ls_service = MTL(ObLSService*);
-    if (OB_ISNULL(ls_service)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("mtl ObLSService should not be null", KR(ret));
-    } else if (OB_FAIL(ls_service->get_ls(arg.ls_id_, ls_handle, ObLSGetMod::OBSERVER_MOD))) {
-      LOG_WARN("failed to get ls", KR(ret), K(arg));
-    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ls should not be NULL", KR(ret), K(arg));
-    }
-  }
-  if (OB_FAIL(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "remove_ls_paxos_member failed", "tenant_id",
-        arg.tenant_id_, "ls_id", arg.ls_id_.id(), "result", ret);
-  }
-  return ret;
-}
-
-int ObService::do_remove_ls_nonpaxos_replica(const obrpc::ObLSDropNonPaxosReplicaArg &arg)
-{
-  int ret = OB_SUCCESS;
-  uint64_t tenant_id = arg.tenant_id_;
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-  ObLSService *ls_service = nullptr;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-  if (tenant_id != MTL_ID()) {
-    ret = guard.switch_to(tenant_id);
-  }
-  ObCurTraceId::set(arg.task_id_);
-  if (OB_SUCC(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "remove_ls_learner_member start", "tenant_id", arg.tenant_id_, "ls_id", arg.ls_id_.id(),
-                     "dest", arg.remove_member_.get_server());
-    LOG_INFO("start do remove ls learner member", K(arg));
-    ls_service = MTL(ObLSService*);
-    if (OB_ISNULL(ls_service)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("mtl ObLSService should not be null", KR(ret));
-    } else if (OB_FAIL(ls_service->get_ls(arg.ls_id_, ls_handle, ObLSGetMod::OBSERVER_MOD))) {
-      LOG_WARN("failed to get ls", KR(ret), K(arg));
-    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ls should not be NULL", KR(ret), K(arg));
-    }
-  }
-  if (OB_FAIL(ret)) {
-    SERVER_EVENT_ADD("storage_ha", "remove_ls_learner_member failed", "tenant_id",
-        arg.tenant_id_, "ls_id", arg.ls_id_.id(), "result", ret);
-  }
-  return ret;
-}
-
 int ObService::check_server_empty(bool &is_empty)
 {
   int ret = OB_SUCCESS;
@@ -2071,98 +1836,6 @@ int ObService::check_server_empty(bool &is_empty)
   return ret;
 }
 
-int ObService::report_replica()
-{
-  // TODO: yanyuan.cxf this maybe need at 4.0
-  // return OB_SUCCESS just for bootstrap.
-  int ret = OB_SUCCESS;
-  // LOG_INFO("receive report all replicas request");
-  // if (!inited_) {
-  //   ret = OB_NOT_INIT;
-  //   LOG_WARN("not init", K(ret));
-  // } else {
-  //   ObIPartitionGroupIterator *partition_iter = NULL;
-  //   ObIPartitionGroup *partition = NULL;
-  //   int64_t replica_count = 0;
-
-  //   if (NULL == (partition_iter = gctx_.par_ser_->alloc_pg_iter())) {
-  //     ret = OB_ALLOCATE_MEMORY_FAILED;
-  //     LOG_WARN("Fail to alloc partition iter, ", K(ret));
-  //   } else {
-  //     while (OB_SUCC(ret)) {
-  //       ObPartitionArray pkeys;
-  //       if (OB_FAIL(partition_iter->get_next(partition))) {
-  //         if (OB_ITER_END != ret) {
-  //           LOG_WARN("Fail to get next partition, ", K(ret));
-  //         }
-  //       } else if (NULL == partition) {
-  //         ret = OB_ERR_UNEXPECTED;
-  //         LOG_WARN("The partition is NULL, ", K(ret));
-  //       } else if (OB_FAIL(partition->get_all_pg_partition_keys(pkeys))) {
-  //         LOG_WARN("get all pg partition keys error", "pg_key", partition->get_partition_key());
-  //         if (OB_ENTRY_NOT_EXIST != ret && OB_PARTITION_NOT_EXIST != ret) {
-  //           LOG_WARN("get partition failed", K(ret));
-  //         } else {
-  //           // The partition has been deleted. There is no need to trigger the report
-  //           ret = OB_SUCCESS;
-  //         }
-  //       } else if (OB_FAIL(submit_pt_update_task(
-  //               partition->get_partition_key(),
-  //               true/*need report checksum*/))) {
-  //         if (OB_PARTITION_NOT_EXIST == ret) {
-  //           // The GC thread is already working,
-  //           // and deleted during traversal, the replica has been deleted needs to be avoided blocking the start process
-  //           ret = OB_SUCCESS;
-  //           LOG_INFO("this partition is already not exist",
-  //               K(ret), "partition_key", partition->get_partition_key());
-  //         } else {
-  //           LOG_WARN("submit partition table update task failed",
-  //               K(ret), "partition_key", partition->get_partition_key());
-  //         }
-  //       } else if (OB_FAIL(submit_pt_update_role_task(
-  //               partition->get_partition_key()))) {
-  //         LOG_WARN("fail to submit pt update role task", K(ret),
-  //                  "pkey", partition->get_partition_key());
-  //       } else {
-  //         //Update partition meta table without concern for error codes
-  //         submit_pg_pt_update_task(pkeys);
-  //         ++replica_count;
-  //       }
-  //     }
-
-  //     if (OB_ITER_END == ret) {
-  //       ret = OB_SUCCESS;
-  //     }
-  //   }
-
-  //   if (NULL != partition_iter) {
-  //     gctx_.par_ser_->revert_pg_iter(partition_iter);
-  //   }
-  //   LOG_INFO("submit all replicas report", K(ret));
-  //   SERVER_EVENT_ADD("storage", "report_replica", K(ret), "replica_count", replica_count);
-  // }
-  return ret;
-}
-
-int ObService::recycle_replica()
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else {
-    //gctx_.par_ser_->garbage_clean();
-  }
-  return ret;
-}
-
-int ObService::clear_location_cache()
-{
-  // TODO baihua: implement after kvcache support clear interface
-  int ret = OB_NOT_IMPLEMENT;
-  return ret;
-}
-
 int ObService::set_ds_action(const obrpc::ObDebugSyncActionArg &arg)
 {
   int ret = OB_SUCCESS;
@@ -2186,69 +1859,6 @@ int ObService::request_heartbeat(ObLeaseRequest &lease_request)
   } else if (OB_FAIL(heartbeat_process_.init_lease_request(lease_request))) {
     LOG_WARN("init_lease_request failed", K(ret));
   }
-  return ret;
-}
-
-int ObService::generate_tenant_table_schemas_(const obrpc::ObBatchBroadcastSchemaArg &arg,
-      ObSArray<share::schema::ObTableSchema> &tables, ObIAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = arg.get_tenant_id();
-  if (CLUSTER_CURRENT_VERSION != arg.get_cluster_current_version()) {
-    ret = OB_OP_NOT_ALLOW;
-    LOG_WARN("server binary not equal, create tenant is not allowed", KR(ret), KCV(CLUSTER_CURRENT_VERSION), K(arg));
-  } else if (OB_FAIL(ObSchemaUtils::construct_inner_table_schemas(tenant_id, tables, allocator))) {
-    LOG_WARN("failed to construct_inner_table_schemas", KR(ret), K(tenant_id));
-  }
-  return ret;
-}
-
-ERRSIM_POINT_DEF(ERRSIM_BROADCAST_SCHEMA);
-
-// used by bootstrap/create_tenant
-int ObService::batch_broadcast_schema(
-    const obrpc::ObBatchBroadcastSchemaArg &arg,
-    ObBatchBroadcastSchemaResult &result)
-{
-  int ret = OB_SUCCESS;
-  ObMultiVersionSchemaService *schema_service = gctx_.schema_service_;
-  const int64_t sys_schema_version = arg.get_sys_schema_version();
-  ObArenaAllocator arena_allocator("InnerTableSchem", OB_MALLOC_MIDDLE_BLOCK_SIZE);
-  ObSArray<ObTableSchema> generated_tables;
-  const ObIArray<ObTableSchema> *tables_to_broadcast = NULL;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invaild", KR(ret), K(arg));
-  } else if (OB_ISNULL(schema_service)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema_service is null", KR(ret));
-  } else if (OB_FAIL(ERRSIM_BROADCAST_SCHEMA)) {
-    LOG_WARN("ERRSIM_BROADCAST_SCHEMA", KR(ret));
-  } else if (OB_FAIL(schema_service->async_refresh_schema(
-             OB_SYS_TENANT_ID, sys_schema_version))) {
-    LOG_WARN("fail to refresh sys schema", KR(ret), K(sys_schema_version));
-  } else if (arg.need_generate_schema()) {
-    if (OB_FAIL(generate_tenant_table_schemas_(arg, generated_tables, arena_allocator))) {
-      LOG_WARN("failed to generate tenant table schemas", KR(ret), K(arg));
-    } else {
-      tables_to_broadcast = &generated_tables;
-    }
-  } else {
-    tables_to_broadcast = &arg.get_tables();
-  }
-  if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(tables_to_broadcast)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("pointer is null", KR(ret), KP(tables_to_broadcast));
-  } else if (OB_FAIL(schema_service->broadcast_tenant_schema(
-             arg.get_tenant_id(), *tables_to_broadcast))) {
-    LOG_WARN("fail to broadcast tenant schema", KR(ret), K(arg));
-  }
-  result.set_ret(ret);
-  DEBUG_SYNC(BEFORE_FINISH_BROADCAST_SCHEMA);
   return ret;
 }
 
@@ -3434,41 +3044,6 @@ int ObService::force_set_server_list(const obrpc::ObForceSetServerListArg &arg, 
   return ret;
 }
 
-int ObService::refresh_tenant_info(
-    const ObRefreshTenantInfoArg &arg,
-    ObRefreshTenantInfoRes &result)
-{
-  int ret = OB_SUCCESS;
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invaild", KR(ret), K(arg));
-  } else if (arg.get_tenant_id() != MTL_ID() && OB_FAIL(guard.switch_to(arg.get_tenant_id()))) {
-    LOG_WARN("switch tenant failed", KR(ret), K(arg));
-  }
-
-  if (OB_SUCC(ret)) {
-    rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-
-    if (OB_ISNULL(tenant_info_loader)) {
-      ret = OB_ERR_UNEXPECTED;
-      COMMON_LOG(ERROR, "tenant_info_loader should not be null", KR(ret));
-    } else if (OB_FAIL(tenant_info_loader->refresh_tenant_info())) {
-      COMMON_LOG(WARN, "refresh_tenant_info failed", KR(ret), K(arg));
-    } else if (OB_FAIL(result.init(arg.get_tenant_id()))) {
-      LOG_WARN("failed to init res", KR(ret), K(arg.get_tenant_id()));
-    } else {
-      MTL(transaction::ObTransService *)->register_standby_cleanup_task();
-      LOG_INFO("finish refresh_tenant_info", KR(ret), K(arg), K(result));
-    }
-  }
-  return ret;
-}
-
 int ObService::init_tenant_config(
     const obrpc::ObInitTenantConfigArg &arg,
     obrpc::ObInitTenantConfigRes &result)
@@ -3494,101 +3069,6 @@ int ObService::init_tenant_config(
   return OB_SUCCESS;
 }
 
-ERRSIM_POINT_DEF(ERRSIM_GET_LS_READABLE_SCN_ERROR);
-ERRSIM_POINT_DEF(ERRSIM_GET_LS_READABLE_SCN_OLD);
-int ObService::get_ls_replayed_scn(
-    const ObGetLSReplayedScnArg &arg,
-    ObGetLSReplayedScnRes &result)
-{
-  LOG_INFO("start get_ls_replayed_scn", K(arg));
-  int ret = OB_SUCCESS;
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-  share::SCN cur_readable_scn = SCN::min_scn();
-
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invaild", KR(ret), K(arg));
-  } else if (arg.get_tenant_id() != MTL_ID() && OB_FAIL(guard.switch_to(arg.get_tenant_id()))) {
-    LOG_WARN("switch tenant failed", KR(ret), K(arg));
-  } else if (ERRSIM_GET_LS_READABLE_SCN_ERROR) {
-    ret = ERRSIM_GET_LS_READABLE_SCN_ERROR;
-    LOG_WARN("failed to get ls replica readable scn for errsim", KR(ret), K(arg));
-  }
-  if (OB_SUCC(ret)) {
-    ObLSService *ls_svr = MTL(ObLSService*);
-    ObLSHandle ls_handle;
-    ObLS *ls = nullptr;
-    share::SCN offline_scn;
-    ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
-    if (OB_ISNULL(ls_svr)) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("pointer is null", KR(ret), KP(ls_svr));
-    } else if (OB_FAIL(ls_svr->get_ls(arg.get_ls_id(), ls_handle, ObLSGetMod::RS_MOD))) {
-      LOG_WARN("get log stream failed", KR(ret), K(arg));
-    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("log stream is null", KR(ret), K(arg), K(ls_handle));
-    } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
-      LOG_WARN("failed to get migration status", K(ret), KPC(ls));
-    } else if (!ObMigrationStatusHelper::check_can_report_readable_scn(migration_status)) {
-      cur_readable_scn = SCN::base_scn();
-      LOG_INFO("ls migration status cannot report reablase scn, report base scn as readable scn", K(migration_status), "ls_id", ls->get_ls_id());
-      if (arg.is_all_replica()) {
-        ret = OB_EAGAIN;
-        LOG_WARN("leader get all replica min readable scn, but leader migration status is not none, need retry",
-            K(ret), K(arg), K(migration_status), "ls_id", ls->get_ls_id());
-      }
-    } else {
-      if (OB_FAIL(ls->get_max_decided_scn(cur_readable_scn))) {
-        LOG_WARN("failed to get_max_decided_scn", KR(ret), K(arg), KPC(ls));
-      } else if (arg.is_all_replica()) {
-        if (OB_ISNULL(ls->get_ls_recovery_stat_handler())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("failed to get ls recovery stat", KR(ret), K(arg));
-        } else if (OB_FAIL(ls->get_ls_recovery_stat_handler()
-              ->get_all_replica_min_readable_scn(cur_readable_scn))) {
-          LOG_WARN("failed to get all replica min readable_scn", KR(ret), K(arg));
-        }
-      }
-
-      if (FAILEDx(ls->get_migration_status(migration_status))) {
-        LOG_WARN("failed to get migration status", K(ret), KPC(ls));
-      } else if (!ObMigrationStatusHelper::check_can_report_readable_scn(migration_status)) {
-        const SCN original_readable_scn = cur_readable_scn;
-        cur_readable_scn = SCN::base_scn();
-        LOG_INFO("ls migration status cannot report reablase scn, report base scn as readable scn", K(migration_status),
-            "ls_id", ls->get_ls_id(), K(original_readable_scn));
-        if (arg.is_all_replica()) {
-          ret = OB_EAGAIN;
-          LOG_WARN("leader get all replica min readable scn, but leader migration status is not none, need retry",
-              K(ret), K(arg), K(migration_status), "ls_id", ls->get_ls_id());
-        }
-      }
-    }
-
-    if (OB_SUCC(ret) && ERRSIM_GET_LS_READABLE_SCN_OLD) {
-      const int64_t current_time = ObTimeUtility::current_time() - 
-        GCONF.internal_sql_execute_timeout;
-      cur_readable_scn.convert_from_ts(current_time);
-      LOG_WARN("set ls replica readble_scn small", K(arg), K(cur_readable_scn),
-          K(current_time));
-    }
-    if (FAILEDx(ls->get_offline_scn(offline_scn))) {
-      LOG_WARN("failed to get offline scn", KR(ret), K(arg), KPC(ls));
-    } else if (OB_FAIL(result.init(arg.get_tenant_id(), arg.get_ls_id(),
-            cur_readable_scn, offline_scn, get_self_addr()))) {
-      LOG_WARN("failed to init res", KR(ret), K(arg), K(cur_readable_scn), K(offline_scn));
-    }
-    LOG_INFO("finish get_ls_replayed_scn", KR(ret), K(cur_readable_scn), K(arg), K(result),
-        K(offline_scn));
-  }
-
-  return ret;
-}
-
 int ObService::handle_heartbeat(
     const share::ObHBRequest &hb_request,
     share::ObHBResponse &hb_response)
@@ -3605,69 +3085,6 @@ int ObService::handle_heartbeat(
   const int64_t time_cost = ::oceanbase::common::ObTimeUtility::current_time() - now;
   FLOG_INFO("handle_heartbeat", KR(ret), K(hb_request), K(hb_response), K(time_cost));
   return ret;
-}
-
-int ObService::update_tenant_info_cache(
-    const ObUpdateTenantInfoCacheArg &arg,
-    ObUpdateTenantInfoCacheRes &result)
-{
-  int ret = OB_SUCCESS;
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invaild", KR(ret), K(arg));
-  } else if (arg.get_tenant_id() != MTL_ID() && OB_FAIL(guard.switch_to(arg.get_tenant_id()))) {
-    LOG_WARN("switch tenant failed", KR(ret), K(arg));
-  }
-
-  if (OB_SUCC(ret)) {
-    rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-
-    if (OB_ISNULL(tenant_info_loader)) {
-      ret = OB_ERR_UNEXPECTED;
-      COMMON_LOG(ERROR, "tenant_info_loader should not be null", KR(ret));
-    } else if (OB_FAIL(tenant_info_loader->update_tenant_info_cache(
-                   arg.get_ora_rowscn(), arg.get_tenant_info(), arg.get_finish_data_version(),
-                   arg.get_data_version_barrier_scn()))) {
-      COMMON_LOG(WARN, "update_tenant_info_cache failed", KR(ret), K(arg));
-    } else if (OB_FAIL(result.init(arg.get_tenant_id()))) {
-      LOG_WARN("failed to init res", KR(ret), K(arg.get_tenant_id()));
-    } else {
-      LOG_TRACE("finish update_tenant_info_cache", KR(ret), K(arg), K(result));
-    }
-  }
-  return ret;
-}
-
-int ObService::check_storage_operation_status(
-    const obrpc::ObCheckStorageOperationStatusArg &arg,
-    obrpc::ObCheckStorageOperationStatusResult &result)
-{
-  int ret = OB_SUCCESS;
-  bool is_done = false;
-  bool is_connective = false;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not inited", K(ret));
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invalid", KR(ret), K(arg));
-  } else if (OB_FAIL(ObDeviceManifestTask::get_instance().run())) {
-    LOG_WARN("fail to run device manifest task", KR(ret));
-  } else if (OB_FAIL(ObDeviceConfigMgr::get_instance().is_op_done(arg.op_id_, arg.sub_op_id_, is_done))) {
-    LOG_WARN("fail to check if op is done", KR(ret), "op_id", arg.op_id_, "sub_op_id", arg.sub_op_id_);
-  } else if (OB_FAIL(ObDeviceConfigMgr::get_instance().is_connective(arg.op_id_, arg.sub_op_id_, is_connective))) {
-    LOG_WARN("fail to check is connective", KR(ret), "op_id", arg.op_id_, "sub_op_id", arg.sub_op_id_);
-  }
-  result.set_ret(ret); // use result to pass ret
-  result.set_is_done(is_done);
-  result.set_is_connective(is_connective);
-  LOG_INFO("finish to check storage operation status", KR(ret), K(is_done), K(is_connective), K(arg), K(result));
-  return OB_SUCCESS; // use result to pass ret
 }
 
 int ObService::change_external_storage_dest(obrpc::ObAdminSetConfigArg &arg)
@@ -3746,61 +3163,6 @@ int ObService::change_external_storage_dest(obrpc::ObAdminSetConfigArg &arg)
     }
   }
   ROOTSERVICE_EVENT_ADD("root_service", "change_external_storage_dest", K(ret), K(arg));
-  return ret;
-}
-
-int ObService::refresh_service_name(
-    const ObRefreshServiceNameArg &arg,
-    ObRefreshServiceNameRes &result)
-{
-  // 1. epoch:
-  //    1.1 if the arg's epoch <= the tenant_info_loader's epoch, do nothing
-  //    1.2 otherwise, replace cache with the arg's service_name_list
-  // 2. kill local connections when the arg's service_op is STOP SERVICE
-  //    and the target service_name's status in the tenant_info_loader is STOPPING
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = arg.get_tenant_id();
-  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret), K(inited_), K(arg));
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("arg is invaild", KR(ret), K(arg));
-  } else if (tenant_id != MTL_ID() && OB_FAIL(guard.switch_to(tenant_id))) {
-    LOG_WARN("switch tenant failed", KR(ret), K(arg));
-  }
-
-  if (OB_SUCC(ret)) {
-    rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-    if (OB_ISNULL(tenant_info_loader)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("tenant_info_loader should not be null", KR(ret), KP(tenant_info_loader));
-    } else if (OB_FAIL(tenant_info_loader->update_service_name(arg.get_epoch(), arg.get_service_name_list()))) {
-      LOG_WARN("fail to execute update_service_name", KR(ret), K(arg));
-    } else if (arg.is_start_service()) {
-      // When starting the service, it is expected that `service_name` is utilized.
-      // However, the ability for users to connect via `service_name` also depends on `tenant_info`,
-      // so it's crucial to ensure that `tenant_info` is up-to-date.
-      const ObUpdateTenantInfoCacheArg &u_arg = arg.get_update_tenant_info_arg();
-      if (OB_FAIL(tenant_info_loader->update_tenant_info_cache(u_arg.get_ora_rowscn(), u_arg.get_tenant_info(),
-          u_arg.get_finish_data_version(), u_arg.get_data_version_barrier_scn()))) {
-        LOG_WARN("fail to execute update_tenant_info_cache", KR(ret), K(u_arg), K(arg));
-      }
-    } else if (arg.is_stop_service()) {
-      ObServiceName service_name;
-      if (OB_FAIL(tenant_info_loader->get_service_name(arg.get_target_service_name_id(), service_name))) {
-        LOG_WARN("fail to get service name", KR(ret), K(arg));
-      } else if (service_name.is_stopping()
-          && OB_FAIL(ObServiceNameCommand::kill_local_connections(tenant_id, service_name))) {
-        LOG_WARN("fail to kill local connections", KR(ret), K(arg), K(service_name));
-      }
-    }
-  }
-  if (FAILEDx(result.init(tenant_id))) {
-    LOG_WARN("failed to init res", KR(ret), K(tenant_id));
-  }
-  FLOG_INFO("finish refresh_service_name", KR(ret), K(arg), K(result));
   return ret;
 }
 

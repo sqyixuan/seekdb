@@ -29,7 +29,6 @@
 #include "common/ob_region.h"
 #include "common/ob_zone_status.h"
 #include "common/ob_zone_type.h"
-#include "share/ob_replica_info.h"
 
 namespace oceanbase
 {

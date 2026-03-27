@@ -16,7 +16,6 @@
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
 #include "ob_tenant_sql_service.h"
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h"  // for ObTenantSnapshotUtil
 #include "sql/ob_sql_utils.h"
 #include "rootserver/ob_rs_job_table_operator.h"
 
@@ -40,141 +39,6 @@ int ObTenantSqlService::insert_tenant(
     LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
   } else if (OB_FAIL(replace_tenant(tenant_schema, op, sql_client, ddl_stmt_str))) {
     LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
-  }
-  return ret;
-}
-
-int ObTenantSqlService::rename_tenant(
-    const ObTenantSchema &tenant_schema,
-    ObISQLClient &sql_client,
-    const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  const ObSchemaOperationType op = OB_DDL_RENAME_TENANT;
-
-  if (!tenant_schema.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
-  } else if (OB_FAIL(replace_tenant(tenant_schema, op, sql_client, ddl_stmt_str))) {
-    LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
-  }
-
-  return ret;
-}
-
-int ObTenantSqlService::alter_tenant(
-    const ObTenantSchema &tenant_schema,
-    ObISQLClient &sql_client,
-    const ObSchemaOperationType op,
-    const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  if (!tenant_schema.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
-  } else if (OB_FAIL(replace_tenant(tenant_schema, op, sql_client, ddl_stmt_str))) {
-    LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
-  }
-  return ret;
-}
-
-int ObTenantSqlService::delay_to_drop_tenant(
-    const ObTenantSchema &tenant_schema,
-    ObMySQLTransaction &trans,
-    const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  const ObSchemaOperationType op = OB_DDL_DEL_TENANT_START;
-  rootserver::ObConflictCaseWithClone case_to_check(rootserver::ObConflictCaseWithClone::DELAY_DROP_TENANT);
-  uint64_t tenant_id_to_check_clone = tenant_schema.get_tenant_id();
-  if (!tenant_schema.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
-  } else if (!is_user_tenant(tenant_id_to_check_clone)) {
-    // sys tenant and meta tenant can not in clone procedure
-  } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::lock_status_for_tenant(trans, tenant_id_to_check_clone))) {
-    LOG_WARN("fail to lock __all_tenant for clone check", KR(ret), K(tenant_id_to_check_clone));
-  } else if (OB_FAIL(rootserver::ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id_to_check_clone, case_to_check))) {
-    LOG_WARN("fail to check whether tenant is cloning", KR(ret), K(tenant_id_to_check_clone), K(case_to_check));
-  }
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(replace_tenant(tenant_schema, op, trans, ddl_stmt_str))) {
-    LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
-  }
-  return ret;
-}
-
-int ObTenantSqlService::drop_tenant_to_recyclebin(
-    const ObTenantSchema &tenant_schema,
-    ObISQLClient &sql_client,
-    const ObSchemaOperationType op,
-    const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  if (!tenant_schema.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant schema", K(tenant_schema), K(ret));
-  } else if (OB_FAIL(replace_tenant(tenant_schema, op, sql_client, ddl_stmt_str))) {
-    LOG_WARN("replace_tenant failed", K(tenant_schema), K(op), K(ret));
-  }
-  return ret;
-}
-
-
-int ObTenantSqlService::delete_tenant(
-    const uint64_t tenant_id,
-    const int64_t new_schema_version,
-    common::ObISQLClient &sql_client,
-    const ObString *ddl_stmt_str)
-{
-  int ret = OB_SUCCESS;
-  ObSqlString sql;
-  int64_t affected_rows = 0;
-  const int64_t IS_DELETED = 1;
-
-  // delete from __all_tenant
-  if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %lu",
-                           OB_ALL_TENANT_TNAME, tenant_id))) {
-    LOG_WARN("format sql failed", K(sql), K(ret));
-  } else if (OB_FAIL(sql_client.write(OB_SYS_TENANT_ID, sql.ptr(), affected_rows))) {
-    LOG_WARN("execute sql failed", K(sql), K(ret));
-  } else if (!is_single_row(affected_rows)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("affected_rows is expected to one", K(affected_rows), K(ret));
-  }
-
-  // mark __all_tenant_history
-  if (OB_SUCC(ret)) {
-    if (FAILEDx(sql.assign_fmt("INSERT INTO %s(tenant_id, schema_version, is_deleted) "
-                               "VALUES(%lu, %ld, %ld)",
-                               OB_ALL_TENANT_HISTORY_TNAME, tenant_id,
-                               new_schema_version, IS_DELETED))) {
-      LOG_WARN("format sql failed", K(sql), K(ret));
-    } else if (OB_FAIL(sql_client.write(OB_SYS_TENANT_ID, sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(sql), K(ret));
-    } else if (!is_single_row(affected_rows)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("affected_rows is expected to one", K(affected_rows), K(ret));
-    }
-  }
-
-  if (FAILEDx(RS_JOB_COMPLETE_ALL_JOB_FOR_DROPPING_TENANT(tenant_id, sql_client))) {
-    LOG_WARN("fail to complete all rs job for dropping tenant", KR(ret), K(tenant_id));
-  }
-
-  if (OB_SUCC(ret)) {
-    ObSchemaOperation delete_tenant_op;
-    delete_tenant_op.tenant_id_ = tenant_id;
-    delete_tenant_op.database_id_ = 0;
-    delete_tenant_op.tablegroup_id_ = 0;
-    delete_tenant_op.table_id_ = 0;
-    delete_tenant_op.op_type_ = OB_DDL_DEL_TENANT_END;
-    delete_tenant_op.schema_version_ = new_schema_version;
-    delete_tenant_op.ddl_stmt_str_ = ddl_stmt_str ? *ddl_stmt_str : ObString();
-    int64_t sql_tenant_id = OB_SYS_TENANT_ID;
-    if (OB_FAIL(log_operation(delete_tenant_op, sql_client, sql_tenant_id))) {
-      LOG_WARN("log delete tenant ddl operation failed", K(delete_tenant_op), K(ret));
-    }
   }
   return ret;
 }
@@ -214,12 +78,9 @@ int ObTenantSqlService::replace_tenant(
   } else {
     int64_t affected_rows = 0;
     ObDMLSqlSplicer dml;
-    const char *locality = tenant_schema.get_locality_str().empty() ?
-        "" : tenant_schema.get_locality_str().ptr();
-    const char *previous_locality = tenant_schema.get_previous_locality_str().empty() ?
-        "" : tenant_schema.get_previous_locality_str().ptr();
-    const char *primary_zone = tenant_schema.get_primary_zone().empty() ?
-            OB_RANDOM_PRIMARY_ZONE : tenant_schema.get_primary_zone().ptr();
+    const char *locality = "";
+    const char *previous_locality = "";
+    const char *primary_zone = OB_RANDOM_PRIMARY_ZONE;
     if (OB_SUCC(ret)) {
       const int64_t INVALID_REPLICA_NUM = -1;
       if (OB_SUCC(ret) && (OB_FAIL(dml.add_pk_column(OBJ_GET_K(tenant_schema, tenant_id)))
@@ -233,34 +94,11 @@ int ObTenantSqlService::replace_tenant(
           || OB_FAIL(dml.add_column("previous_locality", ObHexEscapeSqlStr(previous_locality)))
           || OB_FAIL(dml.add_column("default_tablegroup_id", tenant_schema.get_default_tablegroup_id()))
           || OB_FAIL(dml.add_column("compatibility_mode", tenant_schema.get_compatibility_mode()))
-          || OB_FAIL(dml.add_column("drop_tenant_time", tenant_schema.get_drop_tenant_time()))
+          || OB_FAIL(dml.add_column("drop_tenant_time", OB_INVALID_TIMESTAMP))
           || OB_FAIL(dml.add_column("status", ob_tenant_status_str(tenant_schema.get_status())))
           || OB_FAIL(dml.add_column("in_recyclebin", tenant_schema.is_in_recyclebin())))) {
         LOG_WARN("add column failed", K(ret));
       }
-#ifndef OB_BUILD_ARBITRATION
-      if (OB_SUCC(ret) && !tenant_schema.get_arbitration_service_status().is_disabled()) {
-        ret = OB_OP_NOT_ALLOW;
-        LOG_WARN("arbitration service is not supported in CE version", KR(ret), K(tenant_schema));
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "create tenant with arbitration service in CE version");
-      }
-#else
-      // If this ddl is a create tenant stmt
-      // (1) Only need to make sure sys tenant data version is above 4.1 to compate with arbitration service.
-      // (2) Do not check data version of the creating tenant and its meta tenant, because we can not get valid tenant config now
-      //
-      // If this ddl is a alter tenant stmt
-      // (1) Need to make sure sys,user,meta tenants all upgraded to 4.1
-      const uint64_t tenant_to_check_data_version = (OB_DDL_ADD_TENANT == op || OB_DDL_ADD_TENANT_START == op)
-                                                  ? OB_SYS_TENANT_ID
-                                                  : tenant_schema.get_tenant_id();
-       if (OB_FAIL(ret)) {
-       } else {
-        if (OB_FAIL(dml.add_column("arbitration_service_status", tenant_schema.get_arbitration_service_status_str()))) {
-          LOG_WARN("fail to add arbitration service status column", KR(ret), K(tenant_schema));
-        }
-       }
-#endif
     }
     // insert into __all_tenant
     if (OB_SUCC(ret)) {

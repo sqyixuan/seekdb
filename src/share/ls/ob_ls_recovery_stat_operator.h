@@ -160,24 +160,6 @@ public:
                       const SCN &drop_scn,
                       const ObTenantSwitchoverStatus &working_sw_status,
                       ObMySQLTransaction &trans) override;
-  /*
-   * description: update ls primary zone, need update __all_ls_status and __all_ls_election_reference 
-   * @param[in] tenant_id: tenant_id
-   * @param[in] ls_id: need update ls
-   * @param[in] primary_zone: primary zone of __all_ls_status 
-   * @param[in] zone_priority: primary zone of __all_ls_election_reference 
-   * @param[in] trans
-   * */
-  int update_ls_primary_zone(
-      const uint64_t &tenant_id,
-      const share::ObLSID &ls_id,
-      const common::ObZone &primary_zone,
-      const common::ObString &zone_priority,
-      ObMySQLTransaction &trans) override
-  {
-    UNUSEDx(tenant_id, ls_id, primary_zone, zone_priority, trans);
-    return OB_SUCCESS;
-  } 
 
   /*
    * description:construct ls_recovery by read from inner table*/

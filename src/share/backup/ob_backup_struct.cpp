@@ -1056,6 +1056,13 @@ bool ObLogArchiveBackupInfo::is_valid() const
   return status_.is_valid();
 }
 
+//TODO(yaoying.yyy): S3 is alse oss?
+bool ObLogArchiveBackupInfo::is_oss() const
+{
+  ObString dest(backup_dest_);
+  return dest.prefix_match(OB_OSS_PREFIX);
+}
+
 bool ObLogArchiveBackupInfo::is_same(const ObLogArchiveBackupInfo &other) const
 {
   return 0 == strncmp(backup_dest_, other.backup_dest_, sizeof(backup_dest_))
@@ -1312,6 +1319,9 @@ int ObBackupDest::parse_backup_dest_str_(const char *backup_dest, const bool onl
   } else if (OB_FAIL(get_storage_type_from_path(bakup_dest_str, type))) {
     LOG_WARN("failed to get storage type", K(ret));
   } else {
+    // oss://backup_dir/?host=xxx.com&access_id=111&access_key=222
+    // oss://backup_dir/?host=xxx.com&role_arn=xxx&external_id=xxx
+    // oss://backup_dir/?host=xxx.com&role_arn=xxx (external_id is optional)
     // file:///root_backup_dir"
     while (backup_dest[pos] != '\0') {
       if ('?' == backup_dest[pos]) {
@@ -1491,6 +1501,7 @@ int ObBackupDest::set_without_decryption(const common::ObString &backup_dest) {
   return ret;
 }
 
+// oss://backup_dir/?host=xxx.com -> root_path=oss://backup_dir  endpoint=host=xxx.com
 // file:///root_backup_dir" -> root_path=file:///root_backup_dir
 int ObBackupDest::set_storage_path(const common::ObString &storage_path_str) 
 {
@@ -1943,29 +1954,6 @@ int ObBackupUtils::check_tenant_data_version_match(const uint64_t tenant_id, con
   } else if (cur_data_version != data_version) {
     ret = OB_VERSION_NOT_MATCH;
     LOG_WARN("tenant data version is not match", K(ret), K(tenant_id), K(cur_data_version), K(data_version));
-  }
-  return ret;
-}
-
-int ObBackupUtils::get_full_replica_num(const uint64_t tenant_id, int64_t &replica_num)
-{
-  int ret = OB_SUCCESS;
-  replica_num = 0;
-  ObMultiVersionSchemaService *schema_service = nullptr;
-  ObSchemaGetterGuard schema_guard;
-  const ObTenantSchema *tenant_info = nullptr;
-  if (OB_ISNULL(schema_service = GCTX.schema_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("schema service must not be null", K(ret));
-  } else if (OB_FAIL(schema_service->get_tenant_schema_guard(tenant_id, schema_guard))) {
-    LOG_WARN("[DATA_BACKUP]failed to get_tenant_schema_guard", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant_info))) {
-    LOG_WARN("[DATA_BACKUP]failed to get tenant info", K(ret), K(tenant_id));
-  } else if (OB_ISNULL(tenant_info)) {
-    ret = OB_TENANT_NOT_EXIST;
-    LOG_WARN("tenant schema is null, tenant may has been dropped", K(ret), K(tenant_id));
-  } else {
-    replica_num = tenant_info->get_full_replica_num();
   }
   return ret;
 }
@@ -4370,7 +4358,7 @@ int ObRestoreBackupSetBriefInfo::get_restore_backup_set_brief_info_str(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
   } else {
-    str.assign_ptr(str_buf, static_cast<ObString::obstr_size_t>(STRLEN(str_buf)));
+    str.assign_ptr(str_buf, STRLEN(str_buf));
     LOG_DEBUG("get log path list str", KR(ret), K(str));
   }
   return ret;
@@ -4466,7 +4454,7 @@ int ObRestoreLogPieceBriefInfo::get_restore_log_piece_brief_info_str(
     LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
   } else {
 
-    str.assign_ptr(str_buf, static_cast<ObString::obstr_size_t>(STRLEN(str_buf)));
+    str.assign_ptr(str_buf, STRLEN(str_buf));
     LOG_DEBUG("get log path list str", KR(ret), K(str));
   }
   return ret;

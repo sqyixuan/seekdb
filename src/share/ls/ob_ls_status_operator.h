@@ -26,7 +26,6 @@
 #include "common/ob_member_list.h"
 #include "share/ob_tenant_info_proxy.h"//tenant switchover status
 #include "share/ls/ob_ls_info.h" //ObLSReplica::MemberList
-#include "share/ls/ob_ls_log_stat_info.h" //ObLSLogStatInfo
 #include "share/ls/ob_ls_recovery_stat_operator.h"  //ObLSRecoveryStat
 #include "share/ls/ob_ls_operator.h"
 
@@ -206,62 +205,6 @@ struct ObLSStatusInfo
 typedef ObArray<ObLSStatusInfo> ObLSStatusInfoArray;
 typedef ObIArray<ObLSStatusInfo> ObLSStatusInfoIArray;
 
-struct ObLSPrimaryZoneInfo
-{
-  ObLSPrimaryZoneInfo() : tenant_id_(OB_INVALID_TENANT_ID), ls_group_id_(OB_INVALID_ID),
-                          ls_id_(), primary_zone_(), zone_priority_() {}
-  virtual ~ObLSPrimaryZoneInfo() {}
-  int init(const uint64_t tenant_id, const uint64_t ls_group_id, const ObLSID ls_id,
-           const ObZone &primary_zone, const ObString &zone_priority);
-  bool is_valid() const
-  {
-    return OB_INVALID_TENANT_ID != tenant_id_ && ls_id_.is_valid();
-  }
-  void reset()
-  {
-    tenant_id_ = OB_INVALID_TENANT_ID;
-    ls_group_id_ = OB_INVALID_ID;
-    ls_id_.reset();
-    primary_zone_.reset();
-    zone_priority_.reset();
-  }
-  uint64_t get_tenant_id() const
-  {
-    return tenant_id_;
-  }
-  uint64_t get_ls_group_id() const
-  {
-    return ls_group_id_;
-  }
-  ObLSID get_ls_id() const
-  {
-    return ls_id_;
-  }
-  const ObZone& get_primary_zone() const
-  {
-    return primary_zone_;
-  }
-  const ObString get_zone_priority_str() const
-  {
-    return zone_priority_.string();
-  }
-  const ObSqlString& get_zone_priority() const
-  {
-    return zone_priority_;
-  }
-  int assign(const ObLSPrimaryZoneInfo &other);
-  TO_STRING_KV(K_(tenant_id), K_(ls_group_id), K_(ls_id), K_(primary_zone), K_(zone_priority));
-private:
-  uint64_t tenant_id_;
-  uint64_t ls_group_id_;
-  ObLSID ls_id_;
-  ObZone primary_zone_;
-  ObSqlString zone_priority_;
-};
-
-typedef ObArray<ObLSPrimaryZoneInfo> ObLSPrimaryZoneInfoArray;
-typedef ObIArray<ObLSPrimaryZoneInfo> ObLSPrimaryZoneInfoIArray;
-
 /*
  * description : read or write __all_ls_status
 */
@@ -308,91 +251,11 @@ public:
                       const SCN &drop_scn,
                       const ObTenantSwitchoverStatus &working_sw_status,
                       ObMySQLTransaction &trans) override;
-  /*
-   * description: update ls primary zone, need update __all_ls_status and __all_ls_election_reference 
-   * @param[in] tenant_id: tenant_id
-   * @param[in] ls_id: need update ls
-   * @param[in] primary_zone: primary zone of __all_ls_status 
-   * @param[in] zone_priority: primary zone of __all_ls_election_reference 
-   * @param[in] trans
-   * */
-  int update_ls_primary_zone(
-      const uint64_t &tenant_id,
-      const share::ObLSID &ls_id,
-      const common::ObZone &primary_zone,
-      const common::ObString &zone_priority,
-      ObMySQLTransaction &trans) override; 
 public:
-  /*
-   * description: update ls's status 
-   * @param[in] tenant_id
-   * @param[in] ls_id
-   * @param[in] old_status
-   * @param[in] new_status
-   * @param[in] working_sw_status only support working on specified switchover status
-   * @param[in] client: sql client*/
-  int update_ls_status(const uint64_t tenant_id, const ObLSID &id,
-                       const ObLSStatus &old_status,
-                       const ObLSStatus &new_status, 
-                       const ObTenantSwitchoverStatus &working_sw_status,
-                       ObMySQLProxy &client);
-
-  /*
-   * description: update ls init member list while first create ls
-   * @param[in] tenant_id
-   * @param[in] ls_id
-   * @param[in] member_list
-   * @param[in] client*/
-  int update_init_member_list(const uint64_t tenant_id, const ObLSID &id,
-                              const ObMemberList &member_list,
-                              ObISQLClient &client,
-                              const ObMember &arb_member,
-                              const common::GlobalLearnerList &learner_list);
-   /*
-   * description: update ls's ls group id
-   * @param[in] tenant_id
-  * @param[in] ls_id
-   * @param[in] old_ls_group_id
-   * @param[in] new_ls_group_id
-   * @param[in] old_unit_group_id : the ls group's unit group 
-   * @param[in] new_unit_group_id : the new ls group's target unit group 
-   * @param[in] client*/
-  int alter_ls_group_id(const uint64_t tenant_id, const ObLSID &id,
-                       const uint64_t old_ls_group_id,
-                       const uint64_t new_ls_group_id, 
-                       const uint64_t old_unit_group_id, 
-                       const uint64_t new_unit_group_id, 
-                       ObISQLClient &client);
-   /*
-   * description: update ls's unit group id
-   * @param[in] tenant_id
-   * @param[in] ls_id
-   * @param[in] ls_group_id
-   * @param[in] old_unit_group_id
-   * @param[in] new_unit_group_id : the new ls group's target unit group 
-   * @param[in] client*/
-  int alter_unit_group_id(const uint64_t tenant_id, const ObLSID &id,
-                       const uint64_t ls_group_id, 
-                       const uint64_t old_unit_group_id, 
-                       const uint64_t new_unit_group_id, 
-                       ObISQLClient &client);
 
   int get_all_ls_status_by_order(const uint64_t tenant_id,
                                  ObLSStatusInfoIArray &ls_array,
                                  ObISQLClient &client);
-
-  // get duplicate ls status info with smallest ls id
-  // @params[in]  tenant_id, which tenant to get
-  // @params[in]  client, client to execute sql
-  // @params[out] status_info, duplicate ls status info
-  //
-  // ATTENTION!!!
-  // status_info not include visible_member_list and b_init_member_list
-  // @return OB_ENTRY_NOT_EXIST if duplicate log stream not exist
-  int get_duplicate_ls_status_info(const uint64_t tenant_id,
-                                   ObISQLClient &client,
-                                   share::ObLSStatusInfo &status_info,
-                                   const int32_t group_id = 0/*OBCG_DEFAULT*/);
 
   // check whether transfer ls contain duplicate scope ls
   // @params[in]  tenant_id, which tenant to get
@@ -436,8 +299,6 @@ public:
                          const int32_t group_id = 0);
   int fill_cell(common::sqlclient::ObMySQLResult *result,
                 share::ObLSStatusInfo &status_info);
-  int fill_cell(common::sqlclient::ObMySQLResult *result,
-                share::ObLSPrimaryZoneInfo &status_info);
   /*
    * description: get user tenant max ls id, only for compatible 
    * @param[in] tenant_id
@@ -446,61 +307,6 @@ public:
   int get_tenant_max_ls_id(const uint64_t tenant_id, ObLSID &max_id,
                            ObISQLClient &client);
 
-  /**
-   * @description:
-   *    set ls status to create abort which is in OB_LS_CREATED, OB_LS_CREATING
-   *    to avoid concurrent, only do this when status specified does not change
-   * @param[in] tenant_id
-   * @param[in] status
-   * @param[in] client
-   */
-  int create_abort_ls_in_switch_tenant(
-      const uint64_t tenant_id,
-      const share::ObTenantSwitchoverStatus &status,
-      const int64_t switchover_epoch,
-      ObMySQLProxy &client);
-
-  ////////////////////////////////////////////////////////////////////////////////
-  // Get all ls paxos from __all_virtual_ls_status and __all_virtual_log_stat except 
-  // those whose status is OB_LS_CREATE_ABORT. And then, check majority and log_in_sync.
-  //
-  // @param [in] zone_mgr: zone manager from rs
-  // @param [in] to_stop_servers: servers to be stopped
-  // @param [in] skip_log_sync_check: whether skip log_sync check
-  // @param [in] print_str: string of operation. Used to print LOG_USER_ERROR "'print_str' not allowed"
-  // @param [in] schema_service: schema_service from rs
-  // @param [in] client: sql client for inner sql
-  // @param [out] need_retry: if the check need retry
-  // @return: OB_SUCCESS if all check is passed.
-  //          OB_OP_NOT_ALLOW if ls doesn't have leader/enough member or ls' log is not in sync.
-  int check_all_ls_has_majority_and_log_sync(
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      schema::ObMultiVersionSchemaService &schema_service,
-      ObISQLClient &client,
-      bool &need_retry);
-  // Get all ls paxos from __all_virtual_ls_status and __all_virtual_log_stat except 
-  // those whose status is OB_LS_CREATE_ABORT. And then, check each ls does have leader.
-  // @param [in] client: sql client for inner sql
-  // @param [in] print_str: string of operation. Used to print LOG_USER_ERROR "'print_str' not allowed"
-  // @param [out] has_ls_without_leader: whether there is an LS without a leader
-  // @param [out] valid_error_msg: if has ls without leader, print ls and tenant_id error message 
-  int check_all_ls_has_leader(
-      ObISQLClient &client,
-      const char *print_str,
-      bool &has_ls_without_leader,
-      ObSqlString &error_msg);
-  /*
-   * description: get all tenant ls status. for user tenant: get user tenant ls status info and meta tenant ls status info 
-   * @param[in] sql_proxy
-   * @param[in] tenant_id : maybe user tenant id and sys tenant id
-   * @param[out] ls status info array
-   * */
-  int get_all_tenant_related_ls_status_info(
-      common::ObMySQLProxy &sql_proxy, 
-      const uint64_t tenant_id,
-      ObLSStatusInfoIArray &ls_status_info_array); 
  /*
    * description: update ls's status 
    * @param[in] tenant_id
@@ -519,21 +325,11 @@ public:
 
 
 private:
-  template<typename T> int get_list_hex_(
-      const T &list,
-      common::ObIAllocator &allocator,
-      common::ObString &hex_str,
-      const ObMember &arb_member);
 
   template<typename T> int set_list_with_hex_str_(
       const common::ObString &str,
       T &learner_list,
       ObMember &arb_member);
-
-  int get_visible_member_list_str_(const ObMemberList &member_list,
-                                  common::ObIAllocator &allocator,
-                                  common::ObSqlString &visible_member_list_str,
-                                  const ObMember &arb_member);
 
   int inner_get_ls_status_(const ObSqlString &sql, const uint64_t exec_tenant_id,
                            const bool need_member_list, ObISQLClient &client,
@@ -546,37 +342,6 @@ private:
                      ObLSStatusInfo &status_info, ObISQLClient &client,
                      ObMember &arb_member, common::GlobalLearnerList &learner_list,
                      const int32_t group_id);
-
-  int construct_ls_primary_info_sql_(common::ObSqlString &sql);
-
-  //////////for checking all ls log_stat_info/////////
-  int construct_ls_log_stat_info_sql_(common::ObSqlString &sql);
-  int parse_result_and_check_paxos_(
-      common::sqlclient::ObMySQLResult &result,
-      schema::ObMultiVersionSchemaService &schema_service,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      bool &need_retry);
-  // tenant_id and ls_id is used for printing error info
-  int construct_ls_log_stat_replica_(
-      const common::sqlclient::ObMySQLResult &result,
-      ObLSLogStatReplica &replica,
-      uint64_t &tenant_id,
-      int64_t &ls_id);
-  // check majority and log_sync for each ls paxos
-  int check_ls_log_stat_info_(
-      schema::ObMultiVersionSchemaService &schema_service,
-      const ObLSLogStatInfo &ls_log_stat_info,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      bool &need_retry);
-  int generate_valid_servers_(
-      const ObLSReplica::MemberList &member_list,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      common::ObIArray<ObAddr> &valid_servers);
-  int construct_ls_leader_info_sql_(common::ObSqlString &sql);
 
 private:
   const int64_t MAX_ERROR_LOG_PRINT_SIZE = 1024;

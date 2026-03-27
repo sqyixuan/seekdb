@@ -2120,8 +2120,7 @@ int ObSql::check_read_only_privilege(ParseResult &parse_result,
   ObPhysicalPlanCtx *pctx = exec_ctx.get_physical_plan_ctx();
   ObSQLSessionInfo *session = exec_ctx.get_my_session();
   sql_traits.is_readonly_stmt_ = ObSQLUtils::is_readonly_stmt(parse_result);
-  sql_traits.is_modify_tenant_stmt_
-      = ObSQLUtils::is_modify_tenant_stmt(parse_result);
+  sql_traits.is_modify_tenant_stmt_ = false;
   sql_traits.is_cause_implicit_commit_
       = ObSQLUtils::cause_implicit_commit(parse_result);
   sql_traits.is_commit_stmt_ = ObSQLUtils::is_commit_stmt(parse_result);
@@ -5220,14 +5219,14 @@ void ObSql::generate_sql_id(ObPlanCacheCtx &pc_ctx,
                         pc_ctx.sql_ctx_.sql_id_,
                         (int32_t)sizeof(pc_ctx.sql_ctx_.sql_id_));
   pc_ctx.sql_ctx_.bl_key_.sql_id_.
-    assign_ptr(pc_ctx.sql_ctx_.sql_id_, static_cast<ObString::obstr_size_t>(strlen(pc_ctx.sql_ctx_.sql_id_)));
+    assign_ptr(pc_ctx.sql_ctx_.sql_id_, strlen(pc_ctx.sql_ctx_.sql_id_));
 
   if (!signature_format_sql.empty()) {
     (void)ObSQLUtils::md5(signature_format_sql,
                           pc_ctx.sql_ctx_.format_sql_id_,
                           (int32_t)sizeof(pc_ctx.sql_ctx_.format_sql_id_));
     pc_ctx.sql_ctx_.bl_key_.format_sql_id_.
-      assign_ptr(pc_ctx.sql_ctx_.format_sql_id_, static_cast<ObString::obstr_size_t>(strlen(pc_ctx.sql_ctx_.format_sql_id_)));
+      assign_ptr(pc_ctx.sql_ctx_.format_sql_id_, strlen(pc_ctx.sql_ctx_.format_sql_id_));
   }
 }
 

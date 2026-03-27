@@ -20,7 +20,6 @@
 #include "lib/net/ob_addr.h"
 #include "lib/list/ob_dlist.h"
 #include "common/ob_zone.h"
-#include "share/ob_primary_zone_util.h"
 
 namespace oceanbase
 {

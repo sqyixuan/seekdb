@@ -16,7 +16,6 @@
 
 #include "ob_timestamp_access.h"
 #include "ob_timestamp_service.h"
-#include "ob_standby_timestamp_service.h"
  
 namespace oceanbase
 {
@@ -29,7 +28,8 @@ int ObTimestampAccess::handle_request(const ObGtsRequest &request, obrpc::ObGtsR
   if (GTS_LEADER == service_type_) {
     ret = MTL(ObTimestampService *)->handle_request(request, result);
   } else if (STS_LEADER == service_type_) {
-    ret = MTL(ObStandbyTimestampService *)->handle_request(request, result);
+    ret = OB_NOT_SUPPORTED;
+    TRANS_LOG(WARN, "standby cluster not supported in lite version", KR(ret), K_(service_type));
   } else {
     ret = OB_NOT_MASTER;
     if (EXECUTE_COUNT_PER_SEC(10)) {
@@ -45,7 +45,8 @@ int ObTimestampAccess::get_number(int64_t &gts)
   if (GTS_LEADER == service_type_) {
     ret = MTL(ObTimestampService *)->get_timestamp(gts);
   } else if (STS_LEADER == service_type_) {
-    ret = MTL(ObStandbyTimestampService *)->get_number(gts);
+    ret = OB_NOT_SUPPORTED;
+    TRANS_LOG(WARN, "standby cluster not supported in lite version", KR(ret), K_(service_type));
   } else {
     ret = OB_NOT_MASTER;
     if (EXECUTE_COUNT_PER_SEC(16)) {
@@ -63,8 +64,6 @@ void ObTimestampAccess::get_virtual_info(int64_t &ts_value,
   service_type = service_type_;
   if (MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID()) {
     MTL(ObTimestampService *)->get_virtual_info(ts_value, role, proposal_id);
-  } else {
-    MTL(ObStandbyTimestampService *)->get_virtual_info(ts_value, role, proposal_id);
   }
 }
 

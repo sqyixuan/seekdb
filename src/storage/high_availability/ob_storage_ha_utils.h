@@ -20,7 +20,6 @@
 #include "common/ob_tablet_id.h"
 #include "lib/mysqlclient/ob_isql_client.h"
 #include "ob_storage_ha_struct.h"
-#include "ob_transfer_struct.h"
 #include "storage/ob_storage_rpc.h"
 
 namespace oceanbase
@@ -83,7 +82,6 @@ private:
       share::SCN &compaction_scn);
   static int check_tablet_replica_checksum_(const uint64_t tenant_id, const common::ObTabletID &tablet_id,
       const share::ObLSID &ls_id, const share::SCN &compaction_scn, common::ObISQLClient &sql_client);
-  static int get_readable_scn_(share::SCN &readable_scn);
   static int get_latest_major_sstable_array_(
       ObTableHandleV2 &latest_major, 
       common::ObArray<ObSSTableWrapper> &major_sstables);
@@ -105,10 +103,6 @@ public:
   static int get_gts(const uint64_t tenant_id, share::SCN &gts);
   static void set_transfer_module();
   static void clear_transfer_module();
-  static void set_transfer_related_info(
-      const share::ObLSID &dest_ls_id,
-      const share::ObTransferTaskID &task_id, 
-      const share::SCN &start_scn);
   static void reset_related_info(const share::ObLSID &dest_ls_id);
 
 private:
