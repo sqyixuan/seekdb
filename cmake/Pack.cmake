@@ -156,23 +156,13 @@ install(DIRECTORY
 #   COMPONENT sql-parser)
 
 if(OB_BUILD_OBADMIN)
-  if(NOT APPLE)
-    ## oceanbase-utils
-    list(APPEND CPACK_COMPONENTS_ALL utils)
-    install(PROGRAMS
-      ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
-      ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
-      ${DEVTOOLS_DIR}/bin/obstack
-      DESTINATION usr/bin
-      COMPONENT utils
-    )
-  else()
-    list(APPEND CPACK_COMPONENTS_ALL utils)
-    install(PROGRAMS
-      ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
-      ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
-      DESTINATION usr/bin
-      COMPONENT utils
-    )
-  endif()
+  ## oceanbase-utils
+  list(APPEND CPACK_COMPONENTS_ALL utils)
+  install(PROGRAMS
+    ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
+    ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
+    ${DEVTOOLS_DIR}/bin/obstack
+    DESTINATION usr/bin
+    COMPONENT utils
+  )
 endif()
