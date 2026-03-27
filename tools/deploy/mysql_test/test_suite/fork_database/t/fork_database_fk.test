@@ -1,0 +1,125 @@
+##owner: fanxingkun.fxk
+##owner group: 底层引擎部-轻量版
+##description: Fork Database外键同步测试
+##tags: fork_database foreign_key fk
+##author: fanxingkun.fxk
+
+--disable_warnings
+drop database if exists db_fk_src;
+drop database if exists db_fk_fork;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo ============================================
+--echo 1. 创建源库及外键关系
+--echo ============================================
+
+create database db_fk_src;
+use db_fk_src;
+
+create table parent_t (
+  id bigint primary key,
+  name varchar(64) not null,
+  unique key uk_parent_name (name),
+  key idx_parent_name (name)
+);
+
+create table child_t (
+  id bigint primary key,
+  parent_id bigint not null,
+  parent_name varchar(64) not null,
+  key idx_child_parent_id (parent_id),
+  key idx_child_parent_name (parent_name),
+  constraint fk_child_parent_id
+    foreign key (parent_id) references parent_t(id)
+    on delete restrict on update restrict,
+  constraint fk_child_parent_name
+    foreign key (parent_name) references parent_t(name)
+    on delete restrict on update restrict
+);
+
+insert into parent_t values (1, 'p1'), (2, 'p2');
+insert into child_t values (10, 1, 'p1'), (20, 2, 'p2');
+
+--echo ============================================
+--echo 2. fork database并等待完成
+--echo ============================================
+
+fork database db_fk_src to db_fk_fork;
+--source mysql_test/test_suite/fork_database/include/wait_fork_database.inc
+
+--echo ============================================
+--echo 3. 验证目标库外键与索引
+--echo ============================================
+
+use db_fk_fork;
+
+select table_name, index_name, non_unique, column_name
+from information_schema.statistics
+where table_schema = 'db_fk_fork'
+  and table_name in ('parent_t', 'child_t')
+order by table_name, index_name, seq_in_index;
+
+select
+  table_schema, table_name, constraint_name, referenced_table_name
+from information_schema.key_column_usage
+where table_schema = 'db_fk_fork'
+  and table_name = 'child_t'
+  and referenced_table_name is not null
+order by constraint_name, ordinal_position;
+
+select
+  table_schema, table_name, constraint_name, constraint_type
+from information_schema.table_constraints
+where table_schema = 'db_fk_fork'
+  and table_name in ('parent_t', 'child_t')
+  and constraint_type in ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY')
+order by table_name, constraint_type, constraint_name;
+
+select
+  constraint_schema, table_name, constraint_name,
+  unique_constraint_schema, referenced_table_name
+from information_schema.referential_constraints
+where constraint_schema = 'db_fk_fork'
+  and table_name = 'child_t'
+order by constraint_name;
+
+--echo ============================================
+--echo 4. 验证外键约束生效
+--echo ============================================
+
+# fk_child_parent_id 生效：parent_id 不存在，parent_name 合法
+--error 1452
+insert into child_t values (30, 999, 'p1');
+
+# fk_child_parent_name 生效：parent_id 合法，parent_name 不存在
+--error 1452
+insert into child_t values (30, 1, 'not-exist');
+
+# 两个外键同时违反
+--error 1452
+insert into child_t values (30, 999, 'not-exist');
+
+# 两个外键均满足，插入成功
+insert into child_t values (30, 1, 'p1');
+select * from child_t order by id;
+
+--echo ============================================
+--echo 5. 验证源库不受影响
+--echo ============================================
+
+select count(*) as src_cnt from db_fk_src.child_t;
+select count(*) as fork_cnt from db_fk_fork.child_t;
+
+--echo ============================================
+--echo 6. 清理
+--echo ============================================
+
+drop database if exists db_fk_src;
+drop database if exists db_fk_fork;
