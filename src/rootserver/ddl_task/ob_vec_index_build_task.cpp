@@ -1139,7 +1139,7 @@ int ObVecIndexBuildTask::serialize_params_to_message(
   int8_t is_offline_rebuild = static_cast<int8_t>(is_offline_rebuild_);
   int8_t is_post_create_hybrid_vector = static_cast<int8_t>(is_post_create_hybrid_vector_);
   int8_t is_retryable_ddl = static_cast<int8_t>(is_retryable_ddl_);
-
+  
   if (OB_UNLIKELY(nullptr == buf || buf_len <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(buf), K(buf_len));
