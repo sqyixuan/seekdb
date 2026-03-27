@@ -768,27 +768,11 @@ int ObGranulePump::init_external_odps_table_downloader(ObGranulePumpArgs &args)
     }
     if (OB_SUCC(ret)) {
       if (!GCONF._use_odps_jni_connector) {
-#if defined (OB_BUILD_CPP_ODPS)
-        if (OB_FAIL(odps_partition_downloader_mgr_.init_downloader(args.external_table_files_.count()))) {
-          LOG_WARN("init odps_partition_downloader_mgr_ failed", K(ret), K(args.external_table_files_.count()));
-        } else {
-          LOG_TRACE("succ to init odps table partition downloader", K(ret), K(is_odps_downloader_inited()));
-        }
-#else   
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support odps cpp external table", K(ret));
-#endif
       } else {
-#if defined(OB_BUILD_JNI_ODPS)
-        if (OB_FAIL(odps_partition_jni_scanner_mgr_.init_map(
-                args.external_table_files_.count()))) {
-          LOG_WARN("init odps_partition_jni_scanner_mgr_ failed", K(ret),
-                   K(args.external_table_files_.count()));
-        }
-#else
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support odps jni external table", K(ret));
-#endif
       }
     }
   }
@@ -839,19 +823,6 @@ int ObGranulePump::check_can_randomize(ObGranulePumpArgs &args, bool &can_random
 void ObGranulePump::destroy()
 {
   gi_task_array_map_.reset();
-  if (!GCONF._use_odps_jni_connector) {
-#if defined (OB_BUILD_CPP_ODPS)
-    int ret = 0;
-    if (is_odps_downloader_inited()) {
-      LOG_TRACE("destroy odps_partition_downloader_mgr_", K(ret), KP(this), KP(&odps_partition_downloader_mgr_));
-      odps_partition_downloader_mgr_.reset();
-    }
-#endif
-  } else {
-#if defined (OB_BUILD_JNI_ODPS)
-    odps_partition_jni_scanner_mgr_.reset();
-#endif
-  }
   pump_args_.reset();
 }
 
@@ -2004,20 +1975,23 @@ int ObGranulePump::split_granule(ObGranuleIteratorOp *gi_op, int64_t scan_op_id,
 int ObGranulePump::reset_gi_task()
 {
   int ret = common::OB_SUCCESS;
-  ObLockGuard<ObSpinLock> lock_guard(lock_);
   if (is_taskset_reset_) {
-    /*do nothing*/
   } else {
-    for (int64_t i = 0; i < gi_task_array_map_.count() && OB_SUCC(ret); ++i) {
-      GITaskArrayItem &item = gi_task_array_map_.at(i);
-      item.no_more_task_from_shared_pool_ = false;
-      for(int64_t j = 0; j < item.taskset_array_.count() && OB_SUCC(ret); ++j) {
-        ObGITaskSet &taskset = item.taskset_array_.at(j);
-        taskset.cur_pos_ = 0;
+    ObLockGuard<ObSpinLock> lock_guard(lock_);
+    if (is_taskset_reset_) {
+      /*do nothing*/
+    } else {
+      is_taskset_reset_ = true;
+      set_fetch_task_ret(OB_SUCCESS);
+      for (int64_t i = 0; i < gi_task_array_map_.count() && OB_SUCC(ret); ++i) {
+        GITaskArrayItem &item = gi_task_array_map_.at(i);
+        item.no_more_task_from_shared_pool_ = false;
+        for(int64_t j = 0; j < item.taskset_array_.count() && OB_SUCC(ret); ++j) {
+          ObGITaskSet &taskset = item.taskset_array_.at(j);
+          taskset.cur_pos_ = 0;
+        }
       }
     }
-    is_taskset_reset_ = true;
-    set_fetch_task_ret(OB_SUCCESS);
   }
   return ret;
 }
