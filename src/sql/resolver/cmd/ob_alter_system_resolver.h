@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_RESOLVER_CMD_OB_ALTER_SYSTEM_RESOLVER_
@@ -70,17 +66,6 @@ public:
   static int get_and_verify_tenant_name(const ParseNode* tenant_name_node,
                                         const uint64_t exec_tenant_id,
                                         uint64_t &target_tenant_id);
-  static int check_and_get_data_source(const ParseNode* data_source_node,
-                                       common::ObAddr& data_source);
-  static int check_and_get_server_addr(const ParseNode* server_addr_node,
-                                       common::ObAddr& server_addr);
-  static int check_and_get_paxos_replica_num(const ParseNode* paxos_replica_num_node,
-                                             int64_t& paxos_replica_num);
-  static int check_compatibility_for_alter_ls_replica(const uint64_t cur_tenant_id);
-  static int do_check_for_alter_ls_replica(const ParseNode *tenant_name_node,
-                                           ObSchemaChecker *schema_checker,
-                                           ObSQLSessionInfo *session_info,
-                                           uint64_t &target_tenant_id);
 };
 
 typedef common::ObFixedLengthString<common::OB_MAX_TRACE_ID_BUFFER_SIZE + 1> Task_Id;
@@ -109,7 +94,6 @@ DEF_SIMPLE_CMD_RESOLVER(ObAdminServerResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObAdminZoneResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObAdminStorageResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObSwitchReplicaRoleResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObReportReplicaResolver);
 
@@ -143,24 +127,11 @@ DEF_SIMPLE_CMD_RESOLVER(ObReloadZoneResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObClearMergeErrorResolver);
 
-DEF_SIMPLE_CMD_RESOLVER(ObAddArbitrationServiceResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObRemoveArbitrationServiceResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObReplaceArbitrationServiceResolver);
-
-DEF_SIMPLE_CMD_RESOLVER(ObAddLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObRemoveLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObMigrateLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObModifyLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObModifyLSPaxosReplicaNumResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObCancelLSReplicaTaskResolver);
-
 DEF_SIMPLE_CMD_RESOLVER(ObUpgradeVirtualSchemaResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObRunJobResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObRunUpgradeJobResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObStopUpgradeJobResolver);
-
-DEF_SIMPLE_CMD_RESOLVER(ObSwitchRSRoleResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObAdminUpgradeCmdResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObAdminRollingUpgradeCmdResolver);
@@ -322,7 +293,6 @@ private:
 };
 
 DEF_SIMPLE_CMD_RESOLVER(ObTableTTLResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObCancelCloneResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObChangeExternalStorageDestResolver);
 
 #undef DEF_SIMPLE_CMD_RESOLVER

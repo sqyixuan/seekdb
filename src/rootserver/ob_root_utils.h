@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OB_ROOT_UTILS_H
@@ -247,79 +243,6 @@ public:
   static bool is_rootserver();
 };
 
-
-class ObRootBalanceHelp
-{
-public:
-  enum BalanceControllerItem
-  {
-    ENABLE_REBUILD = 0,
-    ENABLE_EMERGENCY_REPLICATE,
-    ENABLE_TYPE_TRANSFORM,
-    ENABLE_DELETE_REDUNDANT,
-    ENABLE_REPLICATE_TO_UNIT,
-    ENABLE_SHRINK,
-    ENABLE_REPLICATE,
-    ENABLE_COORDINATE_PG,
-    ENABLE_MIGRATE_TO_UNIT,
-    ENABLE_PARTITION_BALANCE,
-    ENABLE_UNIT_BALANCE,
-    ENABLE_SERVER_BALANCE,
-    ENABLE_CANCEL_UNIT_MIGRATION,
-    ENABLE_MODIFY_PAXOS_REPLICA_NUMBER,
-    ENABLE_STOP_SERVER,
-    MAX_BALANCE_ITEM
-  };
-  class BalanceController
-  {
-  public:
-    BalanceController()
-    {
-      init();
-    }
-    virtual ~BalanceController() {}
-    void init()
-    {
-      infos_[ENABLE_REBUILD] = true;
-      infos_[ENABLE_TYPE_TRANSFORM] = true;
-      infos_[ENABLE_DELETE_REDUNDANT] = true;
-      infos_[ENABLE_REPLICATE_TO_UNIT] = true;
-      infos_[ENABLE_SHRINK] = true;
-      infos_[ENABLE_EMERGENCY_REPLICATE] = false;
-      infos_[ENABLE_REPLICATE] = false;
-      infos_[ENABLE_COORDINATE_PG] = false;
-      infos_[ENABLE_MIGRATE_TO_UNIT] = false;
-      infos_[ENABLE_PARTITION_BALANCE] = false;
-      infos_[ENABLE_UNIT_BALANCE] = false;
-      infos_[ENABLE_SERVER_BALANCE] = false;
-      infos_[ENABLE_CANCEL_UNIT_MIGRATION] = false;
-      infos_[ENABLE_MODIFY_PAXOS_REPLICA_NUMBER] = true;
-      infos_[ENABLE_STOP_SERVER] = true;
-    }
-    void reset()
-    {
-      for(int64_t i = 0; i < MAX_BALANCE_ITEM; i++) {
-        infos_[i] = false;
-      }
-    }
-    inline bool at(const int64_t idx)
-    {
-      OB_ASSERT(0 <= idx && idx < MAX_BALANCE_ITEM);
-      return infos_[idx];
-    }
-    inline void set(const int64_t idx, bool result)
-    {
-      OB_ASSERT(0 <= idx && idx < MAX_BALANCE_ITEM);
-      infos_[idx] = result;
-    }
-  private:
-    bool infos_[MAX_BALANCE_ITEM];
-  };
-  const static char * BalanceItem[];
-  static int parse_balance_info(const common::ObString &json_str,
-                                BalanceController &switch_info);
-};
-
 class ObTenantGroupParser
 {
 public:
@@ -434,8 +357,7 @@ public:
       common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
       bool &non_paxos_locality_modified,
       int64_t &pre_paxos_num,
-      int64_t &cur_paxos_num,
-      const share::ObArbitrationServiceStatus &arb_service_status);
+      int64_t &cur_paxos_num);
   static int calc_paxos_replica_num(
       const common::ObIArray<share::ObZoneReplicaAttrSet> &zone_locality,
       int64_t &paxos_num);
@@ -542,8 +464,7 @@ private:
   static int check_alter_locality_valid(
       common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
       int64_t pre_paxos_num,
-      int64_t cur_paxos_num,
-      const share::ObArbitrationServiceStatus &arb_service_status);
+      int64_t cur_paxos_num);
   static int add_multi_zone_locality_task(
       common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
       const share::ObZoneReplicaAttrSet &multi_zone_locality,

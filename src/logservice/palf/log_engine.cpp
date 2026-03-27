@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**log_engine.cpp
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX PALF
@@ -197,7 +193,6 @@ int LogEngine::load(const int64_t palf_id,
                     LogIOWorker *log_io_worker,
                     LogSharedQueueTh *log_shared_queue_th,
                     LogPlugins *plugins,
-                    LSN &last_group_entry_header_lsn,
                     LogGroupEntryHeader &entry_header,
                     const int64_t palf_epoch,
                     const int64_t log_storage_block_size,
@@ -226,6 +221,7 @@ int LogEngine::load(const int64_t palf_id,
     }
     return ret;
   };
+  LSN last_group_entry_header_lsn;
   LSN last_meta_entry_start_lsn;
   LogMetaEntryHeader unused_meta_entry_header;
   if (IS_INIT) {
@@ -1207,22 +1203,6 @@ int LogEngine::submit_config_change_pre_check_req(const common::ObAddr &server,
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int LogEngine::sync_get_arb_member_info(const common::ObAddr &server,
-                                        const int64_t timeout_us,
-                                        LogGetArbMemberInfoResp &resp)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else {
-    ret = log_net_service_.submit_get_arb_member_info_req(
-        server, timeout_us, resp);
-  }
-  return ret;
-}
-#endif
 
 int LogEngine::submit_fetch_log_req(const ObAddr &server,
                                     const FetchLogType fetch_type,

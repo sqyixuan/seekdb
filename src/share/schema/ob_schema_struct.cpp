@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -1835,7 +1831,6 @@ ObTenantSchema& ObTenantSchema::operator =(const ObTenantSchema &src_schema)
     set_drop_tenant_time(src_schema.drop_tenant_time_);
     set_status(src_schema.status_);
     set_in_recyclebin(src_schema.in_recyclebin_);
-    set_arbitration_service_status(src_schema.arbitration_service_status_);
     if (OB_FAIL(set_tenant_name(src_schema.tenant_name_))) {
       LOG_WARN("set_tenant_name failed", K(ret));
     } else if (OB_FAIL(set_zone_list(src_schema.zone_list_))) {
@@ -1892,7 +1887,6 @@ void ObTenantSchema::reset()
   drop_tenant_time_ = OB_INVALID_TIMESTAMP;
   status_ = TENANT_STATUS_NORMAL;
   in_recyclebin_ = false;
-  arbitration_service_status_ = ObArbitrationServiceStatus::DISABLED;
   reset_physical_location_info();
   ObSchema::reset();
 }
@@ -2247,8 +2241,7 @@ OB_DEF_SERIALIZE(ObTenantSchema)
               compatibility_mode_,
               drop_tenant_time_,
               status_,
-              in_recyclebin_,
-              arbitration_service_status_);
+              in_recyclebin_);
 
   LOG_INFO("serialize schema",
            K_(tenant_id), K_(schema_version), K_(tenant_name),
@@ -2256,7 +2249,7 @@ OB_DEF_SERIALIZE(ObTenantSchema)
            K_(charset_type), K_(collation_type), K_(name_case_mode),
            K_(locality_str), K_(primary_zone_array), K_(default_tablegroup_id),
            K_(default_tablegroup_name), K_(drop_tenant_time), K_(in_recyclebin),
-           K_(arbitration_service_status), K(ret));
+           K(ret));
   return ret;
 }
 
@@ -2277,8 +2270,7 @@ OB_DEF_DESERIALIZE(ObTenantSchema)
               compatibility_mode_,
               drop_tenant_time_,
               status_,
-              in_recyclebin_,
-              arbitration_service_status_);
+              in_recyclebin_);
 
   if (OB_FAIL(ret)) {
     LOG_WARN("Fail to deserialize data", K(ret));
@@ -2333,7 +2325,7 @@ OB_DEF_SERIALIZE_SIZE(ObTenantSchema)
               primary_zone_, locked_, comment_, charset_type_, collation_type_, name_case_mode_,
               read_only_, locality_str_, previous_locality_str_,
               default_tablegroup_id_, default_tablegroup_name_,
-              compatibility_mode_, drop_tenant_time_, status_, in_recyclebin_, arbitration_service_status_);
+              compatibility_mode_, drop_tenant_time_, status_, in_recyclebin_);
   len += get_string_array_serialize_size(zone_list_);
   return len;
 }
@@ -10991,8 +10983,7 @@ const char *OB_OBJECT_TYPE_STR[] =
   "SYS_PACKAGE_ONLY_OBJ_PRIV",
   "CONTEXT",
   "CATALOG",
-  "AI_MODEL",
-  "LOCATION"
+  "AI_MODEL"
 };
 static_assert(ARRAYSIZEOF(OB_OBJECT_TYPE_STR) == static_cast<int64_t>(ObObjectType::MAX_TYPE),
               "array size mismatch");

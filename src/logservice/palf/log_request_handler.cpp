@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "log_request_handler.h"
@@ -520,30 +516,6 @@ int LogRequestHandler::handle_sync_request<LogGetStatReq, LogGetStatResp>(
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-template <>
-int LogRequestHandler::handle_sync_request<LogGetArbMemberInfoReq, LogGetArbMemberInfoResp>(
-    const int64_t palf_id,
-    const ObAddr &server,
-    const LogGetArbMemberInfoReq &req,
-    LogGetArbMemberInfoResp &resp)
-{
-  int ret = common::OB_SUCCESS;
-  IPalfHandleImplGuard guard;
-  if (false == is_valid_palf_id(palf_id) || false == req.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    PALF_LOG(ERROR, "Invalid argument!!!", K(ret), K(palf_id), K(req), KPC(palf_env_impl_));
-  } else if (OB_FAIL(palf_env_impl_->get_palf_handle_impl(palf_id, guard))) {
-    PALF_LOG(WARN, "PalfEnvImpl get_palf_handle_impl failed", K(ret), K(palf_id), K(server));
-  } else if (OB_FAIL(guard.get_palf_handle_impl()->get_arb_member_info(resp.arb_member_info_))) {
-    PALF_LOG(WARN, "get_arb_member_info failed", K(ret), K(palf_id), K(server));
-  } else {
-    PALF_LOG(INFO, "get_arb_member_info succ", K(ret), K(palf_id), K(server), K(req), K(resp));
-  }
-  return ret;
-}
-#endif
 
 } // end namespace palf
 } // end namespace oceanbase

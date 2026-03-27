@@ -1,32 +1,21 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "storage/multi_data_source/runtime_utility/common_define.h"
 #define USING_LOG_PREFIX STORAGE
 
 #include "logservice/ob_log_service.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "logservice/arbserver/ob_arb_srv_garbage_collect_service.h"
-#endif
 #include "observer/ob_srv_network_frame.h"
 #include "rootserver/freeze/ob_major_freeze_service.h"
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_scheduler.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "rootserver/ob_arbitration_service.h"
-#endif
 #include "observer/dbms_scheduler/ob_dbms_sched_service.h"
 #include "rootserver/backup/ob_archive_scheduler_service.h"
 #include "rootserver/ddl_task/ob_ddl_scheduler.h" // for ObDDLScheduler
@@ -34,7 +23,6 @@
 #include "rootserver/ob_balance_task_execute_service.h"
 #include "rootserver/ob_common_ls_service.h"
 #include "rootserver/ob_create_standby_from_net_actor.h"
-#include "rootserver/ob_disaster_recovery_service.h" // ObDRService
 #include "rootserver/standby/ob_recovery_ls_service.h"
 #include "rootserver/ob_tenant_balance_service.h"
 #include "share/ob_global_autoinc_service.h"
@@ -389,20 +377,6 @@ int ObLS::finish_create_ls()
     update_state_seq_();
   }
   return ret;
-}
-
-
-bool ObLS::is_clone_first_step() const
-{
-  int ret = OB_SUCCESS;
-  bool bool_ret = false;
-  ObLSRestoreStatus restore_status;
-  if (OB_FAIL(ls_meta_.get_restore_status(restore_status))) {
-    LOG_WARN("fail to get restore status", K(ret), K(ls_meta_.ls_id_));
-  } else {
-    bool_ret = restore_status.is_clone_first_step();
-  }
-  return bool_ret;
 }
 
 bool ObLS::is_restore_first_step() const
@@ -904,9 +878,6 @@ int ObLS::register_sys_service()
   if (ls_id.is_sys_ls()) {
     REGISTER_TO_LOGSERVICE(BACKUP_ARCHIVE_SERVICE_LOG_BASE_TYPE, MTL(ObArchiveSchedulerService *));
     REGISTER_TO_LOGSERVICE(COMMON_LS_SERVICE_LOG_BASE_TYPE, MTL(ObCommonLSService *));
-#ifndef OB_BUILD_LITE
-    REGISTER_TO_LOGSERVICE(DISASTER_RECOVERY_SERVICE_LOG_BASE_TYPE, MTL(ObDRService *));
-#endif
 
     if (is_sys_tenant(tenant_id)) {
       ObIngressBWAllocService *ingress_service = GCTX.net_frame_->get_ingress_service();
@@ -934,7 +905,6 @@ int ObLS::register_sys_service()
     }
     if (is_meta_tenant(tenant_id)) {
       REGISTER_TO_LOGSERVICE(DBMS_SCHEDULER_LOG_BASE_TYPE, MTL(rootserver::ObDBMSSchedService *));
-      REGISTER_TO_LOGSERVICE(SNAPSHOT_SCHEDULER_LOG_BASE_TYPE, MTL(ObTenantSnapshotScheduler *));
     }
   }
 
@@ -1037,10 +1007,6 @@ void ObLS::unregister_sys_service_()
     UNREGISTER_FROM_LOGSERVICE(BACKUP_ARCHIVE_SERVICE_LOG_BASE_TYPE, backup_archive_service);
     ObCommonLSService *ls_service = MTL(ObCommonLSService*);
     UNREGISTER_FROM_LOGSERVICE(COMMON_LS_SERVICE_LOG_BASE_TYPE, ls_service);
-#ifndef OB_BUILD_LITE
-    ObDRService *dr_svr = MTL(ObDRService*);
-    UNREGISTER_FROM_LOGSERVICE(DISASTER_RECOVERY_SERVICE_LOG_BASE_TYPE, dr_svr);
-#endif
     if (is_sys_tenant(MTL_ID())) {
       ObIngressBWAllocService *ingress_service = GCTX.net_frame_->get_ingress_service();
       ObSSNTAllocService *SSNT_service = GCTX.net_frame_->get_SSNT_service();
@@ -1061,8 +1027,6 @@ void ObLS::unregister_sys_service_()
 #endif
     }
     if (is_meta_tenant(MTL_ID())) {
-      ObTenantSnapshotScheduler * snapshot_scheduler = MTL(ObTenantSnapshotScheduler*);
-      UNREGISTER_FROM_LOGSERVICE(SNAPSHOT_SCHEDULER_LOG_BASE_TYPE, snapshot_scheduler);
       UNREGISTER_FROM_LOGSERVICE(DBMS_SCHEDULER_LOG_BASE_TYPE, MTL(rootserver::ObDBMSSchedService *));
     }
   }
@@ -2176,11 +2140,6 @@ int ObLS::diagnose(DiagnoseInfo &info) const
     STORAGE_LOG(WARN, "diagnose log handler failed", K(ret), K(ls_id));
   } else if (OB_FAIL(log_handler_.diagnose_palf(info.palf_diagnose_info_))) {
     STORAGE_LOG(WARN, "diagnose palf failed", K(ret), K(ls_id));
-#ifdef OB_BUILD_ARBITRATION
-  } else if (common::ObRole::LEADER == info.palf_diagnose_info_.palf_role_ &&
-             OB_FAIL(log_service->diagnose_arb_srv(ls_id, info.arb_srv_diagnose_info_))) {
-    STORAGE_LOG(WARN, "diagnose_arb_srv failed", K(ret), K(ls_id));
-#endif
   } else if (info.is_role_sync()) {
     // Role synchronization does not require diagnosis role change service
     info.rc_diagnose_info_.state_ = TakeOverState::TAKE_OVER_FINISH;

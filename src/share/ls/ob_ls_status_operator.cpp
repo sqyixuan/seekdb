@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -1284,16 +1280,6 @@ int ObLSStatusOperator::check_ls_log_stat_info_(
       valid_servers))) {
     LOG_WARN("fail to generate valid member_list", KR(ret),
         K(to_stop_servers), K(leader), K(ls_log_stat_info));
-  } else if (2 == paxos_replica_num
-             && OB_FAIL(ObShareUtil::generate_arb_replica_num(
-                          ls_log_stat_info.get_tenant_id(),
-                          ls_log_stat_info.get_ls_id(),
-                          arb_replica_num))) {
-    // special case: support stop 1F in 2F1A
-    need_retry = true;
-    LOG_WARN("fail to generate arb replica num", KR(ret), KPC(tenant_schema), K(ls_log_stat_info));
-    ret = OB_OP_NOT_ALLOW;
-    //must be OB_OP_NOT_ALLOW && need_retry can retry
   } else if (valid_servers.count() + arb_replica_num < rootserver::majority(leader.get_paxos_replica_num())) {
     ret = OB_OP_NOT_ALLOW;
     LOG_WARN("ls doesn't have enough valid paxos member when checking ls_log_stat_info",

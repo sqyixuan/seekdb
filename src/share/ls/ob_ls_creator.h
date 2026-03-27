@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_SHARE_OB_LS_CREATOR_H_
@@ -87,7 +83,6 @@ public:
               const ObString &zone_priority,
               const bool create_with_palf,
               const palf::PalfBaseInfo &palf_base_info,
-              const uint64_t source_tenant_id,
               const ObAllTenantInfo &tenant_info);
   int create_user_ls(const share::ObLSStatusInfo &status_info,
                      const int64_t paxos_replica_num,
@@ -95,8 +90,7 @@ public:
                      const SCN &create_scn,
                      const common::ObCompatibilityMode &compat_mode,
                      const bool create_with_palf,
-                     const palf::PalfBaseInfo &palf_base_info,
-                     const uint64_t source_tenant_id);
+                     const palf::PalfBaseInfo &palf_base_info);
   int create_sys_tenant_ls(const obrpc::ObServerInfoList &rs_list,
       const common::ObIArray<share::ObUnit> &unit_array);
   bool is_valid();
@@ -111,8 +105,6 @@ private:
       const bool create_with_palf,
       const palf::PalfBaseInfo &palf_base_info);
 
- int construct_clone_tenant_ls_addrs_(const uint64_t source_tenant_id,
-                                      ObLSAddr &addr);
  int do_create_ls_(const ObLSAddr &addr,
                    ObMember &arbitration_service,
                    const share::ObLSStatusInfo &info,
@@ -151,12 +143,6 @@ private:
                       const common::ObMember &arb_replica,
                       const int64_t paxos_replica_num,
                       const common::GlobalLearnerList &learner_list);
-#ifdef OB_BUILD_ARBITRATION
- int set_arbitration_service_list_(
-     const common::ObMember &arbitration_service,
-     const ObTimeoutCtx &ctx,
-     const obrpc::ObSetMemberListArgV2 &arg);
-#endif
  int persist_ls_member_list_(const common::ObMemberList &member_list,
                              const ObMember &arb_member,
                              const common::GlobalLearnerList &learner_list);
@@ -182,15 +168,6 @@ private:
                         const share::ObZoneReplicaAttrSet &zone_locality,
                         const common::ObIArray<share::ObUnit> &unit_info_array,
                         ObLSReplicaAddr &ls_replica_addr);
-#ifdef OB_BUILD_ARBITRATION
-  int check_need_create_arb_replica_(
-      bool &need_create_arb_replica,
-      ObAddr &arbitration_service);
-
-  int try_create_arbitration_service_replica_(
-      const ObTenantRole &tenant_role,
-      const ObAddr &arbitration_service);
-#endif
  int check_create_ls_result_(const int64_t paxos_replica_num,
                              const ObIArray<int> &return_code_array,
                              common::ObMemberList &member_list,

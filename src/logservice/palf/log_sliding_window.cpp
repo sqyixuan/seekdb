@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX PALF
@@ -2784,49 +2780,6 @@ int LogSlidingWindow::get_ack_info_array(LogMemberAckInfoList &ack_info_array) c
         ack_info.last_flushed_end_lsn_ = tmp_val.lsn_;
         ack_info_array.push_back(ack_info);
         PALF_LOG(TRACE, "push ack info for degraded_learner_list success", K(ack_info), K(degraded_learner_list));
-      }
-    }
-  }
-  return ret;
-}
-
-int LogSlidingWindow::pre_check_before_degrade_upgrade(const LogMemberAckInfoList &servers,
-                                                       bool is_degrade)
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else if (is_degrade) {
-    // for degrading, double check if last_ack_ts of degraded servers has changed.
-    // if current last_ack_ts == ack_ts, do degrade
-    ObSpinLockGuard guard(match_lsn_map_lock_);
-    for (int i = 0; OB_SUCC(ret) && i < servers.count(); i++) {
-      LsnTsInfo tmp_val;
-      const LogMemberAckInfo &ack_info = servers.at(i);
-      const common::ObAddr &server = ack_info.member_.get_server();
-      if (OB_FAIL(match_lsn_map_.get(server, tmp_val))) {
-        PALF_LOG(WARN, "do not degrade, arb_reason: match_lsn_map_ get failed", K(ret), K_(palf_id), K_(self), K(server));
-        ret = OB_OP_NOT_ALLOW;
-      } else if (tmp_val.last_ack_time_us_ != ack_info.last_ack_time_us_) {
-        PALF_LOG(WARN, "do not degrade, arb_reason: last_ack_ts has changed", K(ret), K_(palf_id), K_(self), K(ack_info), K(tmp_val));
-        ret = OB_OP_NOT_ALLOW;
-      }
-    }
-  } else {
-    // for upgrading, double check if last_lsn of degraded servers has inc updated
-    // if current match_lsn >= last_lsn, do upgrade
-    ObSpinLockGuard guard(match_lsn_map_lock_);
-    for (int i = 0; OB_SUCC(ret) && i < servers.count(); i++) {
-      LsnTsInfo tmp_val;
-      const LogMemberAckInfo &ack_info = servers.at(i);
-      const common::ObAddr &server = ack_info.member_.get_server();
-      if (OB_FAIL(match_lsn_map_.get(server, tmp_val))) {
-        PALF_LOG(WARN, "do not upgrade, arb_reason: match_lsn_map_ get failed", K(ret), K_(palf_id), K_(self), K(server));
-        ret = OB_OP_NOT_ALLOW;
-      } else if (tmp_val.lsn_ < ack_info.last_flushed_end_lsn_) {
-        PALF_LOG(WARN, "do not degrade, arb_reason: current match_lsn is less than ack_info", K(ret), K_(palf_id), K_(self),
-            K(ack_info), K(tmp_val));
-        ret = OB_OP_NOT_ALLOW;
       }
     }
   }
