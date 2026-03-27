@@ -1,0 +1,222 @@
+# owner: lihongqin.lhq
+# owner group: storage
+# description: this case is use for testing parallel constraint ddl 
+#
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t1x;
+drop table if exists t2x;
+drop database if exists db;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+let $saved_primary_zone=`select primary_zone from __all_tenant where tenant_name = 'sys'`;
+alter system set debug_sync_timeout = '60s';
+alter system set _ob_ddl_timeout = '1000s';
+alter system set rpc_timeout = '1000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default;
+
+--echo
+--echo # rs switch after modify column type and not null take effect
+create table t1(c1 int);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_SET_VALID wait_for continue_signal execute 1';
+alter tenant sys set primary_zone = 'z1';
+sleep 10;
+connection default;
+send alter table t1 modify c1 char(10) not null;
+sleep 3;
+connection obsys;
+#alter tenant sys set primary_zone = 'zone2';
+sleep 10;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+select ddl_stmt_str from oceanbase.__all_ddl_operation where table_id = (select table_id from oceanbase.__all_table where table_name = 't1') and ddl_stmt_str != '';
+drop table t1;
+
+--echo
+--echo # rs switch after modify not null take effect
+create table t1(c1 int);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_SET_VALID wait_for continue_signal execute 1';
+alter tenant sys set primary_zone = 'z1';
+sleep 10;
+connection default;
+send alter table t1 modify c1 int not null;
+sleep 3;
+connection obsys;
+#alter tenant sys set primary_zone = 'zone2';
+sleep 10;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection default;
+reap;
+select ddl_stmt_str from oceanbase.__all_ddl_operation where table_id = (select table_id from oceanbase.__all_table where table_name = 't1') and ddl_stmt_str != '';
+drop table t1;
+
+--echo
+--echo # FIXME: rename column before modify not null validated
+create table t1(c1 int);
+insert into t1 values (1);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_BEFORE_SET_CHECK_CONSTRAINT_VALIDATED_BEFORE_ALTER_TABLE wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 modify c1 int not null;
+connection default;
+sleep 3;
+alter table t1 rename column c1 to c1x;
+select left(constraint_name, 13), check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+--error 1054
+reap;
+select constraint_name, check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+# FIXME: select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1;
+
+--echo
+--echo # force drop check constraint before validated
+create table t1(c1 int);
+insert into t1 values (1);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_CHECK_CONSTRAINT_VALID_SEND_SQL wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 add constraint cst1 check (c1 = 1);
+connection default;
+sleep 10;
+alter table t1 drop constraint cst1;
+select constraint_name, check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+--error 5563
+reap;
+select constraint_name, check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1;
+
+--echo
+--echo # force drop foreign key before validated
+create table t1(c1 int);
+create table t2(c1 int primary key);
+insert into t1 values (1);
+insert into t2 values (1);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_BEFORE_SET_FK_VALIDATED_BEFORE_ALTER_TABLE wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 add constraint fk1 foreign key(c1) references t2(c1);
+connection default;
+sleep 3;
+alter table t1 drop foreign key fk1;
+select foreign_key_name, rely_flag, enable_flag, validate_flag from oceanbase.__all_foreign_key where child_table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+--error 5563
+reap;
+select foreign_key_name, rely_flag, enable_flag, validate_flag from oceanbase.__all_foreign_key where child_table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1, t2;
+
+--echo
+--echo # force drop check constraint before rollback
+create table t1(c1 int);
+insert into t1 values (2);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_ROLLBACK_FAILED_CHECK_CONSTRAINT_BEFORE_ALTER_TABLE wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 add constraint cst1 check (c1 = 1);
+connection default;
+sleep 10;
+alter table t1 drop constraint cst1;
+select constraint_name, check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+--error 3819
+reap;
+select constraint_name, check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint where table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1;
+
+--echo
+--echo # force drop foreign key before rollback 
+create table t1(c1 int);
+create table t2(c1 int primary key);
+insert into t1 values (1);
+insert into t2 values (2);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_ROLLBACK_FAILED_FK_BEFORE_ALTER_TABLE wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 add constraint fk1 foreign key(c1) references t2(c1);
+connection default;
+sleep 3;
+alter table t1 drop foreign key fk1;
+select foreign_key_name, rely_flag, enable_flag, validate_flag from oceanbase.__all_foreign_key where child_table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+--error 5785
+reap;
+select foreign_key_name, rely_flag, enable_flag, validate_flag from oceanbase.__all_foreign_key where child_table_id = (select table_id from oceanbase.__all_table where table_name = 't1');
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str != '' and ddl_stmt_str not like '%PURGE%' and table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1, t2;
+
+--echo
+--echo # parallel modify not null
+create table t1(c1 int);
+insert into t1 values (1);
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'CONSTRAINT_BEFORE_SET_CHECK_CONSTRAINT_VALIDATED_BEFORE_ALTER_TABLE wait_for continue_signal execute 1';
+connection conn1;
+send alter table t1 modify c1 int not null;
+connection default;
+sleep 3;
+--error 1235
+alter table t1 modify c1 int not null;
+connection obsys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now signal continue_signal';
+connection conn1;
+reap;
+select left(constraint_name,13), check_expr, constraint_type, rely_flag, enable_flag, validate_flag from oceanbase.__all_constraint_history where table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+select column_name, column_flags, nullable from oceanbase.__all_column_history where table_id = (select table_id from oceanbase.__all_table where table_name = 't1') order by schema_version;
+connection default;
+drop table t1;
+
+connection obsys;
+--disable_query_log
+eval alter tenant sys set primary_zone = "$saved_primary_zone";
+--enable_query_log

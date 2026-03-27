@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -208,7 +204,6 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   //external table
   external_table_partition_ = other.external_table_partition_;
   catalog_name_ = other.catalog_name_;
-  external_location_id_ = other.external_location_id_;
   SampleInfo *buf = NULL;
   if (is_json_table() 
       && OB_FAIL(deep_copy_json_table_def(*other.json_table_def_, expr_copier, allocator))) {
@@ -5069,24 +5064,6 @@ int ObDMLStmt::get_match_expr_on_table(uint64_t table_id, ObIArray<ObRawExpr *> 
   return ret;
 }
 
-int ObDMLStmt::has_match_expr_on_table(uint64_t table_id, bool &has_match_expr) const
-{
-  int ret = OB_SUCCESS;
-  has_match_expr = false;
-  for (int64_t i = 0; OB_SUCC(ret) && !has_match_expr && i < get_match_exprs().count(); i++) {
-    uint64_t cur_tid = OB_INVALID_ID;
-    if (OB_ISNULL(get_match_exprs().at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected null", K(ret));
-    } else if (OB_FAIL(get_match_exprs().at(i)->get_table_id(cur_tid))) {
-      LOG_WARN("failed to get fulltext search exprs", K(ret));
-    } else if (cur_tid == table_id) {
-      has_match_expr = true;
-    }
-  }
-  return ret;
-}
-
 ObJtColBaseInfo::ObJtColBaseInfo()
   : col_type_(0),
     truncate_(0),
@@ -5362,7 +5339,7 @@ bool ObDMLStmt::is_contain_vector_origin_distance_calc() const
         LOG_WARN("select item expr is null", K(ret));
       } else if (OB_FAIL(ObRawExprUtils::find_expr(si.expr_, vector_expr, bool_ret))) {
         LOG_WARN("failed to find expr", K(ret));
-      }
+      } 
     }
   }
   return bool_ret;

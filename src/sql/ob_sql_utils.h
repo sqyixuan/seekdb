@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OCEANBASE_SQL_OB_SQL_UTILS_H
@@ -28,6 +24,7 @@
 #include "share/ob_i_sql_expression.h"          // ObISqlExpression,ObExprCtx
 #include "share/schema/ob_table_param.h"        // ObColDesc
 #include "share/schema/ob_multi_version_schema_service.h"     // ObMultiVersionSchemaService
+#include "share/external_table/ob_hdfs_storage_info.h"    // ObHDFSStorageInfo
 #include "share/ob_simple_batch.h"
 #include "sql/ob_phy_table_location.h"
 #include "sql/ob_sql_define.h"
@@ -42,6 +39,7 @@
 namespace oceanbase
 {
 namespace share {
+class ObHDFSStorageInfo;
 }
 namespace sql
 {
@@ -716,7 +714,6 @@ public:
                                     bool &is_odps_external_table);
   static int is_odps_external_table(const ObString &table_format_or_properties, 
                                     bool &is_odps_external_table);
-  static int check_location_constraint(const ObTableSchema &table_schema);
   static int extract_odps_part_spec(const ObString &all_part_spec, ObIArray<ObString> &part_spec_list);
   static int check_ident_name(const common::ObCollationType cs_type, common::ObString &name,
                               const bool check_for_path_char, const int64_t max_ident_len);
@@ -866,20 +863,6 @@ class JsonObjectStarChecker : public RelExprCheckerBase
 public:
   JsonObjectStarChecker(common::ObIArray<ObRawExpr *> &rel_array);
   virtual ~JsonObjectStarChecker() {}
-  int add_expr(ObRawExpr *&expr);
-private:
-  common::ObIArray<ObRawExpr *> &rel_array_;
-  int64_t init_size_;
-};
-
-class SemanticVectorDistExprChecker : public RelExprCheckerBase
-{
-public:
-  SemanticVectorDistExprChecker(common::ObIArray<ObRawExpr *> &rel_array)
-      : RelExprCheckerBase(), rel_array_(rel_array), init_size_(rel_array.count())
-  {
-  }
-  virtual ~SemanticVectorDistExprChecker() {}
   int add_expr(ObRawExpr *&expr);
 private:
   common::ObIArray<ObRawExpr *> &rel_array_;

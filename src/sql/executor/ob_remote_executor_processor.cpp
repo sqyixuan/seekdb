@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -875,7 +871,7 @@ int ObRemoteBaseExecuteP<T>::try_refresh_schema_(const uint64_t tenant_id,
     LOG_WARN("schema service is NULL", KR(ret), K(tenant_id));
   } else {
     const int64_t orig_timeout_ts = THIS_WORKER.get_timeout_ts();
-    const int64_t try_refresh_time = is_inner_sql ? timeout_remain : std::min(static_cast<int64_t>(10 * 1000), timeout_remain);
+    const int64_t try_refresh_time = is_inner_sql ? timeout_remain : std::min(10 * 1000L, timeout_remain);
     THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + try_refresh_time);
     if (OB_FAIL(gctx_.schema_service_->async_refresh_schema(
                 tenant_id, schema_version))) {

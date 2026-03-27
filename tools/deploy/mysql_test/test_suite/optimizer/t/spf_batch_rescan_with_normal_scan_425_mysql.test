@@ -1,0 +1,81 @@
+# owner: zhanyue.zzy
+# owner group: SQL1
+#description: test subplan filter batch rescan use normal table scan
+# tags: optimizer
+
+--result_format 4
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists tp1;
+--enable_warnings
+
+create table t1(c1 int primary key, c2 int ,c3 int, c4 int);
+create table tp1(c1 int primary key, c2 int ,c3 int, c4 int) partition by hash(c1) partitions 4;
+insert into t1
+with recursive cte as (select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+select c1, c1, c1, c1 from cte;
+insert into tp1 select * from t1;
+
+--explain_protocol 1
+
+--echo ==================================================================================
+--echo ====================== test new behaviors in 4_2_5 ===============================
+--echo ==================================================================================
+## DIST_BASIC_METHOD
+select sum((select /*+no_use_das(a)*/ a.c2+a.c3 from t1 a where a.c1 = t_outer.c1)) s_val from t1 t_outer;
+select  sum((select /*+no_use_das(a)*/ a.c1+a.c2 from t1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from t1 t_outer;
+select  sum((select /*+use_das(a)*/ a.c1+a.c2 from t1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from t1 t_outer;
+select  sum((select /*+no_use_das(a)*/ a.c1+a.c2 from t1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from t1 t_outer;
+select  sum((select /*+no_use_das(a)*/ a.c1+a.c2 from t1 a where a.c2 = 1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from t1 t_outer;
+
+## DIST_PARTITION_WISE
+select sum((select /*+no_use_das(a)*/ a.c2+a.c3 from tp1 a where a.c1 = t_outer.c1)) s_val from tp1 t_outer;
+select  sum((select /*+no_use_das(a)*/ a.c1+a.c2 from tp1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from tp1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+
+## DIST_PULL_TO_LOCAL
+select /*+ pq_subquery(local local) */ sum((select /*+no_use_das(a)*/ a.c2+a.c3 from t1 a where a.c1 = t_outer.c1)) s_val from tp1 t_outer;
+select /*+ pq_subquery(local local) */ sum((select /*+no_use_das(a)*/ a.c1+a.c2 from t1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+select /*+ pq_subquery(local local) */ sum((select /*+use_das(a)*/ a.c1+a.c2 from t1 a where a.c2 = 1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+select /*+ pq_subquery(local local) */ sum((select /*+no_use_das(a)*/ a.c1+a.c2 from tp1 a where a.c2 = 1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+select /*+ pq_subquery(local local) */ sum((select /*+use_das(a)*/ a.c1+a.c2 from tp1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+select /*+ pq_subquery(local local) */ sum((select /*+no_use_das(a)*/ a.c1+a.c2 from tp1 a where a.c1 = t_outer.c1)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from t1 b where b.c1 = t_outer.c1)) s_val2
+from tp1 t_outer;
+
+## can not batch rescan: DIST_PARTITION_NONE
+select /*+ pq_subquery(partition none) */ sum((select /*+no_use_das(a)*/ a.c1+a.c2 from tp1 a where a.c1 = t_outer.c2)) s_val1
+from tp1 t_outer;
+select /*+ pq_subquery(partition none) */ sum((select /*+no_use_das(a)*/ a.c1+a.c2 from tp1 a where a.c1 = t_outer.c2)) s_val1,
+        sum((select /*+no_use_das(b)*/ b.c2+b.c3 from tp1 b where b.c1 = t_outer.c2)) s_val2
+from tp1 t_outer;
+
+## assign user var 
+set @a = 0;
+select sum(s_val1), sum(c1), sum(old_a), sum(s_val2), sum(new_a)
+from (select (select /*+use_das(t1)*/ c2 from t1 where c1 = a.c1) s_val1, c1, @a old_a, (c1 in (select /*+use_das(t1)*/ @a from t1)) s_val2, @a := c2 + 1 as new_a from t1 a);
+set @a = 0;
+select sum(c1), sum(old_a), sum(s_val2), sum(new_a)
+from (select c1, @a old_a, (c1 in (select /*+use_das(t1)*/ @a from t1)) s_val2, @a := c2 + 1 as new_a from t1 a);
+
+
+drop table if exists t1;
+drop table if exists tp1;

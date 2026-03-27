@@ -1,18 +1,14 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+/**
+* Copyright (c) 2021 OceanBase
+* OceanBase CE is licensed under Mulan PubL v2.
+* You can use this software according to the terms and conditions of the Mulan PubL v2.
+* You may obtain a copy of Mulan PubL v2 at:
+*          http://license.coscl.org.cn/MulanPubL-2.0
+* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+* See the Mulan PubL v2 for more details.
+*/
 
 #define USING_LOG_PREFIX SQL_OPT
 #include "ob_log_plan.h"
@@ -47,7 +43,6 @@
 #include "share/vector_index/ob_vector_index_util.h"
 #include "sql/optimizer/ob_log_expand.h"
 #include "share/ob_fts_index_builder_util.h"
-#include "sql/optimizer/ob_log_insert.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -3877,7 +3872,7 @@ int ObLogPlan::get_popular_values_hash(ObIAllocator &allocator,
     const ObHistogram &histogram = handle.stat_->get_histogram();
     // get total value count via last bucket by it's cumulative endpoint num
     const ObHistBucket &last_bucket = histogram.get(histogram.get_bucket_size() - 1);
-    int64_t total_cnt = std::max(static_cast<int64_t>(1), last_bucket.endpoint_num_); // avoid zero div
+    int64_t total_cnt = std::max(1L, last_bucket.endpoint_num_); // avoid zero div
     int64_t min_freq = optimizer_context_.get_session_info()->get_px_join_skew_minfreq();
     for (int64_t i = 0; OB_SUCC(ret) && i < histogram.get_bucket_size(); ++i) {
       const ObHistBucket &bucket = histogram.get(i);
@@ -6080,7 +6075,7 @@ int ObLogPlan::inner_compute_three_stage_groupby_dop_by_auto_dop(const ObIArray<
     LOG_WARN("failed to get three stage groupby number of copies", K(ret), K(non_distinct_aggrs), K(distinct_aggrs));
   } else {
     const ObOptimizerContext &opt_ctx = get_optimizer_context();
-    const double cost_threshold_us = 1000.0 * std::max(static_cast<int64_t>(10), opt_ctx.get_parallel_min_scan_time_threshold());
+    const double cost_threshold_us = 1000.0 * std::max(10L, opt_ctx.get_parallel_min_scan_time_threshold());
     const int64_t calc_dop_limit = opt_ctx.get_parallel_degree_limit(server_cnt);
     const double op_cost = ObOptEstCost::cost_hash_group(child->get_card() * number_of_copies,
                                                          0, // do not consider grouop by result
@@ -11957,7 +11952,6 @@ int ObLogPlan::collect_vec_index_location_related_info(ObLogTableScan &tsc_op,
   int ret = OB_SUCCESS;
   bool is_all_table_id_inited = false;
   ObVecIndexInfo &vc_info = tsc_op.get_vector_index_info();
-  ObVectorAuxTableIdx hybrid_embedded_tbl_idx = tsc_op.need_skip_rowkey_vid() ? VEC_FOURTH_AUX_TBL_IDX : VEC_SIXTH_AUX_TBL_IDX;
   if (OB_FAIL(vc_info.check_vec_aux_table_is_all_inited(is_all_table_id_inited, tsc_op.need_skip_rowkey_vid(), tsc_op.need_skip_rowkey_doc()))) {
     LOG_WARN("fail to check_all_table_id_inited", K(ret), K(vc_info.vec_type_), K(vc_info.aux_table_id_.count()));
   } else if (!is_all_table_id_inited) {
@@ -11974,8 +11968,6 @@ int ObLogPlan::collect_vec_index_location_related_info(ObLogTableScan &tsc_op,
       LOG_WARN("failed to append rowkey_vid table id", K(ret));
     } else if (!tsc_op.need_skip_rowkey_vid() && OB_FAIL(add_var_to_array_no_dup(rel_info.related_ids_, vc_info.get_aux_table_id(VEC_FIFTH_AUX_TBL_IDX)))) {
       LOG_WARN("failed to append vid rowkey table id", K(ret));
-    } else if (vc_info.is_hybrid_index && OB_FAIL(add_var_to_array_no_dup(rel_info.related_ids_, vc_info.get_aux_table_id(hybrid_embedded_tbl_idx)))) {
-      LOG_WARN("failed to append hybrid embedded table id", K(ret));
     } else if (OB_FAIL(add_var_to_array_no_dup(rel_info.related_ids_, tsc_op.get_real_ref_table_id()))) {
       LOG_WARN("failed to append main table id", K(ret));
     }
@@ -15167,7 +15159,6 @@ int ObLogPlan::prepare_vector_index_info(AccessPath *ap,
   ObSQLSessionInfo *session = nullptr;
   const ObTableSchema *table_schema = nullptr;
   const ObDMLStmt *stmt = get_stmt();
-  bool is_hybrid_index = false;
   if (OB_ISNULL(stmt) || OB_ISNULL(ap)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpect null stmt", K(ret));
@@ -15204,7 +15195,6 @@ int ObLogPlan::prepare_vector_index_info(AccessPath *ap,
                 LOG_WARN("failed to check column has vector index", K(ret), K(tmp_index_col->get_column_id()), K(col_has_vec_idx));
               } else if (col_has_vec_idx) {
                 vec_col_id = tmp_index_col->get_column_id();
-                is_hybrid_index = is_hybrid_vec_index(index_type);
               }
             }
           }
@@ -15237,8 +15227,7 @@ int ObLogPlan::prepare_vector_index_info(AccessPath *ap,
       if (OB_FAIL(vc_info.set_query_param(stmt->get_vector_index_query_param()))) {
         LOG_WARN("set query param fail", K(ret));
       } else if (vc_info.is_hnsw_vec_scan()) {
-        vc_info.is_hybrid_index = is_hybrid_index; // TODO by tanzhu, only support hnsw now
-        if (OB_FAIL(prepare_hnsw_vector_index_scan(schema_guard, *table_schema, vec_col_id, table_scan, is_hybrid_index))) {
+        if (OB_FAIL(prepare_hnsw_vector_index_scan(schema_guard, *table_schema, vec_col_id, table_scan))) {
           LOG_WARN("fail to init hnsw aux index table info",
             K(ret), K(table_scan->get_table_id()), K(vec_col_id), K(vc_info), K(table_schema->get_table_name_str()));
         }
@@ -15452,8 +15441,7 @@ int ObLogPlan::prepare_ivf_vector_index_scan(ObSchemaGetterGuard *schema_guard,
 int ObLogPlan::prepare_hnsw_vector_index_scan(ObSchemaGetterGuard *schema_guard,
                                               const ObTableSchema &table_schema,
                                               const uint64_t& vec_col_id,
-                                              ObLogTableScan *table_scan,
-                                              bool is_hybrid)
+                                              ObLogTableScan *table_scan)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(schema_guard) || OB_ISNULL(table_scan)) {
@@ -15462,10 +15450,10 @@ int ObLogPlan::prepare_hnsw_vector_index_scan(ObSchemaGetterGuard *schema_guard,
   } else {
     uint64_t vid_rowkey_tid = OB_INVALID_ID;
     uint64_t rowkey_vid_tid = OB_INVALID_ID;
-    uint64_t delta_buffer_tid = OB_INVALID_ID; // hybrid index log table when is_hybrid is true
+    uint64_t delta_buffer_tid = OB_INVALID_ID;
     uint64_t index_id_tid = OB_INVALID_ID;
     uint64_t index_snapshot_data_tid = OB_INVALID_ID;
-    uint64_t hybrid_index_embedded_tid = OB_INVALID_ID;
+
     if (OB_FAIL(table_schema.get_vec_id_rowkey_tid(vid_rowkey_tid))) {
       if (OB_ERR_INDEX_KEY_NOT_FOUND == ret) {
         ret = OB_SUCCESS;
@@ -15482,13 +15470,11 @@ int ObLogPlan::prepare_hnsw_vector_index_scan(ObSchemaGetterGuard *schema_guard,
     }
     ObVecIndexInfo &vc_info = table_scan->get_vector_index_info();
     if (FAILEDx(ObVectorIndexUtil::get_latest_avaliable_index_tids_for_hnsw(schema_guard,
-                                                                            table_schema, // data table schema
-                                                                            vec_col_id,
-                                                                            delta_buffer_tid,
-                                                                            index_id_tid,
-                                                                            index_snapshot_data_tid,
-                                                                            hybrid_index_embedded_tid,
-                                                                            is_hybrid))) {
+                                                                                   table_schema, // data table schema
+                                                                                   vec_col_id,
+                                                                                   delta_buffer_tid,
+                                                                                   index_id_tid,
+                                                                                   index_snapshot_data_tid))) {
       LOG_WARN("fail to get latest avaliable index tids for hnsw ", K(ret), K(vec_col_id), K(table_schema));
     } else if (delta_buffer_tid == OB_INVALID_ID || index_id_tid == OB_INVALID_ID || index_snapshot_data_tid == OB_INVALID_ID) {
       ret = OB_ERR_UNEXPECTED;
@@ -15504,8 +15490,6 @@ int ObLogPlan::prepare_hnsw_vector_index_scan(ObSchemaGetterGuard *schema_guard,
       LOG_WARN("fail to push back aux table id", K(ret), K(rowkey_vid_tid), K(vc_info.aux_table_id_.count()));
     } else if (OB_INVALID_ID != vid_rowkey_tid && OB_FAIL(vc_info.aux_table_id_.push_back(vid_rowkey_tid))) {
       LOG_WARN("fail to push back aux table id", K(ret), K(vid_rowkey_tid), K(vc_info.aux_table_id_.count()));
-    } else if (is_hybrid && OB_FAIL(vc_info.aux_table_id_.push_back(hybrid_index_embedded_tid))) {
-      LOG_WARN("fail to push back aux table id", K(ret), K(hybrid_index_embedded_tid), K(vc_info.aux_table_id_.count()));
     } else {
       table_scan->set_index_back(true);
       if (OB_FAIL(table_scan->set_is_skip_rowkey_vid(vid_rowkey_tid == OB_INVALID_ID))) {

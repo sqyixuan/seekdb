@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -24,8 +20,6 @@
 #include "sql/resolver/mv/ob_alter_mview_utils.h"
 #include "share/table/ob_ttl_util.h"
 #include "rootserver/ob_partition_exchange.h"
-#include "share/vector_index/ob_vector_index_util.h"
-#include "share/external_table/ob_external_table_utils.h"
 
 namespace oceanbase
 {
@@ -212,8 +206,6 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
         OZ (alter_schema.set_external_file_location(table_schema_->get_external_file_location()));
         OZ (alter_schema.set_external_file_location_access_info(table_schema_->get_external_file_location_access_info()));
         OZ (alter_schema.set_external_file_pattern(table_schema_->get_external_file_pattern()));
-        alter_schema.set_external_location_id(table_schema_->get_external_location_id());
-        OZ (alter_schema.set_external_sub_path(table_schema_->get_external_sub_path()));
         if (OB_SUCC(ret) && table_schema_->is_user_specified_partition_for_external_table()) {
           alter_schema.set_user_specified_partition_for_external_table();
         }
@@ -348,13 +340,6 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
     if (OB_SUCC(ret)){
       if (OB_FAIL(deep_copy_string_in_part_expr(get_alter_table_stmt()))) {
         LOG_WARN("failed to deep copy string in part expr");
-      }
-    }
-
-    if (OB_SUCC(ret) && alter_table_stmt->get_alter_table_arg().alter_table_schema_.is_external_table()) {
-      ObTableSchema &table_schema = alter_table_stmt->get_alter_table_arg().alter_table_schema_;
-      if (OB_FAIL(ObSQLUtils::check_location_constraint(table_schema))) {
-        LOG_WARN("fail to check location constraint", K(ret), K(table_schema));
       }
     }
 
@@ -672,11 +657,7 @@ int ObAlterTableResolver::resolve_add_external_partition(const ParseNode &part_e
       ObString tmp_str = ObString(location_element.str_len_, location_element.str_value_);
       OZ (ob_write_string(*allocator_, tmp_str, external_location));
       ObSqlString full_path;
-      ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
-      ObString file_location;
-      CK (OB_NOT_NULL(schema_guard));
-      OZ (ObExternalTableUtils::get_external_file_location(*table_schema_, *schema_guard, *allocator_, file_location));
-      OZ (full_path.append(file_location));
+      OZ (full_path.append(table_schema_->get_external_file_location()));
       if (OB_SUCC(ret)) {
         if (full_path.length() == 0) {
           ret = OB_INVALID_ARGUMENT;
@@ -686,7 +667,7 @@ int ObAlterTableResolver::resolve_add_external_partition(const ParseNode &part_e
         }
       }
       OZ (full_path.append(external_location));
-      OZ (alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_file_location(table_schema_->get_external_file_location()));
+      OZ (alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_file_location(full_path.string()));
       alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_table_type(EXTERNAL_TABLE);
       partition.set_external_location(external_location);
       partition.set_is_empty_partition_name(true);
@@ -781,8 +762,6 @@ int ObAlterTableResolver::resolve_external_partition_options(const ParseNode &no
     alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_part_level(table_schema_->get_part_level());
     OZ (alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_file_location_access_info(table_schema_->get_external_file_location_access_info()));
     OZ (alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_file_pattern(table_schema_->get_external_file_pattern()));
-    alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_location_id(table_schema_->get_external_location_id());
-    OZ (alter_table_stmt->get_alter_table_arg().alter_table_schema_.set_external_sub_path(table_schema_->get_external_sub_path()));
     CK (OB_LIKELY(node.type_ == T_ALTER_EXTERNAL_PARTITION_OPTION));
     if (T_ALTER_EXTERNAL_PARTITION_ADD == node.children_[0]->type_) {
       CK (OB_LIKELY(node.num_child_ == 2));
@@ -3411,22 +3390,6 @@ int ObAlterTableResolver::resolve_alter_primary(const ParseNode &action_node_lis
     ret = OB_ERR_CANT_DROP_FIELD_OR_KEY;
     LOG_WARN("can't DROP 'PRIMARY', check primary key exists", K(ret), KPC(table_schema_));
     LOG_USER_ERROR(OB_ERR_CANT_DROP_FIELD_OR_KEY, pk_name.length(), pk_name.ptr());
-  } else {
-    // check if table has HNSW index with extra info
-    share::schema::ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
-    bool has_hnsw_with_extra_info = false;
-    if (OB_ISNULL(schema_guard)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("schema guard is null", K(ret));
-    } else if (OB_FAIL(ObVectorIndexUtil::check_has_extra_info(*table_schema_, *schema_guard, has_hnsw_with_extra_info))) {
-      LOG_WARN("fail to check has hnsw index with extra info", K(ret), KPC(table_schema_));
-    } else if (has_hnsw_with_extra_info) {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("can't drop primary key when table has HNSW index with extra info", K(ret), KPC(table_schema_));
-      LOG_USER_ERROR(OB_NOT_SUPPORTED, "dropping primary key when table has HNSW index with extra info is");
-    }
-  }
-  if (OB_FAIL(ret)) {
   } else {
     obrpc::ObAlterPrimaryArg *alter_pk_arg = NULL;
     void *tmp_ptr = NULL;

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -20,7 +16,6 @@
 #include "share/schema/ob_partition_sql_helper.h"
 #include "observer/omt/ob_tenant_timezone_mgr.h"
 #include "src/share/vector_index/ob_vector_index_util.h"
-#include "share/external_table/ob_external_table_utils.h"
 #include "share/storage_cache_policy/ob_storage_cache_partition_sql_helper.h"
 
 namespace oceanbase
@@ -2269,9 +2264,8 @@ int ObTableSqlService::update_table_options(ObISQLClient &sql_client,
         || new_table_schema.is_aux_vp_table()
         || new_table_schema.is_aux_lob_table()
         || new_table_schema.is_mlog_table()) {
-      // use new_table_schema.get_in_offline_ddl_white_list() here for drop index when offline ddl failed, there is no foreign key on index table.
       if (OB_FAIL(update_data_table_schema_version(sql_client, tenant_id,
-                  new_table_schema.get_data_table_id(), new_table_schema.get_in_offline_ddl_white_list()))) {
+                  new_table_schema.get_data_table_id(), table_schema.get_in_offline_ddl_white_list()))) {
         LOG_WARN("update data table schema version failed", K(ret));
       }
     }
@@ -3207,8 +3201,6 @@ int ObTableSqlService::gen_table_dml_without_check(
       || (OB_FAIL(dml.add_column("semistruct_encoding_type", table.get_semistruct_encoding_flags())))
       || (OB_FAIL(dml.add_column("dynamic_partition_policy", ObHexEscapeSqlStr(dynamic_partition_policy))))
       || (OB_FAIL(dml.add_column("merge_engine_type", table.get_merge_engine_type())))
-      || (OB_FAIL(dml.add_column("external_location_id", table.get_external_location_id())))
-      || (OB_FAIL(dml.add_column("external_sub_path", ObHexEscapeSqlStr(table.get_external_sub_path()))))
       ) {
         LOG_WARN("add column failed", K(ret));
       }

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -1192,24 +1188,6 @@ int ObSQLUtils::get_odps_api_mode(const ObString &table_format_or_properties,
   return ret;
 }
 
-int ObSQLUtils::check_location_constraint(const ObTableSchema &table_schema)
-{
-  int ret = OB_SUCCESS;
-  bool is_odps_external_table = false;
-  if (OB_FAIL(ObSQLUtils::is_odps_external_table(&table_schema, is_odps_external_table))) {
-    LOG_WARN("failed to check is odps external table or not", K(ret));
-  } else if (is_odps_external_table) {
-    // do nothing
-  } else if ((!table_schema.get_external_file_location().empty()
-      && OB_INVALID_ID != table_schema.get_external_location_id())
-      || (table_schema.get_external_file_location().empty()
-          && OB_INVALID_ID == table_schema.get_external_location_id())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("both file location and location id are valid", KR(ret), K(table_schema));
-  }
-  return ret;
-}
-
 int ObSQLUtils::check_ident_name(const ObCollationType cs_type, ObString &name,
                                  const bool check_for_path_char, const int64_t max_ident_len)
 {
@@ -2385,26 +2363,6 @@ int JsonObjectStarChecker::add_expr(ObRawExpr *&expr)
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObTransformUtils::extract_json_object_exprs(expr, rel_array_))) {
     LOG_WARN("failed to push back expr", K(ret));
-  }
-  return ret;
-}
-
-int SemanticVectorDistExprChecker::add_expr(ObRawExpr *&expr)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(expr)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("expr is null", K(ret));
-  } else if (expr->get_expr_type() == T_FUN_SYS_SEMANTIC_VECTOR_DISTANCE) {
-    if (OB_FAIL(add_var_to_array_no_dup(rel_array_, expr))) {
-      LOG_WARN("failed to add semantic_distance expr to array", K(ret));
-    }
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
-      if (OB_FAIL(SMART_CALL(add_expr(expr->get_param_expr(i))))) {
-        LOG_WARN("failed to check param expr", K(ret));
-      }
-    }
   }
   return ret;
 }

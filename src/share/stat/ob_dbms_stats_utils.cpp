@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -305,12 +301,7 @@ bool ObDbmsStatsUtils::is_no_stat_virtual_table(const int64_t table_id)
          table_id == share::OB_TENANT_VIRTUAL_SHOW_RESTORE_PREVIEW_TID ||
          table_id == share::OB_ALL_VIRTUAL_MDS_NODE_STAT_TID ||
          table_id == share::OB_ALL_VIRTUAL_CHECKPOINT_DIAGNOSE_MEMTABLE_INFO_TID ||
-         table_id == share::OB_ALL_VIRTUAL_CHECKPOINT_DIAGNOSE_CHECKPOINT_UNIT_INFO_TID ||
-#ifdef __APPLE__
-         table_id == share::OB_ALL_VIRTUAL_THREAD_TID ||
-#endif
-         table_id == share::OB_TENANT_VIRTUAL_SHOW_CREATE_LOCATION_TID ||
-         table_id == share::OB_TENANT_VIRTUAL_LIST_FILE_TID;
+         table_id == share::OB_ALL_VIRTUAL_CHECKPOINT_DIAGNOSE_CHECKPOINT_UNIT_INFO_TID;
 }
 
 bool ObDbmsStatsUtils::is_virtual_index_table(const int64_t table_id)
@@ -2025,7 +2016,7 @@ int ObDbmsStatsUtils::get_max_work_area_size(uint64_t tenant_id, int64_t &max_wa
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret));
   } else {
-    int64_t worker_cnt = std::max(static_cast<const omt::ObTenant *>(tenant)->min_worker_cnt(), static_cast<int64_t>(4L));
+    int64_t worker_cnt = std::max(static_cast<const omt::ObTenant *>(tenant)->min_worker_cnt(), 4L);
     max_wa_memory_size = lib::get_tenant_memory_limit(tenant_id) / worker_cnt;
     if (lib::ObMallocAllocator::get_instance() != NULL) {
       ObTenantCtxAllocatorGuard ta = lib::ObMallocAllocator::get_instance()->get_tenant_ctx_allocator(tenant_id, common::ObCtxIds::WORK_AREA);

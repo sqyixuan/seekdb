@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -1767,7 +1763,7 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
               LOG_WARN("failed to ob write string", K(ret));
             }
           } else if (T_FUN_SYS_OB_VERSION == name_expr->get_expr_type()) {
-            if (OB_FAIL(ob_write_string(*allocator_, common::ObString(OB_COMPATIBILITY_VERSION), select_item.alias_name_))) {
+            if (OB_FAIL(ob_write_string(*allocator_, common::ObString(PACKAGE_VERSION), select_item.alias_name_))) {
               LOG_WARN("failed to ob write string", K(ret));
             }
           } else if (T_FUN_SYS_ICU_VERSION == name_expr->get_expr_type()) {
