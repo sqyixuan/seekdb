@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX RS
@@ -72,7 +68,6 @@
 #include "parallel_ddl/ob_drop_tablegroup_helper.h" // ObDropTableGroupHelper
 #include "parallel_ddl/ob_create_tablegroup_helper.h" // ObCreateTableGroupHelper
 #include "share/table/ob_ttl_util.h"
-#include "rootserver/ob_ai_model_ddl_service.h"
 
 namespace oceanbase
 {
@@ -4826,58 +4821,6 @@ int ObRootService::rename_table(const obrpc::ObRenameTableArg &arg)
   } else if (OB_FAIL(ddl_service_.rename_table(arg))){
     LOG_WARN("rename table failed", K(ret));
   }
-  return ret;
-}
-
-int ObRootService::fork_table(const obrpc::ObForkTableArg &arg, obrpc::ObDDLRes &res)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else if (OB_FAIL(ddl_service_.fork_table(arg, res))) {
-    LOG_WARN("fork table failed", K(ret));
-  }
-  char table_names_buffer[512] = {0};
-  snprintf(table_names_buffer, sizeof(table_names_buffer), "%.*s -> %.*s",
-           static_cast<int>(arg.src_table_name_.length()), arg.src_table_name_.ptr(),
-           static_cast<int>(arg.dst_table_name_.length()), arg.dst_table_name_.ptr());
-  ROOTSERVICE_EVENT_ADD("ddl scheduler", "fork table",
-                        "tenant_id", arg.tenant_id_,
-                        "ret", ret,
-                        "trace_id", *ObCurTraceId::get_trace_id(),
-                        "task_id", res.task_id_,
-                        "tables", table_names_buffer);
-  LOG_INFO("finish fork table ddl", K(ret), K(arg), K(res), "ddl_event_info", ObDDLEventInfo());
-  return ret;
-}
-
-int ObRootService::fork_database(const obrpc::ObForkDatabaseArg &arg, obrpc::ObDDLRes &res)
-{
-  int ret = OB_SUCCESS;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else if (OB_FAIL(ddl_service_.fork_database(arg, res))) {
-    LOG_WARN("fork database failed", K(ret));
-  }
-  char database_names_buffer[512] = {0};
-  snprintf(database_names_buffer, sizeof(database_names_buffer), "%.*s -> %.*s",
-           static_cast<int>(arg.src_database_name_.length()), arg.src_database_name_.ptr(),
-           static_cast<int>(arg.dst_database_name_.length()), arg.dst_database_name_.ptr());
-  ROOTSERVICE_EVENT_ADD("ddl scheduler", "fork database",
-                        "tenant_id", arg.tenant_id_,
-                        "ret", ret,
-                        "trace_id", *ObCurTraceId::get_trace_id(),
-                        "task_id", res.task_id_,
-                        "databases", database_names_buffer);
-  LOG_INFO("finish fork database ddl", K(ret), K(arg), K(res), "ddl_event_info", ObDDLEventInfo());
   return ret;
 }
 
@@ -9961,7 +9904,8 @@ int ObRootService::set_config_after_bootstrap_()
     {"_enable_dbms_job_package", "false"},
     {"_bloom_filter_ratio", "3"},
     {"_enable_mysql_compatible_dates", "true"},
-    {"_ob_enable_pl_dynamic_stack_check", "true"}
+    {"_ob_enable_pl_dynamic_stack_check", "true"},
+    {"_system_trig_enabled", "false"},
   };
   if (OB_FAIL(sql.assign("ALTER SYSTEM SET"))) {
     LOG_WARN("failed to assign sql string", KR(ret));
@@ -10128,88 +10072,6 @@ int ObRootService::drop_ccl_rule_ddl(const obrpc::ObDropCCLRuleArg &arg)
   }
   return ret;
 }
-
-int ObRootService::create_ai_model(const obrpc::ObCreateAiModelArg &arg)
-{
-  int ret = OB_SUCCESS;
-  LOG_TRACE("receive create ai model arg", K(arg));
-  ObAiModelDDLService ai_model_ddl_service(ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(arg.check_valid())) {
-    LOG_WARN("invalid arg", K(ret), K(arg));
-  } else if (OB_FAIL(ai_model_ddl_service.create_ai_model(arg))) {
-    LOG_WARN("failed to create ai model", K(ret), K(arg));
-  }
-
-  LOG_TRACE("finish create ai model", K(ret), K(arg));
-
-  return ret;
-}
-
-int ObRootService::drop_ai_model(const obrpc::ObDropAiModelArg &arg)
-{
-  int ret = OB_SUCCESS;
-  LOG_TRACE("receive drop ai model arg", K(arg));
-  ObAiModelDDLService ai_model_ddl_service(ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (!arg.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(arg), K(ret));
-  } else if (OB_FAIL(ai_model_ddl_service.drop_ai_model(arg))) {
-    LOG_WARN("failed to drop ai model", K(ret), K(arg));
-  }
-
-  LOG_TRACE("finish drop ai model", K(ret), K(arg));
-
-  return ret;
-}
-
-
-
-int ObRootService::create_location(const obrpc::ObCreateLocationArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObLocationDDLService location_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(location_ddl_service.create_location(arg, &arg.ddl_stmt_str_))) {
-    LOG_WARN("handle ddl failed", K(arg), K(ret));
-  }
-  return ret;
-}
-
-int ObRootService::drop_location(const obrpc::ObDropLocationArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObLocationDDLService location_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(location_ddl_service.drop_location(arg, &arg.ddl_stmt_str_))) {
-    LOG_WARN("drop location failed", K(arg.location_name_), K(ret));
-  }
-  return ret;
-}
-
-int ObRootService::revoke_object(const ObRevokeObjMysqlArg &arg)
-{
-  int ret = OB_SUCCESS;
-  ObObjPrivMysqlDDLService objpriv_mysql_ddl_service(&ddl_service_);
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else {
-    ObObjMysqlPrivSortKey object_key(arg.tenant_id_, arg.user_id_, arg.obj_name_, arg.obj_type_);
-    OZ (objpriv_mysql_ddl_service.revoke_object(object_key, arg.priv_set_, arg.grantor_, arg.grantor_host_));
-  }
-  return ret;
-}
-
 
 } // end namespace rootserver
 } // end namespace oceanbase

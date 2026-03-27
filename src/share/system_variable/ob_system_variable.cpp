@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -54,9 +50,9 @@ ObSpecialSysVarValues::ObSpecialSysVarValues()
   } else if (OB_FAIL(databuff_printf(ObSpecialSysVarValues::version_comment_,
                                      ObSpecialSysVarValues::VERSION_COMMENT_MAX_LEN,
                                      pos,
-                                     "%s %s %s (r%s) (Built %s %s)",
-                                     OB_OCEANBASE_NAME, OB_COMPATIBILITY_VERSION, OB_SEEKDB_NAME, PACKAGE_VERSION,
-                                     build_version(), build_date(), build_time()))) {
+                                     "OceanBase_Lite %s (r%s) (Built %s %s)",
+                                     PACKAGE_VERSION, build_version(),
+                                     build_date(), build_time()))) {
     LOG_ERROR("fail to print version_comment to buff", K(ret));
   }
 
@@ -65,7 +61,7 @@ ObSpecialSysVarValues::ObSpecialSysVarValues()
   } else if (FALSE_IT(pos = 0)) {
   } else if (OB_FAIL(databuff_printf(ObSpecialSysVarValues::version_,
                                      ObSpecialSysVarValues::VERSION_MAX_LEN,
-                                     pos, "5.7.25-%s %s-v%s", OB_OCEANBASE_NAME, OB_SEEKDB_NAME, PACKAGE_VERSION))) {
+                                     pos, "5.7.25-OceanBase_Lite-v%s", PACKAGE_VERSION))) {
 
     LOG_ERROR("fail to print version to buff", K(ret));
   }
@@ -76,12 +72,7 @@ ObSpecialSysVarValues::ObSpecialSysVarValues()
     tzset(); // init tzname
     int64_t current_time_us = ObTimeUtility::current_time();
     struct tm tmp_tm;
-#ifdef __APPLE__
-    time_t current_time_t = static_cast<time_t>(current_time_us / 1000000L);
-    UNUSED(localtime_r(&current_time_t, &tmp_tm));
-#else
     UNUSED(localtime_r(&current_time_us, &tmp_tm));
-#endif
     bool is_neg = false;
     if (tmp_tm.tm_gmtoff < 0) {
       is_neg = true;
@@ -2327,7 +2318,7 @@ int ObSysVarOnCheckFuncs::check_and_convert_max_min_timestamp(ObExecContext &ctx
     //nothing to do
   } else if (OB_FAIL(ObSQLUtils::get_default_cast_mode(ctx.get_my_session(), cast_mode))) {
     LOG_WARN("failed to get cast_mode", K(ret));
-  } else if (in_val.get_number().is_negative() || in_val.get_number() >= static_cast<int64_t>(TIMESTAMP_MAX_VAL)) {
+  } else if (in_val.get_number().is_negative() || in_val.get_number() >= TIMESTAMP_MAX_VAL) {
     if (CM_WARN_ON_FAIL == cast_mode) {
       const char *value = in_val.get_number().format();
       LOG_USER_WARN(OB_ERR_TRUNCATED_WRONG_VALUE, set_var.var_name_.length(),
@@ -2391,7 +2382,7 @@ int ObSysVarOnCheckFuncs::check_and_convert_sql_throttle_queue_time(ObExecContex
   } else if (pos >= sizeof (buf)) {
     ret = OB_SIZE_OVERFLOW;
   } else if (FALSE_IT(lower = atof(buf))) {
-  } else if (lower < 0.001 && num != static_cast<int64_t>(-1)) {
+  } else if (lower < 0.001 && num != -1l) {
     ret = OB_ERR_WRONG_VALUE_FOR_VAR;
     LOG_USER_ERROR(OB_ERR_WRONG_VALUE_FOR_VAR, sys_var.get_name().length(), sys_var.get_name().ptr(),
                    static_cast<int>(strlen("NULL")), "NULL");
@@ -3440,17 +3431,9 @@ int ObSetSysVar::find_set(const ObString &str)
   } else if (OB_UNLIKELY(str.length() >=  MAX_STR_BUF_LEN)) {
     ret = OB_BUF_NOT_ENOUGH;
     LOG_WARN("system variable string is too long", K(ret), K(str));
-#ifdef __linux__
-    // strndupa uses alloca (stack allocation), automatically freed on function return
   } else if (OB_ISNULL(buf = strndupa(str.ptr(), str.length()))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("failed to alloc memory", K(ret));
-#elif defined(__APPLE__)
-    // macOS doesn't support strndupa, use strndup (heap allocation) and free manually
-  } else if (OB_ISNULL(buf = strndup(str.ptr(), str.length()))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_ERROR("failed to alloc memory", K(ret));
-#endif
   } else {
     char *value = NULL;
     char *saveptr = NULL;
@@ -3470,11 +3453,6 @@ int ObSetSysVar::find_set(const ObString &str)
         }
       }
     }
-#ifdef __APPLE__
-    // Free memory allocated by strndup on macOS
-    free(buf);
-    buf = NULL;
-#endif
   }
   return ret;
 }

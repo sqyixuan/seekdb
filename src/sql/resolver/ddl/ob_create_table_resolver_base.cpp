@@ -1,23 +1,18 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ddl/ob_create_table_resolver_base.h"
 #include "share/ob_license_utils.h"
-#include "share/external_table/ob_external_table_utils.h"
 
 namespace oceanbase
 {
@@ -220,12 +215,8 @@ int ObCreateTableResolverBase::set_table_option_to_schema(ObTableSchema &table_s
       }
     }
     if (OB_SUCC(ret) && table_schema.is_external_table()) {
-      ObString file_location;
-      ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
-      CK (OB_NOT_NULL(schema_guard));
-      OZ (ObExternalTableUtils::get_external_file_location(table_schema, *schema_guard, *allocator_, file_location));
       if ((table_schema.get_external_file_format().empty()
-          || file_location.empty()) &&
+          || table_schema.get_external_file_location().empty()) &&
            table_schema.get_external_properties().empty()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "Default properties or format or location option for external table");
