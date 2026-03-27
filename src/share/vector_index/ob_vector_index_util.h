@@ -170,7 +170,7 @@ struct ObVectorIndexParam
     type_(VIAT_MAX), lib_(VIAL_MAX), dim_(0), m_(0), ef_construction_(0), ef_search_(0),
     nlist_(0), sample_per_nlist_(0), extra_info_max_size_(0), extra_info_actual_size_(0),
     refine_type_(0), bq_bits_query_(DEFAULT_BQ_BITS_QUERY),
-    refine_k_(DEFAULT_REFINE_K), bq_use_fht_(false), sync_interval_type_(VSIT_MAX), sync_interval_value_(0),
+    refine_k_(DEFAULT_REFINE_K), bq_use_fht_(false), sync_interval_type_(VSIT_MAX), sync_interval_value_(0), 
     nbits_(0), prune_(false), refine_(false), ob_sparse_drop_ratio_build_(0), window_size_(DEFAULT_WINDOW_SIZE),
     ob_sparse_drop_ratio_search_(0), similarity_threshold_(0)
   {
@@ -262,9 +262,9 @@ struct ObVectorIndexParam
   float similarity_threshold_;
   OB_UNIS_VERSION(1);
 public:
-  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search),
+  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search), 
     K_(nlist), K_(sample_per_nlist), K_(extra_info_max_size), K_(extra_info_actual_size),
-    K_(refine_type), K_(bq_bits_query), K_(refine_k), K_(bq_use_fht), K_(sync_interval_type), K_(sync_interval_value),
+    K_(refine_type), K_(bq_bits_query), K_(refine_k), K_(bq_use_fht), K_(sync_interval_type), K_(sync_interval_value), 
     K_(endpoint), K_(nbits), K_(prune), K_(refine), K_(ob_sparse_drop_ratio_build),K_(window_size), K_(ob_sparse_drop_ratio_search),
     K_(similarity_threshold));
 
@@ -423,7 +423,7 @@ public:
       const ObTableSchema &table_schema,
       ObDocIDType &vid_type);
   static int check_need_vid(
-      const ObTableSchema &table_schema,
+      const ObTableSchema &table_schema, 
       bool &need_vid);
   static int construct_rebuild_index_param(
       const ObTableSchema &data_table_schema,
@@ -500,8 +500,8 @@ public:
       bool &has_fts_index,
       bool &has_vec_index);
   static int check_table_has_vector_index(
-      const ObTableSchema &data_table_schema,
-      ObSchemaGetterGuard &schema_guard,
+      const ObTableSchema &data_table_schema, 
+      ObSchemaGetterGuard &schema_guard, 
       bool &has_vec_index);
   static int check_column_has_vector_index(
       const ObTableSchema &data_table_schema,
@@ -777,7 +777,7 @@ public:
   );
   static int estimate_sparse_memory(
       uint64_t num_vectors,
-      const ObVectorIndexParam &param,
+      const ObVectorIndexParam &param, 
       uint64_t &est_mem
   );
   static int estimate_ivf_memory(uint64_t num_vectors,
@@ -1096,31 +1096,6 @@ public:
   inline static uint64_t get_tablet_id(const char *ptr) {
     return *reinterpret_cast<const uint64_t*>(ptr + VERSION_SIZE);
   }
-};
-
-struct ObDasSemanticIndexInfo
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObDasSemanticIndexInfo()
-  : is_emb_vec_tbl_(false),
-    use_rowkey_vid_tbl_(false),
-    part_key_num_(0),
-    sync_interval_type_(ObVectorIndexSyncIntervalType::VSIT_MAX)
-    {}
-  ~ObDasSemanticIndexInfo() {}
-
-  int generate(const schema::ObTableSchema *data_schema,
-               const schema::ObTableSchema *rowkey_domain_schema,
-               int64_t result_output_count,
-               bool has_trans_info_expr);
-
-  TO_STRING_KV(K_(is_emb_vec_tbl), K_(use_rowkey_vid_tbl), K_(part_key_num), K_(sync_interval_type));
-
-  bool is_emb_vec_tbl_;
-  bool use_rowkey_vid_tbl_;
-  int8_t part_key_num_;
-  ObVectorIndexSyncIntervalType sync_interval_type_;
 };
 
 }  // namespace share
