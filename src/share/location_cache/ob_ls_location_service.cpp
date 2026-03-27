@@ -18,7 +18,6 @@
 
 #include "share/location_cache/ob_ls_location_service.h"
 #include "share/ls/ob_ls_table_operator.h" // ObLSTableOperator
-#include "share/ls/ob_ls_status_operator.h" // ObLSStatusOperator
 #include "rootserver/ob_rs_async_rpc_proxy.h" // ObGetLeaderLocationsProxy
 
 namespace oceanbase
@@ -615,49 +614,6 @@ int ObLSLocationService::reload_config()
   }
   return ret;
 }
-
-//FIXME: Not used. The GC logic needs to be reconsidered. Should not rely on __all_ls_status.
-int ObLSLocationService::build_tenant_ls_info_hash_(ObTenantLsInfoHashMap &hash)
-{
-  int ret = OB_SUCCESS;
-  ObArray<uint64_t> tenant_ids;
-
-  if (OB_FAIL(check_inner_stat_())) {
-    LOG_WARN("fail to check inner stat", KR(ret));
-  } else if (OB_FAIL(schema_service_->get_tenant_ids(tenant_ids))) {
-    LOG_WARN("get tenant_ids failed", KR(ret));
-  } else {
-    // get all tenant id
-    for (int64_t i = 0; OB_SUCC(ret) && i < tenant_ids.count(); ++i) {
-      const uint64_t tenant_id = tenant_ids.at(i);
-      ObLSStatusOperator ls_op;
-      ObLSStatusInfoArray ls_status_arr;
-      // get all ls status info of current tenant
-      if (!is_valid_tenant_id(tenant_id)
-          || is_virtual_tenant_id(tenant_id)
-          || is_sys_tenant(tenant_id)) {
-        // skip invalid tenants and sys tenant
-      } else if (OB_FAIL(ls_op.get_all_ls_status_by_order(
-          tenant_ids.at(i),
-          ls_status_arr,
-          *GCTX.sql_proxy_))) {
-        LOG_WARN("get all ls status by order error", KR(ret), K(tenant_id));
-      } else {
-        // build hash for current tenant
-        for (int64_t j = 0; OB_SUCC(ret) && j < ls_status_arr.count(); ++j) {
-          ObTenantLSInfoKey key(tenant_ids.at(i), ls_status_arr.at(j).ls_id_);
-          if (OB_FAIL(hash.set_refactored(key, true/*exist*/, true/*overwrite*/))) {
-            LOG_WARN("hashmap set refactored error", KR(ret), K(key));
-          }
-        }
-      }
-    }
-  }
-
-  return ret;
-}
-
-//FIXME: Not used. The GC logic needs to be reconsidered
 
 // Attention: can not detect ls deletion
 int ObLSLocationService::renew_all_ls_locations()

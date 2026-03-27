@@ -66,15 +66,10 @@ public:
                K_(tenant_name),
                K_(name_case_mode),
                K_(read_only),
-               K_(primary_zone),
-               K_(locality),
-               K_(previous_locality),
                K_(compatibility_mode),
                K_(gmt_modified),
-               K_(drop_tenant_time),
                K_(status),
-               K_(in_recyclebin),
-               K_(arbitration_service_status));
+               K_(in_recyclebin));
   virtual void reset();
   bool is_valid() const;
   inline int64_t get_convert_size() const;
@@ -91,34 +86,11 @@ public:
   inline void set_read_only(const bool read_only) { read_only_ = read_only; }
   inline bool get_read_only() const { return read_only_; }
 
-  inline int set_primary_zone(const common::ObString &primary_zone)
-  { return deep_copy_str(primary_zone, primary_zone_); }
-  inline const common::ObString &get_primary_zone() const { return primary_zone_; }
-
-  inline int set_locality(const common::ObString &locality)
-  { return deep_copy_str(locality, locality_); }
-  inline const char *get_locality() const { return extract_str(locality_); }
-  inline const common::ObString &get_locality_str() const { return locality_; }
-
-  inline int set_previous_locality(const common::ObString &previous_locality)
-  { return deep_copy_str(previous_locality, previous_locality_); }
-  inline const char *get_previous_locality() const { return extract_str(previous_locality_); }
-  inline const common::ObString &get_previous_locality_str() const { return previous_locality_; }
-
   inline void set_compatibility_mode(const common::ObCompatibilityMode compatibility_mode) { compatibility_mode_ = compatibility_mode; }
   inline common::ObCompatibilityMode get_compatibility_mode() const { return compatibility_mode_; }
 
   inline void set_gmt_modified(const int64_t gmt_modified) { gmt_modified_ = gmt_modified; }
   inline int64_t get_gmt_modified() const { return gmt_modified_; }
-
-  inline void set_drop_tenant_time(const int64_t drop_tenant_time) { drop_tenant_time_ = drop_tenant_time; }
-  inline int64_t get_drop_tenant_time() const { return drop_tenant_time_; }
-
-  inline void set_arbitration_service_status(const ObArbitrationServiceStatus &status) { arbitration_service_status_ = status; }
-  inline int set_arbitration_service_status(const ObString &status) { return arbitration_service_status_.parse_from_string(status); }
-  inline int set_arbitration_service_status_from_string(const common::ObString &status) { return arbitration_service_status_.parse_from_string(status); }
-  inline const ObArbitrationServiceStatus &get_arbitration_service_status() const { return arbitration_service_status_; }
-  inline const char *get_arbitration_service_status_str() const { return arbitration_service_status_.get_status_str(); }
 
   inline bool is_dropping() const { return TENANT_STATUS_DROPPING == status_; }
   inline bool is_in_recyclebin() const { return in_recyclebin_; }
@@ -127,10 +99,6 @@ public:
                                           || TENANT_STATUS_CREATING_STANDBY == status_;}
   inline bool is_normal() const { return TENANT_STATUS_NORMAL == status_; }
   inline bool is_creating_standby_tenant_status() const { return TENANT_STATUS_CREATING_STANDBY == status_; }
-  inline bool is_arbitration_service_enabling() const { return arbitration_service_status_.is_enabling(); }
-  inline bool is_arbitration_service_enabled() const { return arbitration_service_status_.is_enabled(); }
-  inline bool is_arbitration_service_disabling() const { return arbitration_service_status_.is_disabling(); }
-  inline bool is_arbitration_service_disabled() const { return arbitration_service_status_.is_disabled(); }
   inline void set_status(const ObTenantStatus status) { status_ = status; }
   inline ObTenantStatus get_status() const { return status_; }
   inline void set_in_recyclebin(const bool in_recyclebin) { in_recyclebin_ = in_recyclebin; }
@@ -140,15 +108,10 @@ private:
   common::ObString tenant_name_;
   common::ObNameCaseMode name_case_mode_; //deprecated
   bool read_only_;  // Subject to the value of the system variable
-  common::ObString primary_zone_;
-  common::ObString locality_;
-  common::ObString previous_locality_;
   common::ObCompatibilityMode compatibility_mode_;
   int64_t gmt_modified_;
-  int64_t drop_tenant_time_;
   ObTenantStatus status_;
   bool in_recyclebin_;
-  ObArbitrationServiceStatus arbitration_service_status_;
 };
 
 class ObSimpleUserSchema : public ObSchema
@@ -658,7 +621,7 @@ public:
       const uint64_t tenant_id,
       const uint64_t schema_id,
       const ObLocationSchema *&schema) const;
-  // location
+  // location 
   int add_locations(const common::ObIArray<ObLocationSchema> &location_schemas);
   int add_location(const ObLocationSchema &location_schema);
   int del_location(const ObTenantLocationId &id);
@@ -686,9 +649,6 @@ public:
       const uint64_t tenant_id,
       common::ObIArray<const ObSimpleTableSchemaV2 *> &schema_array) const;
   #undef GET_TABLE_SCHEMAS_IN_DST_SCHEMA_FUNC_DECLARE
-  int get_vector_index_schemas_in_tenant(
-      const uint64_t tenant_id,
-      common::ObIArray<const ObSimpleTableSchemaV2 *> &schema_array) const;
   int get_primary_table_schema_in_tablegroup(
       const uint64_t tenant_id,
       const uint64_t tablegroup_id,

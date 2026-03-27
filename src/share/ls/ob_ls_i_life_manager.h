@@ -42,7 +42,6 @@ class ObMySQLResult;
 namespace share
 {
 class ObLSID;
-struct ObLSStatusInfo;
 
 #define ALL_LS_EVENT_ADD(tenant_id, ls_id, event, ret, sql, args...)\
   do {\
@@ -81,66 +80,6 @@ enum ObLSStatus
   OB_LS_PRE_TENANT_DROPPING,//only for sys ls
   OB_LS_DROPPED,//for __all_ls
   OB_LS_MAX_STATUS,
-};
-
-/**
- * @description:
- *    In order to let switchover switch the accessmode of all LS correctly, 
- *    when creating, deleting, and updating LS status, 
- *    it needs to be mutually exclusive with switchover status of __all_tenant_info
- */
-
-/*
- *log stream lifetime description:
- If an inner_table needs to be aware of the creation and deletion of the log stream; 
- or it needs to be an atomic transaction with the insertion and deletion of __all_ls_status.
- The operation of this internal table needs to inherit this class, implement the following two methods,
- and register it in the class of ObLSLifeAgentManager.
- The specific implementation can refer to ObLSRecoveryStatOperator
- * */
-class ObLSLifeIAgent
-{
-public:
-  ObLSLifeIAgent() {}
-  virtual ~ObLSLifeIAgent () {} 
-  //create new ls
-  virtual int create_new_ls(const ObLSStatusInfo &ls_info,
-                            const SCN &create_scn,
-                            const common::ObString &zone_priority,
-                            const share::ObTenantSwitchoverStatus &working_sw_status,
-                            ObMySQLTransaction &trans) = 0;
-  //drop ls
-  virtual int drop_ls(const uint64_t &tenant_id,
-                      const share::ObLSID &ls_id,
-                      const ObTenantSwitchoverStatus &working_sw_status,
-                      ObMySQLTransaction &trans) = 0;
-  //set ls to offline
-  virtual int set_ls_offline(const uint64_t &tenant_id,
-                      const share::ObLSID &ls_id,
-                      const share::ObLSStatus &ls_status,
-                      const SCN &drop_scn,
-                      const ObTenantSwitchoverStatus &working_sw_status,
-                      ObMySQLTransaction &trans) = 0;
-  //update ls primary zone
-  virtual int update_ls_primary_zone(
-      const uint64_t &tenant_id,
-      const share::ObLSID &ls_id,
-      const common::ObZone &primary_zone,
-      const common::ObString &zone_priority,
-      ObMySQLTransaction &trans) = 0;
-
-  /*
-   *description: The table related to the log stream status needs to be reported to the meta tenant or system tenant.
-   *param[in]: the ls's tenant_id
-   *return : need to operator's tenant_id
-   * */
-  static uint64_t get_exec_tenant_id(const uint64_t tenant_id)
-  {
-    return get_private_table_exec_tenant_id(tenant_id);
-  }
-
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObLSLifeIAgent);
 };
 
 /*

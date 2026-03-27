@@ -233,7 +233,6 @@ private:
       const uint64_t tenant_id,
       const ObLSID &ls_id);
   int try_clear_dropped_tenant_caches_();
-  int build_tenant_ls_info_hash_(ObTenantLsInfoHashMap &hash);
   int construct_rpc_dests_(common::ObIArray<common::ObAddr> &addrs);
   int detect_ls_leaders_(
       const common::ObIArray<common::ObAddr> &dests,
