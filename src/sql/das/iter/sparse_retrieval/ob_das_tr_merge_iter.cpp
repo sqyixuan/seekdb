@@ -503,7 +503,7 @@ int ObDASTRMergeIter::create_sparse_retrieval_iter()
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < dim_weights_.count(); ++i) {
           if (sr_iter_param_.dim_weights_->at(i) <= 0.0) {
-            ret = OB_NOT_SUPPORTED;
+            ret = OB_NOT_SUPPORTED; 
             LOG_WARN("not supported dim weight", K(ret), K(sr_iter_param_.dim_weights_->at(i)));
             LOG_USER_ERROR(OB_NOT_SUPPORTED, "token weight < 0 is");
           }
@@ -1002,38 +1002,30 @@ int ObDASTRMergeIter::inner_release()
   }
 
   for (int64_t i = 0; i < inv_scan_params_.count(); ++i) {
-    if (OB_NOT_NULL(inv_scan_params_[i])) {
-      inv_scan_params_[i]->destroy_schema_guard();
-      inv_scan_params_[i]->snapshot_.reset();
-      inv_scan_params_[i]->destroy();
-    }
+    inv_scan_params_[i]->destroy_schema_guard();
+    inv_scan_params_[i]->snapshot_.reset();
+    inv_scan_params_[i]->destroy();
   }
   inv_scan_params_.reset();
 
   for (int64_t i = 0; i < inv_agg_params_.count(); ++i) {
-    if (OB_NOT_NULL(inv_agg_params_[i])) {
-      inv_agg_params_[i]->destroy_schema_guard();
-      inv_agg_params_[i]->snapshot_.reset();
-      inv_agg_params_[i]->destroy();
-    }
+    inv_agg_params_[i]->destroy_schema_guard();
+    inv_agg_params_[i]->snapshot_.reset();
+    inv_agg_params_[i]->destroy();
   }
   inv_agg_params_.reset();
 
   for (int64_t i = 0; i < fwd_scan_params_.count(); ++i) {
-    if (OB_NOT_NULL(fwd_scan_params_[i])) {
-      fwd_scan_params_[i]->destroy_schema_guard();
-      fwd_scan_params_[i]->snapshot_.reset();
-      fwd_scan_params_[i]->destroy();
-    }
+    fwd_scan_params_[i]->destroy_schema_guard();
+    fwd_scan_params_[i]->snapshot_.reset();
+    fwd_scan_params_[i]->destroy();
   }
   fwd_scan_params_.reset();
 
   for (int64_t i = 0; i < block_max_scan_params_.count(); ++i) {
-    if (OB_NOT_NULL(block_max_scan_params_[i])) {
-      block_max_scan_params_[i]->destroy_schema_guard();
-      block_max_scan_params_[i]->snapshot_.reset();
-      block_max_scan_params_[i]->destroy();
-    }
+    block_max_scan_params_[i]->destroy_schema_guard();
+    block_max_scan_params_[i]->snapshot_.reset();
+    block_max_scan_params_[i]->destroy();
   }
   block_max_scan_params_.reset();
 
@@ -1225,7 +1217,7 @@ static int get_query_tokens_directly(ObString &query_str,
         LOG_WARN("failed to push boost", K(ret));
       }
     }
-  }
+  }  
   return ret;
 }
 
