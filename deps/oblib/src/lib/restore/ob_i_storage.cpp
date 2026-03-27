@@ -152,20 +152,10 @@ int get_storage_prefix_from_path(const common::ObString &uri, const char *&prefi
     prefix = OB_S3_PREFIX;
   } else if (uri.prefix_match(OB_FILE_PREFIX)) {
     prefix = OB_FILE_PREFIX;
+  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
+    prefix = OB_HDFS_PREFIX;
   } else if (uri.prefix_match(OB_AZBLOB_PREFIX)) {
     prefix = OB_AZBLOB_PREFIX;
-  } else if (uri.prefix_match(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    STORAGE_LOG(WARN, "OSS storage is not supported", K(ret), K(uri));
-  } else if (uri.prefix_match(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    STORAGE_LOG(WARN, "COS storage is not supported", K(ret), K(uri));
-  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    STORAGE_LOG(WARN, "HDFS storage is not supported", K(ret), K(uri));
   } else {
     ret = OB_INVALID_BACKUP_DEST;
     STORAGE_LOG(ERROR, "invalid backup uri", K(ret), K(uri));
@@ -827,9 +817,11 @@ static lib::ObMemAttr get_mem_attr_from_storage_info(const ObObjectStorageInfo *
 {
   static lib::ObMemAttr s3_attr;
   static lib::ObMemAttr nfs_attr;
+  static lib::ObMemAttr hdfs_attr;
   static lib::ObMemAttr default_attr;
   s3_attr.label_ = "S3_SDK";
   nfs_attr.label_ = "NFS_SDK";
+  hdfs_attr.label_ = "HDFS_SDK";
   default_attr.label_ = "OBJECT_STORAGE";
 
   lib::ObMemAttr ret_attr = default_attr;
@@ -839,6 +831,8 @@ static lib::ObMemAttr get_mem_attr_from_storage_info(const ObObjectStorageInfo *
       ret_attr = s3_attr;
     } else if (OB_STORAGE_FILE == type) {
       ret_attr = nfs_attr;
+    } else if (OB_STORAGE_HDFS == type) {
+      ret_attr = hdfs_attr;
     }
   }
   return ret_attr;
