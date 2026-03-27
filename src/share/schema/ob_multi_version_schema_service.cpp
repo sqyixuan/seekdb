@@ -135,11 +135,16 @@ void ObSchemaConstructTask::unlock()
 
 void ObSchemaConstructTask::wait(const int64_t version)
 {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec += 1;
   if (dbg_construct_task) {
     LOG_WARN_RET(OB_SUCCESS, "task: waiting", K(version), K(count()));
   }
-  // Use portable timed wait with relative timeout (1 second) to avoid clock drift issues on macOS
-  int rc = ob_pthread_cond_timedwait_us(&schema_cond_, &schema_mutex_, 1000000 /* 1 second */);
+  int rc = 0;
+  do {
+    rc = ob_pthread_cond_timedwait(&schema_cond_, &schema_mutex_, &ts);
+  } while (0);
   (void) rc; // make compiler happy
 }
 

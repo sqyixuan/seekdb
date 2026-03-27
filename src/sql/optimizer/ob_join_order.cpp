@@ -1624,7 +1624,7 @@ int ObJoinOrder::process_vec_index_info(const ObDMLStmt *stmt,
   ObSQLSessionInfo *session_info = NULL;
   ObIndexType index_type = INDEX_TYPE_MAX;
   bool is_ipivf = false;
-
+  
   if (OB_ISNULL(stmt) || OB_ISNULL(schema_guard = OPT_CTX.get_sql_schema_guard())
     || OB_ISNULL(session_info = OPT_CTX.get_session_info())) {
     ret = OB_ERR_UNEXPECTED;
@@ -1661,7 +1661,7 @@ int ObJoinOrder::process_vec_index_info(const ObDMLStmt *stmt,
       LOG_WARN("unexpected nullptr to index schema", K(ret));
     } else {
       is_ipivf = ObVectorIndexUtil::is_sindi_index(vec_index_schema);
-      ObVecIndexType pre_vec_type = (vec_index_schema->is_vec_hnsw_index() && helper.vec_index_type_ == ObVecIndexType::VEC_INDEX_ADAPTIVE_SCAN) ?
+      ObVecIndexType pre_vec_type = (vec_index_schema->is_vec_hnsw_index() && helper.vec_index_type_ == ObVecIndexType::VEC_INDEX_ADAPTIVE_SCAN) ? 
       ObVecIndexType::VEC_INDEX_ADAPTIVE_SCAN : ObVecIndexType::VEC_INDEX_PRE;
       if (index_schema->is_spatial_index()) {
         access_path.vec_idx_info_.vec_extra_info_.is_spatial_index_ = true;
@@ -1945,10 +1945,18 @@ int ObJoinOrder::init_sample_info_for_access_path(AccessPath *ap,
     // do nothing
     // sample scan doesn't support DML other than SELECT.
   } else {
+    const ObSelectStmt *stmt = static_cast<const ObSelectStmt *>(get_plan()->get_stmt());
     const SampleInfo *sample_info = table_item->sample_info_;
 
     if (sample_info != NULL) {
       ap->sample_info_ = *sample_info;
+      ap->sample_info_.table_id_ = ap->get_index_table_id();
+    } else if (get_plan()->get_optimizer_context().is_online_ddl() &&
+               get_plan()->get_optimizer_context().get_root_stmt()->is_insert_stmt() &&
+               !get_plan()->get_optimizer_context().is_heap_table_ddl()) {
+      ap->sample_info_.method_ = SampleInfo::SampleMethod::DDL_BLOCK_SAMPLE;
+      ap->sample_info_.scope_ = SampleInfo::SAMPLE_ALL_DATA;
+      ap->sample_info_.percent_ = (double)get_plan()->get_optimizer_context().get_px_object_sample_rate() / 1000;
       ap->sample_info_.table_id_ = ap->get_index_table_id();
     }
     ap->est_cost_info_.sample_info_ = ap->sample_info_;
@@ -13953,7 +13961,7 @@ int ObJoinOrder::check_partition_join_filter_valid(const DistAlgo join_dist_algo
     } else if (OB_ISNULL(info.sharding_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null sharding", K(ret));
-    } else if (((DIST_PARTITION_NONE != join_dist_algo && DIST_PARTITION_HASH_LOCAL != join_dist_algo) ||
+    } else if (((DIST_PARTITION_NONE != join_dist_algo && DIST_PARTITION_HASH_LOCAL != join_dist_algo) || 
                 right_path.get_strong_sharding() != info.sharding_ ) &&
                NULL == info.force_part_filter_ &&
                info.sharding_->get_part_cnt() < 1000) {
@@ -19052,7 +19060,7 @@ int ObJoinOrder::get_vector_index_tid_from_expr(ObSqlSchemaGuard *schema_guard,
       const ObColumnRefRawExpr *col_ref = ObRawExprUtils::get_column_ref_expr_recursively(tmp_expr);
       if (OB_NOT_NULL(col_ref)) {
         column_exist = true;
-
+        
         if (col_ref->get_table_id() == table_id
             && OB_NOT_NULL(tmp_index_col = table_schema->get_column_schema(col_ref->get_column_id()))) {
           if (OB_FAIL(ObVectorIndexUtil::check_column_has_vector_index(*table_schema,
@@ -19633,9 +19641,9 @@ int ObJoinOrder::get_query_tokens_by_boolean_mode(ObMatchFunRawExpr *match_expr,
           if (OB_FAIL(ob_write_string(*allocator_, token, token_string))) {
             LOG_WARN("failed to deep copy query token", K(ret));
           } else if (OB_FAIL(ObRawExprUtils::build_const_string_expr(*OPT_CTX.get_exec_ctx()->get_expr_factory(),
-                                                                    ObVarcharType,
-                                                                    token_string,
-                                                                    cs_type,
+                                                                    ObVarcharType, 
+                                                                    token_string, 
+                                                                    cs_type, 
                                                                     token_expr))) {
             LOG_WARN("failed to build const string expr", K(ret));
           } else if (OB_FAIL(query_tokens.push_back(token_expr))) {

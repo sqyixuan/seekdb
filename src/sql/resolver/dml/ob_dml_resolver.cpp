@@ -2969,11 +2969,6 @@ int ObDMLResolver::resolve_basic_table_without_cte(const ParseNode &parse_tree, 
           LOG_WARN("resolve sample clause failed", K(ret));
         } else { }
       }
-      if (OB_SUCC(ret) && NULL == table_item->sample_info_) {
-        if (OB_FAIL(generate_ddl_sample_info_if_needed(*table_item))) {
-          LOG_WARN("failed to generate ddl sample info", K(ret));
-        }
-      }
       //resolve flashback query node
       if (OB_SUCCESS == ret && time_node != NULL) {
         if (OB_FAIL(resolve_flashback_query_node(time_node, table_item))) {
@@ -3685,7 +3680,7 @@ int ObDMLResolver::build_column_schemas_for_csv(const ObExternalFileFormat &form
                                                       sampled_file_name.after('%') : sampled_file_name;
     ObSqlString full_file_name;
     const bool has_trailing_slash = file_location.empty() ? false : (file_location[file_location.length()-1] == '/');
-    if (OB_FAIL(full_file_name.append_fmt("%.*s%s%.*s",
+    if (OB_FAIL(full_file_name.append_fmt("%.*s%s%.*s", 
                                         file_location.length(), file_location.ptr(),
                                         has_trailing_slash ? "" : "/",
                                         file_name.length(), file_name.ptr()))) {
@@ -4085,12 +4080,12 @@ int ObDMLResolver::set_basic_info_for_mocked_table(ObTableSchema &table_schema,
       LOG_WARN("failed to resolve external file location object", K(ret));
     }
   } else {
-    if (ObExternalFileFormat::ODPS_FORMAT != format.format_type_ &&
+    if (ObExternalFileFormat::ODPS_FORMAT != format.format_type_ && 
         OB_FAIL(ObDDLResolver::resolve_external_file_location(params_, table_schema, table_location))) {
       LOG_WARN("failed to resolve external file location", K(ret));
     }
   }
-
+  
   if (OB_SUCC(ret)) {
     if (OB_FAIL(temp_str.assign_fmt("temp_external_%lu", new_table_id))) {
       LOG_WARN("failed to assign table name", K(ret));
@@ -4108,7 +4103,7 @@ int ObDMLResolver::set_basic_info_for_mocked_table(ObTableSchema &table_schema,
       table_schema.set_schema_version(schema_version);
     }
   }
-
+  
   return ret;
 } 
 
@@ -4196,7 +4191,7 @@ int ObDMLResolver::build_mocked_external_table_schema(const ParseNode *location_
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected child num", K(location_node->children_[0]->num_child_));
           } else if(OB_NOT_NULL(location_node->children_[0]->children_[1])) {
-            sub_path = ObString(location_node->children_[0]->children_[1]->str_len_,
+            sub_path = ObString(location_node->children_[0]->children_[1]->str_len_, 
               location_node->children_[0]->children_[1]->str_value_).trim_space_only();
           }
         }
@@ -8733,7 +8728,7 @@ int ObDMLResolver::get_ddl_schema_in_insert_into_select_clause(const ObTableSche
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected error, insert stmt is nullptr or hasn't table item", K(ret), KPC(insert_stmt));
       } else if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
-                                                           insert_stmt->get_table_item(0)->ddl_table_id_,
+                                                           insert_stmt->get_table_item(0)->ddl_table_id_, 
                                                            ddl_table_schema))) {
         LOG_WARN("fail to get ddl table schema", K(ret), K(insert_stmt->get_table_item(0)->ddl_table_id_));
       } else if (OB_ISNULL(ddl_table_schema)) {
@@ -11108,45 +11103,6 @@ int ObDMLResolver::resolve_sample_clause(const ParseNode *sample_node,
     }
   }
 
-  return ret;
-}
-
-int ObDMLResolver::generate_ddl_sample_info_if_needed(TableItem &table_item)
-{
-  int ret = OB_SUCCESS;
-  if (stmt_->is_select_stmt() &&
-      session_info_->get_ddl_info().is_ddl() &&
-      params_.resolver_scope_stmt_type_ == T_INSERT &&
-      !session_info_->get_ddl_info().is_heap_table_ddl()) {
-    void *buf = allocator_->alloc(sizeof(SampleInfo));
-    if (OB_ISNULL(buf)) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to allocate memory for sample info", K(ret));
-    } else {
-      SampleInfo *sample_info = new(buf) SampleInfo();
-      sample_info->method_ = SampleInfo::SampleMethod::DDL_BLOCK_SAMPLE;
-      sample_info->scope_ = SampleInfo::SAMPLE_ALL_DATA;
-      int64_t px_object_sample_rate = 0;
-      omt::ObTenantConfigGuard tenant_config(TENANT_CONF(session_info_->get_effective_tenant_id()));
-      if (tenant_config.is_valid()) {
-        px_object_sample_rate = tenant_config->_px_object_sampling;
-      }
-      sample_info->percent_ = (double)px_object_sample_rate / 1000;
-      sample_info->table_id_ = table_item.table_id_;
-      // Check if target table is FTS or vector index via upper_insert_resolver_
-      if (OB_NOT_NULL(upper_insert_resolver_)) {
-        const ObTableSchema *ddl_table_schema = NULL;
-        int tmp_ret = OB_SUCCESS;
-        if (OB_SUCCESS != (tmp_ret = upper_insert_resolver_->get_ddl_schema_in_insert_into_select_clause(ddl_table_schema))) {
-          LOG_WARN("get ddl schema failed", K(tmp_ret));
-        } else if (OB_NOT_NULL(ddl_table_schema) &&
-                   (ddl_table_schema->is_fts_index() || ddl_table_schema->is_vec_index())) {
-          sample_info->method_ = SampleInfo::SampleMethod::HYBRID_SAMPLE;
-        }
-      }
-      table_item.sample_info_ = sample_info;
-    }
-  }
   return ret;
 }
 
@@ -17382,7 +17338,7 @@ int ObDMLResolver::resolve_match_against_expr_with_match_phrase_mode(ObRawExpr *
     LOG_WARN("fail to push back expr", K(ret));
   } else if (OB_FAIL(substr_param_exprs.push_back(const_str_expr))) {
     LOG_WARN("fail to push back expr", K(ret));
-  } else if (OB_FAIL(ObRawExprUtils::create_concat_expr(*params_.expr_factory_,
+  } else if (OB_FAIL(ObRawExprUtils::create_concat_expr(*params_.expr_factory_, 
                                                         params_.session_info_,
                                                         substr_param_exprs,
                                                         concat_text_expr))) {
@@ -17484,7 +17440,7 @@ int ObDMLResolver::resolve_match_against_expr_with_match_phrase_mode(ObRawExpr *
     LOG_WARN("fail to formalize expr", K(ret));
   } else if (FALSE_IT(result_op = and_op)) {
     LOG_WARN("fail to formalize expr", K(ret));
-  }
+  } 
   ObRawExprReplacer replacer;
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(replacer.add_replace_expr(need_replace_expr, result_op))) {
@@ -17587,8 +17543,8 @@ int ObDMLResolver::resolve_es_match_expr(ObMatchFunRawExpr &expr)
       } else if (!table_item->is_basic_table()) {
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "match against column on non-base table");
-      } else if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
-                                                           table_item->ref_id_,
+      } else if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(), 
+                                                           table_item->ref_id_, 
                                                            table_schema))) {
         LOG_WARN("failed to get main table schema", K(ret));
       } else if (OB_ISNULL(table_schema)) {
