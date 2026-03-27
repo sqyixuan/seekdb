@@ -6,26 +6,6 @@ set(CPACK_ARCHIVE_THREADS 1)
 # Archive generator uses CPACK_ARCHIVE_COMPONENT_INSTALL for component packages.
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
 
-# Strip binaries to reduce package size
-# Note: CPACK_STRIP_FILES doesn't work for Archive generator, use PRE_BUILD_SCRIPTS instead
-# Create a script to strip binaries before packaging
-# With component install, binaries are in <component>/usr/bin/ subdirectories
-file(WRITE ${CMAKE_BINARY_DIR}/cpack_strip.cmake
-"message(STATUS \"Stripping binaries in \${CPACK_TEMPORARY_DIRECTORY}...\")
-file(GLOB_RECURSE BINARIES \"\${CPACK_TEMPORARY_DIRECTORY}/*/usr/bin/*\")
-foreach(BINARY \${BINARIES})
-  if(NOT IS_SYMLINK \${BINARY} AND NOT IS_DIRECTORY \${BINARY})
-    message(STATUS \"  Stripping \${BINARY}\")
-    execute_process(
-      COMMAND strip \${BINARY}
-      RESULT_VARIABLE STRIP_RESULT
-      ERROR_QUIET
-    )
-  endif()
-endforeach()
-")
-set(CPACK_PRE_BUILD_SCRIPTS ${CMAKE_BINARY_DIR}/cpack_strip.cmake)
-
 set(CPACK_TGZ_FILE_NAME "TGZ-DEFAULT")
 set(CMAKE_INSTALL_LIBDIR "lib64")
 
