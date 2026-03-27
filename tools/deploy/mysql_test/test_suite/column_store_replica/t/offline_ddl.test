@@ -1,0 +1,137 @@
+# owner: ouyanghongrong.oyh
+# owner group: STORAGE
+# description: test column store replica offline ddl
+
+# --------------------------------------------------------------------------
+# step 1: create tenant with column store replica locality
+# --------------------------------------------------------------------------
+let $unit1 = unit_1;
+let $pool1 = pool_1;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection obsys;
+--disable_warnings
+--disable_query_log
+#eval CREATE RESOURCE UNIT if not exists $unit1 MAX_CPU=1, MEMORY_SIZE='2G';
+#eval create resource pool if not exists $pool1 unit='$unit1', unit_num = 1, zone_list = ('$z1', '$z2');
+#eval create tenant tenant1 resource_pool_list=('$pool1'), replica_num=2, zone_list=('$z1','$z2'), locality = 'F@$z1, C@$z2' set ob_tcp_invited_nodes='%';
+--enable_query_log
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn1;
+
+# --------------------------------------------------------------------------
+# step 2: create table, prepare data and do offline ddl
+# --------------------------------------------------------------------------
+--disable_query_log
+--disable_warnings
+drop table if exists test_row_store;
+set ob_query_timeout = 1000000000;
+--enable_warnings
+--enable_query_log
+
+create table test_row_store (k int primary key, v1 int, v2 int);
+insert into test_row_store values (1, 1, 1);
+insert into test_row_store values (2, 2, 2);
+insert into test_row_store values (3, 3, 3);
+select * from test_row_store order by k;
+
+alter table test_row_store modify v1 decimal(10, 1);
+
+# --------------------------------------------------------------------------
+# step 3: try weak consistency read from C replica
+# --------------------------------------------------------------------------
+connection obsys;
+let $z2_ip         = query_get_value(select svr_ip     from oceanbase.__all_virtual_server_stat, svr_ip,     1); 
+let $z2_mysql_port = query_get_value(select sql_port from oceanbase.__all_virtual_server_stat, sql_port, 1);
+connect (conn2,$z2_ip,root,'',test, $z2_mysql_port);
+connection conn2;
+select count(*) from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ count(*) from test_row_store order by k;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+--error 4515
+#select /*+READ_CONSISTENCY(WEAK)+*/ count(*) from test_row_store order by k;
+
+connection conn1;
+select * from test_row_store order by k;
+select k, v1 from test_row_store order by k;
+select avg(k), avg(v1), avg(v2) from test_row_store;
+
+connection conn2;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+set ob_route_policy=READONLY_ZONE_FIRST;
+insert into test_row_store values (6, 6, 6);
+delete from test_row_store where k = 1;
+update test_row_store set v1 = v2 * 10 where k > 1;
+sleep 2;
+
+connection conn1;
+select * from test_row_store order by k;
+select k, v1 from test_row_store order by k;
+select avg(k), avg(v1), avg(v2) from test_row_store;
+
+connection conn2;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+# --------------------------------------------------------------------------
+# step 4: try weak consistency read from C replica after online ddl 
+# --------------------------------------------------------------------------
+connection conn1;
+alter table test_row_store add column v3 int default 10086;
+
+connection conn1;
+select * from test_row_store order by k;
+select k, v1 from test_row_store order by k;
+select avg(k), avg(v1), avg(v2) from test_row_store;
+
+connection conn2;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+set ob_route_policy=READONLY_ZONE_FIRST;
+insert into test_row_store values (7, 7, 7, 7);
+delete from test_row_store where k = 1;
+update test_row_store set v1 = v2 * 10 where k > 2;
+sleep 2;
+
+connection conn1;
+select * from test_row_store order by k;
+select k, v1 from test_row_store order by k;
+select avg(k), avg(v1), avg(v2) from test_row_store;
+
+connection conn2;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+set ob_route_policy=COLUMN_STORE_ONLY;
+#select /*+READ_CONSISTENCY(WEAK)+*/ * from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ k, v1 from test_row_store order by k;
+#select /*+READ_CONSISTENCY(WEAK)+*/ avg(k), avg(v1), avg(v2) from test_row_store;
+
+connection obsys;
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+
+select "Finish";
