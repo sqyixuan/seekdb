@@ -64,7 +64,7 @@ public:
     SKIP_EMBEDDING = 1       // Empty/Null text case
   };
 
-  ObEmbeddingResult()
+  ObEmbeddingResult() 
     : extra_values_(), vector_(nullptr), vector_dim_(0), text_(), status_(NEED_EMBEDDING) {}
 
   ~ObEmbeddingResult() {
@@ -72,8 +72,8 @@ public:
   }
 
   common::ObString get_text() const { return text_; }
-  int set_text(const blocksstable::ObStorageDatum &text, ObArenaAllocator &allocator);
-
+  void set_text(const common::ObString &text) { text_ = text; }
+  
   // Deep copy extra non-embedding columns
   int set_extra_cols(const common::ObArray<blocksstable::ObStorageDatum> &src_extras, ObArenaAllocator &allocator);
   const common::ObArray<blocksstable::ObStorageDatum>& get_extra_cols() const { return extra_values_; }
@@ -101,7 +101,7 @@ private:
 class ObTaskBatchInfo
 {
 public:
-  ObTaskBatchInfo()
+  ObTaskBatchInfo() 
     : allocator_("TaskBatch", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       results_(),
       batch_size_(0),
@@ -109,22 +109,23 @@ public:
       vec_dim_(0),
       need_embedding_count_(0)
   {}
-
+  
   ~ObTaskBatchInfo() {
     reset();
   }
 
   int init(const int64_t batch_size, const int64_t vec_dim);
-
+  
   // Add an item during batching phase (deep copy to allocator)
-  int add_item(const blocksstable::ObStorageDatum &text,
-               const common::ObArray<blocksstable::ObStorageDatum> &extras);
+  int add_item(const common::ObString &text,
+               const common::ObArray<blocksstable::ObStorageDatum> &extras,
+               const ObEmbeddingResult::EmbeddingStatus status);
   int64_t get_count() const { return current_count_; }
   int64_t get_need_embedding_count() const { return need_embedding_count_; }
   bool is_full() const { return current_count_ >= batch_size_; }
   common::ObArray<ObEmbeddingResult*>& get_results() { return results_; }
   void reset();
-
+  
   TO_STRING_KV(K_(batch_size), K_(current_count), K_(need_embedding_count), K_(vec_dim), "results_count", results_.count());
 
 private:
@@ -134,7 +135,7 @@ private:
   int64_t current_count_;
   int64_t vec_dim_;
   int64_t need_embedding_count_;
-
+  
   DISALLOW_COPY_AND_ASSIGN(ObTaskBatchInfo);
 };
 
@@ -142,7 +143,7 @@ struct Slot
 {
 public:
   Slot() : task_(nullptr), batch_info_(nullptr), ready_(false), ret_code_(0) {}
-
+  
   ~Slot() {
     reset();
   }
@@ -161,7 +162,7 @@ public:
 class ObTaskSlotRing
 {
 public:
-  ObTaskSlotRing() : lock_(), capacity_(0), slots_(), next_idx_(0), head_idx_(0) {}
+  ObTaskSlotRing() : lock_(), capacity_(1), slots_(), next_idx_(0), head_idx_(0) {}
   ~ObTaskSlotRing();
 
   int init(const int64_t capacity);
@@ -171,27 +172,27 @@ public:
   int mark_ready(const int64_t slot_idx, const int ret_code);
   // Pop ready batch_info
   int pop_ready_in_order(ObTaskBatchInfo *&batch_info, int &ret_code);
-  int wait_for_head_completion();
+  int wait_for_head_completion(const int64_t timeout_us);
   void set_task(const int64_t slot_idx, share::ObEmbeddingTask *task);
   void set_batch_info(const int64_t slot_idx, ObTaskBatchInfo *batch_info);
-
+  
   // Cleanup operations
   void disable_all_callbacks();
   void clean_all_slots();
-  int wait_all_tasks_finished();
-
+  int wait_all_tasks_finished(const int64_t timeout_us);
+  
   TO_STRING_KV(K_(capacity), K_(next_idx), K_(head_idx));
 
 private:
   void reset();
-
+  
 private:
   common::ObSpinLock lock_;
   int64_t capacity_;
   common::ObArray<Slot> slots_;
   int64_t next_idx_;  // Next slot to write
   int64_t head_idx_;  // Next slot to read
-
+  
   DISALLOW_COPY_AND_ASSIGN(ObTaskSlotRing);
 };
 
@@ -229,7 +230,7 @@ public:
   void release();
 
   TO_STRING_KV(K_(ref_cnt), K_(disabled), K_(cb));
-
+  
 private:
   int64_t ref_cnt_;
   bool disabled_;
@@ -242,13 +243,13 @@ class ObEmbeddingTaskMgr
 public:
   ObEmbeddingTaskMgr() : allocator_("EmbedTaskMgr", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
                          embedding_handler_(nullptr), slot_ring_(), ring_capacity_(9),
-                         cfg_(), is_inited_(false), is_failed_(false) {}
+                         cfg_(), is_inited_(false), is_failed_(false), http_timeout_us_(0) {}
   ~ObEmbeddingTaskMgr();
-  int init(const common::ObString &model_id);
+  int init(const common::ObString &model_id, const int64_t http_timeout_us);
   int submit_batch_info(ObTaskBatchInfo *&batch_info);
   int get_ready_batch_info(ObTaskBatchInfo *&batch_info, int &error_ret_code);
   int mark_task_ready(const int64_t slot_idx, const int ret_code);
-  int wait_for_completion();
+  int wait_for_completion(const int64_t timeout_ms = 0);
   bool get_failed() const { return is_failed_; }
 
   TO_STRING_KV(K_(ring_capacity), K_(slot_ring), K_(cfg), K_(is_inited));
@@ -261,12 +262,11 @@ private:
   ObArenaAllocator allocator_;
   share::ObEmbeddingTaskHandler *embedding_handler_;
   ObTaskSlotRing slot_ring_;  // Ring buffer for task slots
-  int64_t ring_capacity_;  // TODO(fanfangyao.ffy): To be tuned
+  int64_t ring_capacity_;  // TODO(fanfangyao.ffy): 待调参
   ObEmbeddingConfig cfg_;
   bool is_inited_;
   bool is_failed_;
-  int64_t model_request_timeout_us_; //For controlling the maximum timeout of calling model http service
-  int64_t model_max_retries_; //For controlling the maximum retries of calling model http service
+  int64_t http_timeout_us_;
   DISALLOW_COPY_AND_ASSIGN(ObEmbeddingTaskMgr);
 };
 
