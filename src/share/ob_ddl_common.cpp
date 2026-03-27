@@ -18,7 +18,6 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_ddl_common.h"
-#include "share/ob_rpc_struct.h"
 #include "logservice/ob_log_service.h" // for ObLogService
 #include "share/ob_ddl_checksum.h"
 #include "share/ob_ddl_sim_point.h"
@@ -837,21 +836,8 @@ int ObDDLUtil::generate_spatial_index_column_names(const ObTableSchema &dest_tab
     uint64_t geo_col_id = OB_INVALID_ID;
     ObArray<ObColDesc> column_ids;
     const ObColumnSchemaV2 *column_schema = nullptr;
-    if (column_names.count() > select_column_ids.count()) {
-      for (int64_t i = 0; OB_SUCC(ret) && i < column_names.count(); ++i) {
-        if (OB_ISNULL(column_schema = source_table_schema.get_column_schema(column_names.at(i).column_name_))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("error unexpected, column schema must not be nullptr", K(ret));
-        } else if (is_contain(select_column_ids, static_cast<int64_t>(column_schema->get_column_id()))) {
-          // do nothing
-        } else if (OB_FAIL(select_column_ids.push_back(column_schema->get_column_id()))) {
-          LOG_WARN("push back select column id failed", K(ret));
-        }
-      }
-    }
     // get dest table column names
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(dest_table_schema.get_column_ids(column_ids))) {
+    if (OB_FAIL(dest_table_schema.get_column_ids(column_ids))) {
       LOG_WARN("fail to get column ids", K(ret));
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < column_ids.count(); ++i) {
@@ -1596,7 +1582,7 @@ int ObDDLUtil::report_ddl_sstable_checksum(
 {
   int ret = OB_SUCCESS;
   ObSSTableMetaHandle sst_meta_hdl;
-  if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || OB_INVALID_ID == target_table_id ||
+  if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || OB_INVALID_ID == target_table_id || 
                    execution_id < 0 || ddl_task_id < 0 || tenant_data_version < 0 || nullptr == first_major_sstable ||
                    !tablet_handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -1758,9 +1744,9 @@ int ObDDLUtil::init_inc_macro_block_writer(
 }
 
 OB_INLINE int check_lob_column_inrow(
-    char *ptr,
-    uint32_t len,
-    const int64_t lob_inrow_threshold,
+    char *ptr, 
+    uint32_t len, 
+    const int64_t lob_inrow_threshold, 
     bool &is_inrow)
 {
   int ret = OB_SUCCESS;
@@ -1776,7 +1762,7 @@ OB_INLINE int check_lob_column_inrow(
 
 OB_INLINE int check_skip_handle_lob_column(
     const ObDatum &datum,
-    const int64_t lob_inrow_threshold,
+    const int64_t lob_inrow_threshold, 
     bool &can_skip)
 {
   int ret = OB_SUCCESS;
@@ -1791,7 +1777,7 @@ OB_INLINE int check_skip_handle_lob_column(
 int check_skip_handle_lob_column(
     ObIVector *vector,
     const int64_t row_count,
-    const int64_t lob_inrow_threshold,
+    const int64_t lob_inrow_threshold, 
     bool &can_skip)
 {
   int ret = OB_SUCCESS;
@@ -1806,9 +1792,9 @@ int check_skip_handle_lob_column(
       if (!nulls->is_all_true(row_count)) {
         for (int64_t j = 0; OB_SUCC(ret) && can_skip && j < row_count; ++j) {
           if (!nulls->at(j)) {
-            if (OB_FAIL(check_lob_column_inrow(data + offsets[j],
-                                               offsets[j + 1] - offsets[j],
-                                               lob_inrow_threshold,
+            if (OB_FAIL(check_lob_column_inrow(data + offsets[j], 
+                                               offsets[j + 1] - offsets[j], 
+                                               lob_inrow_threshold, 
                                                can_skip))) {
               LOG_WARN("fail to check lob column inrow", K(ret), K(j), KP(data), K(offsets[j]), K(offsets[j + 1]));
             }
@@ -1839,8 +1825,8 @@ int check_skip_handle_lob_column(
       for (int64_t j = 0; OB_SUCC(ret) && can_skip && j < row_count; ++j) {
         const ObDatum &datum = datums[j];
         if (!datum.is_null()) {
-          if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_),
-                                             datum.len_,
+          if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_), 
+                                             datum.len_, 
                                              lob_inrow_threshold,
                                              can_skip))) {
             LOG_WARN("fail to check lob column inrow", K(ret), K(j), K(datum));
@@ -1853,9 +1839,9 @@ int check_skip_handle_lob_column(
       ObUniformBase *uniform_vec = static_cast<ObUniformBase *>(vector);
       const ObDatum &datum = uniform_vec->get_datums()[0];
       if (!datum.is_null()) {
-        if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_),
-                                           datum.len_,
-                                           lob_inrow_threshold,
+        if (OB_FAIL(check_lob_column_inrow(const_cast<char *>(datum.ptr_), 
+                                           datum.len_, 
+                                           lob_inrow_threshold, 
                                            can_skip))) {
           LOG_WARN("fail to check lob column inrow", K(ret), K(datum));
         }
@@ -1971,7 +1957,7 @@ int ObDDLUtil::handle_lob_columns(
     ObDatumRow &datum_row)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
                   slice_idx < 0 ||
                   !param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -2037,8 +2023,8 @@ int ObDDLUtil::handle_lob_column(
 {
   int ret = OB_SUCCESS;
   lob_cells.reuse();
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
-                  slice_idx < 0 ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
+                  slice_idx < 0 || 
                   !param.is_valid() ||
                   !selector.is_valid() ||
                   nullptr == vector)) {
@@ -2197,9 +2183,9 @@ int ObDDLUtil::handle_lob_columns(
     ObBatchDatumRows &batch_rows)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!tablet_id.is_valid() ||
+  if (OB_UNLIKELY(!tablet_id.is_valid() || 
                   slice_idx < 0 ||
-                  !param.is_valid() ||
+                  !param.is_valid() || 
                   batch_rows.row_count_ <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tablet_id), K(slice_idx), K(param), K(batch_rows.row_count_));
@@ -2208,7 +2194,7 @@ int ObDDLUtil::handle_lob_columns(
     const ObDDLTableSchema &ddl_table_schema = param.ddl_table_schema_;
     const int64_t row_count = batch_rows.row_count_;
     const int64_t lob_inrow_threshold = ddl_table_schema.table_item_.lob_inrow_threshold_;
-    ObBatchSelector selector(static_cast<int64_t>(0), batch_rows.row_count_);
+    ObBatchSelector selector(0L, batch_rows.row_count_);
     ObArray<std::pair<char **, uint32_t *>> lob_cells;
     for (int64_t i = 0; OB_SUCC(ret) && i < ddl_table_schema.lob_column_idxs_.count(); i++) {
       const int64_t idx = ddl_table_schema.lob_column_idxs_.at(i);
@@ -2223,8 +2209,8 @@ int ObDDLUtil::handle_lob_columns(
           LOG_WARN("fail to check skip handle lob column", K(ret));
         } else if (!can_skip) {
           const ObColumnSchemaItem &column_schema_item = ddl_table_schema.column_items_.at(idx);
-          if (OB_FAIL(ObDDLUtil::handle_lob_column(tablet_id,
-                                                   slice_idx,
+          if (OB_FAIL(ObDDLUtil::handle_lob_column(tablet_id, 
+                                                   slice_idx, 
                                                    param,
                                                    false, // need_all_cells
                                                    lob_cells,
@@ -2294,7 +2280,7 @@ int ObDDLUtil::check_null_and_length(
         const ObIVector *vector = batch_rows.vectors_[col_idx];
         const VectorFormat format = vector->get_format();
         switch (format) {
-          case VEC_FIXED:
+          case VEC_FIXED: 
           {
             const ObFixedLengthBase *vec = static_cast<const ObFixedLengthBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2303,7 +2289,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_CONTINUOUS:
+          case VEC_CONTINUOUS: 
           {
             const ObContinuousBase *vec = static_cast<const ObContinuousBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2312,7 +2298,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_DISCRETE:
+          case VEC_DISCRETE: 
           {
             const ObDiscreteBase *vec = static_cast<const ObDiscreteBase *>(vector);
             has_null = !vec->get_nulls()->is_all_false(row_count);
@@ -2321,7 +2307,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_UNIFORM:
+          case VEC_UNIFORM: 
           {
             const ObUniformBase *vec = static_cast<const ObUniformBase *>(vector);
             for (int64_t row_idx = 0; row_idx < row_count; row_idx++) {
@@ -2331,7 +2317,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          case VEC_UNIFORM_CONST:
+          case VEC_UNIFORM_CONST: 
           {
             const ObUniformBase *vec = static_cast<const ObUniformBase *>(vector);
             for (int64_t row_idx = 0; row_idx < row_count; row_idx++) {
@@ -2341,7 +2327,7 @@ int ObDDLUtil::check_null_and_length(
             }
             break;
           }
-          default:
+          default: 
           {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected vector format", KR(ret), K(format));
@@ -2967,7 +2953,7 @@ int ObDDLUtil::calc_snapshot_with_gts(
 }
 
 int ObDDLUtil::construct_domain_index_arg(const ObTableSchema *table_schema,
-    const ObTableSchema *&index_schema,
+    const ObTableSchema *index_schema,
     rootserver::ObDDLTask &task,
     ObCreateIndexArg &create_index_arg,
     ObDDLType &ddl_type)
@@ -3006,21 +2992,6 @@ int ObDDLUtil::construct_domain_index_arg(const ObTableSchema *table_schema,
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(root_service->get_ddl_service().get_tenant_schema_guard_with_version_in_inner_table(task.get_tenant_id(), new_schema_guard))) {
     LOG_WARN("failed to refresh schema guard", K(ret));
-  } else if (index_schema->is_vec_index_snapshot_data_type()) {
-    ObString domain_index_name;
-    if (OB_FAIL(ObPluginVectorIndexUtils::get_vector_index_prefix(*index_schema, domain_index_name))) {
-      LOG_WARN("failed to get domain index name", K(ret), KP(index_schema));
-    } else if (OB_FAIL(new_schema_guard.get_table_schema(index_schema->get_tenant_id(), index_schema->get_database_id(), domain_index_name, true, index_schema, create_index_arg.is_offline_rebuild_, false))) {
-      LOG_WARN("failed to get domain index schema", K(ret), K(domain_index_name));
-    } else if (OB_ISNULL(index_schema)) {
-      ret = OB_TABLE_NOT_EXIST;
-      LOG_WARN("get null domain table schema", K(ret), K(domain_index_name));
-    } else {
-      create_index_arg.index_type_ = index_schema->get_index_type();
-    }
-  }
-
-  if (OB_FAIL(ret)) {
   } else if (index_schema->is_vec_index()
              && OB_FAIL(share::ObVectorIndexUtil::get_vector_index_column_name(*table_schema, *index_schema, col_names))) {
     LOG_WARN("fail to get vector index column name", K(ret), K(index_schema));
@@ -3221,7 +3192,7 @@ int ObDDLUtil::get_task_ranges(
     const int64_t tablet_size,
     const int64_t hint_parallelism,
     common::ObArenaAllocator &allocator,
-    ObArray<blocksstable::ObDatumRange> &report_ranges)
+    ObArray<blocksstable::ObDatumRange> &report_ranges) 
 {
   int ret = OB_SUCCESS;
   ObFreezeInfo frozen_status;
@@ -3271,7 +3242,7 @@ int ObDDLUtil::get_task_ranges(
                                                           ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US,
                                                           ranges,
                                                           min(min(max(expected_task_count, 1), hint_parallelism), ObMacroDataSeq::MAX_PARALLEL_IDX + 1),
-                                                          allocator,
+                                                          allocator, 
                                                           multi_range_split_array))) {
       LOG_WARN("split multi ranges failed", K(ret));
       if (OB_REPLICA_NOT_READABLE == ret) {
@@ -3296,7 +3267,7 @@ int ObDDLUtil::get_task_ranges(
       }
     }
     if (OB_SUCC(ret)) {
-      FLOG_INFO("succeed to get range", K(ret), K(task_id), K(tablet_id), K(total_size),
+      FLOG_INFO("succeed to get range", K(ret), K(task_id), K(tablet_id), K(total_size), 
       K(hint_parallelism), K(expected_task_count), K(params), K(multi_range_split_array), K(report_ranges));
     }
   }
@@ -4209,7 +4180,7 @@ int ObDDLUtil::get_ddl_tx_timeout(const int64_t tablet_count, int64_t &ddl_tx_ti
 
 int64_t ObDDLUtil::get_default_ddl_rpc_timeout()
 {
-  return min(static_cast<int64_t>(20L * 60L * 1000L * 1000L), max(GCONF.rpc_timeout, static_cast<int64_t>(9 * 1000 * 1000L)));
+  return min(20L * 60L * 1000L * 1000L, max(GCONF.rpc_timeout, 9 * 1000 * 1000L));
 }
 
 
@@ -4237,7 +4208,7 @@ int ObDDLUtil::get_task_tablet_slice_count(const int64_t tenant_id,  const int64
     LOG_WARN("fail to get schedule info", K(ret), K(tenant_id), K(ddl_task_id));
   } else {
     for (int64_t i = 0; i < ddl_slice_info.part_ranges_.count() && OB_SUCC(ret); i++) {
-      int64_t tablet_slice_cnt = 0;
+      int64_t tablet_slice_cnt = 0; 
       const ObPxTabletRange &cur_part_range = ddl_slice_info.part_ranges_.at(i);
       const int64_t cur_tablet_id = cur_part_range.tablet_id_;
       if (0 == cur_tablet_id && 1 == ddl_slice_info.part_ranges_.count()) {
@@ -4473,7 +4444,6 @@ REPLACE_DDL_ARG_FUNC(obrpc::ObDropTableArg)
 REPLACE_DDL_ARG_FUNC(obrpc::ObDropIndexArg)
 REPLACE_DDL_ARG_FUNC(obrpc::ObRebuildIndexArg)
 REPLACE_DDL_ARG_FUNC(obrpc::ObTruncateTableArg)
-REPLACE_DDL_ARG_FUNC(obrpc::ObForkDatabaseArg)
 
 #undef REPLACE_DDL_ARG_FUNC
 
@@ -5098,9 +5068,9 @@ int64_t ObDDLUtil::get_real_parallelism(const int64_t parallelism, const bool is
 {
   int64_t real_parallelism = 0L;
   if (is_mv_refresh) {
-    real_parallelism = std::max(static_cast<int64_t>(2), parallelism);
+    real_parallelism = std::max(2L, parallelism);
   } else {
-    real_parallelism = std::min(oceanbase::ObMacroDataSeq::MAX_PARALLEL_IDX + 1, std::max(static_cast<int64_t>(1), parallelism));
+    real_parallelism = std::min(oceanbase::ObMacroDataSeq::MAX_PARALLEL_IDX + 1, std::max(1L, parallelism));
   }
   return real_parallelism;
 }
@@ -6311,7 +6281,7 @@ int ObCheckTabletDataComplementOp::do_check_tablets_merge_status(
     rootserver::ObCheckTabletMergeStatusProxy proxy(*rpc_proxy,
         &obrpc::ObSrvRpcProxy::check_ddl_tablet_merge_status);
     obrpc::ObDDLCheckTabletMergeStatusArg arg;
-    const int64_t rpc_timeout = max(GCONF.rpc_timeout, static_cast<int64_t>(1000L * 1000L * 9L));
+    const int64_t rpc_timeout = max(GCONF.rpc_timeout, 1000L * 1000L * 9L);
 
     for (int64_t i = 0; OB_SUCC(ret) && i < tablet_ids.count(); ++i) {
       const ObTabletID &tablet_id = tablet_ids.at(i);
@@ -6797,7 +6767,7 @@ int ObCODDLUtil::is_rowkey_based_co_sstable(
   return ret;
 }
 
-int ObDDLUtil::is_ls_leader(ObLS &ls, bool &is_leader)
+int ObDDLUtil::is_ls_leader(ObLS &ls, bool &is_leader) 
 {
   int ret = OB_SUCCESS;
   ObRole role;

@@ -42,7 +42,6 @@ struct ObTruncateTableArg;
 struct ObCreateIndexArg;
 struct ObIndexArg;
 struct ObForkTableArg;
-struct ObForkDatabaseArg;
 }
 namespace sql
 {
@@ -1305,7 +1304,6 @@ public:
   static int replace_user_tenant_id(const uint64_t tenant_id, obrpc::ObTruncateTableArg &trucnate_table_arg);
   static int replace_user_tenant_id(const uint64_t tenant_id, obrpc::ObCreateIndexArg &create_index_arg);
   static int replace_user_tenant_id(const uint64_t tenant_id, obrpc::ObForkTableArg &fork_table_arg);
-  static int replace_user_tenant_id(const uint64_t tenant_id, obrpc::ObForkDatabaseArg &fork_database_arg);
 
   static int generate_column_name_str(
     const common::ObIArray<ObColumnNameInfo> &column_names,
@@ -1494,7 +1492,7 @@ public:
       const ObTableSchema &data_table_schema,
       int64_t &new_fetched_snapshot);
   static int construct_domain_index_arg(const ObTableSchema *table_schema,
-    const ObTableSchema *&index_schema,
+    const ObTableSchema *index_schema,
     rootserver::ObDDLTask &task,
     obrpc::ObCreateIndexArg &create_index_arg,
     ObDDLType &ddl_type);

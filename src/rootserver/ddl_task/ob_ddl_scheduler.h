@@ -460,8 +460,7 @@ private:
       const uint64_t tenant_data_version,
       ObIAllocator &allocator,
       ObDDLTaskRecord &task_record,
-      const int64_t snapshot_version,
-      const bool ddl_need_retry_at_executor = false);
+      const int64_t snapshot_version);
   int create_constraint_task(
       common::ObISQLClient &proxy,
       const share::schema::ObTableSchema *table_schema,

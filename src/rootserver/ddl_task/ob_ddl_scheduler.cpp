@@ -1341,8 +1341,7 @@ int ObDDLScheduler::create_ddl_task(const ObCreateDDLTaskParam &param,
                                                 param.tenant_data_version_,
                                                 *param.allocator_,
                                                 task_record,
-                                                param.new_snapshot_version_,
-                                                param.ddl_need_retry_at_executor_))) {
+                                                param.new_snapshot_version_))) {
           LOG_WARN("fail to create build vec index task", K(ret));
         }
         break;
@@ -2216,8 +2215,7 @@ int ObDDLScheduler::create_build_vec_index_task(
     const uint64_t tenant_data_version,
     ObIAllocator &allocator,
     ObDDLTaskRecord &task_record,
-    int64_t snapshot_version,
-    const bool ddl_need_retry_at_executor)
+    int64_t snapshot_version)
 {
   int ret = OB_SUCCESS;
   int64_t task_id = 0;
@@ -2247,8 +2245,7 @@ int ObDDLScheduler::create_build_vec_index_task(
                                        tenant_data_version,
                                        parent_task_id,
                                        share::ObDDLTaskStatus::PREPARE,
-                                       snapshot_version,
-                                       !ddl_need_retry_at_executor))) {
+                                       snapshot_version))) {
       LOG_WARN("init fts index task failed", K(ret), K(data_table_schema), K(index_schema));
     } else if (OB_FAIL(index_task.set_trace_id(*ObCurTraceId::get_trace_id()))) {
       LOG_WARN("set trace id failed", K(ret));

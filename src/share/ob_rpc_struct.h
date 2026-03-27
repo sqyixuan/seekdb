@@ -2630,30 +2630,6 @@ public:
   int64_t session_id_;
 };
 
-struct ObForkDatabaseArg : public ObDDLArg
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObForkDatabaseArg():
-      ObDDLArg(),
-      tenant_id_(common::OB_INVALID_ID),
-      src_database_name_(),
-      dst_database_name_(),
-      if_not_exist_(false),
-      session_id_(0)
-  {}
-  bool is_valid() const;
-  virtual bool is_allow_when_upgrade() const { return true; }
-  int assign(const ObForkDatabaseArg &other);
-  DECLARE_TO_STRING;
-
-  uint64_t tenant_id_;
-  common::ObString src_database_name_;
-  common::ObString dst_database_name_;
-  bool if_not_exist_;
-  int64_t session_id_;
-};
-
 struct ObOptimizeTableArg : public ObDDLArg
 {
   OB_UNIS_VERSION(1);
@@ -13063,8 +13039,8 @@ struct ObRevokeObjMysqlArg : public ObDDLArg
 
 public:
   ObRevokeObjMysqlArg() : ObDDLArg(), tenant_id_(common::OB_INVALID_ID), user_id_(common::OB_INVALID_ID),
-                            obj_name_(), obj_type_(common::OB_INVALID_ID),
-                            priv_set_(0), grant_(true),
+                            obj_name_(), obj_type_(common::OB_INVALID_ID), 
+                            priv_set_(0), grant_(true), 
                             grantor_(), grantor_host_()
   { }
   bool is_valid() const;
