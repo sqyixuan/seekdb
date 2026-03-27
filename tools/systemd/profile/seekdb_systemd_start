@@ -1,10 +1,11 @@
 #!/bin/bash
-# SeekDB start script
-# This script reads configuration from /etc/seekdb/seekdb.cnf and starts seekdb
+# OceanBase start script
+# This script reads configuration from /etc/oceanbase/seekdb.cnf and starts observer
 
-CONFIG_FILE="/etc/seekdb/seekdb.cnf"
-BASE_DIR="/var/lib/seekdb"
-SYSTEMD_PID_FILE="$BASE_DIR/run/seekdb.pid"
+CONFIG_FILE="/etc/oceanbase/seekdb.cnf"
+BASE_DIR="/var/lib/oceanbase"
+CURRENT_DIR=$(dirname "$0")
+report=3
 
 # Check if config file exists
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -14,8 +15,6 @@ fi
 
 # Initialize additional parameters
 ADDITIONAL_PARAMS=""
-DATA_DIR=""
-REDO_DIR=""
 
 # Function to read configuration file and build command line arguments
 read_config() {
@@ -34,16 +33,11 @@ read_config() {
             "port")
                 ADDITIONAL_PARAMS="$ADDITIONAL_PARAMS --port=$value"
                 ;;
-            "base-dir")
-                BASE_DIR="$value"
-                ;;
             "data-dir")
                 ADDITIONAL_PARAMS="$ADDITIONAL_PARAMS --data-dir=$value"
-                DATA_DIR="$value"
                 ;;
             "redo-dir")
                 ADDITIONAL_PARAMS="$ADDITIONAL_PARAMS --redo-dir=$value"
-                REDO_DIR="$value"
                 ;;
             *)
                 ADDITIONAL_PARAMS="$ADDITIONAL_PARAMS --parameter $key=$value"
@@ -55,58 +49,42 @@ read_config() {
 # Check if data-dir is specified and not empty
 read_config
 
-if [ -z "$DATA_DIR" ]; then
-    DATA_DIR="$BASE_DIR/data"
-fi
-
-if [ -z "$REDO_DIR" ]; then
-    REDO_DIR="$BASE_DIR/redo"
-fi
-
 # Build final command
-# Check if it is a new database (empty data/redo dirs and no meta file)
-# Or if FORCE_START_WITH_ARGS environment variable is set to true/1 (case insensitive)
-force_start_with_args=$(echo "$FORCE_START_WITH_ARGS" | tr '[:upper:]' '[:lower:]')
-if [ "$force_start_with_args" = "true" ] || [ "$force_start_with_args" = "1" ] || \
-   ( ( [ ! -d "$DATA_DIR" ] || [ -z "$(ls -A "$DATA_DIR" 2>/dev/null)" ] ) && \
-     ( [ ! -d "$REDO_DIR" ] || [ -z "$(ls -A "$REDO_DIR" 2>/dev/null)" ] ) && \
-     [ ! -f "$BASE_DIR/.meta" ] ); then
-    # New database initialization, use all parameters
-    CMD="/usr/bin/seekdb --base-dir=$BASE_DIR $ADDITIONAL_PARAMS"
-else
-    # Existing database, only use base-dir
-    CMD="/usr/bin/seekdb --base-dir=$BASE_DIR"
-fi
+CMD="/usr/bin/observer --base-dir=$BASE_DIR $ADDITIONAL_PARAMS"
 
-echo "Starting seekdb with command: $CMD"
+echo "Starting OceanBase with command: $CMD"
 echo "Configuration loaded from: $CONFIG_FILE"
 
-$CMD
-CMD_EXIT_CODE=$?
+# Execute the command
+$CMD &
+CMD_PID=$!
 
-# Create softlink for PID file to systemd expected location
-SEEKDB_PID_FILE="$BASE_DIR/run/seekdb.pid"
-if [ -f "$SEEKDB_PID_FILE" ] && [ "$SEEKDB_PID_FILE" != "$SYSTEMD_PID_FILE" ]; then
-    # Create target directory if it doesn't exist
-    mkdir -p "$(dirname "$SYSTEMD_PID_FILE")"
-    # Remove existing link or file if exists
-    rm -f "$SYSTEMD_PID_FILE"
-    # Create softlink
-    ln -s "$SEEKDB_PID_FILE" "$SYSTEMD_PID_FILE"
-fi
+# Wait for the command to complete and check its exit status
+wait $CMD_PID
+CMD_EXIT_CODE=$?
+# pid=$(cat /var/lib/oceanbase/run/observer.pid)
+# systemd-notify "MAINPID=$pid"
 
 # Check if command executed successfully
 if [ $CMD_EXIT_CODE -eq 0 ]; then
-    # Start obshell agent (ignore errors)
-    echo "SeekDB started successfully, starting obshell agent..."
+    echo "OceanBase started successfully, sending telemetry..."
+    /bin/bash $CURRENT_DIR/telemetry.sh $report "20" >/dev/null 2>&1
+
+    # Start obshell agent
+    echo "Starting obshell agent..."
     if [ -f "/usr/bin/obshell" ]; then
         sleep 1
-        /usr/bin/obshell agent start --seekdb --base-dir=$BASE_DIR || true
+        /usr/bin/obshell agent start --seekdb --base-dir=$BASE_DIR
+        if [ $? -eq 0 ]; then
+            echo "obshell agent started successfully"
+        else
+            echo "Failed to start obshell agent"
+        fi
     else
         echo "Warning: /usr/bin/obshell not found, skipping obshell agent start"
     fi
 else
-    echo "SeekDB failed to start with exit code: $CMD_EXIT_CODE"
+    echo "OceanBase failed to start with exit code: $CMD_EXIT_CODE"
 fi
 
 exit $CMD_EXIT_CODE
