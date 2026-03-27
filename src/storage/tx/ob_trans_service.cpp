@@ -633,16 +633,6 @@ int ObTransService::register_mds_into_tx(ObTxDesc &tx_desc,
       } else if (OB_FAIL(tx_result.merge_result(result.tx_result_))) {
         TRANS_LOG(WARN, "merge tx result failed", KR(ret), K(result));
       }
-
-      if (OB_NOT_MASTER == ret) {
-        int tmp_ret = OB_SUCCESS;
-        if (OB_SUCCESS
-            != (tmp_ret = location_adapter_->nonblock_renew(tx_desc.cluster_id_, tx_desc.tenant_id_,
-                                                            ls_id))) {
-          TRANS_LOG(WARN, "refresh location cache failed", KR(tmp_ret), K(tx_desc), K(ls_id),
-                    K(type));
-        }
-      }
     } while (OB_NOT_MASTER == ret && this->self_ == tx_desc.addr_);
 
     tx_print_guard.click_start("handle_tx_result", 3);

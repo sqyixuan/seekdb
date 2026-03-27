@@ -138,36 +138,6 @@ private:
   ObLSID ls_id_;
 };
 
-class ObLSLeaderLocation
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObLSLeaderLocation() : key_(), location_() {}
-  ObLSLeaderLocation(
-    const ObLSLocationCacheKey &key,
-    const ObLSReplicaLocation &location)
-    : key_(key), location_(location) {}
-  ~ObLSLeaderLocation() {}
-  int init(
-      const int64_t cluster_id,
-      const uint64_t tenant_id,
-      const ObLSID ls_id,
-      const common::ObAddr &server,
-      const common::ObRole &role,
-      const int64_t &sql_port,
-      const common::ObReplicaType &replica_type,
-      const common::ObReplicaProperty &property,
-      const ObLSRestoreStatus &restore_status,
-      const int64_t proposal_id);
-  int assign(const ObLSLeaderLocation &other);
-  const ObLSLocationCacheKey &get_key() const { return key_; }
-  const ObLSReplicaLocation &get_location() const { return location_; }
-  TO_STRING_KV(K_(key), K_(location));
-private:
-  ObLSLocationCacheKey key_;
-  ObLSReplicaLocation location_;
-};
-
 class ObLSLocation : public common::ObLink
 {
   OB_UNIS_VERSION(1);
@@ -318,12 +288,6 @@ public:
 private:
   uint64_t tenant_id_;
   ObTabletID tablet_id_;
-};
-
-class ObLocationServiceUtility
-{
-public:
-  static bool treat_sql_as_timeout(const int error_code);
 };
 
 class ObLocationSem

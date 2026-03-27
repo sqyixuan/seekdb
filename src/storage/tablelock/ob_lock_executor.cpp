@@ -645,29 +645,12 @@ int ObLockExecutor::get_sql_port_(ObLockContext &ctx,
                                   int32_t &sql_port)
 {
   int ret = OB_SUCCESS;
-  char table_name[MAX_FULL_TABLE_NAME_LENGTH] = {'\0'};
-  char svr_ip[MAX_IP_ADDR_LENGTH] = {'\0'};
-  int32_t svr_port = svr_addr.get_port();
-  int64_t tmp_sql_port = 0;
-
-  OZ (databuff_printf(
-     table_name, MAX_FULL_TABLE_NAME_LENGTH, "%s.%s", OB_SYS_DATABASE_NAME, OB_ALL_VIRTUAL_LS_META_TABLE_TNAME));
-  OV (svr_addr.ip_to_string(svr_ip, MAX_IP_ADDR_LENGTH), OB_ERR_UNEXPECTED, svr_addr);
-  OX (
-    SMART_VAR(ObMySQLProxy::MySQLResult, res)
-    {
-      ObSqlString sql;
-      common::sqlclient::ObMySQLResult *result = nullptr;
-      OZ (sql.assign_fmt("SELECT sql_port FROM %s"
-                        " WHERE svr_ip = '%s' AND svr_port = %" PRId32 " LIMIT 1",
-                        table_name, svr_ip, svr_port));
-      OZ (ctx.execute_read(sql, res));
-      OV (OB_NOT_NULL(result = res.get_result()), OB_ERR_UNEXPECTED, svr_addr, svr_ip, svr_port);
-      OZ (result->next());
-      OX (GET_COL_IGNORE_NULL(result->get_int, "sql_port", tmp_sql_port));
-    }  // end SMART_VAR
-  )
-  OX (sql_port = static_cast<int32_t>(tmp_sql_port));
+  if (OB_ISNULL(GCTX.config_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(GCTX.config_));
+  } else {
+    sql_port = GCTX.config_->mysql_port/*sql_port*/;
+  }
   return ret;
 }
 

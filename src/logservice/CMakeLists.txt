@@ -6,8 +6,6 @@ ob_set_subtarget(ob_logservice common
   ob_log_handler_base.cpp
   ob_log_service.cpp
   ob_ls_adapter.cpp
-  ob_reporter_adapter.cpp
-  ob_switch_leader_adapter.cpp
   ob_server_log_block_mgr.cpp
   ob_log_flashback_service.cpp
   ob_net_keepalive_adapter.cpp
@@ -15,7 +13,6 @@ ob_set_subtarget(ob_logservice common
   ob_log_external_storage_utils.cpp
   ob_log_monitor.cpp
   ob_locality_adapter.cpp
-  ob_reconfig_checker_adapter.cpp
 )
 
 ob_set_subtarget(ob_logservice common_mixed
@@ -31,8 +28,6 @@ ob_set_subtarget(ob_logservice common_mixed
 )
 
 ob_set_subtarget(ob_logservice leader_coordinator
-  leader_coordinator/ob_failure_detector.cpp
-  leader_coordinator/ob_leader_coordinator.cpp
   leader_coordinator/table_accessor.cpp
   leader_coordinator/election_priority_impl/election_priority_impl.cpp
   leader_coordinator/election_priority_impl/election_priority_v1.cpp

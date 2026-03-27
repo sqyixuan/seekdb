@@ -42,10 +42,6 @@
 
 namespace oceanbase
 {
-namespace observer
-{
-class ObIMetaReport;
-}
 namespace common
 {
 class ObRowStore;
@@ -182,8 +178,7 @@ public:
       const bool has_cs_replica,
       const ObTabletID &split_src_tablet_id,
       const uint64_t data_format_version,
-      ObTabletHandle &tablet_handle,
-      const share::ObForkTabletInfo &fork_info = share::ObForkTabletInfo());
+      ObTabletHandle &tablet_handle);
   int create_transfer_in_tablet(
       const share::ObLSID &ls_id,
       const ObMigrationTabletParam &tablet_meta,
@@ -298,8 +293,7 @@ public:
       const ObMetaDiskAddr &disk_addr,
       const char *buf,
       const int64_t buf_len,
-      const ObTabletID &tablet_id,
-      ObTabletTransferInfo &tablet_transfer_info);
+      const ObTabletID &tablet_id);
 
   int create_memtable(const common::ObTabletID &tablet_id, CreateMemtableArg &arg);
   int get_read_tables(

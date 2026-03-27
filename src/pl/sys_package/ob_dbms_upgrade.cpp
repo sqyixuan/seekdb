@@ -18,6 +18,7 @@
 
 #include "pl/sys_package/ob_dbms_upgrade.h"
 #include "pl/ob_pl_package_manager.h"
+#include "share/ob_all_server_tracer.h" // for ObAllServerTracer
 
 namespace oceanbase
 {

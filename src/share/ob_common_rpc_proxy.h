@@ -25,17 +25,11 @@
 #include "share/ob_rs_mgr.h"
 #include "share/ob_time_zone_info_manager.h"
 #include "common/storage/ob_freeze_define.h" // for ObFrozenStatus
-#include "rootserver/ob_alter_locality_finish_checker.h"
 #include "share/config/ob_server_config.h"
 #include "observer/ob_server_struct.h"
-#include "share/ls/ob_ls_info.h"
 
 namespace oceanbase
 {
-namespace rootserver
-{
-class ObCommitAlterTenantLocalityArg;
-}
 namespace obrpc
 {
 class ObCommonRpcProxy

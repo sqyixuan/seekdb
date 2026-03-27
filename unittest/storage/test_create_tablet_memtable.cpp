@@ -33,7 +33,6 @@
 #include "storage/slog/ob_storage_logger.h"
 #include "storage/blocksstable/ob_log_file_spec.h"
 #include "lib/file/file_directory_utils.h"
-#include "storage/mock_ob_meta_report.h"
 #include "storage/ob_super_block_struct.h"
 #include "storage/mock_gctx.h"
 
@@ -96,7 +95,6 @@ void TestTabletCreateMemtable::SetUp()
   share::ObAliveServerTracer server_tracer;
   palf::PalfDiskOptions disk_options;
   rpc::frame::ObReqTransport req_transport(NULL, NULL);
-  MockObMetaReport reporter;
   ObAddr self_addr(ObAddr::IPV4, "127.0.0.1", 52965);
   palf::PalfHandle palf_handle;
   ObTenantSuperBlock super_block(1);

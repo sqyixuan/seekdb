@@ -19,7 +19,6 @@
 #include "ob_rs_mgr.h"
 #include "deps/oblib/src/lib/container/ob_se_array.h"
 
-#include "share/ls/ob_ls_table_operator.h"
 #include "storage/tx_storage/ob_ls_service.h"   // ObLSService
 
 namespace oceanbase
@@ -305,55 +304,6 @@ int ObRsMgr::renew_master_rootserver()
 int ObRsMgr::renew_master_rootserver(const int64_t cluster_id)
 {
   int ret = OB_SUCCESS;
-  ObLSInfo ls_info;
-  ObAddr leader;
-  bool leader_exist = false;
-  if (OB_ISNULL(ObCurTraceId::get_trace_id())) {
-    //Prevent the current trace_id from being overwritten
-    ObCurTraceId::init(GCONF.self_addr_);
-  }
-  if (OB_FAIL(check_inner_stat())) {
-    LOG_WARN("check inner stat faild", KR(ret));
-  } else if (OB_UNLIKELY(OB_INVALID_CLUSTER_ID == cluster_id)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("cluster id is invalid", KR(ret), K(cluster_id));
-  } else if (OB_ISNULL(GCTX.lst_operator_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid partition table operator", KR(ret));
-  } else if (OB_FAIL(GCTX.lst_operator_->get(cluster_id,
-                                        OB_SYS_TENANT_ID,
-                                        SYS_LS,
-                                        share::ObLSTable::DEFAULT_MODE,
-                                        ls_info))) {
-    LOG_WARN("get root log stream failed",
-             KR(ret), K(cluster_id),
-             "tenant_id", OB_SYS_TENANT_ID,
-             "ls_id", SYS_LS);
-  }
-  for (int64_t i = 0; i < ls_info.get_replicas().count() && OB_SUCC(ret); i++) {
-    const ObLSReplica &replica = ls_info.get_replicas().at(i);
-    if (replica.is_strong_leader()) {
-      leader_exist = true;
-      leader = replica.get_server();
-      break;
-    }
-  }
-  if (OB_SUCC(ret)) {
-    if (!leader_exist) {
-      ret = OB_RS_NOT_MASTER;
-      LOG_WARN("no leader finded", KR(ret), K(leader_exist), K(ls_info));
-    } else if (OB_UNLIKELY(!leader.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("failed to find leader replica", KR(ret), K(ls_info), K(leader));
-    } else if (cluster_id == GCONF.cluster_id) {
-      ObLockGuard<ObSpinLock> lock_guard(lock_);
-      master_rs_ = leader;
-    } else if (OB_FAIL(remote_master_rs_map_.set_refactored(cluster_id, leader, 1 /*overwrite*/))) {
-      LOG_WARN("fail to set remote master rs", KR(ret), K(cluster_id), K(leader));
-    }
-    ObTaskController::get().allow_next_syslog();
-    LOG_INFO("[RS_MGR] new master rootserver found", "rootservice", leader, K(cluster_id));
-  }
   return ret;
 }
 

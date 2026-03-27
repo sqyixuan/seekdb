@@ -36,9 +36,6 @@ public:
   MOCK_METHOD2(remove_root_partition, int(const common::ObAddr &server, const ObRpcOpts &opts));
   MOCK_METHOD2(rebuild_root_partition, int(const common::ObAddr &server, const ObRpcOpts &opts));
   MOCK_METHOD2(clear_rebuild_root_partition, int(const common::ObAddr &server, const ObRpcOpts &opts));
-  MOCK_METHOD3(fetch_location,
-               int(const UInt64 &table_id, common::ObSArray<share::ObPartitionLocation> &locations,
-                   const ObRpcOpts &opts));
   MOCK_METHOD3(create_tenant,
                int(const obrpc::ObCreateTenantArg, UInt64 &tenant_id, const ObRpcOpts &opts));
   MOCK_METHOD3(create_database,

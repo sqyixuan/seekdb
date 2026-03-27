@@ -26,6 +26,7 @@
 #include "storage/ddl/ob_tablet_split_task.h"
 #include "observer/ob_server_event_history_table_operator.h"
 #include "observer/omt/ob_tenant_timezone_mgr.h"
+#include "observer/report/ob_tablet_table_updater.h" // for ObTabletTableUpdater
 #include "deps/oblib/src/lib/charset/ob_charset.h"
 #include "storage/ddl/ob_direct_load_mgr_utils.h"
 #include "storage/ddl/ob_pipeline.h"
@@ -92,7 +93,7 @@ int ObComplementDataParam::fill_tablet_param()
   } else if (OB_FAIL(tablet_handle.get_obj()->get_ddl_kv_mgr(ddl_kv_mgr_handle, true /*try_create]*/))) {
     LOG_WARN("failed to create ddl kv mgr", K(ret));
   } else {
-    tablet_param_.tablet_transfer_seq_ = tablet_handle.get_obj()->get_tablet_meta().transfer_info_.transfer_seq_;
+    tablet_param_.tablet_transfer_seq_ = 0;
     tablet_param_.is_micro_index_clustered_ = tablet_handle.get_obj()->get_tablet_meta().micro_index_clustered_;
     ObTabletBindingMdsUserData mds_data;
     if (OB_FAIL(tablet_handle.get_obj()->ObITabletMdsInterface::get_ddl_data(share::SCN::max_scn(), mds_data))) {
@@ -106,7 +107,7 @@ int ObComplementDataParam::fill_tablet_param()
         LOG_WARN("load storage schema failed", K(ret));
       } else {
         lob_meta_tablet_param_.with_cs_replica_ = false;
-        lob_meta_tablet_param_.tablet_transfer_seq_ = lob_meta_tablet_handle.get_obj()->get_tablet_meta().transfer_info_.transfer_seq_;
+        lob_meta_tablet_param_.tablet_transfer_seq_ = 0;
         lob_meta_tablet_param_.is_micro_index_clustered_ = lob_meta_tablet_handle.get_obj()->get_tablet_meta().micro_index_clustered_;
         ObDDLKvMgrHandle lob_ddl_kv_mgr_handle;
         if (OB_FAIL(lob_meta_tablet_handle.get_obj()->get_ddl_kv_mgr(lob_ddl_kv_mgr_handle, true /*try_create]*/))) {
@@ -493,7 +494,7 @@ int ObComplementDataContext::init(
       }
     }
   }
-
+   
   if (OB_SUCC(ret)) {
     is_major_sstable_exist_ = nullptr != first_major_sstable ? true : false;
     concurrent_cnt_ = param.concurrent_cnt_;
@@ -644,7 +645,7 @@ int ObComplementDataDag::calc_total_row_count()
 /*
  * TODO @zhuoran.zzr
  * now complement data task seem to only used for idem type direct load
- * need to rejeuct request from older version
+ * need to rejeuct request from older version 
 */
 int ObComplementDataDag::create_first_task()
 {
@@ -718,10 +719,10 @@ int ObComplementDataDag::create_first_task()
     task_param.execution_id_        = param_.execution_id_;
     task_param.target_table_id_     = param_.dest_table_id_;
     task_param.is_no_logging_       = param_.is_no_logging_;
-
+    
     if (OB_FAIL(dag_merge_param.init(true /* for major */, false /* for lob*/, false /* for replay*/,
                                      mock_scn /* start_scn*/,
-                                     param_.direct_load_type_, task_param,
+                                     param_.direct_load_type_, task_param, param_.allocator_,
                                      context_.tablet_ctx_))) {
       LOG_WARN("failed to init dag merge param", K(ret));
     } else if (OB_FAIL(alloc_task(data_merge_prepare_task))) {
@@ -733,13 +734,13 @@ int ObComplementDataDag::create_first_task()
     } else if (OB_FAIL(data_merge_prepare_task->add_child(*merge_task))) {
       LOG_WARN("add child failed", K(ret));
     }
-
+    
     if (OB_FAIL(ret)) {
     } else if (!param_.dest_lob_meta_tablet_id_.is_valid()) {
       /* if lob tablet id invalid, skip */
     } else if (OB_FAIL(lob_dag_merge_param.init(true /* for major*/, true /* for lob */, false /* for replay */,
                                      mock_scn /* start_scn*/,
-                                     param_.direct_load_type_, task_param,
+                                     param_.direct_load_type_, task_param, param_.allocator_,
                                      context_.tablet_ctx_))) {
       LOG_WARN("failed to init lob dag merge param", K(ret), K(param_));
     } else if (OB_FAIL(alloc_task(lob_merge_prepare_task))) {
@@ -750,7 +751,7 @@ int ObComplementDataDag::create_first_task()
       LOG_WARN("failed to init lob merge task", K(ret));
     } else if (OB_FAIL(lob_merge_prepare_task->add_child(*merge_task))) {
       LOG_WARN("add child failed", K(ret));
-    }
+    } 
   }
 
   if (OB_FAIL(ret)) { // add task in reverse order
@@ -764,8 +765,8 @@ int ObComplementDataDag::create_first_task()
     LOG_WARN("add task failed", K(ret));
   } else if (OB_FAIL(add_task(*prepare_task))) {
     LOG_WARN("add task failed", K(ret));
-  }
-
+  } 
+  
   return ret;
 }
 
@@ -1574,7 +1575,7 @@ int ObComplementMergeTask::init(ObComplementDataParam &param, ObComplementDataCo
   return ret;
 }
 
-/* dest major sstable checksum have been report,
+/* dest major sstable checksum have been report, 
  * only origin sstalbe checksum should be rerprot
 */
 int ObComplementMergeTask::process()

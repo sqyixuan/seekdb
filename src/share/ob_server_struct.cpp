@@ -57,7 +57,6 @@ DEF_TO_STRING(ObGlobalContext)
        KP_(schema_service),
        KP_(config),
        KP_(config_mgr),
-       KP_(lst_operator),
        KP_(tablet_operator),
        KP_(srv_rpc_proxy),
        KP_(storage_rpc_proxy),

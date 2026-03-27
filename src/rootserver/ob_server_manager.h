@@ -46,15 +46,6 @@ namespace rootserver
 {
 class ObUnitManager;
 class ObZoneManager;
-class ObIStatusChangeCallback
-{
-public:
-  virtual int wakeup_balancer() = 0;
-  virtual int wakeup_daily_merger() = 0;
-  //FIXME(jingqian): make it suitable for different task type, this is just a sample iterface
-  virtual int on_server_status_change(const common::ObAddr &server) = 0;
-  virtual int on_offline_server(const common::ObAddr &server) = 0;
-};
 class ObIServerChangeCallback
 {
 public:
@@ -73,7 +64,7 @@ public:
   friend class FakeServerMgr;
   ObServerManager();
   virtual ~ObServerManager();
-  int init(ObIStatusChangeCallback &status_change_callback,
+  int init(
            ObIServerChangeCallback &server_change_callback,
            common::ObMySQLProxy &proxy,
            ObUnitManager &unit_mgr,
@@ -83,12 +74,6 @@ public:
            obrpc::ObSrvRpcProxy &rpc_proxy);
   inline bool is_inited() const { return inited_; }
   virtual int add_server(const common::ObAddr &server, const common::ObZone &zone);
-  virtual int delete_server(const common::ObIArray<common::ObAddr> &servers,
-      const common::ObZone &zone);
-  virtual int end_delete_server(const common::ObAddr &server, const common::ObZone &zone,
-                                const bool commit = true);
-  virtual int start_server_list(const obrpc::ObServerList &server_list, const common::ObZone &zone);
-  virtual int stop_server_list(const obrpc::ObServerList &server_list, const common::ObZone &zone);
 
   // server_id is OB_INVALID_ID before build server manager from __all_server
   int receive_hb(const share::ObLeaseRequest &lease_request,
@@ -110,17 +95,11 @@ public:
       const common::ObZone &zone,
       common::ObIArray<common::ObAddr> &server_list,
       common::ObIArray<uint64_t> &server_id_list) const;
-  // used by check server thread which set server offline if needed
-  int check_servers();
-  int try_renew_rs_list();
 
   int is_server_exist(const common::ObAddr &server, bool &exist) const;
   // get ObServerStatus through server addr, return OB_ENTRY_NOT_EXIST if not exist
   virtual int get_server_status(const common::ObAddr &server,
                         share::ObServerStatus &server_status) const;
-  int get_server_resource_info(
-      const common::ObAddr &server,
-      share::ObServerResourceInfo &resource_info);
   // build ObServerManager from __all_server table
   int load_server_manager();
   int load_server_statuses(const ObServerStatusArray &server_status);
@@ -128,33 +107,18 @@ public:
   virtual int get_server_statuses(const common::ObZone &zone,
       ObServerStatusIArray &server_statuses,
       bool include_permanent_offline = true) const;
-  virtual int build_server_resource_info_result(
-      const common::ObZone &zone,
-      ObIArray<obrpc::ObGetServerResourceInfoResult> &active_servers_resource_info);
   virtual int get_server_statuses(const ObServerArray &servers,
                                   ObServerStatusArray &server_statuses) const;
-  int get_persist_server_statuses(ObServerStatusArray &server_statuses);
-  int adjust_server_status(
-      const ObAddr &server,
-      const bool with_rootserver);
   virtual int get_server_zone(const common::ObAddr &addr, common::ObZone &zone) const;
-  inline ObIStatusChangeCallback &get_status_change_callback() const;
   inline const common::ObAddr &get_rs_addr() const { return rs_addr_; }
   void reset();
 
   virtual int is_server_stopped(const common::ObAddr &server, bool &is_stopped) const;
-  static int try_delete_server_working_dir(
-      const common::ObZone &zone,
-      const common::ObAddr &server,
-      const int64_t svr_seq);
 protected:
-  int construct_not_empty_server_set(
-      common::hash::ObHashSet<common::ObAddr> &not_empty_server_set);
   int set_server_status(const share::ObLeaseRequest &lease_request,
                         const int64_t hb_timestamp,
                         const bool with_rootserver,
                         share::ObServerStatus &server_status);
-  int reset_existing_rootserver();
   int update_admin_status(const common::ObAddr &server,
       const share::ObServerStatus::ServerAdminStatus status,
       const bool remove);
@@ -162,10 +126,6 @@ protected:
   int find(const common::ObAddr &server, const share::ObServerStatus *&status) const;
   int find(const common::ObAddr &server, share::ObServerStatus *&status);
   int fetch_new_server_id(uint64_t &server_id);
-  int start_or_stop_server(const common::ObAddr &server,
-      const common::ObZone &zone, const bool is_start);
-  virtual int start_server(const common::ObAddr &server, const common::ObZone &zone);
-  virtual int stop_server(const common::ObAddr &server, const common::ObZone &zone);
 protected:
   bool inited_;
   bool has_build_;                          // has been loaded from __all_server table
@@ -173,7 +133,6 @@ protected:
   common::SpinRWLock server_status_rwlock_;  // to protect server_statuses_
   common::SpinRWLock maintaince_lock_; // avoid maintain operation run concurrently
 
-  ObIStatusChangeCallback *status_change_callback_;
   ObIServerChangeCallback *server_change_callback_;
   common::ObServerConfig *config_;
   ObUnitManager *unit_mgr_;
@@ -186,11 +145,6 @@ protected:
 
   DISALLOW_COPY_AND_ASSIGN(ObServerManager);
 };
-
-ObIStatusChangeCallback &ObServerManager::get_status_change_callback() const
-{
-  return *status_change_callback_;
-}
 
 }//end namespace rootserver
 }//end namespace oceanbase

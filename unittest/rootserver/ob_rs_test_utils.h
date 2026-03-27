@@ -26,16 +26,6 @@ namespace oceanbase
 {
 namespace rootserver
 {
-class ObFakeCB : public ObIStatusChangeCallback
-{
-public:
-  ObFakeCB() {}
-  int wakeup_balancer() { return OB_SUCCESS; }
-  int wakeup_daily_merger() { return OB_SUCCESS; }
-  int on_start_server(const common::ObAddr &server) {UNUSED(server); return OB_SUCCESS;}
-  int on_stop_server(const common::ObAddr &server) {UNUSED(server); return OB_SUCCESS;}
-  int on_server_status_change(const common::ObAddr &server) {UNUSED(server); return OB_SUCCESS;}
-};
 
 class ObFakeServerChangeCB : public ObIServerChangeCallback
 {

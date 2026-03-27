@@ -17,6 +17,7 @@
 #include "storage/compaction/ob_medium_compaction_func.h"
 #include "share/tablet/ob_tablet_table_operator.h"
 #include "share/schema/ob_tenant_schema_service.h"
+#include "share/ob_all_server_tracer.h" // for ObAllServerTracer
 #include "logservice/ob_log_service.h"
 #include "storage/ob_partition_range_spliter.h"
 #include "storage/truncate_info/ob_mds_info_distinct_mgr.h"
@@ -62,7 +63,6 @@ int ObMediumCompactionScheduleFunc::choose_medium_snapshot(
   param.merge_type_ = MEDIUM_MERGE;
   int64_t max_reserved_snapshot = 0;
   ObTablet &tablet = *tablet_handle_.get_obj();
-  const int64_t transfer_start_snapshot = tablet.get_tablet_meta().transfer_info_.transfer_start_scn_.get_val_for_tx();
 
   if (OB_FAIL(ObAdaptiveMergePolicy::get_meta_merge_tables(param, ls_, tablet, result))) {
     if (OB_NO_NEED_MERGE != ret) {
@@ -84,10 +84,6 @@ int ObMediumCompactionScheduleFunc::choose_medium_snapshot(
   if (OB_FAIL(ret)) {
   } else if (medium_info.medium_snapshot_ <= max_sync_medium_scn) {
     ret = OB_NO_NEED_MERGE;
-  } else if (medium_info.medium_snapshot_ < transfer_start_snapshot) {
-    ret = OB_NO_NEED_MERGE;
-    LOG_INFO("medium snapshot is smaller than transfer start snapshot, no need merge", K(ret),
-        K(medium_info), K(transfer_start_snapshot), K(tablet));
   } else if (OB_FAIL(check_frequency(max_reserved_snapshot, medium_info.medium_snapshot_))) { // check schedule interval
     if (OB_NO_NEED_MERGE != ret) {
       LOG_WARN("failed to check medium scn valid", K(ret), KPC(this));
@@ -338,7 +334,7 @@ int ObMediumCompactionScheduleFunc::get_adaptive_reason(
     merge_reason_ = ObAdaptiveMergePolicy::AdaptiveMergeReason::TENANT_MAJOR;
   } else if (ObAdaptiveMergePolicy::is_valid_merge_reason(merge_reason_)) {
     // is valid merge reason when init func, no need to use policy
-  } else if ((MTL(ObTenantTabletScheduler *)->enable_adaptive_compaction()) && OB_FAIL(ObAdaptiveMergePolicy::get_adaptive_merge_reason(*tablet, merge_reason_, least_medium_snapshot_))) {
+  } else if (OB_FAIL(ObAdaptiveMergePolicy::get_adaptive_merge_reason(*tablet, merge_reason_, least_medium_snapshot_))) {
     if (OB_HASH_NOT_EXIST != ret) {
       LOG_WARN("failed to get meta merge priority", K(ret), KPC(this));
     } else {
@@ -1189,7 +1185,6 @@ int ObMediumCompactionScheduleFunc::submit_medium_clog(
 
 int ObMediumCompactionScheduleFunc::batch_check_medium_meta_table(
     const ObIArray<ObTabletCheckInfo> &tablet_ls_infos,
-    const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
     ObIArray<ObTabletCheckInfo> &finish_tablet_ls,
     ObCompactionTimeGuard &time_guard)
 {
@@ -1223,7 +1218,7 @@ int ObMediumCompactionScheduleFunc::batch_check_medium_meta_table(
           }
         } else if (info->get_ls_id() != ls_id) {
           LOG_INFO("tablet_ls_info has been deleted", K(tablet_ls_info), KPC(info));
-        } else if (OB_TMP_FAIL(check_medium_meta_table(check_medium_scn, *info, filters, ls_info_map, merge_finish))) {
+        } else if (OB_TMP_FAIL(check_medium_meta_table(check_medium_scn, *info, filters, merge_finish))) {
           LOG_WARN("failed to check medium meta table", K(tmp_ret), K(check_medium_scn), KPC(info));
         } else if (merge_finish &&
             OB_TMP_FAIL(finish_tablet_ls.push_back(ObTabletCheckInfo(tablet_id, ls_id, check_medium_scn)))) {
@@ -1240,7 +1235,6 @@ int ObMediumCompactionScheduleFunc::check_medium_meta_table(
     const int64_t check_medium_snapshot,
     const ObTabletInfo &tablet_info,
     const share::ObTabletReplicaFilterHolder &filters,
-    const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
     bool &merge_finish)
 {
   int ret = OB_SUCCESS;
@@ -1259,7 +1253,6 @@ int ObMediumCompactionScheduleFunc::check_medium_meta_table(
     int64_t unfinish_cnt = 0;
     int64_t filter_cnt = 0;
     bool pass = true;
-    const ObLSReplica *ls_replica = nullptr;
     for (int i = 0; OB_SUCC(ret) && i < replica_array.count(); ++i) {
       const ObTabletReplica &replica = replica_array.at(i);
       if (OB_UNLIKELY(!replica.is_valid())) {
@@ -1274,19 +1267,8 @@ int ObMediumCompactionScheduleFunc::check_medium_meta_table(
         // replica may have check_medium_snapshot = 2, but have received medium info of 3,
         // when this replica is elected as leader, this will happened
       } else {
-        share::ObLSInfo ls_info;
-        const ObLSReplica *ls_replica = nullptr;
-        if (OB_TMP_FAIL(ls_info_map.get_refactored(ls_id, ls_info))) {
-          LOG_WARN("failed to get map", K(tmp_ret), K(ls_id));
-          unfinish_cnt++;
-        } else if (OB_ENTRY_NOT_EXIST == 
-            (tmp_ret = ls_info.find(replica.get_server(), ls_replica))) {
-            filter_cnt++;
-            LOG_TRACE("filter by ls locality", K(tmp_ret), K(replica), K(ls_info));
-        } else {
-          LOG_TRACE("tablet unfinish", K(tmp_ret), K(ls_info), K(replica));
-          unfinish_cnt++;
-        }
+        LOG_TRACE("tablet unfinish", K(replica));
+        unfinish_cnt++;
       }
     } // end of for
     LOG_INFO("check_medium_compaction_finish", K(ret), K(tablet_info), K(check_medium_snapshot),
@@ -1459,7 +1441,6 @@ int ObMediumCompactionScheduleFunc::check_replica_checksum_items(
 
 // for Leader, clean wait_check_medium_scn
 int ObMediumCompactionScheduleFunc::batch_check_medium_finish(
-    const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
     ObIArray<ObTabletCheckInfo> &finish_tablet_ls_infos,
     const ObIArray<ObTabletCheckInfo> &tablet_ls_infos,
     ObCompactionTimeGuard &time_guard)
@@ -1469,7 +1450,7 @@ int ObMediumCompactionScheduleFunc::batch_check_medium_finish(
   } else {
     // different ObTabletCheckInfo have different medium_check_scn
     share::ObReplicaCkmArray checksum_items(false/*need_map*/);
-    if (OB_FAIL(batch_check_medium_meta_table(tablet_ls_infos, ls_info_map, finish_tablet_ls_infos, time_guard))) {
+    if (OB_FAIL(batch_check_medium_meta_table(tablet_ls_infos, finish_tablet_ls_infos, time_guard))) {
       LOG_WARN("failed to check inner table", K(ret), K(tablet_ls_infos));
     } else if (!finish_tablet_ls_infos.empty()) {
       if (OB_FAIL(checksum_items.init(MTL_ID(), finish_tablet_ls_infos.count()))) {
