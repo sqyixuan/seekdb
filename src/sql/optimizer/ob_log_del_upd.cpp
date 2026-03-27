@@ -275,7 +275,7 @@ int IndexDMLInfo::is_new_row_expr(const ObRawExpr *expr, bool &bret) const
 ObLogDelUpd::ObLogDelUpd(ObDelUpdLogPlan &plan)
   : ObLogicalOperator(plan),
     my_dml_plan_(plan),
-    view_check_exprs_(),
+    view_check_exprs_(NULL),
     table_partition_info_(NULL),
     stmt_id_expr_(nullptr),
     lock_row_flag_expr_(NULL),
@@ -1537,7 +1537,7 @@ int ObLogDelUpd::replace_dml_info_exprs(
         } else if (OB_NOT_NULL(table_schema)) {
           uint64_t embedded_vec_tid = OB_INVALID_ID;
           if (OB_FAIL(ObVectorIndexUtil::check_hybrid_embedded_vec_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), embedded_vec_tid))) {
-            LOG_WARN("failed to check_hybrid_embedded_table_readable", K(ret));
+            LOG_WARN("failed to check_rowkey_cid_table_readable", K(ret));
           } else if (OB_INVALID_ID == embedded_vec_tid) {
             if (OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
               LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
