@@ -96,13 +96,6 @@ namespace logservice
 class ObServerLogBlockMgr;
 }
 
-#ifdef OB_BUILD_ARBITRATION
-namespace arbserver
-{
-class ObArbGarbageCollectService;
-}
-#endif
-
 namespace observer
 {
 class ObService;
@@ -122,13 +115,10 @@ class ObPluginMgr;
 namespace share
 {
 class ObResourcePlanManager;
-class ObLSTableOperator;
 class ObTabletTableOperator;
-class ObRsMgr;
 class ObLocationService;
 class ObSchemaStatusProxy;
 
-class ObAliveServerTracer;
 class ObCgroupCtrl;
 class ObWorkloadRepositoryService;
 
@@ -146,7 +136,6 @@ struct ObGlobalContext
   share::schema::ObMultiVersionSchemaService *schema_service_;
   common::ObServerConfig *config_;
   common::ObConfigManager *config_mgr_;
-  share::ObLSTableOperator *lst_operator_;
   share::ObTabletTableOperator *tablet_operator_;
   obrpc::ObSrvRpcProxy *srv_rpc_proxy_;
   obrpc::ObStorageRpcProxy *storage_rpc_proxy_;
@@ -160,7 +149,6 @@ struct ObGlobalContext
   common::ObMySQLProxy *ddl_sql_proxy_;
   common::ObOracleSqlProxy *ddl_oracle_sql_proxy_;
   observer::ObResourceInnerSQLConnectionPool *res_inner_conn_pool_;
-  share::ObRsMgr *rs_mgr_;
   common::ObInOutBandwidthThrottle *bandwidth_throttle_;
   common::ObITabletScan *vt_par_ser_;
   common::ObITabletScan *et_access_service_;
@@ -183,12 +171,8 @@ struct ObGlobalContext
   observer::ObSrvNetworkFrame *net_frame_;
 
   obrpc::ObBatchRpc *batch_rpc_;
-  share::ObAliveServerTracer *server_tracer_;
   observer::ObIDiskReport *disk_reporter_;
   logservice::ObServerLogBlockMgr *log_block_mgr_;
-#ifdef OB_BUILD_ARBITRATION
-  arbserver::ObArbGarbageCollectService *arb_gcs_;
-#endif
 
   bool inited_;
   transaction::ObIWeakReadService *weak_read_service_;

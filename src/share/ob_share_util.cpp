@@ -15,11 +15,9 @@
  */
 
 #define USING_LOG_PREFIX SHARE
-#ifdef OB_BUILD_ARBITRATION
-#include "ob_share_util.h"
-#include "share/arbitration_service/ob_arbitration_service_utils.h" // ObArbitrationServiceUtils
-#endif
+#include "logservice/ob_log_service.h" // ObLogService
 #include "share/inner_table/ob_inner_table_schema_constants.h"
+#include "storage/tx/ob_ts_mgr.h" // for OB_TS_MGR
 #include "observer/ob_server_struct.h"
 
 namespace oceanbase
@@ -183,29 +181,6 @@ int ObShareUtil::get_ctx_timeout(const int64_t default_timeout, int64_t &timeout
   return ret;
 }
 
-int ObShareUtil::generate_arb_replica_num(
-    const uint64_t tenant_id,
-    const ObLSID &ls_id,
-    int64_t &arb_replica_num)
-{
-  int ret = OB_SUCCESS;
-  arb_replica_num = 0;
-  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id
-                  || !ls_id.is_valid()
-                  || !ls_id.is_valid_with_tenant(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_id));
-#ifdef OB_BUILD_ARBITRATION
-  } else if (OB_FAIL(ObArbitrationServiceUtils::generate_arb_replica_num(
-                         tenant_id,
-                         ls_id,
-                         arb_replica_num))) {
-    LOG_WARN("fail to generate arb replica number", KR(ret), K(tenant_id), K(ls_id));
-#endif
-  }
-  return ret;
-}
-
 int ObShareUtil::fetch_current_data_version(
     common::ObISQLClient &client,
     const uint64_t tenant_id,
@@ -248,48 +223,6 @@ int ObShareUtil::fetch_current_data_version(
   return ret;
 }
 
-int ObShareUtil::parse_all_server_list(
-    const ObArray<ObAddr> &excluded_server_list,
-    ObArray<ObAddr> &config_all_server_list)
-{
-  int ret = OB_SUCCESS;
-  config_all_server_list.reset();
-  common::ObArenaAllocator allocator(lib::ObLabel("AllSvrList"));
-  ObString all_server_list;
-  LOG_TRACE("get all_server_list from GCONF", K(GCONF.all_server_list));
-  if (OB_FAIL(GCONF.all_server_list.deep_copy_value_string(allocator, all_server_list))) {
-    LOG_WARN("fail to deep copy GCONF.all_server_list", KR(ret), K(GCONF.all_server_list));
-  } else {
-    bool split_end = false;
-    ObAddr addr;
-    ObString sub_string;
-    ObString trimed_string;
-    while (!split_end && OB_SUCCESS == ret) {
-      sub_string.reset();
-      trimed_string.reset();
-      addr.reset();
-      sub_string = all_server_list.split_on(',');
-      if (sub_string.empty() && NULL == sub_string.ptr()) {
-        split_end = true;
-        sub_string = all_server_list;
-      }
-      trimed_string = sub_string.trim();
-      if (trimed_string.empty()) {
-        //nothing todo
-      } else if (OB_FAIL(addr.parse_from_string(trimed_string))) {
-        LOG_WARN("fail to parser addr from string", KR(ret), K(trimed_string));
-      } else if (has_exist_in_array(excluded_server_list, addr)) {
-        // nothing todo
-      } else if (has_exist_in_array(config_all_server_list, addr)) {
-        //nothing todo
-      } else if (OB_FAIL(config_all_server_list.push_back(addr))) {
-        LOG_WARN("fail to push back", KR(ret), K(addr));
-      }
-    } // end while
-  }
-  return ret;
-}
-
 int ObShareUtil::get_ora_rowscn(
     common::ObISQLClient &client,
     const uint64_t tenant_id,
@@ -324,42 +257,6 @@ int ObShareUtil::get_ora_rowscn(
     }
   }
   return ret;
-}
-
-bool ObShareUtil::is_tenant_enable_rebalance(const uint64_t tenant_id)
-{
-  bool bret = false;
-  if (is_valid_tenant_id(tenant_id)) {
-    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
-    if (OB_UNLIKELY(!tenant_config.is_valid())) {
-      LOG_WARN_RET(OB_ERR_UNEXPECTED, "tenant config is invalid", K(tenant_id));
-    } else {
-      bret = tenant_config->enable_rebalance;
-    }
-  }
-  return bret;
-}
-
-bool ObShareUtil::is_tenant_enable_transfer(const uint64_t tenant_id)
-{
-  bool bret = false;
-  if (!is_valid_tenant_id(tenant_id)) {
-    bret = false;
-  } else {
-    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
-     if (OB_UNLIKELY(!tenant_config.is_valid())) {
-       LOG_WARN_RET(OB_ERR_UNEXPECTED, "tenant config is invalid", K(tenant_id));
-     } else if (GCONF.in_upgrade_mode()) {
-      bret = false;
-      LOG_TRACE("in upgrade, transfer is not allowed", K(tenant_id), K(bret));
-     } else {
-      bret = tenant_config->enable_transfer;
-      LOG_TRACE("show enable_transfer state", K(tenant_id), K(bret),
-          "enable_transfer", tenant_config->enable_transfer);
-     }
-  }
- 
-  return bret;
 }
 
 int ObShareUtil::mtl_get_tenant_role(const uint64_t tenant_id, ObTenantRole::Role &tenant_role)
@@ -522,6 +419,100 @@ ObReplicaType ObShareUtil::string_to_replica_type(const ObString &str)
     replica_type = REPLICA_TYPE_INVALID;
   }
   return replica_type;
+}
+
+int ObShareUtil::get_sys_ls_readable_scn(SCN &readable_scn)
+{
+  int ret = OB_SUCCESS;
+  ObLSService *ls_svr = MTL(ObLSService*);
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+  share::SCN offline_scn;
+  if (OB_ISNULL(ls_svr)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("pointer is null", KR(ret), KP(ls_svr));
+  } else if (OB_FAIL(ls_svr->get_ls(SYS_LS, ls_handle, ObLSGetMod::RS_MOD))) {
+      LOG_WARN("get log stream failed", KR(ret));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("log stream is null", KR(ret), K(ls_handle));
+  } else if (OB_FAIL(ls->get_max_decided_scn(readable_scn))) {
+    LOG_WARN("failed to get_max_decided_scn", KR(ret), KPC(ls));
+  }
+  return ret;
+}
+
+int ObShareUtil::check_clog_disk_full_or_hang(
+    bool &clog_disk_is_full,
+    bool &clog_disk_is_hang)
+{
+  int ret = OB_SUCCESS;
+  clog_disk_is_full = false;
+  clog_disk_is_hang = false;
+  int64_t clog_disk_last_working_time = OB_INVALID_TIMESTAMP;
+  const int64_t now = ObTimeUtility::current_time();
+  bool is_disk_enough = true;
+  logservice::ObLogService *log_service = MTL(logservice::ObLogService*);
+  if (OB_ISNULL(log_service)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(log_service));
+  } else if (OB_FAIL(log_service->get_io_start_time(clog_disk_last_working_time))) {
+    LOG_WARN("get_io_start_time failed", KR(ret));
+  } else if (OB_FAIL(log_service->check_disk_space_enough(is_disk_enough))) {
+    LOG_WARN("check_disk_space_enough failed", KR(ret));
+  } else {
+    clog_disk_is_full = !is_disk_enough;
+    clog_disk_is_hang = OB_INVALID_TIMESTAMP != clog_disk_last_working_time
+                        && now - clog_disk_last_working_time > GCONF.log_storage_warning_tolerance_time;
+  }
+  return ret;
+}
+
+int ObShareUtil::check_data_disk_health_status(
+    bool &is_data_disk_healthy)
+{
+  int ret = OB_SUCCESS;
+  is_data_disk_healthy = true;
+  ObDeviceHealthStatus data_disk_status;
+  int64_t data_disk_error_start_ts = OB_INVALID_TIMESTAMP;
+  if (OB_FAIL(OB_IO_MANAGER.get_device_health_detector().get_device_health_status(data_disk_status,
+                                                                                  data_disk_error_start_ts))) {
+    LOG_WARN("get_device_health_status failed", KR(ret));
+  } else if (ObDeviceHealthStatus::DEVICE_HEALTH_NORMAL != data_disk_status) {
+    is_data_disk_healthy = false;
+  }
+  return ret;
+}
+
+int ObShareUtil::get_tenant_gts(const uint64_t &tenant_id, SCN &gts_scn)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("tenant id is invalid", KR(ret), K(tenant_id));
+  } else {
+    ret = OB_EAGAIN;
+    const transaction::MonotonicTs stc = transaction::MonotonicTs::current_time();
+    transaction::MonotonicTs unused_ts(0);
+    const int64_t start_time = ObTimeUtility::fast_current_time();
+    const int64_t TIMEOUT = GCONF.rpc_timeout;
+    while (OB_EAGAIN == ret) {
+      if (ObTimeUtility::fast_current_time() - start_time > TIMEOUT) {
+        ret = OB_TIMEOUT;
+        LOG_WARN("stmt is timeout", KR(ret), K(start_time), K(TIMEOUT));
+      } else if (OB_FAIL(OB_TS_MGR.get_gts(tenant_id, stc, NULL,
+                                           gts_scn, unused_ts))) {
+        if (OB_EAGAIN != ret) {
+          LOG_WARN("failed to get gts", KR(ret), K(tenant_id));
+        } else {
+          // waiting 10ms
+          ob_usleep(10L * 1000L);
+        }
+      }
+    }
+  }
+  LOG_INFO("get tenant gts", KR(ret), K(tenant_id), K(gts_scn));
+  return ret;
 }
 
 } //end namespace share

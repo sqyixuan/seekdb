@@ -19,7 +19,6 @@
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx/wrs/ob_weak_read_util.h"
 #include "rootserver/mview/ob_mview_maintenance_service.h"
-#include "share/ob_io_device_helper.h"
 
 namespace oceanbase
 {
@@ -925,35 +924,7 @@ int ObMultiVersionGarbageCollector::reclaim()
           // TODO(handora.qc): use a better time monitor for the node lost for a long time
           if (current_timestamp > create_time
               && current_timestamp - create_time > GARBAGE_COLLECT_RECLAIM_DURATION) {
-            bool is_exist = true;
-            if (OB_TMP_FAIL(share::ObAllServerTracer::get_instance().is_server_exist(addr, is_exist))) {
-              MVCC_LOG(WARN, "check all server tracer failed", K(tmp_ret));
-            } else if (is_exist) {
-              // Case 1: server exists, while not renew snapshot for a long time
-              bool is_alive = false;
-              if (OB_TMP_FAIL(share::ObAllServerTracer::get_instance().check_server_alive(addr, is_alive))) {
-                MVCC_LOG(WARN, "check all server tracer failed", K(tmp_ret));
-              } else if (is_alive) {
-                // Case 1.1: server is alive, we report the WARN for not
-                //           renewing. because there may be tenant transfer out
-                //           which cause it will not be reclaimed forever
-                MVCC_LOG(WARN, "server alives while not renew for a long time", K(create_time),
-                         K(current_timestamp), K(addr), K(snapshot_type), K(snapshot_version));
-                need_reclaim = true;
-              } else {
-                // Case 1.2: server is not alive, we report the WARN and reclaim
-                //           it immediately
-                MVCC_LOG(WARN, "server not alives while not renew for a long time", K(create_time),
-                         K(current_timestamp), K(addr), K(snapshot_type), K(snapshot_version));
-                need_reclaim = true;
-              }
-            } else {
-              // Case 2: server doesnot exits,  we report the WARN and reclaim
-              //         it immediately
-              MVCC_LOG(WARN, "server doesnot exists so we should remove it", K(create_time),
-                       K(current_timestamp), K(addr), K(snapshot_type), K(snapshot_version));
-              need_reclaim = true;
-            }
+            need_reclaim = true; // server will be always exist and alive in lite version
           }
 
           if (need_reclaim) {
@@ -1028,48 +999,6 @@ int ObMultiVersionGarbageCollector::reclaim()
 int ObMultiVersionGarbageCollector::monitor_(const ObArray<ObAddr> &snapshot_servers)
 {
   int ret = OB_SUCCESS;
-  ObArray<ObAddr> lost_servers;
-
-  if (OB_FAIL(share::ObAllServerTracer::get_instance().for_each_server_info(
-                [&snapshot_servers,
-                 &lost_servers](const share::ObServerInfoInTable &server_info) -> int {
-                  int ret = OB_SUCCESS;
-                  bool found = false;
-
-                  // find servers that recorded in __all_server table while has
-                  // not reported its timestamp.
-                  for (int64_t i = 0; !found && i < snapshot_servers.count(); ++i) {
-                    if (server_info.get_server() == snapshot_servers[i]) {
-                      found = true;
-                    }
-                  }
-
-                  if (!found) {// not found in __all_reserved_snapshot inner table
-                    if (OB_FAIL(lost_servers.push_back(server_info.get_server()))) {
-                      MVCC_LOG(WARN, "lost servers push back failed", K(ret));
-                    } else if (!server_info.is_valid()) {
-                      MVCC_LOG(ERROR, "invalid server info", K(ret), K(server_info));
-                      // if not in service, we ignore it and report the warning
-                    } else if (!server_info.in_service() || server_info.is_stopped()) {
-                      MVCC_LOG(WARN, "server is not alive, we will remove soon", K(ret), K(server_info));
-                      // if not alive, we ignore it and report the warning
-                    } else if (!server_info.is_alive()) {
-                      MVCC_LOG(WARN, "server is not alive, please pay attention", K(ret), K(server_info));
-                    } else {
-                      // may be lost or do not contain the tenant
-                      // TODO(handora.qc): make it better and more clear
-                      MVCC_LOG(INFO, "server is alive when mointor", K(ret), K(server_info));
-                    }
-                  }
-
-                  return ret;
-                }))) {
-    MVCC_LOG(WARN, "for each server status failed", K(ret));
-  } else {
-    MVCC_LOG(INFO, "garbage collector monitor server status monitor",
-             K(snapshot_servers), K(lost_servers));
-  }
-
   return ret;
 }
 

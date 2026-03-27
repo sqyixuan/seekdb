@@ -40,7 +40,6 @@
 #include "observer/omt/ob_multi_tenant.h"
 #include "observer/omt/ob_tenant_srs.h"
 #include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
-#include "share/ob_alive_server_tracer.h"
 #include "share/ob_device_manager.h"
 #include "share/ob_io_device_helper.h"
 #include "share/ob_simple_mem_limit_getter.h"
@@ -97,7 +96,6 @@
 #include "storage/access/ob_empty_read_bucket.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "sensitive_test/object_storage/object_storage_authorization_info.h"
-#include "storage/shared_storage/ob_disk_space_manager.h"
 #include "storage/shared_storage/ob_file_manager.h"
 #include "storage/shared_storage/ob_dir_manager.h"
 #include "storage/shared_storage/ob_ss_micro_cache.h"
@@ -108,7 +106,6 @@
 #include "observer/table/object_pool/ob_table_object_pool.h"
 #include "share/index_usage/ob_index_usage_info_mgr.h"
 #include "observer/ob_startup_accel_task_handler.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_service.h"
 #include "storage/tmp_file/ob_tmp_file_manager.h" // ObTenantTmpFileManager
 #include "storage/memtable/ob_lock_wait_mgr.h"
 #include "observer/table/group/ob_table_tenant_group.h"
@@ -161,13 +158,6 @@ class MockObService : public observer::ObService
 public:
   MockObService(const oceanbase::observer::ObGlobalContext &gctx):observer::ObService(gctx)
   {}
-  int submit_ls_update_task(const uint64_t tenant_id,
-    const share::ObLSID &ls_id)
-  {
-    UNUSED(tenant_id);
-    UNUSED(ls_id);
-    return OB_SUCCESS;
-  }
 };
 
 class MockObTsMgr : public ObTsMgr
@@ -389,7 +379,6 @@ private:
   MockObService ob_service_;
   share::ObLocationService location_service_;
   share::schema::ObMultiVersionSchemaService &schema_service_;
-  share::ObAliveServerTracer server_tracer_;
   sql::ObSql sql_engine_;
   ObSQLSessionMgr session_mgr_;
   common::ObMysqlRandom scramble_rand_;
@@ -405,7 +394,6 @@ private:
   std::string slog_dir_;
   obrpc::ObCommonRpcProxy rs_rpc_proxy_;
   obrpc::ObSrvRpcProxy srv_rpc_proxy_;
-  share::ObRsMgr rs_mgr_;
   common::ObServerConfig &config_;
   MockDiskUsageReport mock_disk_reporter_;
   logservice::ObServerLogBlockMgr log_block_mgr_;
@@ -500,12 +488,7 @@ int MockTenantModuleEnv::init_dir()
 {
   system(("rm -rf " + run_dir_).c_str());
 
-#ifdef __APPLE__
-  char buf[PATH_MAX];
-  curr_dir_ = getcwd(buf, sizeof(buf));
-#else
   curr_dir_ = get_current_dir_name();
-#endif
 
   int ret = OB_SUCCESS;
   sstable_dir_ = env_dir_ + "/sstable";
@@ -633,7 +616,6 @@ void MockTenantModuleEnv::init_gctx_gconf()
   GCTX.location_service_ = &location_service_;
   GCTX.batch_rpc_ = &batch_rpc_;
   GCTX.schema_service_ = &schema_service_;
-  GCTX.server_tracer_ = &server_tracer_;
   GCTX.net_frame_ = &net_frame_;
   GCTX.ob_service_ = &ob_service_;
   GCTX.omt_ = &multi_tenant_;
@@ -646,7 +628,6 @@ void MockTenantModuleEnv::init_gctx_gconf()
   (void) GCTX.set_server_id(1);
   GCTX.rs_rpc_proxy_ = &rs_rpc_proxy_;
   GCTX.srv_rpc_proxy_ = &srv_rpc_proxy_;
-  GCTX.rs_mgr_ = &rs_mgr_;
   GCTX.config_ = &config_;
   GCTX.disk_reporter_ = &mock_disk_reporter_;
   GCTX.bandwidth_throttle_ = &bandwidth_throttle_;
@@ -822,8 +803,6 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, share::ObTenantDagScheduler::mtl_init, nullptr, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObTenantStorageMetaService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, tmp_file::ObTenantTmpFileManager::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, coordinator::ObLeaderCoordinator::mtl_init, coordinator::ObLeaderCoordinator::mtl_start, coordinator::ObLeaderCoordinator::mtl_stop, coordinator::ObLeaderCoordinator::mtl_wait, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, coordinator::ObFailureDetector::mtl_init, coordinator::ObFailureDetector::mtl_start, coordinator::ObFailureDetector::mtl_stop, coordinator::ObFailureDetector::mtl_wait, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, compaction::ObDiagnoseTabletMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(ObLobManager::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::detector::ObDeadLockDetectorMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
@@ -859,7 +838,6 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, table::ObTableObjectPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObIndexUsageInfoMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTabletMemtableMgrPool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, ObTenantSnapshotService::mtl_init, mtl_start_default, mtl_stop_default, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObOptStatMonitorManager::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, memtable::ObLockWaitMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObGlobalIteratorPool::mtl_init, nullptr, nullptr, nullptr, ObGlobalIteratorPool::mtl_destroy);
