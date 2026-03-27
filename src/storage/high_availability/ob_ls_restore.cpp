@@ -892,30 +892,7 @@ int ObStartLSRestoreTask::process()
 
 int ObStartLSRestoreTask::deal_with_local_ls_()
 {
-  int ret = OB_SUCCESS;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-  ObRole role;
-  int64_t leader_epoch = 0;
-  ObLSMeta local_ls_meta;
-  ObLSRestoreStatus restore_status;
-
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("start ls restore task do not init", K(ret));
-  } else if (OB_FAIL(ObStorageHADagUtils::get_ls(ctx_->arg_.ls_id_, ls_handle))) {
-    LOG_WARN("failed to get ls", K(ret), K(ctx_));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_SYS;
-    LOG_ERROR("ls should not be NULL", K(ret), K(*ctx_));
-  } else {
-    if (OB_FAIL(ls->get_restore_status(restore_status))) {
-      LOG_WARN("failed to get restore status", K(ret), KPC(ctx_));
-    } else if (ObLSRestoreStatus::RESTORE_SYS_TABLETS != restore_status) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ls restore status is unexpected", K(ret), K(restore_status));
-    }
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -999,87 +976,7 @@ void ObStartLSRestoreTask::set_tablet_to_restore(ObMigrationTabletParam &tablet_
 
 int ObStartLSRestoreTask::update_ls_meta_and_create_all_tablets_()
 {
-  int ret = OB_SUCCESS;
-  ObICopyLSViewInfoReader *reader = nullptr;
-  ObLSService *ls_service = nullptr;
-  ObLS *ls = nullptr;
-  ObLSHandle ls_handle;
-  const ObBackupSetFileDesc::Compatible backup_compat = ctx_->arg_.restore_base_info_.backup_compatible_;
-  if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls service should not be null", K(ret), KP(ls_service));
-  } else if (OB_FAIL(ls_service->get_ls(ctx_->arg_.ls_id_, ls_handle, ObLSGetMod::HA_MOD))) {
-    LOG_WARN("fail to get ls handle", K(ret), "ls_id", ctx_->arg_.ls_id_);
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), K(ls_handle));
-  } else if (OB_FAIL(alloc_copy_ls_view_reader_(reader))) {
-    LOG_WARN("failed to alloc copy ls view reader", K(ret));
-  } else {
-    ObMigrationStatus migration_status;
-    ObLSRestoreStatus restore_status;
-    obrpc::ObCopyTabletInfo tablet_info;
-    HEAP_VAR(ObLSMetaPackage, ls_meta_package) {
-      if (OB_FAIL(reader->get_ls_meta(ls_meta_package))) {
-        LOG_WARN("fail to read ls meta infos", K(ret));
-      } else if (OB_FAIL(ls_meta_package.ls_meta_.get_migration_status(migration_status))) {
-        LOG_WARN("failed to get migration status", K(ret), K(ls_meta_package));
-      } else if (OB_FAIL(ls_meta_package.ls_meta_.get_restore_status(restore_status))) {
-        LOG_WARN("failed to get restore status", K(ret), K(ls_meta_package));
-      } else if (ctx_->arg_.is_leader_
-                 && (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status
-                    || ObLSRestoreStatus::NONE != restore_status)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("leader ls restore get unexpected migration status or restore status", K(ret), K(migration_status),
-            K(restore_status), K(ls_meta_package));
-      } else if (!ctx_->arg_.is_leader_
-                 && !restore_status.is_wait_restore_sys_tablets()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("follower ls restore get unexpected restore status", K(ret), K(restore_status), K(ls_meta_package));
-      } else if (OB_FAIL(ls->update_ls_meta(false/*don't update restore status*/,
-                                            ls_meta_package.ls_meta_))) {
-        LOG_WARN("fail to update ls meta", K(ret), KPC(ls), K(ls_meta_package));
-      } else {
-        LOG_INFO("update ls meta succeed", KPC(ls), K(ls_meta_package));
-        ctx_->src_ls_meta_package_ = ls_meta_package;
-        ctx_->need_check_seq_ = ctx_->arg_.is_leader_ ? false : true;
-        ctx_->ls_rebuild_seq_ = ctx_->arg_.is_leader_ ? -1 : ls_meta_package.ls_meta_.get_rebuild_seq();
-        ctx_->sys_tablet_id_array_.reset();
-        int64_t tablet_cnt = 0;
-        ObLogicTabletID logic_tablet_id;
-        // create all tablets on the log stream
-        while (OB_SUCC(ret)) {
-          tablet_info.reset();
-          logic_tablet_id.reset();
-          if (OB_FAIL(reader->get_next_tablet_info(tablet_info))) {
-            if (OB_ITER_END == ret) {
-              LOG_INFO("update ls meta and create all tablets succeed", KPC_(ctx), K(tablet_cnt));
-              ret = OB_SUCCESS;
-              break;
-            } else {
-              LOG_WARN("failed to get next tablet meta", K(ret));
-            }
-          } else if (OB_FAIL(logic_tablet_id.init(tablet_info.tablet_id_, tablet_info.param_.transfer_info_.transfer_seq_))) {
-            LOG_WARN("failed to init logicl tablet id", K(ret), K(tablet_info));
-          } else if (tablet_info.param_.tablet_id_.is_ls_inner_tablet()
-                     && OB_FAIL(ctx_->sys_tablet_id_array_.push_back(logic_tablet_id))) {
-            LOG_WARN("failed to push sys tablet id into array", K(ret), "array count", ctx_->sys_tablet_id_array_.count());
-          } else if (!tablet_info.param_.is_empty_shell()
-                      && !share::ObBackupSetFileDesc::is_backup_set_support_quick_restore(backup_compat)
-                      && OB_FALSE_IT(set_tablet_to_restore(tablet_info.param_))) {
-          } else if (OB_FAIL(reset_multi_version_start_(tablet_info.param_))) {
-            LOG_WARN("failed to reset multi version start", K(ret), K(tablet_info));
-          } else if (OB_FAIL(create_tablet_(tablet_info.param_, ls))) {
-            LOG_WARN("failed to create tablet", K(ret));
-          } else {
-            ++tablet_cnt;
-          }
-        }
-      }
-    }
-
-    free_copy_ls_view_reader_(reader);
-  }
+  int ret = OB_NOT_SUPPORTED;
   return ret;
 }
 
@@ -2057,8 +1954,6 @@ int ObTabletGroupMetaRestoreTask::create_or_update_tablet_(
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(param.transfer_info_.init())) {
-      LOG_WARN("failed to init transfer info", K(ret), K(param));
     } else if (OB_FAIL(param.ha_status_.set_restore_status(restore_status))) {
       LOG_WARN("failed to set restore status", K(ret), K(restore_status));
     } else if (OB_FAIL(param.ha_status_.set_data_status(data_status))) {
