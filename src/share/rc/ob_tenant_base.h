@@ -206,7 +206,6 @@ namespace rootserver
 namespace observer
 {
   class ObTenantMetaChecker;
-  class QueueThread;
   class ObTableLoadService;
   class ObTableLoadResourceService;
   class ObStartupAccelTaskHandler;
@@ -297,7 +296,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
 #define MTL_MEMBERS                                  \
   MTL_LIST(                                          \
       common::ObDiagnosticInfoContainer*,            \
-      ObTimerService*,                               \
       omt::ObSharedTimer*,                           \
       oceanbase::sql::ObTenantSQLSessionMgr*,        \
       storage::ObTenantMetaMemMgr*,                  \
@@ -329,7 +327,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       rootserver::ObRestoreMajorFreezeService*,      \
       observer::ObTenantMetaChecker*,                \
       observer::ObTabletTableUpdater*,               \
-      observer::QueueThread *,                       \
       storage::ObStorageHAHandlerService*,           \
       rootserver::ObTenantInfoLoader*,         \
       rootserver::ObCreateStandbyFromNetActor*,         \
@@ -693,12 +690,6 @@ public:
 
   template<class T>
   void set(T v) { return inner_set(v); }
-
-  ObTimerService *get_timer_service() override
-  {
-    return get<ObTimerService *>();
-  }
-
 
 private:
   int create_mtl_module();
