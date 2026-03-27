@@ -28,7 +28,6 @@
 #include "storage/blocksstable/ob_logic_macro_id.h"
 #include "share/ls/ob_ls_i_life_manager.h"
 #include "share/scheduler/ob_dag_scheduler_config.h"
-#include "ob_ls_transfer_info.h"
 #include "common/ob_learner_list.h"
 #include "storage/high_availability/ob_tablet_ha_status.h"
 
@@ -92,10 +91,6 @@ public:
   static bool check_can_report_readable_scn(
       const ObMigrationStatus &cur_status);
 private:
-  static int check_ls_transfer_tablet_(
-      const share::ObLSID &ls_id,
-      const ObMigrationStatus &migration_status,
-      bool &allow_gc);
   static int check_transfer_dest_tablet_for_ls_gc(
       ObLS *ls,
       const ObTabletID &tablet_id,
@@ -104,40 +99,6 @@ private:
   static int set_ls_migrate_gc_status_(
       ObLS &ls,
       bool &allow_gc);
-  static int check_transfer_dest_ls_(
-      const share::ObLSID &ls_id,
-      bool &allow_gc);
-  static int check_transfer_dest_tablets_(
-      const ObLSTransferMetaInfo &transfer_meta_info,
-      ObLS &dest_ls,
-      bool &allow_gc);
-  static int allow_transfer_src_ls_gc_(
-      const ObMigrationStatus &migration_status,
-      bool &allow_gc);
-
-  //compatible ls gc function
-  static int check_ls_transfer_tablet_v1_(
-      const share::ObLSID &ls_id,
-      const ObMigrationStatus &migration_status,
-      bool &allow_gc);
-  static int check_ls_with_transfer_task_v1_(
-      ObLS &ls,
-      bool &need_check_allow_gc,
-      bool &need_wait_dest_ls_replay);
-  static int check_transfer_dest_ls_status_for_ls_gc_v1_(
-      const share::ObLSID &transfer_ls_id,
-      const ObTabletID &tablet_id,
-      const share::SCN &transfer_scn,
-      const bool need_wait_dest_ls_replay,
-      bool &allow_gc);
-  static int check_transfer_dest_tablet_for_ls_gc_v1_(
-      ObLS *ls,
-      const ObTabletID &tablet_id,
-      const share::SCN &transfer_scn,
-      const bool need_wait_dest_ls_replay,
-      bool &allow_gc);
-  static int check_transfer_meta_info_compatible_(
-      bool &for_compatible);
 };
 
 enum ObMigrationOpPriority

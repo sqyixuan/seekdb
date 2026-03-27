@@ -366,18 +366,13 @@ public:
 struct ObHATableStoreParam final
 {
 public:
-  ObHATableStoreParam();
   ObHATableStoreParam(
-    const int64_t transfer_seq,
-    const bool need_check_transfer_seq,
     const bool need_replace_remote_sstable = false,
     const bool is_only_replace_major = false);
   ~ObHATableStoreParam() = default;
   bool is_valid() const;
-  TO_STRING_KV(K_(transfer_seq), K_(need_check_transfer_seq), K_(need_replace_remote_sstable), K_(is_only_replace_major));
+  TO_STRING_KV(K_(need_replace_remote_sstable), K_(is_only_replace_major));
 public:
-  int64_t transfer_seq_;
-  bool need_check_transfer_seq_;
   bool need_replace_remote_sstable_; // only true for restore replace sstable.
   bool is_only_replace_major_;
 };
@@ -449,8 +444,6 @@ struct ObUpdateTableStoreParam
     PARAM_DEFINE_FUNC(var_type, ha_info_, var_name)
   #define COMP_PARAM_FUNC(var_type, var_name) \
     PARAM_DEFINE_FUNC(var_type, compaction_info_, var_name)
-  HA_PARAM_FUNC(bool, need_check_transfer_seq);
-  HA_PARAM_FUNC(int64_t, transfer_seq);
   COMP_PARAM_FUNC(compaction::ObMergeType, merge_type);
   COMP_PARAM_FUNC(const blocksstable::ObMajorChecksumInfo&, major_ckm_info);
   COMP_PARAM_FUNC(share::SCN, clog_checkpoint_scn);
@@ -491,23 +484,6 @@ public:
   ObSEArray<ObITable::TableKey, MAX_SSTABLE_CNT_IN_STORAGE> skip_split_keys_;
 };
 
-struct ObForkTableStoreParam final
-{
-public:
-  ObForkTableStoreParam();
-  ~ObForkTableStoreParam();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(snapshot_version), K_(multi_version_start), K_(merge_type), K_(clog_checkpoint_scn), K_(mds_checkpoint_scn));
-
-public:
-  int64_t snapshot_version_;
-  int64_t multi_version_start_;
-  compaction::ObMergeType merge_type_;
-  share::SCN clog_checkpoint_scn_;
-  share::SCN mds_checkpoint_scn_;
-};
-
 struct ObBatchUpdateTableStoreParam final
 {
   ObBatchUpdateTableStoreParam();
@@ -517,7 +493,7 @@ struct ObBatchUpdateTableStoreParam final
 
   TO_STRING_KV(K_(tables_handle), K_(rebuild_seq), K_(is_transfer_replace),
       K_(start_scn), KP_(tablet_meta), K_(restore_status), K_(tablet_split_param),
-      K_(tablet_fork_param), K_(need_replace_remote_sstable), K_(release_mds_scn));
+      K_(need_replace_remote_sstable), K_(release_mds_scn));
 
   ObTablesHandleArray tables_handle_;
 #ifdef ERRSIM
@@ -529,7 +505,6 @@ struct ObBatchUpdateTableStoreParam final
   const ObMigrationTabletParam *tablet_meta_;
   ObTabletRestoreStatus::STATUS restore_status_;
   ObSplitTableStoreParam tablet_split_param_;
-  ObForkTableStoreParam tablet_fork_param_;
   bool need_replace_remote_sstable_;
   share::SCN release_mds_scn_;
 

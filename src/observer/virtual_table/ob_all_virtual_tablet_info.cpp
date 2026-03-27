@@ -223,15 +223,15 @@ int ObAllVirtualTabletInfo::process_curr_tenant(ObNewRow *&row)
           break;
         case OB_APP_MIN_COLUMN_ID + 10:
           // transfer_start_scn
-          cur_row_.cells_[i].set_uint64(tablet_meta.transfer_info_.transfer_start_scn_.get_val_for_inner_table_field());
+          cur_row_.cells_[i].set_uint64(0);
           break;
         case OB_APP_MIN_COLUMN_ID + 11:
           // transfer_seq
-          cur_row_.cells_[i].set_int(tablet_meta.transfer_info_.transfer_seq_);
+          cur_row_.cells_[i].set_int(0);
           break;
         case OB_APP_MIN_COLUMN_ID + 12:
           // has_transfer_table
-          cur_row_.cells_[i].set_int(tablet_meta.transfer_info_.has_transfer_table() ? 1 : 0);
+          cur_row_.cells_[i].set_int(0);
           break;
         case OB_APP_MIN_COLUMN_ID + 13: {
           // restore_status

@@ -18,7 +18,6 @@
 #define OCEANBASE_OBSERVER_TABLET_LOCATION_BROADCAST_
 
 #include "observer/ob_uniq_task_queue.h"
-#include "share/transfer/ob_transfer_info.h"               // ObTransferTaskInfo
 #include "share/location_cache/ob_location_update_task.h"  // ObTabletLocationSendTask
 #include "share/rpc/ob_async_rpc_proxy.h"                  // ObSrvRpcProxy, RPC_F
 

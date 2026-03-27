@@ -29,8 +29,6 @@
 #include "sql/resolver/ddl/ob_drop_func_resolver.h"
 #include "sql/resolver/ddl/ob_rename_table_resolver.h"
 #include "sql/resolver/ddl/ob_truncate_table_resolver.h"
-#include "sql/resolver/ddl/ob_fork_table_resolver.h"
-#include "sql/resolver/ddl/ob_fork_database_resolver.h"
 #include "sql/resolver/ddl/ob_create_table_like_resolver.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/ddl/ob_drop_table_resolver.h"
@@ -127,8 +125,6 @@
 #include "pl/ob_pl_package.h"
 #include "sql/resolver/ddl/ob_drop_context_resolver.h"
 #include "sql/resolver/cmd/ob_module_data_resolver.h"
-#include "sql/resolver/cmd/ob_tenant_snapshot_resolver.h"
-#include "sql/resolver/cmd/ob_tenant_clone_resolver.h"
 #include "sql/resolver/cmd/ob_olap_async_job_resolver.h"
 #include "sql/resolver/ddl/ob_create_ccl_rule_resolver.h"
 #include "sql/resolver/ddl/ob_drop_ccl_rule_resolver.h"
@@ -339,14 +335,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         REGISTER_STMT_RESOLVER(CreateTableLike);
         break;
       }
-      case T_FORK_TABLE: {
-        REGISTER_STMT_RESOLVER(ForkTable);
-        break;
-      }
-      case T_FORK_DATABASE: {
-        REGISTER_STMT_RESOLVER(ForkDatabase);
-        break;
-      }
       case T_SELECT: {
         REGISTER_SELECT_STMT_RESOLVER(Select);
         break;
@@ -419,14 +407,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_DROP_LOGFILE_GROUP:
       {
         REGISTER_STMT_RESOLVER(Mock);
-        break;
-      }
-      case T_SWITCH_REPLICA_ROLE: {
-        REGISTER_STMT_RESOLVER(SwitchReplicaRole);
-        break;
-      }
-      case T_SWITCH_RS_ROLE: {
-        REGISTER_STMT_RESOLVER(SwitchRSRole);
         break;
       }
       case T_SWITCHOVER: {
@@ -527,42 +507,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_CLEAR_MERGE_ERROR: {
         REGISTER_STMT_RESOLVER(ClearMergeError);
-        break;
-      }
-      case T_ADD_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(AddLSReplica);
-        break;
-      }
-      case T_REMOVE_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(RemoveLSReplica);
-        break;
-      }
-      case T_MIGRATE_LS_REPLICA: {
-        REGISTER_STMT_RESOLVER(MigrateLSReplica);
-        break;
-      }
-      case T_MODIFY_LS_REPLICA_TYPE: {
-        REGISTER_STMT_RESOLVER(ModifyLSReplica);
-        break;
-      }
-      case T_MODIFY_LS_PAXOS_REPLICA_NUM: {
-        REGISTER_STMT_RESOLVER(ModifyLSPaxosReplicaNum);
-        break;
-      }
-      case T_CANCEL_LS_REPLICA_TASK: {
-        REGISTER_STMT_RESOLVER(CancelLSReplicaTask);
-        break;
-      }
-      case T_ADD_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(AddArbitrationService);
-        break;
-      }
-      case T_REMOVE_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(RemoveArbitrationService);
-        break;
-      }
-      case T_REPLACE_ARBITRATION_SERVICE: {
-        REGISTER_STMT_RESOLVER(ReplaceArbitrationService);
         break;
       }
       case T_RUN_JOB: {
@@ -756,9 +700,9 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       case T_SHOW_CHECK_TABLE:
       case T_SHOW_CREATE_USER:
       case T_SHOW_CATALOGS:
-      case T_SHOW_CREATE_CATALOG:
+      case T_SHOW_CREATE_CATALOG: 
       case T_SHOW_LOCATIONS:
-      case T_SHOW_CREATE_LOCATION:
+      case T_SHOW_CREATE_LOCATION: 
       case T_LOCATION_UTILS_LIST: {
         REGISTER_STMT_RESOLVER(Show);
         break;
@@ -816,10 +760,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_ADMIN_ZONE: {
         REGISTER_STMT_RESOLVER(AdminZone);
-        break;
-      }
-      case T_ADMIN_STORAGE: {
-        REGISTER_STMT_RESOLVER(AdminStorage);
         break;
       }
       case T_ALTER_SYSTEM_SET: {
@@ -926,10 +866,6 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_SET_DISK_VALID: {
         REGISTER_STMT_RESOLVER(SetDiskValid);
-        break;
-      }
-      case T_CLEAR_BALANCE_TASK: {
-        REGISTER_STMT_RESOLVER(ClearBalanceTask);
         break;
       }
       case T_ANALYZE:
@@ -1139,40 +1075,12 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         REGISTER_STMT_RESOLVER(TableTTL);
         break;
       }
-      case T_CREATE_TENANT_SNAPSHOT: {
-        REGISTER_STMT_RESOLVER(CreateTenantSnapshot);
-        break;
-      }
-      case T_DROP_TENANT_SNAPSHOT: {
-        REGISTER_STMT_RESOLVER(DropTenantSnapshot);
-        break;
-      }
-      case T_CLONE_TENANT: {
-        REGISTER_STMT_RESOLVER(CloneTenant);
-        break;
-      }
       case T_ALTER_SYSTEM_RESET_PARAMETER: {
         REGISTER_STMT_RESOLVER(ResetConfig);
         break;
       }
       case T_ALTER_SYSTEM_RESET: {
         REGISTER_STMT_RESOLVER(AlterSystemReset);
-        break;
-      }
-      case T_CANCEL_CLONE: {
-        REGISTER_STMT_RESOLVER(CancelClone);
-        break;
-      }
-      case T_TRANSFER_PARTITION: {
-        REGISTER_STMT_RESOLVER(TransferPartition);
-        break;
-      }
-      case T_CANCEL_TRANSFER_PARTITION: {
-        REGISTER_STMT_RESOLVER(TransferPartition);
-        break;
-      }
-      case T_CANCEL_BALANCE_JOB: {
-        REGISTER_STMT_RESOLVER(TransferPartition);
         break;
       }
       case T_SERVICE_NAME: {

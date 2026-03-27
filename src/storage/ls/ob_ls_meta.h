@@ -34,7 +34,6 @@
 #include "storage/tx/ob_id_service.h"
 #include "storage/ls/ob_ls_saved_info.h"
 #include "share/scn.h"
-#include "storage/high_availability/ob_ls_transfer_info.h"
 #include "storage/mview/ob_major_mv_merge_info.h"
 #include "common/ob_store_format.h"       // ObLSStoreFormat
 
@@ -48,7 +47,6 @@ public:
   static const int64_t NORMAL = 0;
   static const int64_t RESTORE = 1;
   static const int64_t MIGRATE = 2;
-  static const int64_t CLONE = 3;
 };
 
 class ObLSMeta
@@ -120,16 +118,6 @@ public:
   int get_rebuild_info(ObLSRebuildInfo &rebuild_info) const;
   int get_create_type(int64_t &create_type) const;
   int check_ls_need_online(bool &need_online) const;
-  int set_transfer_meta_info(
-      const int64_t ls_epoch,
-      const share::SCN &replay_scn,
-      const share::ObLSID &src_ls,
-      const share::SCN &src_scn,
-      const ObTransferInTransStatus::STATUS &trans_status,
-      const common::ObIArray<common::ObTabletID> &tablet_id_array,
-      const uint64_t data_version);
-  int get_transfer_meta_info(ObLSTransferMetaInfo &trasfer_meta_info) const;
-  int cleanup_transfer_meta_info(const int64_t ls_epoch, const share::SCN &replay_scn);
   ObMajorMVMergeInfo get_major_mv_merge_info() const;
   int set_major_mv_merge_scn(const int64_t ls_epoch, const SCN &major_mv_merge_scn);
   int set_major_mv_merge_scn_safe_calc(const int64_t ls_epoch, const SCN &major_mv_merge_scn_safe_calc);
@@ -187,7 +175,7 @@ public:
                K_(clog_checkpoint_scn), K_(clog_base_lsn),
                K_(rebuild_seq), K_(migration_status), K(offline_scn_),
                K_(restore_status), K_(replayable_point), K_(tablet_change_checkpoint_scn),
-               K_(all_id_meta), K_(transfer_scn), K_(rebuild_info), K_(transfer_meta_info),
+               K_(all_id_meta), K_(transfer_scn), K_(rebuild_info),
                K_(store_format));
 private:
   int check_can_update_();
@@ -227,7 +215,6 @@ private:
   ObLSSavedInfo saved_info_;
   share::SCN transfer_scn_;
   ObLSRebuildInfo rebuild_info_;
-  ObLSTransferMetaInfo transfer_meta_info_; //transfer_dml_ctrl_42x # placeholder
   ObMajorMVMergeInfo major_mv_merge_info_;
   common::ObLSStoreFormat store_format_;    // set on initialization and then remain unchanged
 };

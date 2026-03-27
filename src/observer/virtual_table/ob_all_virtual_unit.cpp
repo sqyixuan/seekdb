@@ -18,9 +18,6 @@
 #include "observer/ob_server.h"
 #include "observer/omt/ob_tenant.h"
 #include "logservice/ob_log_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 
 using namespace oceanbase;
 using namespace oceanbase::common;

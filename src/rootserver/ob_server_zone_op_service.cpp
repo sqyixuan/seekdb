@@ -23,9 +23,6 @@
 #include "share/ob_max_id_fetcher.h"
 #include "rootserver/ob_root_service.h" // callback
 #include "share/ob_license_utils.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "share/object_storage/ob_zone_storage_table_operation.h"
-#endif
 
 namespace oceanbase
 {
@@ -69,56 +66,6 @@ int ObServerZoneOpService::init(
   }
   return ret;
 }
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObServerZoneOpService::get_and_check_storage_infos_by_zone_(const ObZone& zone,
-    ObIArray<share::ObZoneStorageTableInfo> &result)
-{
-  int ret = OB_SUCCESS;
-  if (!GCTX.is_shared_storage_mode()) {
-  } else if (OB_ISNULL(sql_proxy_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sql_proxy_ is NULL", KR(ret), KP(GCTX.root_service_));
-  } else {
-    if (OB_FAIL(ObStorageInfoOperator::get_ordered_zone_storage_infos_with_sub_op_id(*sql_proxy_,
-            zone, result))) {
-      LOG_WARN("failed to get all storage infos", KR(ret), K(zone));
-    } else if (result.empty()) {
-      ret = OB_OP_NOT_ALLOW;
-      LOG_WARN("zone storage infos is empty", KR(ret), K(zone));
-      LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Zone storage info not exists. ADD SERVER");
-    }
-  }
-  return ret;
-}
-int ObServerZoneOpService::check_storage_infos_not_changed_(common::ObISQLClient &proxy,
-    const ObZone &zone, const ObIArray<share::ObZoneStorageTableInfo> &storage_infos)
-{
-  int ret = OB_SUCCESS;
-  ObArray<share::ObZoneStorageTableInfo> zone_storage_infos;
-  if (!GCTX.is_shared_storage_mode()) {
-  } else if (OB_FAIL(ObStorageInfoOperator::get_ordered_zone_storage_infos_with_sub_op_id(proxy,
-          zone, zone_storage_infos))) {
-    LOG_WARN("failed to get get zone storage infos", KR(ret), K(zone));
-  } else if (storage_infos.count() != zone_storage_infos.count()) {
-    ret = OB_OP_NOT_ALLOW;
-    LOG_WARN("zone storage infos changed when adding server", KR(ret), K(zone),
-        K(storage_infos), K(zone_storage_infos));
-    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Zone storage changed. ADD SERVER");
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < storage_infos.count(); i++) {
-      const ObZoneStorageTableInfo &target = storage_infos.at(i);
-      const ObZoneStorageTableInfo &current = zone_storage_infos.at(i);
-      if (!target.is_equal(current)) {
-        ret = OB_OP_NOT_ALLOW;
-        LOG_WARN("zone storage infos changed when adding server", KR(ret), K(zone),
-            K(storage_infos), K(zone_storage_infos));
-        LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Zone storage changed. ADD SERVER");
-      }
-    }
-  }
-  return ret;
-}
-#endif
 
 #define PRINT_NON_EMPTY_SERVER_ERR_MSG(addr) \
   do {\
@@ -221,12 +168,6 @@ int ObServerZoneOpService::prepare_server_for_adding_server_(const ObAddr &serve
     LOG_WARN("ctx time out", KR(ret), K(timeout));
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(OB_SYS_TENANT_ID, sys_tenant_data_version))) {
     LOG_WARN("fail to get sys tenant's min data version", KR(ret));
-#ifdef OB_BUILD_SHARED_STORAGE
-  } else if (GCTX.is_shared_storage_mode()) {
-    if (OB_FAIL(get_and_check_storage_infos_by_zone_(picked_zone, zone_storage_infos))) {
-      LOG_WARN("failed to get storage infos", KR(ret), K(picked_zone));
-    }
-#endif
   }
   if (FAILEDx(fetch_new_server_id_(server_id))) {
     // fetch a new server id and insert the server into __all_server table
@@ -404,27 +345,7 @@ int ObServerZoneOpService::finish_delete_server(
   (void) end_trans_and_on_server_change_(ret, trans, "finish_delete_server", server, server_info_in_table.get_zone(), now);
   return ret;
 }
-int ObServerZoneOpService::stop_servers(
-    const ObIArray<ObAddr> &servers,
-    const ObZone &zone,
-    const obrpc::ObAdminServerArg::AdminServerOp &op)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret), K(is_inited_));
-  } else if (OB_FAIL(stop_server_precheck(servers, op))) {
-    LOG_WARN("fail to precheck stop server", KR(ret), K(servers), K(zone));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < servers.count(); i++) {
-      const ObAddr &server = servers.at(i);
-      if (OB_FAIL(start_or_stop_server_(server, zone, op))) {
-        LOG_WARN("fail to stop server", KR(ret), K(server), K(zone));
-      }
-    }
-  }
-  return ret;
-}
+
 int ObServerZoneOpService::start_servers(
     const ObIArray<ObAddr> &servers,
     const ObZone &zone)
@@ -483,67 +404,6 @@ int ObServerZoneOpService::start_servers(
       }
       if (FAILEDx(start_or_stop_server_(server, zone, ObAdminServerArg::START))) {
         LOG_WARN("fail to start server", KR(ret), K(server), K(zone));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObServerZoneOpService::stop_server_precheck(
-    const ObIArray<ObAddr> &servers,
-    const obrpc::ObAdminServerArg::AdminServerOp &op)
-{
-  int ret = OB_SUCCESS;
-  ObZone zone;
-  bool is_same_zone = false;
-  bool is_all_stopped = false;
-  ObArray<ObServerInfoInTable> all_servers_info_in_table;
-  ObServerInfoInTable server_info;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret), K(is_inited_));
-  } else if (OB_UNLIKELY(servers.count() <= 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("servers' count is zero", KR(ret), K(servers));
-  } else if (OB_ISNULL(GCTX.root_service_) || OB_ISNULL(sql_proxy_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("GCTX.root_service_ or sql_proxy_ is null", KR(ret), KP(GCTX.root_service_), KP(sql_proxy_));
-  } else if (OB_FAIL(ObServerTableOperator::get(*sql_proxy_, all_servers_info_in_table))) {
-    LOG_WARN("fail to read __all_server table", KR(ret), KP(sql_proxy_));
-  } else if (OB_FAIL(check_zone_and_server_(
-      all_servers_info_in_table,
-      servers,
-      is_same_zone,
-      is_all_stopped))) {
-    LOG_WARN("fail to check zone and server", KR(ret), K(all_servers_info_in_table), K(servers));
-  } else if (is_all_stopped) {
-    //nothing todo
-  } else if (!is_same_zone) {
-    ret = OB_STOP_SERVER_IN_MULTIPLE_ZONES;
-    LOG_WARN("can not stop servers in multiple zones", KR(ret), K(server_info), K(servers));
-  } else if (OB_FAIL((ObRootUtils::find_server_info(all_servers_info_in_table, servers.at(0), server_info)))) {
-    LOG_WARN("fail to find server info", KR(ret), K(all_servers_info_in_table), K(servers.at(0)));
-  } else {
-    const ObZone &zone = server_info.get_zone();
-    if (ObAdminServerArg::ISOLATE == op) {
-      //"Isolate server" does not need to check the total number and status of replicas; it cannot be restarted later;
-      if (OB_FAIL(GCTX.root_service_->check_can_stop(zone, servers, false /*is_stop_zone*/))) {
-        LOG_WARN("fail to check can stop", KR(ret), K(zone), K(servers), K(op));
-        if (OB_OP_NOT_ALLOW == ret) {
-          LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Stop all servers in primary region is");
-        }
-      }
-    } else {
-      if (ObRootUtils::have_other_stop_task(zone)) {
-        ret = OB_STOP_SERVER_IN_MULTIPLE_ZONES;
-        LOG_WARN("can not stop servers in multiple zones", KR(ret), K(zone), K(servers), K(op));
-        LOG_USER_ERROR(OB_STOP_SERVER_IN_MULTIPLE_ZONES,
-            "cannot stop server or stop zone in multiple zones");
-      } else if (OB_FAIL(GCTX.root_service_->check_majority_and_log_in_sync(
-          servers,
-          ObAdminServerArg::FORCE_STOP == op,/*skip_log_sync_check*/
-          "stop server"))) {
-        LOG_WARN("fail to check majority and log in-sync", KR(ret), K(zone), K(servers), K(op));
       }
     }
   }
@@ -638,11 +498,6 @@ int ObServerZoneOpService::add_server_(
   } else if (OB_UNLIKELY(!is_active)) {
     ret = OB_ZONE_NOT_ACTIVE;
     LOG_WARN("the zone is not active", KR(ret), K(zone), K(is_active));
-#ifdef OB_BUILD_SHARED_STORAGE
-  } else if (GCTX.is_shared_storage_mode() &&
-    OB_FAIL(check_storage_infos_not_changed_(trans, zone, storage_infos))) {
-    LOG_WARN("check zone storage not changed failed", KR(ret), K(zone));
-#endif
   } else if (OB_FAIL(ObServerTableOperator::get(trans, server, server_info_in_table))) {
     if (OB_SERVER_NOT_IN_WHITE_LIST == ret) {
       ret = OB_SUCCESS;

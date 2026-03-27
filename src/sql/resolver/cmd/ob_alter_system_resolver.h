@@ -70,17 +70,6 @@ public:
   static int get_and_verify_tenant_name(const ParseNode* tenant_name_node,
                                         const uint64_t exec_tenant_id,
                                         uint64_t &target_tenant_id);
-  static int check_and_get_data_source(const ParseNode* data_source_node,
-                                       common::ObAddr& data_source);
-  static int check_and_get_server_addr(const ParseNode* server_addr_node,
-                                       common::ObAddr& server_addr);
-  static int check_and_get_paxos_replica_num(const ParseNode* paxos_replica_num_node,
-                                             int64_t& paxos_replica_num);
-  static int check_compatibility_for_alter_ls_replica(const uint64_t cur_tenant_id);
-  static int do_check_for_alter_ls_replica(const ParseNode *tenant_name_node,
-                                           ObSchemaChecker *schema_checker,
-                                           ObSQLSessionInfo *session_info,
-                                           uint64_t &target_tenant_id);
 };
 
 typedef common::ObFixedLengthString<common::OB_MAX_TRACE_ID_BUFFER_SIZE + 1> Task_Id;
@@ -107,9 +96,6 @@ DEF_SIMPLE_CMD_RESOLVER(ObFlushDagWarningsResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObAdminServerResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObAdminZoneResolver);
-
-DEF_SIMPLE_CMD_RESOLVER(ObAdminStorageResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObSwitchReplicaRoleResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObReportReplicaResolver);
 
@@ -143,24 +129,11 @@ DEF_SIMPLE_CMD_RESOLVER(ObReloadZoneResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObClearMergeErrorResolver);
 
-DEF_SIMPLE_CMD_RESOLVER(ObAddArbitrationServiceResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObRemoveArbitrationServiceResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObReplaceArbitrationServiceResolver);
-
-DEF_SIMPLE_CMD_RESOLVER(ObAddLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObRemoveLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObMigrateLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObModifyLSReplicaResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObModifyLSPaxosReplicaNumResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObCancelLSReplicaTaskResolver);
-
 DEF_SIMPLE_CMD_RESOLVER(ObUpgradeVirtualSchemaResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObRunJobResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObRunUpgradeJobResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObStopUpgradeJobResolver);
-
-DEF_SIMPLE_CMD_RESOLVER(ObSwitchRSRoleResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObAdminUpgradeCmdResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObAdminRollingUpgradeCmdResolver);
@@ -169,7 +142,6 @@ DEF_SIMPLE_CMD_RESOLVER(ObCancelTaskResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObSetDiskValidResolver);
 
-DEF_SIMPLE_CMD_RESOLVER(ObClearBalanceTaskResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObChangeTenantResolver);
 
 DEF_SIMPLE_CMD_RESOLVER(ObDropTempTableResolver);
@@ -238,17 +210,6 @@ public:
   virtual int resolve(const ParseNode &parse_tree);
 private:
   int convert_param_value(obrpc::ObAdminSetConfigItem &item);
-};
-class ObTransferPartitionResolver : public ObSystemCmdResolver
-{
-public:
-  ObTransferPartitionResolver(ObResolverParams &params) : ObSystemCmdResolver(params) {}
-  virtual ~ObTransferPartitionResolver() {}
-  virtual int resolve(const ParseNode &parse_tree);
-private:
-  int resolve_transfer_partition_(const ParseNode &parse_tree);
-  int resolve_cancel_transfer_partition_(const ParseNode &parse_tree);
-  int resolve_cancel_balance_job_(const ParseNode &parse_tree);
 };
 class ObFreezeResolver : public ObSystemCmdResolver {
 public:
@@ -322,7 +283,6 @@ private:
 };
 
 DEF_SIMPLE_CMD_RESOLVER(ObTableTTLResolver);
-DEF_SIMPLE_CMD_RESOLVER(ObCancelCloneResolver);
 DEF_SIMPLE_CMD_RESOLVER(ObChangeExternalStorageDestResolver);
 
 #undef DEF_SIMPLE_CMD_RESOLVER

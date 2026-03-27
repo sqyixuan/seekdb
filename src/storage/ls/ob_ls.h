@@ -47,9 +47,6 @@
 #include "logservice/replayservice/ob_replay_status.h"
 #include "logservice/rcservice/ob_role_change_handler.h"
 #include "logservice/ob_log_handler.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "logservice/ob_arbitration_service.h"
-#endif
 #include "storage/ls/ob_ls_meta_package.h"
 #include "storage/ls/ob_ls_get_mod.h"
 #include "storage/tablelock/ob_lock_table.h"
@@ -58,9 +55,7 @@
 #include "storage/tx_storage/ob_tablet_gc_service.h"
 #include "storage/tx_storage/ob_empty_shell_task.h"
 #include "rootserver/ob_ls_recovery_stat_handler.h" //ObLSRecoveryStatHandler
-#include "storage/high_availability/ob_ls_transfer_info.h"
 #include "observer/table/ttl/ob_tenant_tablet_ttl_mgr.h"
-#include "storage/ls/ob_ls_transfer_status.h"
 #include "storage/mview/ob_major_mv_merge_info.h"
 #include "storage/ls/ob_freezer_define.h"
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -139,9 +134,6 @@ struct DiagnoseInfo
   logservice::ApplyDiagnoseInfo apply_diagnose_info_;
   logservice::ReplayDiagnoseInfo replay_diagnose_info_;
   checkpoint::CheckpointDiagnoseInfo checkpoint_diagnose_info_;
-#ifdef OB_BUILD_ARBITRATION
-  logservice::LogArbSrvDiagnoseInfo arb_srv_diagnose_info_;
-#endif
   char read_only_tx_info_[1024];
   TO_STRING_KV(K(ls_id_),
                K(log_handler_diagnose_info_),
@@ -149,11 +141,8 @@ struct DiagnoseInfo
                K(rc_diagnose_info_),
                K(apply_diagnose_info_),
                K(replay_diagnose_info_),
-               K(checkpoint_diagnose_info_)
-#ifdef OB_BUILD_ARBITRATION
-               ,K(arb_srv_diagnose_info_)
-#endif
-               ,K(read_only_tx_info_));
+               K(checkpoint_diagnose_info_),
+               K(read_only_tx_info_));
   void reset() {
     ls_id_ = -1;
     log_handler_diagnose_info_.reset();
@@ -162,9 +151,6 @@ struct DiagnoseInfo
     apply_diagnose_info_.reset();
     replay_diagnose_info_.reset();
     checkpoint_diagnose_info_.reset();
-#ifdef OB_BUILD_ARBITRATION
-    arb_srv_diagnose_info_.reset();
-#endif
     read_only_tx_info_[0] = '\0';
   }
 };
@@ -272,10 +258,7 @@ public:
   // get the log_service pointer
   logservice::ObLogHandler *get_log_handler() { return &log_handler_; }
   logservice::ObRoleChangeHandler *get_role_change_handler() { return &role_change_handler_;}
-  ObLSTransferInfo &get_ls_startup_transfer_info() { return startup_transfer_info_; }
 
-  // for transfer record MDS phase
-  ObLSTransferStatus &get_transfer_status() { return ls_transfer_status_; }
   //remove member handler
 
   checkpoint::ObTabletGCHandler *get_tablet_gc_handler() { return &tablet_gc_handler_; }
@@ -299,7 +282,6 @@ public:
   int finish_create_ls();
 
   bool is_restore_first_step() const;
-  bool is_clone_first_step() const;
   // is current ls replica a column store replica
   bool is_cs_replica() const;
   // is current ls replica set contains a column store replica
@@ -388,7 +370,7 @@ public:
   void clear_delay_resource_recycle();
 
   TO_STRING_KV(K_(running_state), K_(ls_meta), K_(switch_epoch), K_(log_handler) ,K_(is_inited),
-    K_(tablet_gc_handler), K_(startup_transfer_info), K_(need_delay_resource_recycle));
+    K_(tablet_gc_handler), K_(need_delay_resource_recycle));
 private:
   void update_state_seq_();
   int ls_init_for_dup_table_();
@@ -721,10 +703,6 @@ public:
   DELEGATE_WITH_RET(log_handler_, disable_vote, int);
   DELEGATE_WITH_RET(log_handler_, remove_member, int);
   DELEGATE_WITH_RET(log_handler_, remove_learner, int);
-#ifdef OB_BUILD_ARBITRATION
-  DELEGATE_WITH_RET(log_handler_, add_arbitration_member, int);
-  DELEGATE_WITH_RET(log_handler_, remove_arbitration_member, int);
-#endif
   DELEGATE_WITH_RET(log_handler_, is_in_sync, int);
   DELEGATE_WITH_RET(log_handler_, get_end_scn, int);
   DELEGATE_WITH_RET(log_handler_, disable_sync, int);
@@ -951,23 +929,6 @@ public:
   DELEGATE_WITH_RET(reserved_snapshot_mgr_, add_dependent_medium_tablet, int);
   DELEGATE_WITH_RET(reserved_snapshot_mgr_, del_dependent_medium_tablet, int);
 
-  int set_transfer_meta_info(
-      const share::SCN &replay_scn,
-      const share::ObLSID &src_ls,
-      const share::SCN &src_scn,
-      const ObTransferInTransStatus::STATUS &trans_status,
-      const common::ObIArray<common::ObTabletID> &tablet_id_array,
-      const uint64_t data_version)
-  {
-    return ls_meta_.set_transfer_meta_info(ls_epoch_, replay_scn, src_ls, src_scn, trans_status, tablet_id_array, data_version);
-  }
-  CONST_DELEGATE_WITH_RET(ls_meta_, get_transfer_meta_info, int);
-  int cleanup_transfer_meta_info(
-      const share::SCN &replay_scn)
-  {
-    return ls_meta_.cleanup_transfer_meta_info(ls_epoch_, replay_scn);
-  }
-
   int set_ls_migration_gc(bool &allow_gc);
   int inner_check_allow_read_(
       const ObMigrationStatus &migration_status,
@@ -1064,10 +1025,6 @@ private:
   ObLSLock lock_;
   common::ObMultiModRefMgr<ObLSGetMod> ref_mgr_;
   logservice::coordinator::ElectionPriorityImpl election_priority_;
-  // Record the dependent transfer information when restarting
-  ObLSTransferInfo startup_transfer_info_;
-  // for transfer MDS phase
-  ObLSTransferStatus ls_transfer_status_;
   // this is used for the meta lock, and will be removed later
   RWLock meta_rwlock_;
 

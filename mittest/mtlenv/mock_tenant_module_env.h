@@ -97,7 +97,6 @@
 #include "storage/access/ob_empty_read_bucket.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "sensitive_test/object_storage/object_storage_authorization_info.h"
-#include "storage/shared_storage/ob_disk_space_manager.h"
 #include "storage/shared_storage/ob_file_manager.h"
 #include "storage/shared_storage/ob_dir_manager.h"
 #include "storage/shared_storage/ob_ss_micro_cache.h"
@@ -108,7 +107,6 @@
 #include "observer/table/object_pool/ob_table_object_pool.h"
 #include "share/index_usage/ob_index_usage_info_mgr.h"
 #include "observer/ob_startup_accel_task_handler.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_service.h"
 #include "storage/tmp_file/ob_tmp_file_manager.h" // ObTenantTmpFileManager
 #include "storage/memtable/ob_lock_wait_mgr.h"
 #include "observer/table/group/ob_table_tenant_group.h"
@@ -500,12 +498,7 @@ int MockTenantModuleEnv::init_dir()
 {
   system(("rm -rf " + run_dir_).c_str());
 
-#ifdef __APPLE__
-  char buf[PATH_MAX];
-  curr_dir_ = getcwd(buf, sizeof(buf));
-#else
   curr_dir_ = get_current_dir_name();
-#endif
 
   int ret = OB_SUCCESS;
   sstable_dir_ = env_dir_ + "/sstable";
@@ -859,7 +852,6 @@ int MockTenantModuleEnv::init()
       MTL_BIND2(mtl_new_default, table::ObTableObjectPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObIndexUsageInfoMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, storage::ObTabletMemtableMgrPool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
-      MTL_BIND2(mtl_new_default, ObTenantSnapshotService::mtl_init, mtl_start_default, mtl_stop_default, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObOptStatMonitorManager::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, memtable::ObLockWaitMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, ObGlobalIteratorPool::mtl_init, nullptr, nullptr, nullptr, ObGlobalIteratorPool::mtl_destroy);

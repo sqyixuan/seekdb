@@ -18,7 +18,6 @@
 
 #include "rootserver/ddl_task/ob_sys_ddl_util.h" // for ObSysDDLSchedulerUtil
 #include "rootserver/ob_split_partition_helper.h"
-#include "rootserver/ob_tenant_balance_service.h"
 #include "share/tablet/ob_tablet_to_table_history_operator.h"
 #include "src/share/scheduler/ob_partition_auto_split_helper.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
@@ -304,15 +303,7 @@ int ObSplitPartitionHelper::check_enable_global_index_auto_split(
     if (tenant_config.is_valid()) {
       const ObString policy_str(tenant_config->global_index_auto_split_policy.str());
       if (0 == policy_str.case_compare("DISTRIBUTED")) {
-        int64_t primary_zone_num = 0;
-        int64_t unit_group_num = 0;
-        ObArray<share::ObSimpleUnitGroup> unit_group_array;
-        if (OB_FAIL(rootserver::ObTenantBalanceService::gather_stat_primary_zone_num_and_units(
-                tenant_id, primary_zone_num, unit_group_array))) {
-          LOG_WARN("failed to gather stat of primary zone and unit", KR(ret), K(tenant_id));
-        } else if (primary_zone_num > 1 || unit_group_array.count() > 1) {
-          enable_auto_split = true;
-        }
+        enable_auto_split = false;
       } else if (0 == policy_str.case_compare("ALL")) {
         enable_auto_split = true;
       }

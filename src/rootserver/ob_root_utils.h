@@ -247,79 +247,6 @@ public:
   static bool is_rootserver();
 };
 
-
-class ObRootBalanceHelp
-{
-public:
-  enum BalanceControllerItem
-  {
-    ENABLE_REBUILD = 0,
-    ENABLE_EMERGENCY_REPLICATE,
-    ENABLE_TYPE_TRANSFORM,
-    ENABLE_DELETE_REDUNDANT,
-    ENABLE_REPLICATE_TO_UNIT,
-    ENABLE_SHRINK,
-    ENABLE_REPLICATE,
-    ENABLE_COORDINATE_PG,
-    ENABLE_MIGRATE_TO_UNIT,
-    ENABLE_PARTITION_BALANCE,
-    ENABLE_UNIT_BALANCE,
-    ENABLE_SERVER_BALANCE,
-    ENABLE_CANCEL_UNIT_MIGRATION,
-    ENABLE_MODIFY_PAXOS_REPLICA_NUMBER,
-    ENABLE_STOP_SERVER,
-    MAX_BALANCE_ITEM
-  };
-  class BalanceController
-  {
-  public:
-    BalanceController()
-    {
-      init();
-    }
-    virtual ~BalanceController() {}
-    void init()
-    {
-      infos_[ENABLE_REBUILD] = true;
-      infos_[ENABLE_TYPE_TRANSFORM] = true;
-      infos_[ENABLE_DELETE_REDUNDANT] = true;
-      infos_[ENABLE_REPLICATE_TO_UNIT] = true;
-      infos_[ENABLE_SHRINK] = true;
-      infos_[ENABLE_EMERGENCY_REPLICATE] = false;
-      infos_[ENABLE_REPLICATE] = false;
-      infos_[ENABLE_COORDINATE_PG] = false;
-      infos_[ENABLE_MIGRATE_TO_UNIT] = false;
-      infos_[ENABLE_PARTITION_BALANCE] = false;
-      infos_[ENABLE_UNIT_BALANCE] = false;
-      infos_[ENABLE_SERVER_BALANCE] = false;
-      infos_[ENABLE_CANCEL_UNIT_MIGRATION] = false;
-      infos_[ENABLE_MODIFY_PAXOS_REPLICA_NUMBER] = true;
-      infos_[ENABLE_STOP_SERVER] = true;
-    }
-    void reset()
-    {
-      for(int64_t i = 0; i < MAX_BALANCE_ITEM; i++) {
-        infos_[i] = false;
-      }
-    }
-    inline bool at(const int64_t idx)
-    {
-      OB_ASSERT(0 <= idx && idx < MAX_BALANCE_ITEM);
-      return infos_[idx];
-    }
-    inline void set(const int64_t idx, bool result)
-    {
-      OB_ASSERT(0 <= idx && idx < MAX_BALANCE_ITEM);
-      infos_[idx] = result;
-    }
-  private:
-    bool infos_[MAX_BALANCE_ITEM];
-  };
-  const static char * BalanceItem[];
-  static int parse_balance_info(const common::ObString &json_str,
-                                BalanceController &switch_info);
-};
-
 class ObTenantGroupParser
 {
 public:
@@ -418,144 +345,6 @@ struct AlterPaxosLocalityTask
   TO_STRING_KV(K_(task_type), K_(zone_set), K_(associated_replica_type_set));
 };
 
-class ObLocalityCheckHelp
-{
-public:
-  typedef common::hash::ObHashMap<common::ObZone,
-                                  share::ObZoneReplicaAttrSet,
-                                  common::hash::NoPthreadDefendMode> ZoneReplicaMap;
-public:
-  ObLocalityCheckHelp() {}
-  virtual ~ObLocalityCheckHelp() {}
-
-  static int check_alter_locality(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &cur_zone_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      bool &non_paxos_locality_modified,
-      int64_t &pre_paxos_num,
-      int64_t &cur_paxos_num,
-      const share::ObArbitrationServiceStatus &arb_service_status);
-  static int calc_paxos_replica_num(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &zone_locality,
-      int64_t &paxos_num);
-private:
-  enum class SingleZoneLocalitySearch : int64_t
-  {
-    SZLS_IN_ASSOC_SINGLE = 0,
-    SZLS_IN_ASSOC_MULTI,
-    SZLS_NOT_FOUND,
-    SZLS_INVALID,
-  };
-
-  struct XyIndex
-  {
-    XyIndex() : x_(-1), y_(-1) {}
-    XyIndex(const int64_t x, const int64_t y) : x_(x), y_(y) {}
-    int64_t x_;
-    int64_t y_;
-    TO_STRING_KV(K_(x), K_(y));
-  };
-
-  struct YIndexCmp
-  {
-    bool operator()(const XyIndex &left, const XyIndex &right) {
-      bool cmp = true;
-      if (left.y_ < right.y_) {
-        cmp = true;
-      } else {
-        cmp = false;
-      }
-      return cmp;
-    }
-  };
-
-  static int get_alter_paxos_replica_number_replica_task(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &cur_zone_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      bool &non_paxos_locality_modified);
-  static int split_single_and_multi_zone_locality(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &zone_locality,
-      common::ObIArray<share::ObZoneReplicaAttrSet> &single_zone_locality,
-      common::ObIArray<share::ObZoneReplicaAttrSet> &multi_zone_locality);
-  static int single_zone_locality_search(
-      const share::ObZoneReplicaAttrSet &this_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_zone_locality,
-      SingleZoneLocalitySearch &search_flag,
-      int64_t &search_index,
-      const share::ObZoneReplicaAttrSet *&search_zone_locality);
-  static int try_add_single_zone_alter_paxos_task(
-      const share::ObZoneReplicaAttrSet &pre_locality,
-      const share::ObZoneReplicaAttrSet &cur_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      bool &non_paxos_locality_modified);
-  static int process_pre_single_zone_locality(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_cur_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_cur_zone_locality,
-      common::ObArray<XyIndex> &pre_in_cur_multi_indexes,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      bool &non_paxos_locality_modified);
-  static int process_cur_single_zone_locality(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_cur_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_pre_zone_locality,
-      common::ObArray<XyIndex> &cur_in_pre_multi_indexes,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      bool &non_paxos_locality_modified);
-  static int check_multi_zone_locality_intersect(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_cur_zone_locality,
-      bool &intersect);
-  static bool check_zone_set_intersect(
-      const common::ObIArray<common::ObZone> &pre_zone_set,
-      const common::ObIArray<common::ObZone> &cur_zone_set);
-  static int process_single_in_multi(
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_left_zone_locality,
-      const common::ObIArray<XyIndex> &left_in_multi_indexes,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_right_zone_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks);
-  static bool has_exist_in_yindex_array(
-      const common::ObIArray<XyIndex> &index_array,
-      const int64_t y);
-  static int process_pre_multi_locality(
-      const common::ObIArray<XyIndex> &pre_in_cur_multi_indexes,
-      const common::ObIArray<XyIndex> &cur_in_pre_multi_indexes,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_cur_zone_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks);
-  static int process_cur_multi_locality(
-      const common::ObIArray<XyIndex> &pre_in_cur_multi_indexes,
-      const common::ObIArray<XyIndex> &cur_in_pre_multi_indexes,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_pre_zone_locality,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &multi_cur_zone_locality,
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks);
-  static int check_alter_single_zone_locality_valid(
-       const share::ObZoneReplicaAttrSet &new_locality,
-       const share::ObZoneReplicaAttrSet &orig_locality,
-       bool &non_paxos_locality_modified);
-  static int check_alter_locality_match(
-      const share::ObZoneReplicaAttrSet &in_locality,
-      const share::ObZoneReplicaAttrSet &out_locality);
-  static int check_alter_locality_valid(
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      int64_t pre_paxos_num,
-      int64_t cur_paxos_num,
-      const share::ObArbitrationServiceStatus &arb_service_status);
-  static int add_multi_zone_locality_task(
-      common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
-      const share::ObZoneReplicaAttrSet &multi_zone_locality,
-      const PaxosReplicaNumberTaskType paxos_replica_number_task_type);
-  static int check_single_and_multi_zone_locality_match(
-      const int64_t start,
-      const int64_t end,
-      const common::ObIArray<share::ObZoneReplicaAttrSet> &single_zone_locality,
-      const common::ObIArray<XyIndex> &in_multi_indexes,
-      const share::ObZoneReplicaAttrSet &multi_zone_locality);
-};
-
 ObTraceEventRecorder *get_rs_trace_recorder();
 inline ObTraceEventRecorder *get_rs_trace_recorder()
 {
@@ -598,30 +387,7 @@ public:
   static int get_stopped_zone_list(common::ObIArray<common::ObZone> &stopped_zone_list,
                                    common::ObIArray<common::ObAddr> &stopped_server_list);
   static bool have_other_stop_task(const ObZone &zone);
-  static int check_primary_region_in_zonelist(share::schema::ObMultiVersionSchemaService *schema_service,
-                                              ObDDLService *ddl_service,
-                                              ObUnitManager &unit_mgr,
-                                              ObZoneManager &zone_mgr,
-                                              const common::ObIArray<uint64_t> &tenant_ids,
-                                              const common::ObIArray<common::ObZone> &zone_list,
-                                              bool &is_in);
 
-  static int check_left_f_outside_zonelist(const share::schema::ObTenantSchema &tenant_info,
-                                           const common::ObIArray<common::ObZone> &zone_list,
-                                           bool &has);
-  static int get_primary_zone(ObZoneManager &zone_mgr,
-                              const common::ObIArray<share::schema::ObZoneScore> &zone_score_array,
-                              common::ObIArray<common::ObZone> &primary_zone);
-  static int is_first_priority_primary_zone_changed(
-    const share::schema::ObTenantSchema &orig_tenant_schema,
-    const share::schema::ObTenantSchema &new_tenant_schema,
-    ObIArray<ObZone> &orig_first_primary_zone,
-    ObIArray<ObZone> &new_first_primary_zone,
-    bool &is_changed);
-  static int check_ls_balance_and_commit_rs_job(
-      const uint64_t tenant_id,
-      const int64_t rs_job_id,
-      const ObRsJobType rs_job_type);
   // wait the given ls's end_scn be larger than or equal to sys_ls_target_scn
   // @params[in]: sys_ls_target_scn
   // @params[in]: log_ls_svr
@@ -636,21 +402,8 @@ public:
       storage::ObLS &ls);
 
   template<class T>
-      static int check_left_f_in_primary_zone(ObZoneManager &zone_mgr,
-                                              share::schema::ObSchemaGetterGuard &schema_guard,
-                                              const T &schema_info,
-                                              const common::ObIArray<common::ObZone> &zone_list,
-                                              bool &has);
-  template<class T>
       static bool is_subset(const common::ObIArray<T> &superset_array,
                             const common::ObIArray<T> &array);
-  template<class T>
-      static bool has_intersection(const common::ObIArray<T> &this_array,
-                                   const common::ObIArray<T> &other_array);
-  static int get_tenant_intersection(ObUnitManager &unit_mgr,
-                                     common::ObIArray<common::ObAddr> &this_server_list,
-                                     common::ObIArray<common::ObAddr> &other_server_list,
-                                     common::ObIArray<uint64_t> &tenant_ids);
   static int get_proposal_id_from_sys_ls(int64_t &proposal_id, ObRole &role);
 
   static int notify_switch_leader(

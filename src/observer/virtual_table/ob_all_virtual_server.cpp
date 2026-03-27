@@ -17,9 +17,6 @@
 #include "observer/virtual_table/ob_all_virtual_server.h"
 
 #include "observer/ob_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 
 using namespace oceanbase;
 using namespace oceanbase::observer;

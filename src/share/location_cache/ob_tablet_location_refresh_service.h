@@ -36,34 +36,19 @@ class ObTabletLocationRefreshMgr
 {
 public:
   ObTabletLocationRefreshMgr() = delete;
-  ObTabletLocationRefreshMgr(const uint64_t tenant_id,
-                             const ObTransferTaskID &base_task_id);
+  ObTabletLocationRefreshMgr(const uint64_t tenant_id);
   ~ObTabletLocationRefreshMgr();
-
-  void set_base_task_id(const ObTransferTaskID &base_task_id);
-  void get_base_task_id(ObTransferTaskID &base_task_id);
 
   int set_tablet_ids(const common::ObIArray<ObTabletID> &tablet_ids);
   int get_tablet_ids(common::ObIArray<ObTabletID> &tablet_ids);
 
-  // ensure inc_task_infos_ order by task_id asc
-  int merge_inc_task_infos(common::ObArray<ObTransferRefreshInfo> &inc_task_infos_to_merge);
-  int get_doing_task_ids(common::ObIArray<ObTransferTaskID> &doing_task_ids);
-  int clear_task_infos(bool &has_doing_task);
-
-  void dump_statistic();
 public:
   static const int64_t BATCH_TASK_COUNT = 128;
 private:
   lib::ObMutex mutex_;
   uint64_t tenant_id_;
-  // base_task_id_ = 0 : valid, means transfer never occur.
-  // base_task_id_ = OB_INVALID_ID, invalid, means should be run in compat mode
-  ObTransferTaskID base_task_id_;
   // tablet_ids to reload cache for compatibility
   common::ObArray<ObTabletID> tablet_ids_;
-  // transfer tasks to process, order by tablet_id asc
-  common::ObArray<ObTransferRefreshInfo> inc_task_infos_;
   DISALLOW_COPY_AND_ASSIGN(ObTabletLocationRefreshMgr);
 };
 
@@ -106,7 +91,6 @@ public:
 private:
   void idle_();
   int check_stop_();
-  int get_base_task_id_(const uint64_t tenant_id, ObTransferTaskID &base_task_id);
 
   int inner_get_mgr_(const int64_t tenant_id,
                      ObTabletLocationRefreshMgr *&mgr);
@@ -121,9 +105,6 @@ private:
   int try_runs_for_compatibility_(const uint64_t tenant_id);
   int try_reload_tablet_cache_(const uint64_t tenant_id);
 
-  int fetch_inc_task_infos_and_update_(const uint64_t tenant_id);
-  int process_doing_task_infos_(const uint64_t tenant_id);
-  int clear_task_infos_(const uint64_t tenant_id);
 private:
   bool inited_;
   bool has_task_;

@@ -503,22 +503,6 @@ public:
   share::ObLSID ls_id_;
 };
 
-struct ObUpdateTransferMetaInfoArg final
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObUpdateTransferMetaInfoArg();
-  ~ObUpdateTransferMetaInfoArg() {}
-  bool is_valid() const;
-
-  TO_STRING_KV(K_(tenant_id), K_(dest_ls_id), K_(transfer_meta_info));
-  uint64_t tenant_id_;
-  share::ObLSID dest_ls_id_;
-  ObLSTransferMetaInfo transfer_meta_info_;
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObUpdateTransferMetaInfoArg);
-};
-
 #ifdef OB_BUILD_SHARED_STORAGE
 // migration micro cache related
 struct ObGetMicroBlockCacheInfoArg final

@@ -17,7 +17,6 @@
 #define USING_LOG_PREFIX SHARE_LOCATION
 #include "ob_tablet_location_refresh_service.h"
 #include "share/location_cache/ob_tablet_ls_service.h"
-#include "share/transfer/ob_transfer_task_operator.h"
 #include "src/rootserver/ob_root_utils.h"
 
 namespace oceanbase
@@ -26,34 +25,16 @@ namespace share
 {
 
 ObTabletLocationRefreshMgr::ObTabletLocationRefreshMgr(
-   const uint64_t tenant_id,
-   const ObTransferTaskID &base_task_id)
+   const uint64_t tenant_id)
   : mutex_(),
     tenant_id_(tenant_id),
-    base_task_id_(base_task_id),
-    tablet_ids_(),
-    inc_task_infos_()
+    tablet_ids_()
 {
   tablet_ids_.set_attr(SET_USE_500("TbltRefIDS"));
-  inc_task_infos_.set_attr(SET_USE_500("TbltRefTasks"));
 }
 
 ObTabletLocationRefreshMgr::~ObTabletLocationRefreshMgr()
 {
-}
-
-void ObTabletLocationRefreshMgr::set_base_task_id(
-     const ObTransferTaskID &base_task_id)
-{
-  lib::ObMutexGuard guard(mutex_);
-  base_task_id_ = base_task_id;
-}
-
-void ObTabletLocationRefreshMgr::get_base_task_id(
-     ObTransferTaskID &base_task_id)
-{
-  lib::ObMutexGuard guard(mutex_);
-  base_task_id = base_task_id_;
 }
 
 int ObTabletLocationRefreshMgr::set_tablet_ids(
@@ -76,172 +57,6 @@ int ObTabletLocationRefreshMgr::get_tablet_ids(
     LOG_WARN("fail to get tablet_ids", KR(ret), K_(tenant_id));
   }
   return ret;
-}
-
-// update & add inc_task_infos_
-int ObTabletLocationRefreshMgr::merge_inc_task_infos(
-    common::ObArray<ObTransferRefreshInfo> &inc_task_infos_to_merge)
-{
-  int ret = OB_SUCCESS;
-  if (inc_task_infos_to_merge.count() <= 0) {
-    // do nothing
-  } else {
-    lib::ob_sort(inc_task_infos_to_merge.begin(), inc_task_infos_to_merge.end(), ObTransferRefreshInfo::less_than);
-    ObArray<ObTransferRefreshInfo> new_tasks;
-    ObArray<ObTransferRefreshInfo> changed_tasks;
-
-    lib::ObMutexGuard guard(mutex_);
-    int64_t local_pos = 0;
-    int64_t inc_pos = 0;
-    for ( ;
-          OB_SUCC(ret)
-          && local_pos < inc_task_infos_.count()
-          && inc_pos < inc_task_infos_to_merge.count()
-          ;) {
-      ObTransferRefreshInfo &local_task = inc_task_infos_.at(local_pos);
-      const ObTransferRefreshInfo &inc_task = inc_task_infos_to_merge.at(inc_pos);
-      if (local_task.get_task_id() == inc_task.get_task_id()) {
-        bool changed = false;
-        (void) local_task.get_status().update(inc_task.get_status(), changed);
-        if (changed && OB_FAIL(changed_tasks.push_back(inc_task))) {
-          LOG_WARN("fail to push back task", KR(ret), K(inc_task));
-        }
-        local_pos++;
-        inc_pos++;
-      } else if (local_task.get_task_id() < inc_task.get_task_id()) {
-        local_pos++;
-      } else if (local_task.get_task_id() > inc_task.get_task_id()) {
-        if (OB_FAIL(new_tasks.push_back(inc_task))) {
-          LOG_WARN("fail to push back task", KR(ret), K(inc_task));
-        }
-        inc_pos++;
-      }
-    } // end for
-
-    if (changed_tasks.count() > 0) {
-      FLOG_INFO("[REFRESH_TABLET_LOCATION] change tasks",
-                KR(ret), K_(tenant_id), K(changed_tasks.count()), K(changed_tasks));
-    }
-
-    for (int64_t i = inc_pos; OB_SUCC(ret) && i < inc_task_infos_to_merge.count(); i++) {
-      const ObTransferRefreshInfo &inc_task = inc_task_infos_to_merge.at(i);
-      if (OB_FAIL(new_tasks.push_back(inc_task))) {
-        LOG_WARN("fail to push back task", KR(ret), K(inc_task));
-      }
-    } // end dor
-
-    if (OB_SUCC(ret) && new_tasks.count() > 0) {
-      int64_t new_count = inc_task_infos_.count() + new_tasks.count();
-      if (OB_FAIL(inc_task_infos_.reserve(new_count))) {
-        LOG_WARN("fail to reserve array", KR(ret), K(new_count));
-      } else if (OB_FAIL(append(inc_task_infos_, new_tasks))) {
-        LOG_WARN("fail to append array", KR(ret), K(new_count));
-      } else {
-        lib::ob_sort(inc_task_infos_.begin(), inc_task_infos_.end(), ObTransferRefreshInfo::less_than);
-        FLOG_INFO("[REFRESH_TABLET_LOCATION] add tasks",
-                  KR(ret), K_(tenant_id), K(new_tasks.count()), K(new_tasks));
-      }
-    }
-  }
-  return ret;
-}
-
-// return 128 task ids at most in one time
-int ObTabletLocationRefreshMgr::get_doing_task_ids(
-    common::ObIArray<ObTransferTaskID> &task_ids)
-{
-  int ret = OB_SUCCESS;
-  task_ids.reset();
-  lib::ObMutexGuard guard(mutex_);
-  for (int64_t i = 0;
-       OB_SUCC(ret)
-       && i < inc_task_infos_.count()
-       && task_ids.count() < BATCH_TASK_COUNT
-       ; i++) {
-    const ObTransferRefreshInfo &inc_task = inc_task_infos_.at(i);
-    if (inc_task.get_status().is_doing_status()) {
-      if (OB_FAIL(task_ids.push_back(inc_task.get_task_id()))) {
-        LOG_WARN("fail to push back task", KR(ret), K(inc_task));
-      }
-    }
-  } // end for
-  return ret;
-}
-
-// clear inc_task_infos_ & update base_task_id_
-int ObTabletLocationRefreshMgr::clear_task_infos(bool &has_doing_task)
-{
-  int ret = OB_SUCCESS;
-  has_doing_task = false;
-  lib::ObMutexGuard guard(mutex_);
-
-  int64_t continuous_done_status_pos = OB_INVALID_INDEX;
-  for (int64_t i = 0; OB_SUCC(ret) && i < inc_task_infos_.count(); i++) {
-    if (inc_task_infos_.at(i).get_status().is_done_status()) {
-      continuous_done_status_pos = i;
-    } else {
-      break;
-    }
-  } // end for
-
-  if (OB_SUCC(ret)
-      && continuous_done_status_pos >= 0
-      && continuous_done_status_pos < inc_task_infos_.count()) {
-    ObTransferTaskID from_task_id = inc_task_infos_.at(0).get_task_id();
-    ObTransferTaskID to_task_id = inc_task_infos_.at(continuous_done_status_pos).get_task_id();
-    int64_t clear_tasks_cnt = continuous_done_status_pos + 1;
-    int64_t remain_tasks_cnt = inc_task_infos_.count() - 1 - continuous_done_status_pos;
-    if (continuous_done_status_pos == inc_task_infos_.count() - 1) {
-      inc_task_infos_.reset();
-    } else {
-      ObArray<ObTransferRefreshInfo> tmp_task_infos;
-      if (OB_FAIL(rootserver::ObRootUtils::copy_array(
-                 inc_task_infos_, continuous_done_status_pos + 1,
-                 inc_task_infos_.count(), tmp_task_infos))) {
-        LOG_WARN("fail to copy array", KR(ret), K(continuous_done_status_pos), K(inc_task_infos_.count()));
-      } else if (OB_FAIL(inc_task_infos_.assign(tmp_task_infos))) {
-        LOG_WARN("fail to assign array", KR(ret), K(tmp_task_infos.count()));
-      }
-    }
-
-    if (OB_SUCC(ret) && base_task_id_ < to_task_id) {
-      FLOG_INFO("[REFRESH_TABLET_LOCATION] update base_task_id when fetch inc tasks",
-                KR(ret), K_(tenant_id), "from_base_task_id", base_task_id_, "to_base_task_id", to_task_id);
-      base_task_id_ = to_task_id;
-    }
-    FLOG_INFO("[REFRESH_TABLET_LOCATION] clear tasks", KR(ret), K_(tenant_id),
-              K(from_task_id), K(to_task_id), K(clear_tasks_cnt), K(remain_tasks_cnt));
-  }
-
-  for (int64_t i = 0; OB_SUCC(ret) && !has_doing_task && i < inc_task_infos_.count(); i++) {
-    if (inc_task_infos_.at(i).get_status().is_doing_status()) {
-      has_doing_task = true;
-    }
-  } // end for
-  return ret;
-}
-
-void ObTabletLocationRefreshMgr::dump_statistic()
-{
-  lib::ObMutexGuard guard(mutex_);
-  int64_t unknown_task_cnt = 0;
-  int64_t doing_task_cnt = 0;
-  int64_t done_task_cnt = 0;
-  for (int64_t i = 0; i < inc_task_infos_.count(); i++) {
-    const ObTransferRefreshInfo &transfer_task = inc_task_infos_.at(i);
-    if (transfer_task.get_status().is_unknown_status()) {
-      unknown_task_cnt++;
-    } else if (transfer_task.get_status().is_doing_status()) {
-      doing_task_cnt++;
-    } else if (transfer_task.get_status().is_done_status()) {
-      done_task_cnt++;
-    } else {}
-  } // end for
-  FLOG_INFO("[REFRESH_TABLET_LOCATION] dump statistic",
-            K_(tenant_id), K_(base_task_id),
-            "tablet_list_cnt", tablet_ids_.count(),
-            "total_task_cnt", inc_task_infos_.count(),
-            K(unknown_task_cnt), K(doing_task_cnt), K(done_task_cnt));
 }
 
 int64_t ObTabletLocationRefreshServiceIdling::get_idle_interval_us()
@@ -404,25 +219,6 @@ int ObTabletLocationRefreshService::check_stop_()
   return ret;
 }
 
-int ObTabletLocationRefreshService::get_base_task_id_(
-    const uint64_t tenant_id,
-    ObTransferTaskID &base_task_id)
-{
-  int ret = OB_SUCCESS;
-  base_task_id.reset();
-  SpinRLockGuard guard(rwlock_);
-  ObTabletLocationRefreshMgr *mgr = NULL;
-  if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-    LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
-  } else if (OB_ISNULL(mgr)) {
-    ret = OB_TENANT_NOT_EXIST;
-    LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-  } else {
-    (void) mgr->get_base_task_id(base_task_id);
-  }
-  return ret;
-}
-
 int ObTabletLocationRefreshService::try_init_base_point(const int64_t tenant_id)
 {
   int ret = OB_SUCCESS;
@@ -539,17 +335,6 @@ int ObTabletLocationRefreshService::try_clear_mgr_(const uint64_t tenant_id, boo
 int ObTabletLocationRefreshService::try_init_base_point_(const int64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  ObTransferTaskID base_task_id;
-
-  // try get base_task_id
-  if (OB_ISNULL(sql_proxy_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("sql_proxy_ is null", KR(ret));
-  } else if (OB_FAIL(ObTransferTaskOperator::fetch_initial_base_task_id(
-              *sql_proxy_, tenant_id, base_task_id))) {
-    LOG_WARN("fail to fetch initial base task id", KR(ret), K(tenant_id));
-  }
-
   // try init struct
   if (OB_SUCC(ret)) {
     SpinWLockGuard guard(rwlock_);
@@ -561,15 +346,15 @@ int ObTabletLocationRefreshService::try_init_base_point_(const int64_t tenant_id
         if (OB_ISNULL(buf = allocator_.alloc(sizeof(ObTabletLocationRefreshMgr)))) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
           LOG_WARN("fail to alloc memory", KR(ret));
-        } else if (FALSE_IT(mgr = new (buf) ObTabletLocationRefreshMgr(tenant_id, base_task_id))) {
+        } else if (FALSE_IT(mgr = new (buf) ObTabletLocationRefreshMgr(tenant_id))) {
           LOG_WARN("fail to new ObTabletLocationRefreshMgr",
-                   KR(ret), K(tenant_id), K(base_task_id));
+                   KR(ret), K(tenant_id));
         } else if (OB_FAIL(tenant_mgr_map_.set_refactored(tenant_id, mgr))) {
           LOG_WARN("fail to set ObTabletLocationRefreshMgr",
-                   KR(ret), K(tenant_id), K(base_task_id));
+                   KR(ret), K(tenant_id));
         }
         FLOG_INFO("[REFRESH_TABLET_LOCATION] init struct",
-                  KR(ret), K(tenant_id), K(base_task_id));
+                  KR(ret), K(tenant_id));
       } else {
         LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
       }
@@ -588,21 +373,6 @@ int ObTabletLocationRefreshService::refresh_cache_()
     LOG_WARN("fail to get tenant_ids", KR(ret));
   } else {
     int tmp_ret = OB_SUCCESS;
-
-    // dump statistic
-    const int64_t DUMP_INTERVAL = 10 * 60 * 1000 * 1000L; // 10min
-    if (TC_REACH_TIME_INTERVAL(DUMP_INTERVAL)) {
-      for (int64_t i = 0; i < tenant_ids.count(); i++) { // ignore different tenant's failure
-        const uint64_t tenant_id = tenant_ids.at(i);
-        SpinRLockGuard guard(rwlock_);
-        ObTabletLocationRefreshMgr *mgr = NULL;
-        if (OB_TMP_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-          LOG_WARN("fail to get mgr", KR(tmp_ret), K(tenant_id));
-        } else if (OB_NOT_NULL(mgr)) {
-          (void) mgr->dump_statistic();
-        }
-      } // end for
-    }
 
     for (int64_t i = 0; OB_SUCC(ret) && i < tenant_ids.count(); i++) {
       const uint64_t tenant_id = tenant_ids.at(i);
@@ -635,12 +405,6 @@ int ObTabletLocationRefreshService::refresh_cache_(const uint64_t tenant_id)
     LOG_WARN("fail to check stop", KR(ret));
   } else if (OB_FAIL(try_runs_for_compatibility_(tenant_id))) {
     LOG_WARN("fail to runs for compatibility", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(fetch_inc_task_infos_and_update_(tenant_id))) {
-    LOG_WARN("fail to fetch inc task infos", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(process_doing_task_infos_(tenant_id))) {
-    LOG_WARN("fail to process tasks", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(clear_task_infos_(tenant_id))) {
-    LOG_WARN("fail to clear tasks", KR(ret), K(tenant_id));
   }
   FLOG_INFO("[REFRESH_TABLET_LOCATION] refresh cache end",
             KR(ret), K(tenant_id), "cost_us", ObTimeUtility::current_time() - start_time);
@@ -652,12 +416,6 @@ int ObTabletLocationRefreshService::try_runs_for_compatibility_(
     const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-  ObTransferTaskID base_task_id;
-  if (OB_FAIL(get_base_task_id_(tenant_id, base_task_id))) {
-    LOG_WARN("fail to get base_task_id", KR(ret), K(tenant_id));
-  } else if (base_task_id.is_valid()) {
-    // non compatibility scene, do nothing
-  } else {
     ObArray<ObTabletID> tablet_ids;
     tablet_ids.set_attr(SET_USE_500("TbltRefIDS"));
     if (OB_FAIL(check_stop_())) {
@@ -666,34 +424,20 @@ int ObTabletLocationRefreshService::try_runs_for_compatibility_(
       ret = OB_NOT_INIT;
       LOG_WARN("sql_proxy_ or tablet_ls_service_ is null",
                KR(ret), KP_(sql_proxy), KP_(tablet_ls_service));
-    } else if (OB_FAIL(ObTransferTaskOperator::fetch_initial_base_task_id(
-               *sql_proxy_, tenant_id, base_task_id))) {
-      LOG_WARN("fail to fetch initial base task id", KR(ret), K(tenant_id));
     } else if (OB_FAIL(tablet_ls_service_->get_tablet_ids_from_cache(tenant_id, tablet_ids))) {
       LOG_WARN("fail to get tablet_ids", KR(ret), K(tenant_id));
     } else {
       SpinWLockGuard guard(rwlock_);
       ObTabletLocationRefreshMgr *mgr = NULL;
-      ObTransferTaskID existed_base_task_id;
       if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
         LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
       } else if (OB_ISNULL(mgr)) {
         ret = OB_TENANT_NOT_EXIST;
         LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-      } else if (FALSE_IT(mgr->get_base_task_id(existed_base_task_id))) {
-      } else if (existed_base_task_id.is_valid()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("base_task_id should be invalid",
-                 KR(ret), K(tenant_id), K(existed_base_task_id));
       } else if (OB_FAIL(mgr->set_tablet_ids(tablet_ids))) {
         LOG_WARN("fail to set tablet_ids", KR(ret));
-      } else {
-        (void) mgr->set_base_task_id(base_task_id);
-        FLOG_INFO("[REFRESH_TABLET_LOCATION] update base_task_id for compatibility",
-                  K(tenant_id), K(base_task_id), "tablet_ids_cnt", tablet_ids.count());
       }
     }
-  }
 
   // try reload tablet-ls caches according to tablet_ids_
   if (FAILEDx(try_reload_tablet_cache_(tenant_id))) {
@@ -708,7 +452,6 @@ int ObTabletLocationRefreshService::try_reload_tablet_cache_(
   int ret = OB_SUCCESS;
   ObArray<ObTabletID> store_tablet_ids;
   store_tablet_ids.set_attr(SET_USE_500("TbltRefIDS"));
-  ObTransferTaskID base_task_id;
   {
     SpinRLockGuard guard(rwlock_);
     ObTabletLocationRefreshMgr *mgr = NULL;
@@ -719,12 +462,10 @@ int ObTabletLocationRefreshService::try_reload_tablet_cache_(
       LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
     } else if (OB_FAIL(mgr->get_tablet_ids(store_tablet_ids))) {
       LOG_WARN("fail to get tablet_ids", KR(ret), K(tenant_id));
-    } else {
-      (void) mgr->get_base_task_id(base_task_id);
     }
   }
 
-  if (OB_SUCC(ret) && base_task_id.is_valid() && store_tablet_ids.count() > 0) {
+  if (OB_SUCC(ret) && store_tablet_ids.count() > 0) {
 
     const int64_t MAX_RELOAD_TABLET_NUM_IN_BATCH = 128;
     int64_t end_pos = min(store_tablet_ids.count(), MAX_RELOAD_TABLET_NUM_IN_BATCH);
@@ -777,155 +518,6 @@ int ObTabletLocationRefreshService::try_reload_tablet_cache_(
     FLOG_INFO("[REFRESH_TABLET_LOCATION] update tablet-ls caches for compatibility", KR(ret),
               K(tenant_id), "process_tablet_cnt", process_tablet_ids.size(),
               "remain_tablet_cnt", store_tablet_ids.count() - process_tablet_ids.size());
-  }
-  return ret;
-}
-
-int ObTabletLocationRefreshService::fetch_inc_task_infos_and_update_(
-    const uint64_t tenant_id)
-{
-  int ret = OB_SUCCESS;
-  ObTransferTaskID base_task_id;
-  if (OB_FAIL(get_base_task_id_(tenant_id, base_task_id))) {
-    LOG_WARN("fail to get base_task_id", KR(ret), K(tenant_id));
-  } else if (!base_task_id.is_valid()) {
-    // skip
-  } else {
-    ObArray<ObTransferRefreshInfo> inc_task_infos;
-    if (OB_FAIL(check_stop_())) {
-      LOG_WARN("fail to check stop", KR(ret));
-    } else if (OB_ISNULL(sql_proxy_)) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("sql_proxy_ is null", KR(ret), KP_(sql_proxy));
-    } else if (OB_FAIL(ObTransferTaskOperator::fetch_inc_task_infos(
-               *sql_proxy_, tenant_id, base_task_id, inc_task_infos))) {
-      LOG_WARN("fail to fetch inc task infos", KR(ret), K(tenant_id), K(base_task_id));
-    } else {
-      SpinRLockGuard guard(rwlock_);
-      ObTabletLocationRefreshMgr *mgr = NULL;
-      if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-        LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
-      } else if (OB_ISNULL(mgr)) {
-        ret = OB_TENANT_NOT_EXIST;
-        LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-      } else if (OB_FAIL(mgr->merge_inc_task_infos(inc_task_infos))) {
-        LOG_WARN("fail to merge inc task infos", KR(ret), K(tenant_id), K(inc_task_infos.count()));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTabletLocationRefreshService::process_doing_task_infos_(
-    const uint64_t tenant_id)
-{
-  int ret = OB_SUCCESS;
-  ObTransferTaskID base_task_id;
-  if (OB_FAIL(get_base_task_id_(tenant_id, base_task_id))) {
-    LOG_WARN("fail to get base_task_id", KR(ret), K(tenant_id));
-  } else if (!base_task_id.is_valid()) {
-    // skip
-  } else {
-    ObArray<ObTransferTaskID> task_ids;
-    {
-      SpinRLockGuard guard(rwlock_);
-      ObTabletLocationRefreshMgr *mgr = NULL;
-      if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-        LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
-      } else if (OB_ISNULL(mgr)) {
-        ret = OB_TENANT_NOT_EXIST;
-        LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-      } else if (OB_FAIL(mgr->get_doing_task_ids(task_ids))) {
-        LOG_WARN("fail to get doing task ids", KR(ret), K(tenant_id));
-      }
-    }
-
-    if (OB_SUCC(ret) && task_ids.count() > 0) {
-      common::ObArray<ObTabletLSCache> tablet_ls_caches;
-      tablet_ls_caches.set_attr(SET_USE_500("TbltRefCaches"));
-      if (OB_FAIL(check_stop_())) {
-        LOG_WARN("fail to check stop", KR(ret));
-      } else if (OB_ISNULL(sql_proxy_) || OB_ISNULL(tablet_ls_service_)) {
-        ret = OB_NOT_INIT;
-        LOG_WARN("sql_proxy_ or tablet_ls_service_ is null",
-                 KR(ret), KP_(sql_proxy), KP_(tablet_ls_service));
-      } else if (OB_FAIL(ObTransferTaskOperator::batch_get_tablet_ls_cache(
-                 *sql_proxy_, tenant_id, task_ids, tablet_ls_caches))) {
-        LOG_WARN("fail to get tablet ls cache", KR(ret), K(tenant_id), K(task_ids));
-      } else {
-        int64_t start_time = ObTimeUtility::current_time();
-        const bool update_only = true;
-        for (int64_t i = 0; OB_SUCC(ret) && i < tablet_ls_caches.count(); i++) {
-          const ObTabletLSCache &tablet_ls = tablet_ls_caches.at(i);
-          if (OB_FAIL(check_stop_())) {
-            LOG_WARN("fail to check stop", KR(ret));
-          } else if (OB_FAIL(tablet_ls_service_->update_cache(tablet_ls, update_only))) {
-            LOG_WARN("update cache failed", KR(ret), K(tablet_ls));
-          }
-        } // end for
-        FLOG_INFO("[REFRESH_TABLET_LOCATION] update tablet-ls caches when process tasks",
-                  KR(ret), K(tenant_id), K(tablet_ls_caches.count()),
-                  "cost_us", ObTimeUtility::current_time() - start_time,
-                  K(task_ids));
-      }
-
-      if (OB_SUCC(ret)) {
-        ObArray<ObTransferRefreshInfo> done_task_infos;
-        ObTransferRefreshStatus done_status(ObTransferRefreshStatus::DONE);
-        if (OB_FAIL(done_task_infos.reserve(task_ids.count()))) {
-          LOG_WARN("fail to reserve array", KR(ret), K(task_ids.count()));
-        }
-        for (int64_t i = 0; OB_SUCC(ret) && i < task_ids.count(); i++) {
-          ObTransferRefreshInfo task_info;
-          if (OB_FAIL(check_stop_())) {
-            LOG_WARN("fail to check stop", KR(ret));
-          } else if (OB_FAIL(task_info.init(task_ids.at(i), done_status))) {
-            LOG_WARN("fail to init refresh info", KR(ret), K(tenant_id), K(task_ids.at(i)));
-          } else if (OB_FAIL(done_task_infos.push_back(task_info))) {
-            LOG_WARN("fail to push back task info", KR(ret), K(tenant_id), K(task_info));
-          }
-        } // end for
-        if (OB_SUCC(ret)) {
-          SpinRLockGuard guard(rwlock_);
-          ObTabletLocationRefreshMgr *mgr = NULL;
-          if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-            LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
-          } else if (OB_ISNULL(mgr)) {
-            ret = OB_TENANT_NOT_EXIST;
-            LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-          } else if (OB_FAIL(mgr->merge_inc_task_infos(done_task_infos))) {
-            LOG_WARN("fail to merge inc task infos", KR(ret), K(tenant_id), K(done_task_infos));
-          }
-        }
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTabletLocationRefreshService::clear_task_infos_(
-    const uint64_t tenant_id)
-{
-  int ret = OB_SUCCESS;
-  ObTransferTaskID base_task_id;
-  if (OB_FAIL(get_base_task_id_(tenant_id, base_task_id))) {
-    LOG_WARN("fail to get base_task_id", KR(ret), K(tenant_id));
-  } else if (!base_task_id.is_valid()) {
-    // skip
-  } else {
-    SpinRLockGuard guard(rwlock_);
-    ObTabletLocationRefreshMgr *mgr = NULL;
-    bool has_doing_task = false;
-    if (OB_FAIL(inner_get_mgr_(tenant_id, mgr))) {
-      LOG_WARN("fail to get mgr", KR(ret), K(tenant_id));
-    } else if (OB_ISNULL(mgr)) {
-      ret = OB_TENANT_NOT_EXIST;
-      LOG_WARN("mgr is null, tenant has been dropped", KR(ret), K(tenant_id));
-    } else if (OB_FAIL(mgr->clear_task_infos(has_doing_task))) {
-      LOG_WARN("fail to clear task", KR(ret), K(tenant_id));
-    } else if (has_doing_task) {
-      has_task_ = true;
-    }
   }
   return ret;
 }

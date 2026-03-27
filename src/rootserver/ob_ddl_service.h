@@ -30,19 +30,15 @@
 #include "share/schema/ob_schema_getter_guard.h"
 #include "rootserver/ob_ddl_operator.h"
 #include "rootserver/ddl_task/ob_ddl_task.h"
-#include "ob_root_balancer.h"
 #include "lib/mysqlclient/ob_mysql_transaction.h"
 #include "lib/container/ob_iarray.h"
 #include "share/ls/ob_ls_table_operator.h"
 #include "storage/tablet/ob_tablet_binding_helper.h"
 #include "storage/ddl/ob_ddl_clog.h"
 #include "share/ob_freeze_info_proxy.h"
-#include "share/ob_ddl_common.h"
-#include "share/ob_fork_table_util.h"
 #include "common/ob_common_utility.h"
 #include "share/config/ob_config.h" // ObConfigPairs
 #include "rootserver/parallel_ddl/ob_index_name_checker.h"
-#include "rootserver/parallel_ddl/ob_tablet_balance_allocator.h"
 #include "pl_ddl/ob_pl_ddl_service.h"
 
 namespace oceanbase
@@ -93,9 +89,6 @@ namespace rootserver
 {
 class ObDDLOperator;
 class ObTenantDDLService;
-class ObCommitAlterTenantLocalityArg;
-class ObCommitAlterTablegroupLocalityArg;
-class ObCommitAlterTableLocalityArg;
 class ObDDLSQLTransaction;
 class ObTableGroupHelp;
 //class ObFreezeInfoManager;
@@ -127,10 +120,6 @@ public:
   ObSnapshotInfoManager &get_snapshot_mgr() { return *snapshot_mgr_; }
   share::ObLSTableOperator &get_lst_operator() { return *lst_operator_; }
   share::schema::ObIndexNameChecker &get_index_name_checker() { return index_name_checker_; }
-  share::schema::ObNonPartitionedTableTabletAllocator &get_non_partitioned_tablet_allocator()
-  {
-     return non_partitioned_tablet_allocator_;
-  }
 
   // create_index_table will fill table_id and frozen_version to table_schema
   virtual int create_index_table(const obrpc::ObCreateIndexArg &arg,
@@ -704,8 +693,6 @@ public:
                             share::schema::ObSchemaGetterGuard &schema_guard,
                             ObString &index_name);
   virtual int rename_table(const obrpc::ObRenameTableArg &rename_table_arg);
-  virtual int fork_table(const obrpc::ObForkTableArg &fork_table_arg, obrpc::ObDDLRes &res);
-  virtual int fork_database(const obrpc::ObForkDatabaseArg &fork_database_arg, obrpc::ObDDLRes &res);
   int collect_temporary_tables_in_session(const obrpc::ObDropTableArg &drop_table_arg);
   int need_collect_current_temp_table(share::schema::ObSchemaGetterGuard &schema_guard,
                                       obrpc::ObDropTableArg &drop_table_arg,
@@ -1243,8 +1230,7 @@ int check_will_be_having_domain_index_operation(
                               ObDDLOperator &ddl_operator,
                               ObMySQLTransaction &trans,
                               share::schema::ObSchemaGetterGuard &schema_guard,
-                              const uint64_t tenant_data_version,
-                              const share::ObForkTableInfo &fork_table_info = share::ObForkTableInfo());
+                              const uint64_t tenant_data_version);
   int create_tablets_in_trans_for_mv_(common::ObIArray<share::schema::ObTableSchema> &table_schemas,
                               ObDDLOperator &ddl_operator,
                               ObMySQLTransaction &trans,
@@ -1275,29 +1261,6 @@ int check_will_be_having_domain_index_operation(
               const common::ObIArray<share::schema::ObDependencyInfo> *dep_infos,
               ObIArray<ObMockFKParentTableSchema> &mock_fk_parent_table_schema_array,
               int64_t &ddl_task_id);
-  int create_tables_for_fork_(
-              const common::ObString &ddl_stmt_str,
-              common::ObIArray<share::schema::ObTableSchema> &table_schemas,
-              const obrpc::ObSequenceDDLArg &sequence_ddl_arg,
-              ObIArray<ObMockFKParentTableSchema> &mock_fk_parent_table_schema_array,
-              share::schema::ObSchemaGetterGuard &schema_guard,
-              ObDDLSQLTransaction &trans,
-              const share::ObForkTableInfo &fork_table_info);
-  // Helper function to fork a single table within a transaction.
-  // This is shared by fork_table() and fork_database().
-  int fork_single_table_in_trans_(
-              const uint64_t tenant_id,
-              const share::schema::ObTableSchema &src_table_schema,
-              const share::schema::ObDatabaseSchema &src_db_schema,
-              const share::schema::ObDatabaseSchema &dst_db_schema,
-              const common::ObString &dst_table_name,
-              const int64_t fork_snapshot_version,
-              const uint64_t session_id,
-              const common::ObString &ddl_stmt_str,
-              share::schema::ObSchemaGetterGuard &schema_guard,
-              ObDDLSQLTransaction &trans,
-              common::ObIAllocator &allocator,
-              ObDDLTaskRecord &task_record);
   int print_view_expanded_definition(
       const share::schema::ObTableSchema &table_schema,
       ObString &ddl_stmt_str,
@@ -2247,8 +2210,7 @@ private:
                                        share::schema::ObSchemaService &schema_service,
                                        common::ObIArray<share::schema::ObTableSchema> &new_scheams,
                                        common::ObArenaAllocator &allocator,
-                                       const uint64_t define_user_id,
-                                       const bool delete_unused_columns);
+                                       const uint64_t define_user_id);
   int check_enable_sys_table_ddl(const share::schema::ObTableSchema &table_schema,
                                  const share::schema::ObSchemaOperationType operation_type);
   int log_drop_warn_or_err_msg(const obrpc::ObTableItem table_item,
@@ -2586,7 +2548,6 @@ private:
 
   // for paralled ddl to cache oracle's index name map
   share::schema::ObIndexNameChecker index_name_checker_;
-  share::schema::ObNonPartitionedTableTabletAllocator non_partitioned_tablet_allocator_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObDDLService);
 };
