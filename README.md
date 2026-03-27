@@ -1,10 +1,6 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://mdn.alipayobjects.com/huamei_ytl0i7/afts/img/A*pKqtRILxGioAAAAAQLAAAAgAejCYAQ/original" width="420">
-  <source media="(prefers-color-scheme: light)" srcset="https://mdn.alipayobjects.com/huamei_ytl0i7/afts/img/A*6BO4Q6D78GQAAAAAQFAAAAgAejCYAQ/original" width="420">
-  <img alt="示意图" src="light-mode.png">
-</picture>
+# <img src="https://mdn.alipayobjects.com/huamei_ytl0i7/afts/img/A*6BO4Q6D78GQAAAAAQFAAAAgAejCYAQ/original" width="420">
 
 ### **🔷 The AI-Native Search Database**
 
@@ -28,7 +24,7 @@
         <img alt="Ask DeepWiki" src="https://deepwiki.com/badge.svg" />
     </a>
     <a href="https://discord.gg/74cF8vbNEs">
-        <img alt="Join Discord" src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?logo=discord&style=flat-square" />
+        <img alt="Discord" src="https://img.shields.io/discord/74cF8vbNEs?label=Discord&logo=discord&style=flat-square&color=5865F2" />
     </a>
     <a href="https://pepy.tech/projects/pylibseekdb">
         <img height="20" alt="Downloads" src="https://static.pepy.tech/badge/pylibseekdb" />
@@ -110,11 +106,9 @@ pip install -U pyseekdb
 docker run -d \
   --name seekdb \
   -p 2881:2881 \
-  -p 2886:2886 \
-  -v ./data:/var/lib/oceanbase \
+  -v ./data:/var/lib/oceanbase/store \
   oceanbase/seekdb:latest
 ```
-Please refer to the [document](https://github.com/oceanbase/docker-images/blob/main/seekdb/README.md) of this docker image for details.
 
 </details>
 
@@ -460,8 +454,6 @@ Please refer to the [User Guide](docs/user-guide/README.md) for more details.
 
 ### Build from Source
 
-Before building, please install the required toolchain and dependencies for your operating system. See [Install Toolchain](docs/developer-guide/en/toolchain.md) for detailed instructions.
-
 ```bash
 # Clone the repository
 git clone https://github.com/oceanbase/seekdb.git
@@ -469,10 +461,11 @@ cd seekdb
 bash build.sh debug --init --make
 mkdir ~/seekdb
 mkdir ~/seekdb/bin
-cp build_debug/src/observer/seekdb ~/seekdb/bin
+cp build_debug/src/observer/observer ~/seekdb/bin
 cd ~/seekdb
-./bin/seekdb
+./bin/observer
 ```
+
 
 In this example, the working director is $HOME/seekdb, please use a fresh director for testing, Please see the [Developer Guide](docs/developer-guide/en/README.md) for detailed instructions.
 

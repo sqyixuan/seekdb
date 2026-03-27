@@ -35,27 +35,20 @@ GDB 是一个强大的调试工具，但是使用 GDB 调试 seekdb 是比较困
 
 1. 找到进程 id
 ```bash
-ps -ef | grep seekdb
+ps -ef | grep observer
 ```
 
 或者
 ```bash
-pidof seekdb
+pidof observer
 ```
 
 2. attach 进程
-
-使用 GDB：
 ```bash
-gdb seekdb <pid>
+gdb observer <pid>
 ```
 
-或者使用 LLDB（macOS 上推荐）：
-```bash
-lldb -p <pid>
-```
-
-接着就可以设置断点，打印变量等。更多信息请参考 [GDB 手册](https://sourceware.org/gdb/current/onlinedocs/gdb.html/) 或 [LLDB 手册](https://lldb.llvm.org/use/tutorial.html)。
+接着就可以设置断点，打印变量等。更多信息请参考 [gdb 手册](https://sourceware.org/gdb/current/onlinedocs/gdb.html/)。
 
 ## 使用 debug-info 包调试 seekdb
 
@@ -69,10 +62,10 @@ lldb -p <pid>
 
 使用下面的命令获取包的revision。
 ```bash
-# in the seekdb runtime path
-clusters/local/bin [83] $ ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+# in the observer runtime path
+clusters/local/bin [83] $ ./observer -V
+./observer -V
+observer (OceanBase seekdb 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
 BUILD_BRANCH: HEAD
@@ -85,17 +78,22 @@ Copyright (c) 2011-2022 OceanBase Inc.
 
 如果看到下面的错误信息
 ```
-./seekdb -V
-./seekdb: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
+./observer -V
+./observer: error while loading shared libraries: libmariadb.so.3: cannot open shared object file: No such file or directory
 ```
 
 就换成这个命令来获取revision
 ```bash
-clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./seekdb -V
-./seekdb -V
-seekdb (OceanBase seekdb 1.0.0.0)
+clusters/local/bin [83] $ LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH ./observer -V
+./observer -V
+observer (OceanBase seekdb 1.0.0.0)
 
 REVISION: 102000042023061314-43bca414d5065272a730c92a645c3e25768c1d05
+BUILD_BRANCH: HEAD
+BUILD_TIME: Nov 1 2025 14:26:23
+BUILD_FLAGS: RelWithDebInfo
+BUILD_INFO:
+
 Copyright (c) 2011-2022 OceanBase Inc.
 ```
 
@@ -134,40 +132,40 @@ rpm2cpio seekdb-debuginfo-1.0.0.0-102000042023061314.el7.x86_64.rpm | cpio -div
         └── debug
             ├── .build-id
             │   └── ee
-            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/seekdb
-            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/seekdb.debug
+            │       ├── f87ee72d228069aab083d8e6d2fa2fcb5c03f2 -> ../../../../../home/admin/oceanbase/bin/observer
+            │       └── f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug -> ../../home/admin/oceanbase/bin/observer.debug
             └── home
                 └── admin
                     └── oceanbase
                         └── bin
-                            └── seekdb.debug
+                            └── observer.debug
 ```
 
-`seekdb.debug` 是我们要的 debug-info 包，`f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` 是一个软链接。
+`observer.debug` 是我们要的 debug-info 包，`f87ee72d228069aab083d8e6d2fa2fcb5c03f2.debug` 是一个软链接。
 
 **使用 debug-info 包调试 seekdb**
 
-使用gdb命令 attach 到一个进程或者打开coredump文件。
+使用gdb命令 attch 到一个进程或者打开coredump文件。
 
 ```bash
 # attach 进程
-gdb ./seekdb `pidof seekdb`
+gdb ./observer `pidof observer`
 ```
 
 或
 
 ```bash
 # 打开coredump文件
-gdb ./seekdb <coredump file name>
+gdb ./observer <coredump file name>
 ```
 
 正常情况下，会看到这个信息
 
 ```
 Type "apropos word" to search for commands related to "word"...
-Reading symbols from clusters/local/bin/seekdb...
-(No debugging symbols found in clusters/local/bin/seekdb)
-Attaching to program: clusters/local/bin/seekdb, process 57296
+Reading symbols from clusters/local/bin/observer...
+(No debugging symbols found in clusters/local/bin/observer)
+Attaching to program: clusters/local/bin/observer, process 57296
 ```
 
 意思是没有调试符号。
@@ -189,8 +187,8 @@ Attaching to program: clusters/local/bin/seekdb, process 57296
 现在加载 debug-info 包。
 
 ```bash
-(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug
-Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/seekdb.debug...
+(gdb) symbol-file usr/lib/debug/home/admin/oceanbase/bin/observer.debug
+Reading symbols from usr/lib/debug/home/admin/oceanbase/bin/observer.debug...
 ```
 
 > 使用debug-info文件的全路径更好
@@ -282,7 +280,7 @@ lbt()="0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x
 
 用这个命令查看调用栈信息：
 ```bash
-addr2line -pCfe ./bin/seekdb 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
+addr2line -pCfe ./bin/observer 0x14371609 0xe4ce783 0x54fd9b6 0x54ebb1b 0x905e62e 0x92a4dc8 0x905df11 0x905dc94 0x13d2278e 0x13d22be3 0x6b10b81 0x6b0f0f7 0x62e2491 0x10ff6409 0x1475f87a 0x10ff6428 0x1475f1c2 0x1476ba83 0x14767fb5 0x14767ae8 0x7ff340250e25 0x7ff33fd0ff1d
 ```
 
 我测试时看到的是这样的
