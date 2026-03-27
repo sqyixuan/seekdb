@@ -30,7 +30,6 @@ namespace observer
 enum IOStatColumn
 {
   TENANT_ID = common::OB_APP_MIN_COLUMN_ID,
-  LS_ID,
   SVR_IP,
   SVR_PORT,
   ELECTION_ROLE,

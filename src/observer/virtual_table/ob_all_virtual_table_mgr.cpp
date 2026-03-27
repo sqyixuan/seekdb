@@ -29,7 +29,6 @@ ObAllVirtualTableMgr::ObAllVirtualTableMgr()
       tablet_iter_(nullptr),
       tablet_allocator_("VTTable"),
       tablet_handle_(),
-      ls_id_(share::ObLSID::INVALID_LS_ID),
       table_store_iter_(),
       iter_buf_(nullptr)
 {
@@ -45,7 +44,6 @@ void ObAllVirtualTableMgr::reset()
 {
   omt::ObMultiTenantOperator::reset();
   addr_.reset();
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
 
   if (OB_NOT_NULL(iter_buf_)) {
     allocator_->free(iter_buf_);
@@ -126,8 +124,6 @@ int ObAllVirtualTableMgr::get_next_tablet()
   } else if (OB_UNLIKELY(!tablet_handle_.is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(WARN, "unexpected invalid tablet", K(ret), K(tablet_handle_));
-  } else {
-    ls_id_ = tablet_handle_.get_obj()->get_tablet_meta().ls_id_.id();
   }
 
   return ret;
@@ -206,9 +202,6 @@ int ObAllVirtualTableMgr::process_curr_tenant(common::ObNewRow *&row)
           break;
         case TENANT_ID:
           cur_row_.cells_[i].set_int(MTL_ID());
-          break;
-        case LS_ID:
-          cur_row_.cells_[i].set_int(ls_id_);
           break;
         case TABLET_ID:
           cur_row_.cells_[i].set_int(table_key.tablet_id_.id());

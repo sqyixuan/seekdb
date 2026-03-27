@@ -105,9 +105,6 @@ int ObAllVirtualTabletCompactionInfo::process_curr_tenant(common::ObNewRow *&row
         case TENANT_ID:
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
-        case LS_ID:
-          cur_row_.cells_[i].set_int(ls_id_);
-          break;
         case TABLET_ID:
           cur_row_.cells_[i].set_int(tablet->get_tablet_meta().tablet_id_.id());
           break;

@@ -94,9 +94,6 @@ int ObAllVirtualKvGroupCommitInfo::process_curr_tenant(ObNewRow *&row)
           cells[i].set_varchar(group_info.get_group_type_str());
           cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
-        case GROUP_COLUMN::LS_ID:
-          cells[i].set_int(group_info.ls_id_.id());
-          break;
         case GROUP_COLUMN::TABLE_ID:
           cells[i].set_int(group_info.table_id_);
           break;

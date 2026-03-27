@@ -112,9 +112,6 @@ int ObAllVirtualTabletCompactionProgress::fill_cells()
       cells[i].set_varchar(share::ObIDag::get_dag_status_str(progress_.status_));
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
-    case LS_ID:
-      cells[i].set_int(progress_.ls_id_);
-      break;
     case TABLET_ID:
       cells[i].set_int(progress_.tablet_id_);
       break;

@@ -83,9 +83,6 @@ int ObAllVirtualApplyStat::insert_stat_(logservice::LSApplyStat &apply_stat)
         cur_row_.cells_[i].set_int(MTL_ID());
         break;
       case OB_APP_MIN_COLUMN_ID + 1:
-        cur_row_.cells_[i].set_int(apply_stat.ls_id_);
-        break;
-      case OB_APP_MIN_COLUMN_ID + 2:
         if (false == GCTX.self_addr().ip_to_string(ip_, common::OB_IP_PORT_STR_BUFF)) {
           ret = OB_ERR_UNEXPECTED;
           SERVER_LOG(WARN, "ip_to_string failed", K(ret));
@@ -94,10 +91,10 @@ int ObAllVirtualApplyStat::insert_stat_(logservice::LSApplyStat &apply_stat)
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         }
         break;
-      case OB_APP_MIN_COLUMN_ID + 3:
+      case OB_APP_MIN_COLUMN_ID + 2:
         cur_row_.cells_[i].set_int(GCTX.self_addr().get_port());
         break;
-      case OB_APP_MIN_COLUMN_ID + 4:
+      case OB_APP_MIN_COLUMN_ID + 3:
         if (OB_FAIL(role_to_string(apply_stat.role_, role_str_, sizeof(role_str_)))) {
           SERVER_LOG(WARN, "role_to_string failed", K(ret), K(apply_stat));
         } else {
@@ -106,13 +103,13 @@ int ObAllVirtualApplyStat::insert_stat_(logservice::LSApplyStat &apply_stat)
                                                 ObCharset::get_default_charset()));
         }
         break;
-      case OB_APP_MIN_COLUMN_ID + 5:
+      case OB_APP_MIN_COLUMN_ID + 4:
         cur_row_.cells_[i].set_uint64(apply_stat.end_lsn_.val_);
         break;
-      case OB_APP_MIN_COLUMN_ID + 6:
+      case OB_APP_MIN_COLUMN_ID + 5:
         cur_row_.cells_[i].set_int(apply_stat.proposal_id_);
         break;
-      case OB_APP_MIN_COLUMN_ID + 7:
+      case OB_APP_MIN_COLUMN_ID + 6:
         cur_row_.cells_[i].set_int(apply_stat.pending_cnt_);
         break;
       default:

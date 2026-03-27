@@ -28,7 +28,6 @@ namespace observer
 ObAllVirtualFreezeCheckpointInfo::ObAllVirtualFreezeCheckpointInfo()
     : ObVirtualTableScannerIterator(),
       addr_(),
-      ls_id_(share::ObLSID::INVALID_LS_ID),
       ls_iter_guard_()
 {
 }
@@ -56,8 +55,6 @@ int ObAllVirtualFreezeCheckpointInfo::get_next_ls_(ObLS *&ls)
     if (OB_ITER_END != ret) {
       SERVER_LOG(WARN, "get_next_ls failed", K(ret));
     }
-  } else {
-    ls_id_ = ls->get_ls_id().id();
   }
 
   return ret;
@@ -114,8 +111,7 @@ int ObAllVirtualFreezeCheckpointInfo::get_next_(ObFreezeCheckpointVTInfo &freeze
     } else if (OB_FAIL(ob_freeze_checkpoint_iter_.get_next(freeze_checkpoint))) {
       if (OB_ITER_END == ret) {
         ob_freeze_checkpoint_iter_.reset();
-        SERVER_LOG(DEBUG, "iterate freezecheckpoint info iter in the ls end",
-                                                              K(ret), K(ls_id_));
+        SERVER_LOG(DEBUG, "iterate freezecheckpoint info iter in the ls end", K(ret));
         continue;
       } else {
         SERVER_LOG(WARN, "get next freezecheckpoint info error.", K(ret));
@@ -136,7 +132,6 @@ bool ObAllVirtualFreezeCheckpointInfo::is_need_process(uint64_t tenant_id)
 
 void ObAllVirtualFreezeCheckpointInfo::release_last_tenant()
 {
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
   ls_iter_guard_.reset();
   ob_freeze_checkpoint_iter_.reset();
 }
@@ -184,19 +179,15 @@ int ObAllVirtualFreezeCheckpointInfo::process_curr_tenant(ObNewRow *&row)
           // tenant_id
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
-        case OB_APP_MIN_COLUMN_ID + 3:
-          // ls_id
-          cur_row_.cells_[i].set_int(ls_id_);
-          break;
-        case OB_APP_MIN_COLUMN_ID + 4: {
+        case OB_APP_MIN_COLUMN_ID + 3: {
           cur_row_.cells_[i].set_int(freeze_checkpoint.tablet_id.id());
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 5: {
+        case OB_APP_MIN_COLUMN_ID + 4: {
           cur_row_.cells_[i].set_uint64(freeze_checkpoint.rec_scn.is_valid() ? freeze_checkpoint.rec_scn.get_val_for_inner_table_field() : 0);
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 6:
+        case OB_APP_MIN_COLUMN_ID + 5:
           if (OB_FAIL(freeze_checkpoint_location_to_string(ObFreezeCheckpointLocation(freeze_checkpoint.location),
                                                            freeze_checkpoint_location_buf_,
                                                            sizeof(freeze_checkpoint_location_buf_)))) {
@@ -207,7 +198,7 @@ int ObAllVirtualFreezeCheckpointInfo::process_curr_tenant(ObNewRow *&row)
             cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           }
           break;
-        case OB_APP_MIN_COLUMN_ID + 7:
+        case OB_APP_MIN_COLUMN_ID + 6:
           cur_row_.cells_[i].set_int(freeze_checkpoint.rec_scn_is_stable ? 1 : 0);
           break;
         default:

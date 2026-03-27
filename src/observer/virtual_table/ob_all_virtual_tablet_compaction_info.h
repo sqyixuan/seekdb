@@ -29,7 +29,6 @@ class ObAllVirtualTabletCompactionInfo : public ObVirtualTableTabletIter
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    LS_ID,
     TABLET_ID,
     FINISH_SCN,
     WAIT_CHECK_SCN,

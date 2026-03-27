@@ -53,7 +53,6 @@ protected:
   int get_next_tablet(storage::ObTabletHandle &tablet_handle);
 protected:
   common::ObAddr addr_;
-  int64_t ls_id_;
   ObSharedGuard<storage::ObLSIterator> ls_iter_guard_;
   storage::ObLSTabletIterator ls_tablet_iter_;
   char ip_buf_[common::OB_IP_STR_BUFF];
@@ -68,7 +67,6 @@ class ObAllVirtualCSReplicaTabletStats : public ObAllVirtualTableLSTabletIter
     TENANT_ID = common::OB_APP_MIN_COLUMN_ID,
     SVR_IP,
     SVR_PORT,
-    LS_ID,
     TABLET_ID,
     MACRO_BLOCK_CNT,
     IS_CS,

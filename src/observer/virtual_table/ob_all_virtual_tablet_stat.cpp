@@ -112,9 +112,6 @@ int ObAllVirtualTabletStat::process_curr_tenant(ObNewRow *&row)
       case TENANT_ID:
         cells[i].set_int(tenant_id);
         break;
-      case LS_ID:
-        cells[i].set_int(cur_stat_.ls_id_);
-        break;
       case TABLET_ID:
         cells[i].set_int(cur_stat_.tablet_id_);
         break;

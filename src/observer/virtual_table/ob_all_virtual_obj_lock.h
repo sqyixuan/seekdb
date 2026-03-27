@@ -61,7 +61,6 @@ private:
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    LS_ID,
     LOCK_ID,
     LOCK_MODE,
     OWNER_ID,
@@ -81,7 +80,6 @@ private:
   };
 private:
   common::ObAddr addr_;
-  int64_t ls_id_;
   ObLS *ls_;
   transaction::ObPartTransCtx *tx_ctx_;
   ObSharedGuard<storage::ObLSIterator> ls_iter_guard_;

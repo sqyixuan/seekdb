@@ -96,9 +96,6 @@ int ObAllVirtualHADiagnose::insert_stat_(storage::DiagnoseInfo &diagnose_info)
       case TENANT_ID:
         cur_row_.cells_[i].set_int(MTL_ID());
         break;
-      case LS_ID:
-        cur_row_.cells_[i].set_int(diagnose_info.ls_id_);
-        break;
       case SVR_IP:
         if (false == GCTX.self_addr().ip_to_string(ip_, common::OB_IP_PORT_STR_BUFF)) {
           ret = OB_ERR_UNEXPECTED;
@@ -246,9 +243,6 @@ int ObAllVirtualHADiagnose::insert_stat_(storage::DiagnoseInfo &diagnose_info)
         break;
       case ARB_SRV_INFO:
         cur_row_.cells_[i].set_varchar(ObString(""));
-#ifdef OB_BUILD_ARBITRATION
-        cur_row_.cells_[i].set_varchar(diagnose_info.arb_srv_diagnose_info_.diagnose_str_.string());
-#endif
         cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(
                                               ObCharset::get_default_charset()));
         break;

@@ -39,7 +39,6 @@ private:
     SVR_IP_COL = OB_APP_MIN_COLUMN_ID,
     SVR_PORT_COL,
     TENANT_ID_COL,
-    LS_ID_COL,
     STATE_COL,
     START_SCN_COL,
     END_SCN_COL,
@@ -52,7 +51,7 @@ public:
   ObAllVirtualTxDataTable();
   ~ObAllVirtualTxDataTable();
 
-  TO_STRING_KV(K_(ls_id), K(MTL_ID()), K_(memtable_array_pos), K_(sstable_array_pos));
+  TO_STRING_KV(K(MTL_ID()), K_(memtable_array_pos), K_(sstable_array_pos));
 public:
   virtual int inner_get_next_row(common::ObNewRow *&row) { return execute(row);}
   virtual void reset();
@@ -74,7 +73,6 @@ private:
 
 private:
   common::ObAddr addr_;
-  int64_t ls_id_;
   char ip_buf_[common::OB_IP_STR_BUFF];
 
   /****************   NOTE : These resources must be released in their own tenant    *****************/
