@@ -835,8 +835,7 @@ int ObTscCgService::generate_ext_tbl_filter_pd_level(const ObLogTableScan &op,
     if (OB_FAIL(ObSQLUtils::get_external_table_type(scan_ctdef.external_file_format_str_.str_,
                                                     format_type))) {
       LOG_WARN("fail to get external table format", K(ret));
-    } else if (ObExternalFileFormat::PARQUET_FORMAT == format_type ||
-               ObExternalFileFormat::ORC_FORMAT == format_type) {
+    } else if (ObExternalFileFormat::PARQUET_FORMAT == format_type) {
       need_pd_level = true;
     }
   }
@@ -849,10 +848,11 @@ int ObTscCgService::generate_ext_tbl_filter_pd_level(const ObLogTableScan &op,
       if (ObExternalFileFormat::PARQUET_FORMAT == format_type) {
         pd_level = tenant_config->_parquet_filter_pushdown_level;
       } else if (ObExternalFileFormat::ORC_FORMAT == format_type) {
-        pd_level = tenant_config->_orc_filter_pushdown_level;
+        ret = OB_NOT_SUPPORTED;
       }
     }
-    if (OB_ISNULL(log_plan->get_stmt()) || OB_ISNULL(log_plan->get_stmt()->get_query_ctx())) {
+    if (OB_FAIL(ret)) {
+    } else if (OB_ISNULL(log_plan->get_stmt()) || OB_ISNULL(log_plan->get_stmt()->get_query_ctx())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("stmt or query ctx is null", K(ret));
     } else {
@@ -863,9 +863,10 @@ int ObTscCgService::generate_ext_tbl_filter_pd_level(const ObLogTableScan &op,
       if (ObExternalFileFormat::PARQUET_FORMAT == format_type) {
         param_type = ObOptParamHint::OptParamType::PARQUET_FILTER_PUSHDOWN_LEVEL;
       } else if (ObExternalFileFormat::ORC_FORMAT == format_type) {
-        param_type = ObOptParamHint::OptParamType::ORC_FILTER_PUSHDOWN_LEVEL;
+        ret = OB_NOT_SUPPORTED;
       }
-      if (ObOptParamHint::OptParamType::INVALID_OPT_PARAM_TYPE == param_type) {
+      if (OB_FAIL(ret)) {
+      } else if (ObOptParamHint::OptParamType::INVALID_OPT_PARAM_TYPE == param_type) {
       } else if (OB_FAIL(opt_params->get_opt_param(param_type, pd_level_val))) {
         LOG_WARN("fail to get pushdown filter level opt param from hint", K(ret));
       } else if (pd_level_val.is_int()) { // valid
@@ -1070,46 +1071,30 @@ int ObTscCgService::extract_das_access_exprs(const ObLogTableScan &op,
           && !static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column()
           && !static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()) {
         // do nothing.
-      } else if (!cg_.opt_ctx_->is_online_ddl() &&
-                 expr->is_column_ref_expr() &&
-                 (static_cast<ObColumnRefRawExpr *>(expr)->is_vec_cid_column() ||
-                  static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column() ||
-                  static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column())) {
+      } else if (!cg_.opt_ctx_->is_online_ddl() && expr->is_column_ref_expr() && (static_cast<ObColumnRefRawExpr *>(expr)->is_vec_cid_column() || static_cast<ObColumnRefRawExpr *>(expr)->is_vec_pq_cids_column())) {
         share::schema::ObSchemaGetterGuard *schema_guard = cg_.opt_ctx_->get_schema_guard();
         const ObTableSchema *table_schema = nullptr;
-        uint64_t rowkey_id_tid = OB_INVALID_ID;
+        uint64_t rowkey_cid_tid = OB_INVALID_ID;
         if (OB_ISNULL(schema_guard)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get null schema guard", K(ret));
-        } else if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), op.get_ref_table_id(), table_schema))) {
+        } else if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), static_cast<ObColumnRefRawExpr *>(expr)->get_database_name(), static_cast<ObColumnRefRawExpr *>(expr)->get_table_name(), false, table_schema))) {
           LOG_WARN("failed to get table schema", K(ret));
         } else if (OB_ISNULL(table_schema)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("table schema is null", K(ret));
-        } else if (table_schema->is_index_table()) {
           // select from index table do not need to check rowkey cid table.
           if (OB_FAIL(add_var_to_array_no_dup(tmp_access_exprs, expr))) {
             LOG_WARN("failed to add param expr", K(ret));
           }
-        } else if (OB_FAIL(ObVectorIndexUtil::check_rowkey_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_id_tid))) {
+        } else if (OB_FAIL(ObVectorIndexUtil::check_rowkey_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_cid_tid))) {
           LOG_WARN("failed to check_rowkey_cid_table_readable", K(ret));
-        } else if (static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()
-                   && OB_FAIL(ObVectorIndexUtil::check_hybrid_embedded_vec_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_id_tid))) {
-          LOG_WARN("failed to check_embedded_vec_cid_readable", K(ret));
-        } else if (OB_INVALID_ID == rowkey_id_tid) {
+        } else if (OB_INVALID_ID == rowkey_cid_tid) {
         } else {
           const ObIArray<uint64_t> &domain_tids = op.get_rowkey_domain_tids();
           bool need_add = false;
           for (int i = 0; i < domain_tids.count() && !need_add; i++) {
-            if (rowkey_id_tid == domain_tids.at(i)) {
+            if (rowkey_cid_tid == domain_tids.at(i)) {
               need_add = true;
             }
-          }
-          if (op.is_vec_idx_scan() &&
-              scan_ctdef.ir_scan_type_ == OB_VEC_COM_AUX_SCAN &&
-              expr->is_column_ref_expr() &&
-              static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()) {
-            need_add = true;
           }
           if (need_add && OB_FAIL(add_var_to_array_no_dup(tmp_access_exprs, expr))) {
             LOG_WARN("failed to add param expr", K(ret));
@@ -4675,7 +4660,6 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
     scan_ctdef->ref_table_id_ = rowkey_domain_id_tid;
     ObDASTableLocMeta *scan_loc_meta =
       OB_NEWx(ObDASTableLocMeta, &cg_.phy_plan_->get_allocator(), cg_.phy_plan_->get_allocator());
-    share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
     if (OB_ISNULL(scan_loc_meta)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate scan location meta failed", K(ret));
@@ -4689,12 +4673,6 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
       LOG_WARN("generate table loc meta failed", K(ret));
     } else if (OB_FAIL(tsc_ctdef.attach_spec_.attach_loc_metas_.push_back(scan_loc_meta))) {
       LOG_WARN("store scan loc meta failed", K(ret));
-    } else if (cur_type == ObDomainIdUtils::ObDomainIDType::EMB_VEC &&
-               OB_FAIL(semantic_index_info.generate(data_schema,
-                                                    rowkey_domain_id_schema,
-                                                    scan_ctdef->result_output_.count(),
-                                                    OB_NOT_NULL(scan_ctdef->trans_info_expr_)))) {
-      LOG_WARN("fail to generate semantic index info", K(ret));
     } else {
       rowkey_domain_scan_ctdef = scan_ctdef;
     }
@@ -5548,4 +5526,3 @@ int ObTscCgService::generate_match_ctdef(const ObLogTableScan &op,
 }
 }  // namespace sql
 }  // namespace oceanbase
-

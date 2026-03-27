@@ -26,9 +26,9 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
 #include "share/ob_vec_index_builder_util.h"
+#include "share/external_table/ob_hdfs_storage_info.h"
 #include "sql/resolver/ddl/ob_fts_parser_resolver.h"
 #include "share/ob_dynamic_partition_manager.h"
-#include "share/ob_license_utils.h"
 #include "share/vector_index/ob_plugin_vector_index_service.h"
 
 namespace oceanbase
@@ -1119,24 +1119,7 @@ int ObDDLResolver::resolve_file_prefix(ObString &url, ObSqlString &prefix_str, c
   if (!tmp_prefix.empty()) {
     OZ (get_storage_type_from_name(tmp_prefix.ptr(), device_type));
   }
-  if (OB_FAIL(ret)) {
-    // do nothing
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "OSS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    LOG_WARN("OSS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "COS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    LOG_WARN("COS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE
-      && !tmp_prefix.empty() && 0 == strcmp(tmp_prefix.ptr(), "HDFS")) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    LOG_WARN("HDFS storage is not supported", K(ret));
-  } else if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE) {
+  if (device_type == common::ObStorageType::OB_STORAGE_MAX_TYPE) {
     device_type = common::ObStorageType::OB_STORAGE_FILE;
     if (url.empty()) {
       ret = OB_DIR_NOT_EXIST;
@@ -2413,11 +2396,11 @@ int ObDDLResolver::resolve_table_option(const ParseNode *option_node, const bool
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected child num", K(option_node->num_child_));
           } else {
-            ObString location_obj = ObString(option_node->children_[0]->str_len_, 
+            ObString location_obj = ObString(option_node->children_[0]->str_len_,
                                         option_node->children_[0]->str_value_).trim_space_only();
             ObString sub_path;
             if(OB_NOT_NULL(option_node->children_[1])) {
-              sub_path = ObString(option_node->children_[1]->str_len_, 
+              sub_path = ObString(option_node->children_[1]->str_len_,
                           option_node->children_[1]->str_value_).trim_space_only();
             }
             if (OB_FAIL(resolve_external_file_location_object(params_, arg.schema_, location_obj, sub_path))) {
@@ -3247,12 +3230,13 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
       ObExternalFileFormat format;
       format.format_type_ = external_table_format_type_;
       if (format.format_type_ == ObExternalFileFormat::FormatType::ORC_FORMAT) {
-        format.orc_format_.column_index_type_ = column_index_type_;
+        ret = OB_NOT_SUPPORTED;
       } else if (format.format_type_ == ObExternalFileFormat::FormatType::PARQUET_FORMAT) {
         format.parquet_format_.column_index_type_ = column_index_type_;
       }
       ObString mock_gen_column_str;
-      if (OB_FAIL(format.mock_gen_column_def(column, *allocator_, mock_gen_column_str))) {
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(format.mock_gen_column_def(column, *allocator_, mock_gen_column_str))) {
         LOG_WARN("fail to mock gen column def", K(ret));
       } else {
         ObObj default_value;
@@ -6610,7 +6594,7 @@ int ObDDLResolver::resolve_vec_index_constraint(
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "not user tenant create vector index is");
 #endif
     }
-    
+
     if (OB_SUCC(ret)) {
       int64_t dim = 0;
 
@@ -11533,10 +11517,6 @@ int ObDDLResolver::parse_column_group(const ParseNode *column_group_node,
   } else if (!ObSchemaUtils::can_add_column_group(table_schema)) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not supported table type to add column group", K(ret));
-  } else if (OB_FAIL(ObLicenseUtils::check_olap_allowed(session_info_->get_effective_tenant_id()))) {
-    ret = OB_LICENSE_SCOPE_EXCEEDED;
-    LOG_WARN("column group is not allowed", KR(ret));
-    LOG_USER_ERROR(OB_LICENSE_SCOPE_EXCEEDED, "column group is not supported due to the absence of the OLAP module");
   } else {
     dst_table_schema.set_max_used_column_group_id(table_schema.get_max_used_column_group_id());
   }
@@ -11611,10 +11591,6 @@ int ObDDLResolver::parse_cg_node(const ParseNode &cg_node, obrpc::ObCreateIndexA
   if (OB_UNLIKELY(T_COLUMN_GROUP != cg_node.type_ || cg_node.num_child_ <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     SQL_RESV_LOG(WARN, "invalid argument", KR(ret), K(cg_node.type_), K(cg_node.num_child_));
-  } else if (OB_FAIL(ObLicenseUtils::check_olap_allowed(session_info_->get_effective_tenant_id()))) {
-    ret = OB_LICENSE_SCOPE_EXCEEDED;
-    LOG_WARN("column group is not allowed", KR(ret));
-    LOG_USER_ERROR(OB_LICENSE_SCOPE_EXCEEDED, "column group is not supported due to the absence of the OLAP module");
   } else {
     const int64_t num_child = cg_node.num_child_;
     // handle all_type column_group & single_type column_group
