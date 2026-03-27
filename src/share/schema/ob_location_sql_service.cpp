@@ -17,7 +17,7 @@
  #define USING_LOG_PREFIX SHARE_SCHEMA
  #include "share/schema/ob_location_sql_service.h"
  #include "share/inner_table/ob_inner_table_schema_constants.h"
-
+ 
  namespace oceanbase
  {
  namespace share
@@ -26,16 +26,16 @@
  {
  const char *ObLocationSqlService::LOCATION_TABLES[2] = {OB_ALL_TENANT_LOCATION_TNAME,
                                                            OB_ALL_TENANT_LOCATION_HISTORY_TNAME};
-
+ 
  ObLocationSqlService::ObLocationSqlService(ObSchemaService &schema_service)
    : ObDDLSqlService(schema_service)
  {
  }
-
+ 
  ObLocationSqlService::~ObLocationSqlService()
  {
  }
-
+ 
  int ObLocationSqlService::apply_new_schema(const ObLocationSchema &schema,
                                              ObISQLClient &sql_client,
                                              ObSchemaOperationType ddl_type,
@@ -56,7 +56,7 @@
      ret = OB_NOT_SUPPORTED;
      LOG_WARN("not supported ddl type", K(ret), K(ddl_type));
    }
-
+ 
    if (OB_FAIL(ret)) {
      LOG_WARN("fail to exec ddl sql", K(ret), K(schema), K(ddl_type));
    } else {
@@ -72,7 +72,7 @@
    }
    return ret;
  }
-
+ 
  int ObLocationSqlService::add_schema(ObISQLClient &sql_client, const ObLocationSchema &schema)
  {
    int ret = OB_SUCCESS;
@@ -112,7 +112,7 @@
    }
    return ret;
  }
-
+ 
  int ObLocationSqlService::alter_schema(ObISQLClient &sql_client, const ObLocationSchema &schema)
  {
    int ret = OB_SUCCESS;
@@ -154,7 +154,7 @@
    }
    return ret;
  }
-
+ 
  int ObLocationSqlService::drop_schema(ObISQLClient &sql_client, const ObLocationSchema &schema)
  {
     int ret = OB_SUCCESS;
@@ -168,9 +168,8 @@
       LOG_WARN("invalid input argument", K(ret), K(schema));
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = %lu AND location_id = %lu",
+      if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE location_id = %lu",
                                  LOCATION_TABLES[THE_SYS_TABLE_IDX],
-                                 ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                  ObSchemaUtils::get_extract_schema_id(exec_tenant_id, schema.get_location_id())))) {
         LOG_WARN("fail to assign sql format", K(ret));
       } else if (OB_FAIL(sql_client.write(exec_tenant_id, sql.ptr(), affected_rows))) {
@@ -207,14 +206,12 @@
     }
     return ret;
  }
-
+ 
  int ObLocationSqlService::gen_sql(common::ObSqlString &sql, common::ObSqlString &values, const ObLocationSchema &schema)
  {
    int ret = OB_SUCCESS;
    uint64_t tenant_id = schema.get_tenant_id();
    const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-   SQL_COL_APPEND_VALUE(sql, values, ObSchemaUtils::get_extract_tenant_id(
-                        exec_tenant_id, schema.get_tenant_id()), "tenant_id", "%lu");
    SQL_COL_APPEND_VALUE(sql, values, ObSchemaUtils::get_extract_schema_id(
                         exec_tenant_id, schema.get_location_id()), "location_id", "%lu");
    SQL_COL_APPEND_ESCAPE_STR_VALUE(sql, values, schema.get_location_name_str().ptr(),
@@ -228,3 +225,4 @@
  } // namespace schema
  } // namespace share
  } // namespace oceanbase
+

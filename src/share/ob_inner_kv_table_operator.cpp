@@ -266,9 +266,7 @@ bool ObInnerKVItemTenantIdWrapper::is_valid() const
 int ObInnerKVItemTenantIdWrapper::fill_pkey_dml(share::ObDMLSqlSplicer &dml) const
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(dml.add_pk_column(TENANT_ID_COLUMN_NAME, tenant_id_))) {
-    LOG_WARN("failed to add column", K(ret));
-  } else if (OB_FAIL(item_->fill_pkey_dml(dml))) {
+  if (OB_FAIL(item_->fill_pkey_dml(dml))) {
     LOG_WARN("failed to fill item pkey dml", K(ret));
   }
 

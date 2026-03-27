@@ -73,20 +73,6 @@ int ObAllVirtualLongOpsStatus::inner_get_next_row(ObNewRow *&row)
           cur_row_.cells_[i].set_varchar(longops_value_.target_);
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
-        case OB_APP_MIN_COLUMN_ID + 4:
-          // svr_ip
-          if (addr_.ip_to_string(ip_buf_, sizeof(ip_buf_))) {
-            cur_row_.cells_[i].set_varchar(ip_buf_);
-            cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-          } else {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("fail to execute ip_to_string", K(ret));
-          }
-          break;
-        case OB_APP_MIN_COLUMN_ID + 5:
-          // svr_port
-          cur_row_.cells_[i].set_int(addr_.get_port());
-          break;
         case OB_APP_MIN_COLUMN_ID + 6:
           // start_time
           cur_row_.cells_[i].set_int(longops_value_.start_time_);

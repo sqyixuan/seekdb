@@ -26,14 +26,12 @@ namespace common {
 
 #define FETCH_GLOBAL_PREFS "SELECT /*+ OPT_PARAM(\'USE_DEFAULT_OPT_STAT\',\'TRUE\') */ spare4 FROM %s WHERE sname = upper('%.*s')"
 
-#define FETCH_USER_PREFS "SELECT /*+ OPT_PARAM(\'USE_DEFAULT_OPT_STAT\',\'TRUE\') */ valchar FROM %s WHERE tenant_id = %lu and \
-                          table_id = %lu and pname = upper('%.*s')"
+#define FETCH_USER_PREFS "SELECT /*+ OPT_PARAM(\'USE_DEFAULT_OPT_STAT\',\'TRUE\') */ valchar FROM %s WHERE table_id = %lu and pname = upper('%.*s')"
 
 #define UPDATE_GLOBAL_PREFS "UPDATE %s SET spare4 = upper('%.*s'), \
                              sval2 = usec_to_time('%ld') WHERE sname = upper('%.*s')"
 
-#define UPDATE_USER_PREFS "REPLACE INTO %s(tenant_id,\
-                                           table_id,\
+#define UPDATE_USER_PREFS "REPLACE INTO %s(table_id,\
                                            pname,\
                                            valnum,\
                                            valchar,\
@@ -88,7 +86,6 @@ int ObDbmsStatsPreferences::get_prefs(ObMySQLProxy *mysql_proxy,
     uint64_t exec_tenant_id = share::schema::ObSchemaUtils::get_exec_tenant_id(tenant_id);
     if (OB_FAIL(get_user_sql.append_fmt(FETCH_USER_PREFS,
                                         share::OB_ALL_OPTSTAT_USER_PREFS_TNAME,
-                                        share::schema::ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id),
                                         share::schema::ObSchemaUtils::get_extract_schema_id(exec_tenant_id, table_id),
                                         opt_name.length(),
                                         opt_name.ptr()))) {
@@ -287,8 +284,7 @@ int ObDbmsStatsPreferences::get_user_prefs_sql(const uint64_t tenant_id,
   share::ObDMLSqlSplicer dml_splicer;
   uint64_t ext_tenant_id = share::schema::ObSchemaUtils::get_extract_tenant_id(tenant_id, tenant_id);
   uint64_t pure_table_id = share::schema::ObSchemaUtils::get_extract_schema_id(tenant_id, table_id);
-  if (OB_FAIL(dml_splicer.add_pk_column("tenant_id", ext_tenant_id)) ||
-      OB_FAIL(dml_splicer.add_pk_column("table_id", pure_table_id)) ||
+  if (OB_FAIL(dml_splicer.add_pk_column("table_id", pure_table_id)) ||
       OB_FAIL(dml_splicer.add_pk_column("pname", opt_name)) ||
       OB_FAIL(dml_splicer.add_column("valnum", NULL)) ||
       OB_FAIL(dml_splicer.add_column("valchar", opt_value)) ||
@@ -316,9 +312,8 @@ int ObDbmsStatsPreferences::get_sys_default_stat_options(ObExecContext &ctx,
   } else if (OB_FAIL(gen_sname_list_str(stat_prefs, sname_list))) {
     LOG_WARN("failed to gen sname list str", K(ret), K(sname_list));
   } else if (OB_FAIL(raw_sql.append_fmt("SELECT pname, valchar FROM %s WHERE"\
-                                        " tenant_id = %lu and table_id = %lu and pname in %s",
+                                        " table_id = %lu and pname in %s",
                                         share::OB_ALL_OPTSTAT_USER_PREFS_TNAME,
-                                        ext_tenant_id,
                                         pure_table_id,
                                         sname_list.ptr()))) {
     LOG_WARN("failed to append fmt", K(ret), K(raw_sql));
@@ -717,7 +712,7 @@ int ObGranularityPrefs::check_pref_value_validity(ObTableStatParam *param/*defau
   int ret = OB_SUCCESS;
   const char *default_value = get_stat_pref_default_value();
   if (pvalue_.empty()) {
-    pvalue_.assign_ptr(default_value, static_cast<ObString::obstr_size_t>(strlen(default_value)));
+    pvalue_.assign_ptr(default_value, strlen(default_value));
   }
   if (param != NULL) {//no need check
     char *buf = NULL;
@@ -784,7 +779,7 @@ int ObMethodOptPrefs::check_pref_value_validity(ObTableStatParam *param/*default
   int ret = OB_SUCCESS;
   const char *default_value = get_stat_pref_default_value();
   if (pvalue_.empty()) {
-    pvalue_.assign_ptr(default_value, static_cast<ObString::obstr_size_t>(strlen(default_value)));
+    pvalue_.assign_ptr(default_value, strlen(default_value));
   }
   if (OB_ISNULL(session_info_) || OB_ISNULL(allocator_)) {
     ret = OB_ERR_UNEXPECTED;

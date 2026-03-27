@@ -66,7 +66,7 @@ static void delay_process_by_probability(int64_t percentage) {
 const char *ObLoadDataBase::SERVER_TENANT_MEMORY_EXAMINE_SQL =
     "SELECT case when memstore_used < freeze_trigger * 1.02 then false else true end"
     " as need_wait_freeze"
-    " FROM oceanbase.__all_virtual_tenant_memstore_info WHERE tenant_id = %ld"
+    " FROM oceanbase.__all_virtual_tenant_memstore_info WHERE 0 = %ld % 1"
     " and svr_ip = '%s' and svr_port = %d";
 
 const char *log_file_column_names = "\nBatchId\tLineNum\tType\tErrCode\tErrMsg\t\n";
@@ -2709,7 +2709,7 @@ int ObLoadDataSPImpl::ToolBox::init(ObExecContext &ctx, ObLoadDataStmt &load_stm
     } else if (0 == hint_batch_size) {
       batch_row_count = DEFAULT_BUFFERRED_ROW_COUNT;
     } else {
-      batch_row_count = std::max(static_cast<int64_t>(1), std::min(DEFAULT_BUFFERRED_ROW_COUNT, hint_batch_size));
+      batch_row_count = std::max(1L, std::min(DEFAULT_BUFFERRED_ROW_COUNT, hint_batch_size));
     }
     if (OB_SUCC(ret)) {
       if (OB_FAIL(hint.get_value(ObLoadDataHint::BATCH_BUFFER_SIZE, hint_batch_buffer_size_str))) {
