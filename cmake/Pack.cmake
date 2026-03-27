@@ -2,8 +2,7 @@ ob_define(CPACK_PACKAGING_INSTALL_PREFIX /)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OceanBase is a distributed relational database")
 set(CPACK_PACKAGE_VENDOR "OceanBase Inc.")
 set(CPACK_PACKAGE_DESCRIPTION "OceanBase is a distributed relational database")
-# set(CPACK_COMPONENTS_ALL server sql-parser)
-set(CPACK_COMPONENTS_ALL server)
+set(CPACK_COMPONENTS_ALL server sql-parser)
 
 set(CPACK_PACKAGE_NAME "seekdb")
 set(CPACK_PACKAGE_VERSION "${OceanBase_VERSION}")
@@ -29,7 +28,7 @@ set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION
 
 # Install binaries to /usr/bin
 install(PROGRAMS
-  ${CMAKE_BINARY_DIR}/src/observer/seekdb
+  ${CMAKE_BINARY_DIR}/src/observer/observer
   deps/3rd/home/admin/oceanbase/bin/obshell
   DESTINATION usr/bin
   COMPONENT server)
@@ -51,14 +50,14 @@ install(FILES
 install(PROGRAMS
   tools/import_time_zone_info.py
   tools/import_srs_data.py
-  DESTINATION usr/libexec/seekdb
+  DESTINATION usr/libexec/oceanbase
   COMPONENT server)
 
 install(PROGRAMS
   tools/systemd/profile/seekdb_systemd_start
   tools/systemd/profile/seekdb_systemd_stop
   tools/systemd/profile/telemetry.sh
-  DESTINATION usr/libexec/seekdb/scripts
+  DESTINATION usr/libexec/oceanbase/scripts
   COMPONENT server)
 
 # Install configuration files to /etc/oceanbase
@@ -78,20 +77,20 @@ install(FILES
   tools/systemd/profile/seekdb.cnf
   tools/systemd/profile/oceanbase-pre.json
   tools/systemd/profile/telemetry-pre.json
-  DESTINATION etc/seekdb
+  DESTINATION etc/oceanbase
   COMPONENT server)
 
 # Install admin SQL files to /usr/share/oceanbase/admin
 message(STATUS "system package release directory: " ${SYS_PACK_RELEASE_DIR})
 install(
   DIRECTORY ${SYS_PACK_RELEASE_DIR}/
-  DESTINATION usr/share/seekdb/admin
+  DESTINATION usr/share/oceanbase/admin
   COMPONENT server)
 
 # Install help files to /usr/share/oceanbase/help
 install(FILES
   src/sql/fill_help_tables-ob.sql
-  DESTINATION usr/share/seekdb/help
+  DESTINATION usr/share/oceanbase/help
   COMPONENT server)
 
 # Install timezone files to /usr/share/oceanbase/timezone
@@ -101,14 +100,14 @@ install(FILES
   tools/timezone_name.data
   tools/timezone_trans.data
   tools/timezone_trans_type.data
-  DESTINATION usr/share/seekdb/timezone
+  DESTINATION usr/share/oceanbase/timezone
   COMPONENT server)
 
 # Install SRS files to /usr/share/oceanbase/srs
 install(FILES
   tools/spatial_reference_systems.data
   tools/default_srs_data_mysql.sql
-  DESTINATION usr/share/seekdb/srs
+  DESTINATION usr/share/oceanbase/srs
   COMPONENT server)
 
 # Install upgrade scripts to /usr/share/oceanbase/upgrade
@@ -117,62 +116,52 @@ install(FILES
   tools/upgrade/upgrade_post.py
   tools/upgrade/upgrade_checker.py
   tools/upgrade/upgrade_health_checker.py
-  DESTINATION usr/share/seekdb/upgrade
+  DESTINATION usr/share/oceanbase/upgrade
   COMPONENT server)
 
 # Install ocp configuration to /usr/share/oceanbase/software_package
 install(DIRECTORY
-  DESTINATION usr/share/seekdb/software_package
+  DESTINATION usr/share/oceanbase/software_package
   COMPONENT server)
 
-# ## oceanbase-sql-parser
-# if (OB_BUILD_LIBOB_SQL_PROXY_PARSER)
+## oceanbase-sql-parser
+if (OB_BUILD_LIBOB_SQL_PROXY_PARSER)
 
-#   if (ENABLE_THIN_LTO)
-#     message(STATUS "add libob_sql_proxy_parser_static_to_elf")
-#     add_custom_command(
-#       OUTPUT libob_sql_proxy_parser_static_to_elf
-#       COMMAND ${CMAKE_SOURCE_DIR}/cmake/script/bitcode_to_elfobj --ld=${OB_LD_BIN} --input=${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a --output=${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a
-#       DEPENDS ob_sql_proxy_parser_static
-#       COMMAND_EXPAND_LISTS)
-#     list(APPEND BITCODE_TO_ELF_LIST libob_sql_proxy_parser_static_to_elf)
-#   endif()
+  if (ENABLE_THIN_LTO)
+    message(STATUS "add libob_sql_proxy_parser_static_to_elf")
+    add_custom_command(
+      OUTPUT libob_sql_proxy_parser_static_to_elf
+      COMMAND ${CMAKE_SOURCE_DIR}/cmake/script/bitcode_to_elfobj --ld=${OB_LD_BIN} --input=${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a --output=${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a
+      DEPENDS ob_sql_proxy_parser_static
+      COMMAND_EXPAND_LISTS)
+    list(APPEND BITCODE_TO_ELF_LIST libob_sql_proxy_parser_static_to_elf)
+  endif()
 
-#   install(PROGRAMS
-#     ${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a
-#     DESTINATION usr/lib64
-#     COMPONENT sql-parser
-#     )
-# endif()
+  install(PROGRAMS
+    ${CMAKE_BINARY_DIR}/src/sql/parser/libob_sql_proxy_parser_static.a
+    DESTINATION usr/lib64
+    COMPONENT sql-parser
+    )
+endif()
 
-# install(FILES
-#   src/objit/include/objit/common/ob_item_type.h
-#   deps/oblib/src/common/sql_mode/ob_sql_mode.h
-#   src/sql/parser/ob_sql_parser.h
-#   src/sql/parser/parse_malloc.h
-#   src/sql/parser/parser_proxy_func.h
-#   src/sql/parser/parse_node.h
-#   DESTINATION usr/include
-#   COMPONENT sql-parser)
+install(FILES
+  src/objit/include/objit/common/ob_item_type.h
+  deps/oblib/src/common/sql_mode/ob_sql_mode.h
+  src/sql/parser/ob_sql_parser.h
+  src/sql/parser/parse_malloc.h
+  src/sql/parser/parser_proxy_func.h
+  src/sql/parser/parse_node.h
+  DESTINATION usr/include
+  COMPONENT sql-parser)
 
 if(OB_BUILD_OBADMIN)
-  if(NOT APPLE)
-    ## oceanbase-utils
-    list(APPEND CPACK_COMPONENTS_ALL utils)
-    install(PROGRAMS
-      ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
-      ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
-      ${DEVTOOLS_DIR}/bin/obstack
-      DESTINATION usr/bin
-      COMPONENT utils
-    )
-  else()
-    list(APPEND CPACK_COMPONENTS_ALL utils)
-    install(PROGRAMS
-      ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
-      ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
-      DESTINATION usr/bin
-      COMPONENT utils
-    )
-  endif()
+  ## oceanbase-utils
+  list(APPEND CPACK_COMPONENTS_ALL utils)
+  install(PROGRAMS
+    ${CMAKE_BINARY_DIR}/tools/ob_admin/ob_admin
+    ${CMAKE_BINARY_DIR}/tools/ob_error/src/ob_error
+    ${DEVTOOLS_DIR}/bin/obstack
+    DESTINATION usr/bin
+    COMPONENT utils
+  )
 endif()
