@@ -31,7 +31,6 @@ public:
   {
     SVR_IP  = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
-    ZONE,
     TENANT_ID,
     MERGE_TYPE,
     COMPACTION_SCN,

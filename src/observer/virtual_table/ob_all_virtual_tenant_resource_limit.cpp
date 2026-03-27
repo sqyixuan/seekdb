@@ -120,10 +120,6 @@ int ObResourceLimitTable::process_curr_tenant(ObNewRow *&row)
         case TENANT_ID:
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
-        case ZONE:
-          cur_row_.cells_[i].set_varchar(GCONF.zone);
-          cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
-          break;
         case RESOURCE_NAME: {
           cur_row_.cells_[i].set_varchar(get_logic_res_type_name(iter_.get_curr_type()));
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
