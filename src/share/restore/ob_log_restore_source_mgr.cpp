@@ -24,9 +24,9 @@ int ObLogRestoreSourceMgr::init(const uint64_t tenant_id, ObISQLClient *proxy)
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObLogRestoreSourceMgr already init", K(ret), K(is_inited_));
-  } else if (OB_UNLIKELY(! is_user_tenant(tenant_id)) || OB_ISNULL(proxy)) {
+  } else if (OB_UNLIKELY(OB_ISNULL(proxy))) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(tenant_id), K(proxy));
+    LOG_WARN("invalid argument", K(ret), K(proxy));
   } else if (OB_FAIL(table_operator_.init(tenant_id, proxy))) {
     LOG_WARN("table_operator_ init failed", K(ret), K(tenant_id), K(proxy));
   } else {
