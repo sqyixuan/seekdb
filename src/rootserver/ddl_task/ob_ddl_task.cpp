@@ -1637,7 +1637,7 @@ void ObDDLTask::calc_next_schedule_ts(const int ret_code, const int64_t total_ta
   int64_t ddl_rpc_timeout = ObDDLUtil::get_default_ddl_rpc_timeout();
   if (OB_TIMEOUT == ret_code) {
     const int64_t SEC = 1000000;
-    const int64_t max_delay = std::min(total_task_cnt * ddl_rpc_timeout * 10, static_cast<int64_t>(600 * 1000 * 1000)/*10 min*/);
+    const int64_t max_delay = std::min(total_task_cnt * ddl_rpc_timeout * 10, 600 * 1000 * 1000L/*10 min*/);
     delay_schedule_time_ = std::min(delay_schedule_time_ * 6/5 + SEC/10, max_delay);
     const int64_t max_dt = delay_schedule_time_;
     const int64_t min_dt = max_dt / 2;
@@ -3081,7 +3081,7 @@ int ObDDLTaskRecordOperator::update_parent_task_message(
         LOG_WARN("fail to update task message", K(ret), K(parent_task_id));
       }
     } else if (DDL_CREATE_VEC_SPIV_INDEX == task_record.ddl_type_) {
-      SMART_VAR(ObFtsIndexBuildTask, task) {
+      SMART_VAR(ObFtsIndexBuildTask, task) { 
         if (OB_FAIL(task.init(task_record))) {
           LOG_WARN("fail to init ObFtsIndexBuildTask", K(ret), K(task_record));
         } else if (UPDATE_CREATE_INDEX_ID == update_type) {
@@ -3101,7 +3101,7 @@ int ObDDLTaskRecordOperator::update_parent_task_message(
         } else if (UPDATE_DROP_INDEX_TASK_ID == update_type) {
           task.set_drop_index_task_id(target_task_id);
           task.set_drop_index_task_submitted(true);
-        }
+        } 
       }
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(task.update_task_message(proxy))) {
