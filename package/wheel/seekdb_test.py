@@ -1,5 +1,5 @@
 #-*- coding: utf-8 -*-
-import pylibseekdb as seekdb
+import seekdb
 
 seekdb.open()
 conn = seekdb.connect("test")

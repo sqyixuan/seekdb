@@ -24,26 +24,24 @@ def get_long_description():
     return "OceanBase SeekDB"
 
 def __library_name():
-    return "libseekdb_python"
-def __package_name():
-    return "pylibseekdb_runtime"
+    return "pyseekdb"
 
 def get_package_data():
     """Get package data files"""
     return {
-        __package_name(): [
+        "seekdb_lib": [
             f"{__library_name()}.so.0.gz"
             ]
     }
 
 class CustomBdistWheel(_bdist_wheel):
     """Custom bdist_wheel to specify non-pure Python wheel"""
-
+    
     def finalize_options(self):
         super().finalize_options()
         # Mark as not pure Python (contains compiled extensions)
         self.root_is_pure = False
-
+    
     def get_tag(self):
         # Get platform-specific tags
         return super().get_tag()
@@ -60,7 +58,7 @@ class CustomBdistWheel(_bdist_wheel):
 
 # Setup configuration
 setup(
-    name=__package_name(),
+    name="seekdb-lib",
     version=get_version(),
     description="OceanBase SeekDB",
     long_description=get_long_description(),
@@ -69,15 +67,15 @@ setup(
     author_email="open_oceanbase@oceanbase.com",
     maintainer="OceanBase",
     maintainer_email="open_oceanbase@oceanbase.com",
-    url="https://github.com/oceanbase/seekdb",
+    url="https://github.com/oceanbase/oceanbase-seekdb",
     project_urls={
-        "Homepage": "https://github.com/oceanbase/seekdb",
-        "Repository": "https://github.com/oceanbase/seekdb",
-        "Documentation": "https://github.com/oceanbase/seekdb",
-        "Bug Tracker": "https://github.com/oceanbase/seekdb/issues",
+        "Homepage": "https://github.com/oceanbase/oceanbase-seekdb",
+        "Repository": "https://github.com/oceanbase/oceanbase-seekdb",
+        "Documentation": "https://github.com/oceanbase/oceanbase-seekdb",
+        "Bug Tracker": "https://github.com/oceanbase/oceanbase-seekdb/issues",
     },
-    packages=[__package_name()],
-    package_dir={__package_name(): "."},
+    packages=["seekdb_lib"],
+    package_dir={"seekdb_lib": "."},
     package_data=get_package_data(),
     include_package_data=True,
     ext_modules = [ Extension('seekdb_lib.dummy', ['dummy.c']) ],

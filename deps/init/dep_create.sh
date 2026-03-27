@@ -8,32 +8,15 @@ PWD="$(cd $(dirname $0); pwd)"
 OS_ARCH="$(uname -m)" || exit 1
 OS_RELEASE="0"
 AL3_RELEASE="0"
-OS_TYPE="$(uname -s)" || exit 1
 
-# Use a more reliable method to detect architecture on macOS
-# because uname -m incorrectly returns x86_64 when running under Rosetta 2
-if [[ "${OS_TYPE}" == "Darwin" ]]; then
-  # Use sysctl to detect actual hardware architecture, unaffected by Rosetta
-  if sysctl -n hw.optional.arm64 2>/dev/null | grep -q '1'; then
-    OS_ARCH="arm64"
-  else
-    OS_ARCH="x86_64"
-  fi
+if [[ ! -f /etc/os-release ]]; then
+  echo "[ERROR] os release info not found" 1>&2 && exit 1
 fi
 
-# macOS detection
-if [[ "${OS_TYPE}" == "Darwin" ]]; then
-  # macOS does not need /etc/os-release
-  OS_RELEASE="macos"
-  PNAME="macOS $(sw_vers -productVersion) (${OS_ARCH})"
-else
-  if [[ ! -f /etc/os-release ]]; then
-    echo "[ERROR] os release info not found" 1>&2 && exit 1
-  fi
-  source /etc/os-release || exit 1
-  PNAME=${PRETTY_NAME:-"${NAME} ${VERSION}"}
-  PNAME="${PNAME} (${OS_ARCH})"
-fi
+source /etc/os-release || exit 1
+
+PNAME=${PRETTY_NAME:-"${NAME} ${VERSION}"}
+PNAME="${PNAME} (${OS_ARCH})"
 
 function compat_centos9() {
   echo_log "[NOTICE] '$PNAME' is compatible with CentOS 9, use el9 dependencies list"
@@ -73,14 +56,6 @@ function echo_err() {
 }
 
 function get_os_release() {
-  if [[ "${OS_TYPE}" == "Darwin" ]]; then
-    if [[ "${OS_ARCH}x" == "x86_64x" || "${OS_ARCH}x" == "arm64x" ]]; then
-      OS_RELEASE="macos"
-      echo_log "[NOTICE] 'macOS (${OS_ARCH})' detected, use macos dependencies list"
-      return 0
-    fi
-  fi
-
   if [[ "${OS_ARCH}x" == "x86_64x" ]]; then
     case "$ID" in
       rhel)
@@ -106,7 +81,6 @@ function get_os_release() {
         version_ge "16.04" && compat_centos7 && return
         ;;
       centos)
-        version_ge "9.0" && OS_RELEASE=9 && return
         version_ge "8.0" && OS_RELEASE=8 && return
         version_ge "7.0" && OS_RELEASE=7 && return
         ;;
@@ -141,7 +115,6 @@ function get_os_release() {
         compat_centos8 && return
         ;;
       rocky)
-        version_ge "9.0" && compat_centos9 && return
         version_ge "8.0" && compat_centos8 && return
         ;;
       tencentos)
@@ -165,7 +138,6 @@ function get_os_release() {
         version_ge "7.0" && compat_centos7 && return
         ;;
       centos)
-        version_ge "9.0" && OS_RELEASE=9 && return
         version_ge "8.0" && OS_RELEASE=8 && return
         version_ge "7.0" && OS_RELEASE=7 && return
         ;;
@@ -190,10 +162,6 @@ function get_os_release() {
       alinux)
         version_ge "3.0" && compat_alinux3 && return
         ;;
-      rocky)
-        version_ge "9.0" && compat_centos9 && return
-        version_ge "8.0" && compat_centos8 && return
-        ;;
     esac
   elif [[ "${OS_ARCH}x" == "sw_64x" ]]; then
     case "$ID" in
@@ -207,30 +175,16 @@ function get_os_release() {
 
 get_os_release || exit 1
 
-if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-    MACOS_VERSION=$(sw_vers -productVersion | awk -F. '{print $1}')
-    if [ $MACOS_VERSION -lt 13 ]; then
-      not_supported && exit 1
-    elif [ $MACOS_VERSION -lt 15 ]; then
-      OS_TAG="macos13.$OS_ARCH"
-    else
-      OS_TAG="macos15.$OS_ARCH"
-    fi
-elif [[ "${AL3_RELEASE}x" == "1x" ]]; then
+if [[ "${AL3_RELEASE}x" == "1x" ]]; then
     OS_TAG="al$OS_RELEASE.$OS_ARCH"
 else
     OS_TAG="el$OS_RELEASE.$OS_ARCH"
 fi
 
 DEP_FILE="oceanbase.${OS_TAG}.deps"
-# Compatible with MD5 checksum for macOS and Linux
-if command -v md5sum >/dev/null 2>&1; then
-    MD5=`md5sum ${DEP_FILE} | cut -d" " -f1`
-else
-    MD5=`md5 -r ${DEP_FILE} | cut -d" " -f1`
-fi
+MD5=`md5sum ${DEP_FILE} | cut -d" " -f1`
 
-# Whether to use shared dependency cache, default is ON, will be OFF under certain conditions
+# 是否需要共享依赖缓存，默认为ON，在特定条件将OFF
 NEED_SHARE_CACHE=ON
 
 WORKSACPE_DEPS_DIR="$(cd $(dirname $0); cd ..; pwd)"
@@ -238,7 +192,7 @@ WORKSPACE_DEPS_3RD=${WORKSACPE_DEPS_DIR}/3rd
 WORKSAPCE_DEPS_3RD_DONE=${WORKSPACE_DEPS_3RD}/DONE
 WORKSAPCE_DEPS_3RD_MD5=${WORKSPACE_DEPS_3RD}/${MD5}
 
-# Check if local dependency directory exists
+# 开始判断本地目录依赖目录是否存在
 if [ -f ${WORKSAPCE_DEPS_3RD_MD5} ]; then
     if [ -f "${WORKSAPCE_DEPS_3RD_DONE}" ]; then
         echo_log "${DEP_FILE} has been initialized due to ${WORKSAPCE_DEPS_3RD_MD5}, ${WORKSAPCE_DEPS_3RD_DONE} exists"
@@ -250,7 +204,7 @@ else
     echo_log "${DEP_FILE} has been not initialized, due to ${WORKSAPCE_DEPS_3RD_MD5} not exists"
 fi
 
-# Dependency directory does not exist, disable cache
+# 依赖目录不存在，停止缓存
 if [ "x${DEP_CACHE_DIR}" == "x" ]; then
     NEED_SHARE_CACHE=OFF
     echo_log "disable share dep cache due to env DEP_CACHE_DIR not set"
@@ -263,38 +217,33 @@ else
   fi
 fi
 
-# Determine shared dependency cache directory
+# 确定共享依赖缓存目录
 CACHE_DEPS_DIR=${DEP_CACHE_DIR}/${MD5}
 CACHE_DEPS_DIR_3RD=${DEP_CACHE_DIR}/${MD5}/3rd
 CACHE_DEPS_DIR_3RD_DONE=${DEP_CACHE_DIR}/${MD5}/3rd/DONE
 CACHE_DEPS_LOCKFILE=${DEP_CACHE_DIR}/${MD5}.lockfile
 
-# Determine temporary directory path; if cache is disabled, this will also be the actual directory path
-# UUID generation compatible with both macOS and Linux
-if [[ "${OS_TYPE}" == "Darwin" ]]; then
-  UUID=`uuidgen`
-else
-  UUID=`cat /proc/sys/kernel/random/uuid`
-fi
+# 确定临时目录地址，如果关闭缓存，该目录也是实际目录的地址
+UUID=`cat /proc/sys/kernel/random/uuid`
 TARGET_DIR=${DEP_CACHE_DIR}/${MD5}.${UUID}
 TARGET_DIR_3RD=${DEP_CACHE_DIR}/${MD5}.${UUID}/3rd
 
-# Environment variable to disable shared dependency cache
+# 保留环境变量入口，停止共享依赖缓存
 if [ "x${DISABLE_SHARE_DEP_CACHE}" == "x1" ]; then
     NEED_SHARE_CACHE=OFF
     echo_log "disable share deps cache due to env DISABLE_SHARE_DEP_CACHE=1"
 fi
 
 if [ $NEED_SHARE_CACHE == "OFF" ]; then
-    # Not sharing cache, download directly to current workspace directory
+    # 不共享缓存，二则是相等的，直接下到当前的工作目录
     TARGET_DIR_3RD=${WORKSPACE_DEPS_3RD}
 fi
 
-# Remove local dependency files
+# 删除本地依赖文件
 rm -rf ${WORKSPACE_DEPS_3RD}
 
 if [ ${NEED_SHARE_CACHE} == "ON" ]; then
-    # Check if shared directory exists
+    # 判断共享目录是否存在
     if [ -f ${CACHE_DEPS_DIR_3RD_DONE} ]; then
         echo_log "use cache deps ${WORKSPACE_DEPS_3RD} -> ${CACHE_DEPS_DIR_3RD}"
         ln -sf ${CACHE_DEPS_DIR_3RD} ${WORKSPACE_DEPS_3RD}
@@ -311,15 +260,8 @@ else
     echo_log "check dependencies profile for ${DEP_FILE}... FOUND"
 fi
 
-# Use regular arrays for compatibility with bash 3.x (macOS default version)
-# targets use two regular arrays: target name and repo URL
-targets_sections=()
-targets_repos=()
-
-# packages use two regular arrays: section name and content
-package_sections=()
-package_contents=()
-
+declare -A targets
+declare -A packages
 section="default"
 content=""
 
@@ -329,13 +271,10 @@ function save_content {
         if [[ $(echo "$section" | grep -E "^target\-") != "" ]]
         then
             target_name=$(echo $section | sed 's|^target\-\(.*\)$|\1|g')
-            repo=$(echo "${content}" | grep -Eo "repo=.*" | awk -F '=' '{ print $2 }')
-            targets_sections+=("$target_name")
-            targets_repos+=("$repo")
-            echo_log "target: $target_name, repo: $repo"
+            targets["$target_name"]="$(echo "${content}" | grep -Eo "repo=.*" | awk -F '=' '{ print $2 }')"
+            echo_log "target: $target_name, repo: ${targets["$target_name"]}"
         else
-            package_sections+=("$section")
-            package_contents+=("$content")
+            packages["$section"]=$content
         fi
     fi
 }
@@ -355,48 +294,22 @@ do
 done < $DEP_FILE
 save_content
 
-# Start downloading dependencies
+# 真正开始下载
 echo_log "start to download dependencies..."
-if [[ ${#package_sections[@]} -eq 0 ]]; then
-    echo_err "ERROR: packages array is empty! Cannot proceed."
-    exit 1
-fi
 mkdir -p "${TARGET_DIR_3RD}/pkg"
-
-# Iterate through all sections
-for i in $(seq 0 $((${#package_sections[@]} - 1)))
+for sect in "${!packages[@]}"
 do
-    sect="${package_sections[$i]}"
-    sect_content="${package_contents[$i]}"
     while read -r line
     do
         [[ "$line" == "" ]] && continue
         pkg=${line%%\ *}
         target_name="default"
         temp=$(echo "$line" | grep -Eo "target=(\S*)")
-
         [[ "$temp" != "" ]] && target_name=${temp#*=}
        
-	# Adapt to OB artifact repository download URL
+       	# 适配 ob 制品源下载地址
         pkg_path=${pkg}
-        # 在 targets_sections 中查找对应的 repo
-        repo=""
-        for j in $(seq 0 $((${#targets_sections[@]} - 1))); do
-            if [[ "${targets_sections[$j]}" == "$target_name" ]]; then
-                repo="${targets_repos[$j]}"
-                break
-            fi
-        done
-        # If not found, use default value
-        if [[ -z "$repo" ]]; then
-            # Try to get from target-default
-            for j in $(seq 0 $((${#targets_sections[@]} - 1))); do
-                if [[ "${targets_sections[$j]}" == "default" ]]; then
-                    repo="${targets_repos[$j]}"
-                    break
-                fi
-            done
-        fi
+        repo=${targets["$target_name"]}
         if [[ "${AL3_RELEASE}" == "1" && ("${target_name}" == "default" || "${target_name}" == "test") && "$repo" != *"mirror"* ]]; then
             pkg_version=${pkg%.al8.${OS_ARCH}.rpm}
             pkg_name=$(echo "$pkg_version" | sed 's/\(.*\)-.*-.*/\1/')
@@ -407,45 +320,21 @@ do
             echo_log "find package <${pkg}> in cache"
         else
             echo_log "downloading package <${pkg}>"
-            # macOS uses different temp file creation method and download command
-            if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-              TEMP=$(mktemp "${TARGET_DIR_3RD}/pkg/.${pkg}.XXXX")
-              if command -v curl >/dev/null 2>&1; then
-                curl -L -f -s "$repo/${pkg_path}" -o "${TEMP}" > ${TARGET_DIR_3RD}/pkg/error.log 2>&1
-              else
-                echo_err "curl command not found, please install curl"
-                exit 4
-              fi
-            else
-              TEMP=$(mktemp -p "/" -u ".${pkg}.XXXX")
-              wget "$repo/${pkg_path}" -O "${TARGET_DIR_3RD}/pkg/${TEMP}" &> ${TARGET_DIR_3RD}/pkg/error.log
-            fi
+            TEMP=$(mktemp -p "/" -u ".${pkg}.XXXX")
+            wget "$repo/${pkg_path}" -O "${TARGET_DIR_3RD}/pkg/${TEMP}" &> ${TARGET_DIR_3RD}/pkg/error.log
             if (( $? == 0 )); then
-                if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-                  mv -f "${TEMP}" "${TARGET_DIR_3RD}/pkg/${pkg}"
-                else
-                  mv -f "${TARGET_DIR_3RD}/pkg/$TEMP" "${TARGET_DIR_3RD}/pkg/${pkg}"
-                fi
+                mv -f "${TARGET_DIR_3RD}/pkg/$TEMP" "${TARGET_DIR_3RD}/pkg/${pkg}"
                 rm -rf ${TARGET_DIR_3RD}/pkg/error.log
             else
                 cat ${TARGET_DIR_3RD}/pkg/error.log
-                if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-                  rm -rf "${TEMP}"
-                  echo_err "curl $repo/${pkg_path}"
-                  echo_err "Failed to init macos deps"
-                else
-                  rm -rf "${TARGET_DIR_3RD}/pkg/$TEMP"
-                  echo_err "wget $repo/${pkg_path}"
-                  echo_err "Failed to init rpm deps"
-                fi
+                rm -rf "${TARGET_DIR_3RD}/pkg/$TEMP"
+                echo_err "wget $repo/${pkg_path}"
+                echo_err "Failed to init rpm deps"
                 exit 4
             fi
         fi
         echo_log "unpack package <${pkg}>... \c"
-        # macOS uses tar.gz extraction
-        if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-          (cd ${TARGET_DIR_3RD} && tar -xzf "${TARGET_DIR_3RD}/pkg/${pkg}" --strip-components=1)
-        elif [[ "$ID" = "arch" || "$ID" = "garuda" ]]; then
+        if [[ "$ID" = "arch" || "$ID" = "garuda" ]]; then
           (cd ${TARGET_DIR_3RD} && rpmextract.sh "${TARGET_DIR_3RD}/pkg/${pkg}")
         else
           (cd ${TARGET_DIR_3RD} && rpm2cpio "${TARGET_DIR_3RD}/pkg/${pkg}" | cpio -di -u --quiet)
@@ -454,29 +343,25 @@ do
           echo "SUCCESS"
         else
           echo "FAILED" 1>&2
-          if [[ "${OS_RELEASE}x" == "macosx" ]]; then
-            echo_log "[ERROR] Failed to init macos deps"
-          else
-            echo_log "[ERROR] Failed to init rpm deps"
-          fi
+          echo_log "[ERROR] Failed to init rpm deps"
           exit 5
         fi
-    done <<< "$sect_content"
+    done <<< "${packages["$sect"]}"
 done
 
-# Skip caching and exit directly
+# 不进行缓存工作，直接结束
 if [ ${NEED_SHARE_CACHE} == "OFF" ]; then
     touch ${WORKSAPCE_DEPS_3RD_MD5}
     touch ${WORKSAPCE_DEPS_3RD_DONE}
     exit $?
 fi
 
-# Link to cache directory
+# 链接缓存目录
 LINK_CHACE_DIRECT=OFF
-# Link to current target directory
+# 链接当前目标目录
 LINK_TARGET_DIRECT=OFF
 
-# After download, if target already exists, create symlink directly
+# 下载完成之后，发现目标已经存在，直接进行软链接
 if [ -d ${CACHE_DEPS_DIR} ]; then
     echo_log "found ${CACHE_DEPS_DIR} exists"
     if [ -f ${CACHE_DEPS_DIR_3RD_DONE} ]; then
@@ -489,7 +374,7 @@ if [ -d ${CACHE_DEPS_DIR} ]; then
 fi
 
 if [ -f ${CACHE_DEPS_LOCKFILE} ];then
-    # Lock files older than one minute are considered stale, cache will be reinitialized
+    # 超过一分钟的锁文件将失效，也将重新初始化缓存
     echo_log "found lock file ${CACHE_DEPS_LOCKFILE}"
     LINK_TARGET_DIRECT=ON
     if test `find "${CACHE_DEPS_LOCKFILE}" -mmin +1`; then
@@ -515,7 +400,7 @@ if [ ${LINK_CHACE_DIRECT}  == "ON" ]; then
 fi
 
 if [ ${LINK_TARGET_DIRECT} == "ON" ]; then
-    # Skip caching, create symlink directly to this directory
+    # 放弃缓存，直接软链接该目录
     echo_log "give up mv and link dirct, ${WORKSPACE_DEPS_3RD} -> ${TARGET_DIR_3RD}"
     ln -sf ${TARGET_DIR_3RD} ${WORKSPACE_DEPS_3RD}
     if [ $? -ne 0 ]; then
@@ -548,6 +433,6 @@ echo_log "unlock lock file ${CACHE_DEPS_LOCKFILE}"
 
 echo_log "link deps ${WORKSPACE_DEPS_3RD} -> ${CACHE_DEPS_DIR_3RD}"
 
-# Mark md5 and done files
+# 标记md5和done文件
 touch ${WORKSAPCE_DEPS_3RD_MD5}
 touch ${WORKSAPCE_DEPS_3RD_DONE}
