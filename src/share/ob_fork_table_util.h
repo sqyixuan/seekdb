@@ -22,9 +22,6 @@
 #include "lib/container/ob_iarray.h"
 #include "lib/utility/ob_print_utils.h"
 #include "lib/utility/ob_unify_serialize.h"
-#include "lib/hash/ob_hashmap.h"
-#include "share/schema/ob_table_schema.h"
-
 
 namespace oceanbase
 {
@@ -129,28 +126,16 @@ public:
       const common::ObIArray<share::schema::ObTableSchema> &table_schemas,
       common::ObIArray<common::ObTabletID> &tablet_ids);
 
-  static int collect_complete_domain_index_schemas(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const uint64_t tenant_id,
-      const share::schema::ObTableSchema &table_schema,
-      common::hash::ObHashMap<uint64_t, share::schema::ObTableSchema> &complete_index_schema_map);
-
-  static bool is_domain_or_aux_index(const share::schema::ObTableSchema &index_schema);
-
-  // Obtain snapshot for multiple tables at once to ensure consistency
   static int obtain_snapshot(
       common::ObMySQLTransaction &trans,
       schema::ObSchemaGetterGuard &schema_guard,
-      const uint64_t tenant_id,
-      const common::ObIArray<const share::schema::ObTableSchema*> &data_table_schemas,
+      const share::schema::ObTableSchema &data_table_schema,
       int64_t &new_fetched_snapshot);
 
-  // Release snapshot for multiple tables at once
   static int release_snapshot(
       rootserver::ObDDLTask* task,
       schema::ObSchemaGetterGuard &schema_guard,
-      const uint64_t tenant_id,
-      const common::ObIArray<uint64_t> &table_ids,
+      const uint64_t table_id,
       const int64_t snapshot_version);
 };
 
