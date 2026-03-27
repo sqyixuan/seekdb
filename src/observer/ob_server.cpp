@@ -188,6 +188,7 @@ ObServer::ObServer()
     sql_mem_task_(),
     ctas_clean_up_task_(),
     refresh_active_time_task_(),
+    refresh_network_speed_task_(),
     refresh_cpu_frequency_task_(),
     refresh_io_calibration_task_(),
     schema_status_proxy_(sql_proxy_),
@@ -353,6 +354,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init network failed", KR(ret));
     } else if (OB_FAIL(init_interrupt())) {
       LOG_ERROR("init interrupt failed", KR(ret));
+    } else if (OB_FAIL(init_zlib_lite_compressor())) {
+      LOG_ERROR("init zlib lite compressor failed", KR(ret));
     } else if (OB_FAIL(init_plugin())) {
       LOG_ERROR("init plugin failed", KR(ret));
     } else if (OB_FAIL(rs_mgr_.init(&srv_rpc_proxy_, &config_, &sql_proxy_))) {
@@ -441,6 +444,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init redef heart beat task failed", KR(ret));
     } else if (OB_FAIL(init_refresh_active_time_task())) {
       LOG_ERROR("init refresh active time task failed", KR(ret));
+    } else if (OB_FAIL(init_refresh_network_speed_task())) {
+      LOG_ERROR("init refresh network speed task failed", KR(ret));
     } else if (OB_FAIL(init_refresh_cpu_frequency())) {
       LOG_ERROR("init refresh cpu frequency failed", KR(ret));
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -733,6 +738,10 @@ void ObServer::destroy()
     net_frame_.destroy();
     FLOG_INFO("net frame destroyed");
 
+    FLOG_INFO("begin to destroy oss storage");
+    fin_oss_env();
+    FLOG_INFO("oss storage destroyed");
+
     FLOG_INFO("begin to destroy io manager");
     ObIOManager::get_instance().destroy();
     FLOG_INFO("io manager destroyed");
@@ -740,10 +749,6 @@ void ObServer::destroy()
     FLOG_INFO("begin to destroy server storage meta service");
     SERVER_STORAGE_META_SERVICE.destroy();
     FLOG_INFO("server storage meta service destroyed");
-
-    FLOG_INFO("begin to destroy io device");
-    ObIODeviceWrapper::get_instance().destroy();
-    FLOG_INFO("io device destroyed");
 
     FLOG_INFO("begin to destroy memory dump");
     ObMemoryDump::get_instance().destroy();
@@ -855,9 +860,11 @@ void ObServer::destroy()
 
     deinit_plugin();
 
-    FLOG_INFO("begin to destroy log io device wrapper");
-    LOG_IO_DEVICE_WRAPPER.destroy();
-    FLOG_INFO("log io device wrapper destroyed");
+    deinit_zlib_lite_compressor();
+
+    FLOG_INFO("begin to destroy io device");
+    ObIODeviceWrapper::get_instance().destroy();
+    FLOG_INFO("io device destroyed");
 
     has_destroy_ = true;
     FLOG_INFO("[OBSERVER_NOTICE] destroy observer end");
@@ -1269,7 +1276,7 @@ int ObServer::check_if_schema_ready()
   while (OB_SUCC(ret) && !stop_ && !schema_ready) {
     schema_ready = schema_service_.is_sys_full_schema();
     if (!schema_ready) {
-      ob_usleep(10 * 1000);
+      SLEEP(1);
     }
   }
   FLOG_INFO("check if schema ready", KR(ret), K(stop_), K(schema_ready));
@@ -1290,17 +1297,16 @@ int ObServer::check_if_timezone_usable()
 {
   int ret = OB_SUCCESS;
   bool timezone_usable = false;
-  while (OB_SUCC(ret) && !stop_ && !timezone_usable) {
-    timezone_usable = tenant_timezone_mgr_.is_usable();
-    if (!timezone_usable) {
-      (void) (tenant_timezone_mgr_.refresh_timezone_info());
-      ob_usleep(10 * 1000);
-    }
-  }
   if (FAILEDx(tenant_timezone_mgr_.start())) {
     LOG_ERROR("fail to start tenant timezone mgr", KR(ret));
   } else {
     FLOG_INFO("success to start tenant timezone mgr");
+  }
+  while (OB_SUCC(ret) && !stop_ && !timezone_usable) {
+    timezone_usable = tenant_timezone_mgr_.is_usable();
+    if (!timezone_usable) {
+      ob_usleep(10 * 1000);
+    }
   }
   FLOG_INFO("check if timezone usable", KR(ret), K(stop_), K(timezone_usable));
   return ret;
@@ -1898,7 +1904,7 @@ int ObServer::init_config(const ObServerOptions &opts)
     LOG_ERROR("failed to load data_version_mgr file", KR(ret));
   } else {
     // set dump path
-    const char *dump_path = "etc/seekdb.config.bin";
+    const char *dump_path = "etc/observer.config.bin";
     char buffer[PATH_MAX];
     ObSqlString abs_dump_path;
     if (getcwd(buffer, sizeof(buffer)) == nullptr) {
@@ -2062,7 +2068,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
   } else if (nullptr == config_.redo_dir.get_value() || 0 == strlen(config_.redo_dir.get_value())) {
     ObString tmp_data_dir(data_dir.length(), data_dir.ptr());
     if (tmp_data_dir.empty()) {
-      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), static_cast<ObString::obstr_size_t>(strlen(config_.data_dir.get_value())));
+      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), strlen(config_.data_dir.get_value()));
     }
     if (OB_FAIL(redo_dir.assign_fmt("%.*s/redo", tmp_data_dir.length(), tmp_data_dir.ptr()))) {
       LOG_ERROR("failed to append redo dir", K(ret));
@@ -2077,7 +2083,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
     } else {
       ObString tmp_redo_dir(redo_dir.length(), redo_dir.ptr());
       if (tmp_redo_dir.prefix_match(current_dir)) {
-        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), static_cast<ObString::obstr_size_t>(tmp_redo_dir.length() - strlen(current_dir)));
+        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), tmp_redo_dir.length() - strlen(current_dir));
         while (tmp_redo_dir.prefix_match("/")) {
           tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + 1, tmp_redo_dir.length() - 1);
         }
@@ -2227,14 +2233,9 @@ int ObServer::init_pre_setting()
     ob_set_reserved_memory(reserved_memory);
   }
   if (OB_SUCC(ret)) {
-    const int64_t default_stack_size = 1L << 19; // 512KB
-    const int64_t stack_size = std::max(static_cast<int64_t>(default_stack_size), static_cast<int64_t>(GCONF.stack_size));
+    const int64_t stack_size = std::max(1L << 19, static_cast<int64_t>(GCONF.stack_size));
     LOG_INFO("set stack_size", K(stack_size));
     global_thread_stack_size = stack_size - SIG_STACK_SIZE - ACHUNK_PRESERVE_SIZE;
-#ifdef __APPLE__
-    const int ps = getpagesize();
-    global_thread_stack_size = (global_thread_stack_size + ps - 1) & ~(ps - 1);
-#endif
   }
   if (OB_SUCC(ret) && GCONF.use_ipv6) {
     enable_use_ipv6();
@@ -2338,12 +2339,16 @@ int ObServer::init_io()
                                                   data_disk_percentage,
                                                   log_disk_percentage))) {
           LOG_ERROR("cal_all_part_disk_size failed", KR(ret));
-        } else if (OB_FAIL(LOG_IO_DEVICE_WRAPPER.init(storage_env_.clog_dir_,
-                                                      io_config.disk_io_thread_count_,
-                                                      max_io_depth,
-                                                      &OB_IO_MANAGER,
-                                                      &ObDeviceManager::get_instance()))) {
-          LOG_ERROR("log_io_device_wrapper init failed", KR(ret));
+        } else {
+          if (log_block_mgr_.is_reserved()) {
+            int64_t clog_pool_in_use = 0;
+            int64_t clog_pool_total_size = 0;
+            if (OB_FAIL(log_block_mgr_.get_disk_usage(clog_pool_in_use, clog_pool_total_size))) {
+               LOG_ERROR("get clog disk size failed", KR(ret));
+            } else {
+              log_disk_size = clog_pool_total_size;
+            }
+          }
         }
         if (OB_SUCC(ret)) {
           storage_env_.data_disk_size_ = data_disk_size;
@@ -2441,6 +2446,39 @@ void ObServer::deinit_plugin()
     GCTX.plugin_mgr_ = nullptr;
   }
   LOG_INFO("plugin deinit done");
+}
+
+int ObServer::init_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else if (OB_FAIL(zlib_lite_compressor->init(0))) { // 0 means preserve 0 qpl job
+    LOG_ERROR("failed to init zlib lite compressor", K(ret));
+  } else {
+    const char *zlib_lite_compress_method = zlib_lite_compressor->compression_method();
+    LOG_INFO("zlib lite compressor init success", KCSTRING(zlib_lite_compress_method));
+  }
+  return ret;
+}
+
+void ObServer::deinit_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else {
+    zlib_lite_compressor->deinit();
+  }
+  LOG_INFO("zlib lite compressor deinit done");
 }
 
 int ObServer::init_loaddata_global_stat()
@@ -2702,6 +2740,7 @@ int ObServer::init_sequence()
 int ObServer::init_pl()
 {
   int ret = OB_SUCCESS;
+
   LOG_INFO("init pl");
   if (OB_FAIL(pl_engine_.init(sql_proxy_))) {
     LOG_ERROR("init pl engine failed", KR(ret));
@@ -2822,9 +2861,11 @@ int ObServer::init_storage()
   bool clogdir_is_empty = false;
 
   if (OB_SUCC(ret)) {
+    int64_t total_log_disk_size = 0;
     int64_t log_disk_in_use = 0;
     // Check if the clog directory is empty
-    if (OB_FAIL(log_block_mgr_.get_disk_usage(log_disk_in_use))) {
+    if (OB_FAIL(log_block_mgr_.get_disk_usage(
+            log_disk_in_use, total_log_disk_size))) {
       LOG_ERROR("ObServerLogBlockMgr get_disk_usage failed", K(ret));
     } else if (0 == log_disk_in_use
         && OB_FAIL(logservice::ObServerLogBlockMgr::check_clog_directory_is_empty(
@@ -2900,6 +2941,22 @@ int ObServer::init_log_kv_cache()
   if (OB_FAIL(OB_LOG_KV_CACHE.init(palf::OB_LOG_KV_CACHE_NAME, 1, palf::LOG_CACHE_MEMORY_LIMIT))) {
     LOG_WARN("init OB_LOG_KV_CACHE failed", KR(ret));
   }
+  return ret;
+}
+
+int ObServer::get_network_speed_from_sysfs(int64_t &network_speed)
+{
+  int ret = OB_SUCCESS;
+  // sys_bkgd_net_percentage_ = config_.sys_bkgd_net_percentage;
+
+  int tmp_ret = OB_SUCCESS;
+  if (OB_FAIL(get_ethernet_speed(config_.devname.str(), network_speed))) {
+    LOG_WARN("cannot get Ethernet speed, use default", K(tmp_ret), "devname", config_.devname.str());
+  } else if (network_speed <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid Ethernet speed, use default", "devname", config_.devname.str());
+  }
+
   return ret;
 }
 
@@ -3041,7 +3098,16 @@ int ObServer::get_network_speed_from_config_file(int64_t &network_speed)
 int ObServer::init_bandwidth_throttle()
 {
   int ret = OB_SUCCESS;
-  int64_t network_speed = DEFAULT_ETHERNET_SPEED;
+  int64_t network_speed = 0;
+
+  if (OB_SUCC(get_network_speed_from_config_file(network_speed))) {
+    LOG_DEBUG("got network speed from config file", K(network_speed));
+  } else if (OB_SUCC(get_network_speed_from_sysfs(network_speed))) {
+    LOG_DEBUG("got network speed from sysfs", K(network_speed));
+  } else {
+    network_speed = DEFAULT_ETHERNET_SPEED;
+    LOG_DEBUG("using default network speed", K(network_speed));
+  }
 
   sys_bkgd_net_percentage_ = config_.sys_bkgd_net_percentage;
   if (network_speed > 0) {
@@ -3073,8 +3139,37 @@ int ObServer::reload_config()
                                                    GCONF.bf_cache_priority,
                                                    GCONF.storage_meta_cache_priority))) {
     LOG_WARN("set cache priority fail, ", KR(ret));
+  } else if (OB_FAIL(reload_bandwidth_throttle_limit(ethernet_speed_))) {
+    LOG_WARN("failed to reload_bandwidth_throttle_limit", KR(ret));
   }
 
+  return ret;
+}
+
+int ObServer::reload_bandwidth_throttle_limit(int64_t network_speed)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sys_bkgd_net_percentage = config_.sys_bkgd_net_percentage;
+
+  if ((sys_bkgd_net_percentage_ != sys_bkgd_net_percentage) || (ethernet_speed_ != network_speed)) {
+    if (network_speed <= 0) {
+      LOG_WARN("wrong network speed.", K(ethernet_speed_));
+      network_speed = DEFAULT_ETHERNET_SPEED;
+    }
+
+    int64_t rate = network_speed * sys_bkgd_net_percentage / 100;
+    if (OB_FAIL(bandwidth_throttle_.set_rate(rate))) {
+      LOG_WARN("failed to reset bandwidth throttle", KR(ret), K(rate), K(ethernet_speed_));
+    } else {
+      LOG_INFO("succeed to reload_bandwidth_throttle_limit",
+          "old_percentage", sys_bkgd_net_percentage_,
+          "new_percentage", sys_bkgd_net_percentage,
+          K(network_speed),
+          K(rate));
+      sys_bkgd_net_percentage_ = sys_bkgd_net_percentage;
+      ethernet_speed_ = network_speed;
+    }
+  }
   return ret;
 }
 
@@ -3343,6 +3438,44 @@ int ObServer::refresh_temp_table_sess_active_time()
   return ret;
 }
 
+ObServer::ObRefreshNetworkSpeedTask::ObRefreshNetworkSpeedTask()
+: obs_(nullptr), is_inited_(false)
+{}
+
+int ObServer::ObRefreshNetworkSpeedTask::init(ObServer *obs, int tg_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(is_inited_)) {
+    ret = OB_INIT_TWICE;
+    LOG_ERROR("ObRefreshNetworkSpeedTask has already been inited", KR(ret));
+  } else if (OB_ISNULL(obs)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("ObRefreshNetworkSpeedTask init with null ptr", KR(ret), K(obs));
+  } else {
+    obs_ = obs;
+    is_inited_ = true;
+    if (OB_FAIL(TG_SCHEDULE(tg_id, *this, REFRESH_INTERVAL, true /*schedule repeatly*/))) {
+      LOG_ERROR("fail to schedule task ObRefreshNetworkSpeedTask", KR(ret));
+    }
+  }
+  return ret;
+}
+
+
+void ObServer::ObRefreshNetworkSpeedTask::runTimerTask()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObRefreshNetworkSpeedTask has not been inited", KR(ret));
+  } else if (OB_ISNULL(obs_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("ObRefreshNetworkSpeedTask cleanup task got null ptr", KR(ret));
+  } else if (OB_FAIL(obs_->refresh_network_speed())) {
+    LOG_WARN("ObRefreshNetworkSpeedTask reload bandwidth throttle limit failed", KR(ret));
+  }
+}
+
 ObServer::ObRefreshCpuFreqTimeTask::ObRefreshCpuFreqTimeTask()
 : obs_(nullptr), is_inited_(false)
 {}
@@ -3393,6 +3526,31 @@ int ObServer::refresh_cpu_frequency()
   if (cpu_frequency != cpu_frequency_) {
     LOG_INFO("Cpu frequency changed", "from", cpu_frequency_, "to", cpu_frequency);
     cpu_frequency_ = cpu_frequency;
+  }
+
+  return ret;
+}
+
+int ObServer::refresh_network_speed()
+{
+  int ret = OB_SUCCESS;
+  int64_t network_speed = 0;
+
+  if (OB_SUCC(get_network_speed_from_config_file(network_speed))) {
+    LOG_DEBUG("got network speed from config file", K(network_speed));
+  } else if (OB_SUCC(get_network_speed_from_sysfs(network_speed))) {
+    LOG_DEBUG("got network speed from sysfs", K(network_speed));
+  } else {
+    network_speed = DEFAULT_ETHERNET_SPEED;
+    LOG_DEBUG("using default network speed", K(network_speed));
+  }
+
+  if ((network_speed > 0) && (network_speed != ethernet_speed_)) {
+    LOG_INFO("network speed changed", "from", ethernet_speed_, "to", network_speed);
+    OB_IO_MANAGER.get_tc().set_device_bandwidth(network_speed);
+    if (OB_FAIL(reload_bandwidth_throttle_limit(network_speed))) {
+      LOG_WARN("ObRefreshNetworkSpeedTask reload bandwidth throttle limit failed", KR(ret));
+    }
   }
 
   return ret;
@@ -3491,6 +3649,15 @@ int ObServer::init_ddl_heart_beat_task_container()
   int ret = OB_SUCCESS;
   if (OB_FAIL(OB_DDL_HEART_BEAT_TASK_CONTAINER.init())) {
     LOG_ERROR("fail to init ddl heart beat task container", K(ret));
+  }
+  return ret;
+}
+
+int ObServer::init_refresh_network_speed_task()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(refresh_network_speed_task_.init(this, lib::TGDefIDs::ServerGTimer))) {
+    LOG_ERROR("fail to init refresh network speed task", KR(ret));
   }
   return ret;
 }
@@ -3811,9 +3978,7 @@ int ObServer::init_server_in_arb_mode()
     LOG_ERROR("start ObIOManager failed", K(ret));
   } else if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
     LOG_ERROR("init device manager failed", K(ret));
-  } else if (OB_FAIL(LOG_IO_DEVICE_WRAPPER.init(GCONF.data_dir, io_config.disk_io_thread_count_, max_io_depth, &OB_IO_MANAGER, &ObDeviceManager::get_instance()))) {
-    LOG_ERROR("log_io_adapter init failed", K(ret));
-  } else if (OB_FAIL(palf_env_mgr.init(GCONF.data_dir, self_addr_, net_work_farme.get_req_transport(), LOG_IO_DEVICE_WRAPPER.get_local_device(), &G_RES_MGR, &OB_IO_MANAGER))) {
+  } else if (OB_FAIL(palf_env_mgr.init(GCONF.data_dir, self_addr_, net_work_farme.get_req_transport(), &LOCAL_DEVICE_INSTANCE, &G_RES_MGR, &OB_IO_MANAGER))) {
     LOG_ERROR("init PalfEnvLiteMgr failed", K(ret), K(arb_opts));
   } else if (OB_FAIL(arb_timer_.init(lib::TGDefIDs::ArbServerTimer, &palf_env_mgr))) {
     LOG_ERROR("init ArbServerTimer failed", K(ret));
@@ -3936,7 +4101,6 @@ int ObServer::destroy_server_in_arb_mode()
   ObMemoryDump::get_instance().destroy();
   ASCONF.destroy();
   palf::election::GLOBAL_REPORT_TIMER.destroy();
-  LOG_IO_DEVICE_WRAPPER.destroy();
   ObIOManager::get_instance().destroy();
   LOG_WARN("destroy_server_in_arb_mode success", K(ret));
   return ret;
