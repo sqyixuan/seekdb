@@ -160,8 +160,7 @@ TelemetryTask::TelemetryTask(bool embed_mode)
 
 void TelemetryTask::runTimerTask()
 {
-  const char *env_reporter = std::getenv("REPORTER");
-  const char *reporter = env_reporter ? env_reporter : (embed_mode_ ? "embed" : "server");
+  const char *reporter = embed_mode_ ? "embed" : "server";
   share::report_telemetry(reporter, "bootstraped");
 }
 
@@ -1802,9 +1801,8 @@ int ObService::get_server_resource_info(share::ObServerResourceInfo &resource_in
     LOG_WARN("log_block_mgr is null", KR(ret), K(GCTX.log_block_mgr_));
   } else if (OB_FAIL(omt::ObTenantNodeBalancer::get_instance().get_server_allocated_resource(svr_res_assigned))) {
     LOG_WARN("fail to get server allocated resource", KR(ret));
-  } else if (OB_FAIL(log_block_mgr->get_disk_usage(clog_in_use_size_byte))) {
+  } else if (OB_FAIL(log_block_mgr->get_disk_usage(clog_in_use_size_byte, clog_total_size_byte))) {
     LOG_WARN("Failed to get clog stat ", KR(ret));
-  } else if (FALSE_IT(clog_total_size_byte = log_block_mgr->get_log_disk_size())) {
   } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.get_reserved_size(reserved_size))) {
     LOG_WARN("Failed to get reserved size ", KR(ret), K(reserved_size));
 #ifdef OB_BUILD_SHARED_STORAGE

@@ -170,7 +170,6 @@ ob_set_subtarget(ob_share common
   ob_core_table_proxy.cpp
   ob_ddl_checksum.cpp
   ob_ddl_sim_point.cpp
-  ob_fork_table_util.cpp
   ob_ddl_common.cpp
   ob_ddl_error_message_table_operator.cpp
   ob_tablet_reorganize_history_table_operator.cpp
@@ -602,6 +601,8 @@ ob_set_subtarget(ob_share stat
 )
 
 ob_set_subtarget(ob_share external_table
+  external_table/ob_hdfs_storage_info.cpp
+  external_table/ob_hdfs_table_device.cpp
   external_table/ob_external_table_file_mgr.cpp
   external_table/ob_external_table_file_rpc_processor.cpp
   external_table/ob_external_table_file_task.cpp
@@ -616,6 +617,8 @@ ob_set_subtarget(ob_share catalog
   catalog/ob_catalog_meta_getter.cpp
   catalog/ob_cached_catalog_meta_getter.cpp
   catalog/ob_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog.cpp
 )
 
 
