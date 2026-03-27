@@ -316,7 +316,7 @@ int HnswIndexHandler::get_vid_bound(int64_t &min_vid, int64_t &max_vid)
 
 uint64_t HnswIndexHandler::estimate_memory(const uint64_t row_count, const bool is_build)
 {
-
+  
   uint64_t size = 0;
   if (IPIVF_TYPE == index_type_) {
     // TODO(ningxin.ning): use vsag EstimateMemory
@@ -342,16 +342,12 @@ uint64_t HnswIndexHandler::estimate_memory(const uint64_t row_count, const bool 
 int HnswIndexHandler::immutable_optimize()
 {
   int ret = OB_SUCCESS;
-  if (index_type_ == IPIVF_TYPE) {
-    // TODO(ningxin.ning): support SetImmutable for sparse vector index
+  tl::expected<void, Error> res = index_->SetImmutable();
+  if (res.has_value()) {
+    LOG_INFO("[OBVSAG] set immutable success", KPC(this));
   } else {
-    tl::expected<void, Error> res = index_->SetImmutable();
-    if (res.has_value()) {
-      LOG_INFO("[OBVSAG] set immutable success", KPC(this));
-    } else {
-      ret = vsag_errcode2ob(res.error().type);
-      LOG_WARN("[OBVSAG] index set immutable error", K(ret), K(res.error().type));
-    }
+    ret = vsag_errcode2ob(res.error().type);
+    LOG_WARN("[OBVSAG] index set immutable error", K(ret), K(res.error().type));
   }
   return ret;
 }
@@ -690,7 +686,7 @@ int construct_vsag_create_param(
   return ret;
 }
 
-int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, const char *metric,
+int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, const char *metric, 
     void *allocator, int extra_info_size, bool use_reorder, float doc_prune_ratio, int window_size,
     char *result_param_str)
 {
@@ -780,7 +776,7 @@ int construct_vsag_search_param(uint8_t create_type,
   return ret;
 }
 
-int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candidate,
+int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candidate, 
                                 char *result_param_str)
 {
   int ret = OB_SUCCESS;
@@ -788,19 +784,19 @@ int construct_vsag_sindi_search_param(float query_prune_ratio, uint64_t n_candid
   int64_t pos = 0;
   int64_t buff_size = 0;
   int64_t buf_len = 1024;
-  if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         "{\"%s\":{", index_type_str))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
-  } else if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  } else if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         "\"query_prune_ratio\":%f", query_prune_ratio))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
-  } else if (OB_FAIL(databuff_printf(result_param_str,
-                        buf_len,
-                        pos,
+  } else if (OB_FAIL(databuff_printf(result_param_str, 
+                        buf_len, 
+                        pos, 
                         ",\"n_candidate\":%lu}}", n_candidate))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
   }
@@ -1143,7 +1139,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
                int dim, int64_t topk, const float *&dist, const int64_t *&ids,
                int64_t &result_size, int ef_search, bool need_extra_info,
                const char *&extra_infos, void *invalid, bool reverse_filter,
-               bool use_extra_info_filter, void *allocator, float valid_ratio,
+               bool use_extra_info_filter, void *allocator, float valid_ratio, 
                float distance_threshold)
 {
   int ret = OB_SUCCESS;
@@ -1325,7 +1321,7 @@ int fdeserialize(VectorIndexPtr &index_handler,
         ef_construction, ef_search, hnsw->get_allocator(),
         extra_info_size, refine_type, bq_bits_query, bq_use_fht, result_param_str))) {
         LOG_WARN("construct_vsag_create_param fail", K(ret), K(index_type));
-      }
+      } 
     }
     if (OB_FAIL(ret)) {
     } else {
