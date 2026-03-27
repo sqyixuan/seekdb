@@ -293,7 +293,7 @@ int ObTabletSplitCtx::prepare_index_builder(
         } else if (OB_FAIL(ObDDLUtil::ddl_get_tablet(ls_handle_, param.dest_tablets_id_.at(j), tablet_handle))) {
           LOG_WARN("get tablet failed", K(ret));
         } else if (OB_FAIL(data_desc.init(
-            true/*is_ddl*/, *clipped_storage_schema, param.ls_id_,
+            true/*is_ddl*/, *clipped_storage_schema, param.ls_id_, 
             dst_tablet_id, merge_type, snapshot_version, param.data_format_version_,
             tablet_handle.get_obj()->get_tablet_meta().micro_index_clustered_,
             tablet_handle.get_obj()->get_transfer_seq(),
