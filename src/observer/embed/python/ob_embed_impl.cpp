@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 #define USING_LOG_PREFIX SERVER
-#ifdef __APPLE__
-#include <libkern/OSByteOrder.h>
-// macOS doesn't have be64toh/htobe64, use OSSwapBigToHostInt64/OSSwapHostToBigInt64
-#define be64toh(x) OSSwapBigToHostInt64(x)
-#define htobe64(x) OSSwapHostToBigInt64(x)
-#elif defined(__linux__)
-#include <endian.h>
-#endif
 #include <pybind11/stl.h>
 #include <memory>
 #include "observer/embed/python/ob_embed_impl.h"
@@ -228,7 +220,7 @@ int ObLiteEmbed::do_open_(const char* db_dir, int64_t port)
     MPRINT("db %s opened by other process", db_dir);
   } else if (FALSE_IT(pid_locked = true)) {
   } else {
-    OB_LOGGER.set_log_level(DEFAULT_LOG_LEVEL);
+    OB_LOGGER.set_log_level("INFO");
     ObSqlString log_file;
     if (OB_FAIL(log_file.assign_fmt("%s/log/seekdb.log", opts.base_dir_.ptr()))) {
       MPRINT("calculate log file failed %d", ret);
