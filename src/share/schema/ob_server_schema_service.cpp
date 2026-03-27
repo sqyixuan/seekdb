@@ -3727,7 +3727,7 @@ int ObServerSchemaService::replay_log(
                                                   schema_operation, schema_keys))) {
             LOG_WARN("fail to get increment obj priv keys", K(ret));
           }
-        } else if (schema_operation.op_type_ > OB_DDL_OBJ_MYSQL_PRIV_OPERATION_BEGIN
+        } else if (schema_operation.op_type_ > OB_DDL_OBJ_MYSQL_PRIV_OPERATION_BEGIN 
                    && schema_operation.op_type_ < OB_DDL_OBJ_MYSQL_PRIV_OPERATION_END) {
             if (OB_FAIL(get_increment_obj_mysql_priv_keys(schema_mgr, schema_operation, schema_keys))) {
               LOG_WARN("fail to get increment obj mysql priv id", K(ret));
@@ -3737,7 +3737,7 @@ int ObServerSchemaService::replay_log(
           if (OB_FAIL(get_increment_directory_keys(schema_mgr, schema_operation, schema_keys))) {
             LOG_WARN("fail to get increment directory id", K(ret));
           }
-        } else if (schema_operation.op_type_ > OB_DDL_LOCATION_OPERATION_BEGIN
+        } else if (schema_operation.op_type_ > OB_DDL_LOCATION_OPERATION_BEGIN 
                    && schema_operation.op_type_ < OB_DDL_LOCATION_OPERATION_END) {
           if (OB_FAIL(get_increment_location_keys(schema_mgr, schema_operation, schema_keys))) {
             LOG_WARN("fail to get increment location id", K(ret));
@@ -5389,7 +5389,7 @@ int ObServerSchemaService::refresh_tenant_full_normal_schema(
         } else if (OB_FAIL(schema_service_->get_all_locations(
           sql_client, schema_status, schema_version, tenant_id, simple_locations))) {
           LOG_WARN("get all location schema failed", K(ret), K(schema_version), K(tenant_id));
-        }
+        } 
       }
 
       if (OB_SUCC(ret)) {
@@ -5720,24 +5720,6 @@ int ObServerSchemaService::add_sys_table_lob_aux_ids(
         }
       }
     }
-  }
-  return ret;
-}
-
-int ObServerSchemaService::query_tenant_status(
-    const uint64_t tenant_id,
-    TenantStatus &tenant_status)
-{
-  int ret = OB_SUCCESS;
-
-  if (!check_inner_stat()) {
-    ret = OB_INNER_STAT_ERROR;
-    LOG_WARN("inner stat error", K(ret));
-  } else if (OB_ISNULL(sql_proxy_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("proxy is null", K(ret));
-  } else if (OB_FAIL(schema_service_->query_tenant_status(*sql_proxy_, tenant_id, tenant_status))) {
-    LOG_WARN("fail to get tenant status", K(ret), K(tenant_id));
   }
   return ret;
 }

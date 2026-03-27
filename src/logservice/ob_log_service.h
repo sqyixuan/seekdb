@@ -19,7 +19,6 @@
 
 #include "common/ob_role.h"
 #include "lib/ob_define.h"
-#include "share/ob_tenant_info_proxy.h"                // ObTenantRole
 #include "applyservice/ob_log_apply_service.h"
 #include "logrpc/ob_log_rpc_req.h"
 #include "logrpc/ob_log_rpc_proxy.h"
@@ -27,12 +26,7 @@
 #include "palf/log_define.h"
 #include "rcservice/ob_role_change_service.h"
 #include "replayservice/ob_log_replay_service.h"
-#ifndef OB_BUILD_ARBITRATION
 #include "ob_net_keepalive_adapter.h"
-#else
-#include "logservice/ob_arbitration_service.h"
-#endif
-#include "ob_reporter_adapter.h"
 #include "ob_ls_adapter.h"
 #include "ob_locality_adapter.h"
 #include "ob_location_adapter.h"
@@ -116,7 +110,6 @@ public:
            obrpc::ObBatchRpc *batch_rpc,
            storage::ObLSService *ls_service,
            share::ObLocationService *location_service,
-           observer::ObIMetaReport *reporter,
            palf::ILogBlockPool *log_block_pool,
            common::ObMySQLProxy *sql_proxy,
            IObNetKeepAliveAdapter *net_keepalive_adapter,
@@ -217,24 +210,15 @@ public:
   int diagnose_role_change(RCDiagnoseInfo &diagnose_info);
   int diagnose_replay(const share::ObLSID &id, ReplayDiagnoseInfo &diagnose_info);
   int diagnose_apply(const share::ObLSID &id, ApplyDiagnoseInfo &diagnose_info);
-#ifdef OB_BUILD_ARBITRATION
-  int diagnose_arb_srv(const share::ObLSID &id, LogArbSrvDiagnoseInfo &diagnose_info);
-#endif
   int get_io_start_time(int64_t &last_working_time);
   int check_disk_space_enough(bool &is_disk_enough);
 
   palf::PalfEnv *get_palf_env() { return palf_env_; }
-  // TODO by yunlong: temp solution, will by removed after Reporter be added in MTL
-  ObLogReporterAdapter *get_reporter() { return &reporter_; }
   ObLogReplayService *get_log_replay_service()  { return &replay_service_; }
 #ifdef OB_BUILD_SHARED_STORAGE
   ObSharedLogService *get_shared_log_service() {return &shared_log_service_;}
 #endif
   ObLogApplyService *get_log_apply_service()  { return &apply_service_; }
-#ifdef OB_BUILD_ARBITRATION
-  ObArbitrationService *get_arbitration_service() { return &arb_service_; }
-
-#endif
   obrpc::ObLogServiceRpcProxy *get_rpc_proxy() { return &rpc_proxy_; }
   ObLogFlashbackService *get_flashback_service() { return &flashback_service_; }
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -274,14 +258,10 @@ private:
   ObLocationAdapter location_adapter_;
   ObLSAdapter ls_adapter_;
   obrpc::ObLogServiceRpcProxy rpc_proxy_;
-  ObLogReporterAdapter reporter_;
 #ifdef OB_BUILD_SHARED_STORAGE
   // ========================== shared log start =================================
   ObSharedLogService shared_log_service_;
   // ========================== shared log end ===================================
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  ObArbitrationService arb_service_;
 #endif
   ObLogFlashbackService flashback_service_;
   ObLogMonitor monitor_;
