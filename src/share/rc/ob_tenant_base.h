@@ -297,7 +297,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
 #define MTL_MEMBERS                                  \
   MTL_LIST(                                          \
       common::ObDiagnosticInfoContainer*,            \
-      ObTimerService*,                               \
       omt::ObSharedTimer*,                           \
       oceanbase::sql::ObTenantSQLSessionMgr*,        \
       storage::ObTenantMetaMemMgr*,                  \
@@ -693,12 +692,6 @@ public:
 
   template<class T>
   void set(T v) { return inner_set(v); }
-
-  ObTimerService *get_timer_service() override
-  {
-    return get<ObTimerService *>();
-  }
-
 
 private:
   int create_mtl_module();
