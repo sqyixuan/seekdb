@@ -198,7 +198,7 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
               || schema->is_vec_vid_rowkey_type()
               || schema->is_hybrid_vec_index_log_type()
               || schema->is_hybrid_vec_index_embedded_type()) {
-      if (schema->is_vec_delta_buffer_type()
+      if (schema->is_vec_delta_buffer_type() 
         || schema->is_hybrid_vec_index_embedded_type()
         || schema->is_hybrid_vec_index_log_type()) {
         if (OB_FAIL(ob_write_string(allocator_, schema->get_index_params(), vec_index_param_))) {
@@ -227,7 +227,7 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
         } else if (schema->is_hybrid_vec_index_log_type()) {
           if (column_schema->get_column_name_str().prefix_match(OB_HYBRID_VEC_CHUNK_VALUE_COLUMN_NAME_PREFIX)) {
             vec_chunk_col_id_ = column_schema->get_column_id();
-          }
+          }  
         }
         if (OB_SUCC(ret) && (schema->is_vec_delta_buffer_type() || schema->is_hybrid_vec_index_log_type()
                               || schema->is_hybrid_vec_index_embedded_type())) {
@@ -238,7 +238,7 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("invalid vec id column id", K(ret), K(vec_id_col_id_), K(col_id));
             }
-          }
+          }       
         }
       }
     } else if (schema->is_vec_dim_docid_value_type()) {
