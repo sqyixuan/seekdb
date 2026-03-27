@@ -94,7 +94,6 @@ struct ObVecIndexTaskStatus
   int64_t status_;
   SCN target_scn_;
   int64_t ret_code_;
-  int64_t last_error_code_;
   // ObString trace_id_str_;
   TraceId trace_id_;
   bool all_finished_;
@@ -110,13 +109,12 @@ struct ObVecIndexTaskStatus
                             status_(ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_INVALID),
                             target_scn_(),
                             ret_code_(VEC_ASYNC_TASK_DEFAULT_ERR_CODE),
-                            last_error_code_(VEC_ASYNC_TASK_DEFAULT_ERR_CODE),
                             trace_id_(),
                             all_finished_(false) {}
 
   TO_STRING_KV(K_(gmt_create), K_(gmt_modified), K_(tenant_id), K_(table_id),
                 K_(tablet_id), K_(task_type), K_(trigger_type), K_(task_id),
-                K_(status), K_(target_scn), K_(trace_id), K_(ret_code), K_(all_finished), K_(last_error_code));
+                K_(status), K_(target_scn), K_(trace_id), K_(ret_code), K_(all_finished));
 };
 
 struct ObVecIndexTaskKey
@@ -352,7 +350,7 @@ private:
 class ObVecIndexAsyncTask : public ObVecIndexIAsyncTask
 {
 public:
-  ObVecIndexAsyncTask()
+  ObVecIndexAsyncTask() 
       : ObVecIndexIAsyncTask(ObMemAttr(MTL_ID(), "VecIdxASyTask"))
   {
   }
