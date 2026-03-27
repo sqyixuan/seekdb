@@ -32,6 +32,11 @@
 #include "common/ob_range.h"
 #include "common/ob_store_format.h"
 #include "common/ob_tablet_id.h"
+#ifdef _WIN32
+#ifndef strtok_r
+#define strtok_r strtok_s
+#endif
+#endif
 #include "share/ob_define.h"
 #include "share/ob_get_compat_mode.h"
 #include "share/schema/ob_schema_struct.h"
@@ -1246,7 +1251,7 @@ public:
     const bool heap_case =  is_index_local_storage() && data_table_schema.is_table_without_pk();
     const bool fts_case = is_partitioned_table() && is_index_local_storage() && (is_fts_index_aux() || is_fts_doc_word_aux());
     const bool multivalue_case = is_partitioned_table() && is_index_local_storage() && is_multivalue_index_aux();
-    const bool vec_case = is_partitioned_table() && is_index_local_storage() &&
+    const bool vec_case = is_partitioned_table() && is_index_local_storage() && 
                           (is_vec_delta_buffer_type() || is_vec_index_id_type() || is_vec_index_snapshot_data_type() || is_vec_spiv_index_aux());
     return heap_case || fts_case || vec_case || multivalue_case;
   }

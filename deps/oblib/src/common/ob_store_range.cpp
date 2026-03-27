@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#ifdef _WIN32
+#define USING_LOG_PREFIX COMMON
+#endif
 #include "common/ob_store_range.h"
 
 namespace oceanbase

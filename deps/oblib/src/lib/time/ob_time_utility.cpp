@@ -18,6 +18,8 @@
 #include "lib/utility/ob_print_utils.h"
 #ifdef __APPLE__
 #include <mach/mach_time.h>
+#elif defined(_WIN32)
+#include "lib/hash/ob_hashutils.h"
 #endif
 
 using namespace oceanbase;
@@ -50,31 +52,21 @@ struct MachTimeBaseLocal {
     numer_ = timebase.numer;
     denom_ = timebase.denom;
     calibration_interval_mach_ = CALIBRATION_INTERVAL_NS * denom_ / numer_;
-    // Do NOT call calibrate() here. Instead, set next_calibrate_mach_ = 0
-    // to force calibration on first use via calibrate_if_needed().
-    // This avoids a uint64_t underflow bug: the constructor is invoked lazily
-    // on first thread_local access, AFTER the caller has already captured
-    // current_mach = mach_absolute_time(). If calibrate() independently reads
-    // mach_absolute_time(), base_mach_time_ becomes newer than the caller's
-    // current_mach, causing (current_mach - base_mach_time_) to underflow.
-    base_wall_time_us_ = 0;
-    base_mach_time_ = 0;
-    next_calibrate_mach_ = 0;
+    calibrate();
   }
 
-  // Calibrate using the caller's mach time to guarantee
-  // base_mach_time_ <= current_mach (no underflow possible).
-  void calibrate(uint64_t current_mach) {
+  void calibrate() {
     struct timeval tv;
     gettimeofday(&tv, nullptr);
+    uint64_t mach_now = mach_absolute_time();
     base_wall_time_us_ = tv.tv_sec * 1000000LL + tv.tv_usec;
-    base_mach_time_ = current_mach;
-    next_calibrate_mach_ = current_mach + calibration_interval_mach_;
+    base_mach_time_ = mach_now;
+    next_calibrate_mach_ = mach_now + calibration_interval_mach_;
   }
 
   void calibrate_if_needed(uint64_t current_mach) {
     if (OB_UNLIKELY(current_mach >= next_calibrate_mach_)) {
-      calibrate(current_mach);
+      calibrate();
     }
   }
 };
@@ -123,7 +115,14 @@ int64_t ObTimeUtility::current_time_us()
 
 int64_t ObTimeUtility::current_time_ns()
 {
-	int err_ret = 0;
+#ifdef _WIN32
+  FILETIME ft;
+  GetSystemTimePreciseAsFileTime(&ft);
+  uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+  t -= UINT64_C(116444736000000000);
+  return static_cast<int64_t>(t) * 100;
+#else
+  int err_ret = 0;
   struct timespec ts;
   if (OB_UNLIKELY((err_ret = clock_gettime(CLOCK_REALTIME, &ts)) != 0)) {
       LIB_LOG_RET(WARN, err_ret, "current system not support CLOCK_REALTIME", K(err_ret), K(errno));
@@ -132,10 +131,19 @@ int64_t ObTimeUtility::current_time_ns()
   }
   return static_cast<int64_t>(ts.tv_sec) * 1000000000L +
     static_cast<int64_t>(ts.tv_nsec);
+#endif
 }
 
 int64_t ObTimeUtility::current_monotonic_raw_time()
 {
+#ifdef _WIN32
+  LARGE_INTEGER freq, counter;
+  QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&counter);
+  int64_t sec = counter.QuadPart / freq.QuadPart;
+  int64_t frac = counter.QuadPart % freq.QuadPart;
+  return sec * 1000000L + frac * 1000000L / freq.QuadPart;
+#else
   int64_t ret_val = 0;
   int err_ret = 0;
   struct timespec ts;
@@ -156,11 +164,12 @@ int64_t ObTimeUtility::current_monotonic_raw_time()
   }
 
   return ret_val;
+#endif
 }
 
 int64_t ObTimeUtility::current_time_coarse()
 {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
   // On macOS, use the same time source as current_time() to avoid clock skew.
   // This is because current_time() uses mach_absolute_time() with a fixed base,
   // while clock_gettime(CLOCK_REALTIME) returns the actual system clock which

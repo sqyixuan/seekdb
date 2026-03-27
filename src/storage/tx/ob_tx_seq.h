@@ -135,7 +135,9 @@ private:
     };
   };
 };
+#ifndef _WIN32
 static_assert(sizeof(ObTxSEQ) == sizeof(int64_t), "ObTxSEQ should sizeof(int64_t)");
+#endif
 
 inline int64_t ObTxSEQ::to_string(char* buf, const int64_t buf_len) const
 {

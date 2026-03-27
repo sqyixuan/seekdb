@@ -79,7 +79,7 @@ private:
 private:
   static constexpr int64_t NORMAL_LOG_ITEM_SIZE = 8 * 1024; //8KB
   static constexpr int64_t MAX_CONCURRENT_ITEM_CNT = 128;
-  static constexpr int64_t RESERVED_DISK_SIZE = 4 * 1024 * 1024 * 1024L; // 4G
+  static constexpr int64_t RESERVED_DISK_SIZE = 4LL * 1024 * 1024 * 1024; // 4G
 
   common::ObArenaAllocator allocator_;
   const char *log_dir_;

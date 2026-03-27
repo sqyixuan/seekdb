@@ -875,6 +875,20 @@ bool ObConfigMomentItem::set(const char *str)
   memset(&tm_value, 0, sizeof(struct tm));
   if (0 == STRCASECMP(str, "disable")) {
     value_.disable_ = true;
+#ifdef _WIN32
+  } else {
+    int h = 0, m = 0;
+    if (sscanf(str, "%d:%d", &h, &m) != 2 || h < 0 || h > 23 || m < 0 || m > 59) {
+      value_.disable_ = true;
+      ret = false;
+      OB_LOG(ERROR, "Not well-formed moment item value", K(str));
+    } else {
+      value_.disable_ = false;
+      value_.hour_ = h;
+      value_.minute_ = m;
+    }
+  }
+#else
   } else if (OB_ISNULL(strptime(str, "%H:%M", &tm_value))) {
     value_.disable_ = true;
     ret = false;
@@ -884,6 +898,7 @@ bool ObConfigMomentItem::set(const char *str)
     value_.hour_ = tm_value.tm_hour;
     value_.minute_ = tm_value.tm_min;
   }
+#endif
   return ret;
 }
 

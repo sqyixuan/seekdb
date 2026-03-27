@@ -19,7 +19,71 @@
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <basetsd.h>
+typedef SSIZE_T ssize_t;
+#ifndef O_DIRECTORY
+#define O_DIRECTORY 0
+#endif
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#ifndef O_NOATIME
+#define O_NOATIME 0
+#endif
+#ifndef FALLOC_FL_ZERO_RANGE
+#define FALLOC_FL_ZERO_RANGE 0
+#endif
+#define stat64 _stat64
+static int ob_fstatat64(int, const char *path, struct _stat64 *buf, int) {
+  return _stat64(path, buf);
+}
+#define fstatat64 ob_fstatat64
+static int ob_openat(int, const char *path, int flags, ...) {
+  int mode = 0;
+  if (flags & _O_CREAT) { mode = _S_IREAD | _S_IWRITE; }
+  return _open(path, flags & ~(O_DIRECT | O_NOATIME), mode);
+}
+#define openat ob_openat
+static int ob_renameat(int, const char *src, int, const char *dst) {
+  return rename(src, dst);
+}
+#define renameat ob_renameat
+static int ob_fsync(int fd) { return _commit(fd); }
+#define fsync ob_fsync
+static int ob_fallocate(int fd, int, off_t, off_t len) {
+  return _chsize_s(fd, len) == 0 ? 0 : -1;
+}
+#define fallocate ob_fallocate
+static int ob_ftruncate(int fd, off_t len) {
+  return _chsize_s(fd, len) == 0 ? 0 : -1;
+}
+#define ftruncate ob_ftruncate
+static ssize_t ob_pwrite(int fd, const void *buf, size_t count, off_t offset) {
+  long long prev = _lseeki64(fd, 0, SEEK_CUR);
+  _lseeki64(fd, offset, SEEK_SET);
+  int written = _write(fd, buf, (unsigned)count);
+  _lseeki64(fd, prev, SEEK_SET);
+  return written;
+}
+#define pwrite ob_pwrite
+static ssize_t ob_pread(int fd, void *buf, size_t count, off_t offset) {
+  long long prev = _lseeki64(fd, 0, SEEK_CUR);
+  _lseeki64(fd, offset, SEEK_SET);
+  int nread = _read(fd, buf, (unsigned)count);
+  _lseeki64(fd, prev, SEEK_SET);
+  return nread;
+}
+#define pread ob_pread
+#else
 #include <unistd.h>
+#endif
 #ifdef __APPLE__
 #include <fcntl.h> // For fcntl, F_PREALLOCATE on macOS
 #include <string.h> // For memset

@@ -21,7 +21,9 @@
 #include "share/ob_define.h"
 #include "share/ob_errno.h"
 #include <fstream>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 namespace oceanbase
 {
 using namespace common;

@@ -16,6 +16,15 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "observer/ob_check_params.h"
+#ifdef _WIN32
+#include <io.h>
+#ifndef F_OK
+#define F_OK 0
+#endif
+#define access _access
+#else
+#include <unistd.h>
+#endif
 
 namespace oceanbase
 {
@@ -190,6 +199,7 @@ int CheckAllParams::check_fs_file_max(bool strict_check)
 int CheckAllParams::check_ulimit_open_files(bool strict_check)
 {
   int ret = OB_SUCCESS;
+#ifndef _WIN32
   // Check open files limit
   struct rlimit rlim;
   if (getrlimit(RLIMIT_NOFILE, &rlim) == 0) {
@@ -217,12 +227,16 @@ int CheckAllParams::check_ulimit_open_files(bool strict_check)
   } else {
     LOG_DBA_ERROR_V2(OB_SERVER_READ_FILE_FAIL, OB_FILE_NOT_EXIST, "read ulimit.open_file_limit file failed ");
   }
+#else
+  (void)strict_check;
+#endif
   return ret;
 }
 
 int CheckAllParams::check_ulimit_max_user_processes(bool strict_check)
 {
   int ret = OB_SUCCESS;
+#ifndef _WIN32
   struct rlimit rlim;
   // Check process limit
   if (getrlimit(RLIMIT_NPROC, &rlim) == 0) {
@@ -252,11 +266,15 @@ int CheckAllParams::check_ulimit_max_user_processes(bool strict_check)
   } else {
     LOG_DBA_ERROR_V2(OB_SERVER_READ_FILE_FAIL, OB_FILE_NOT_EXIST, "read ulimit.max_user_processes file failed ");
   }
+#else
+  (void)strict_check;
+#endif
   return ret;
 }
 int CheckAllParams::check_ulimit_core_file_size(bool strict_check)
 {
   int ret = OB_SUCCESS;
+#ifndef _WIN32
   struct rlimit rlim;
   // Check core file size limit
   if (getrlimit(RLIMIT_CORE, &rlim) == 0) {
@@ -271,12 +289,16 @@ int CheckAllParams::check_ulimit_core_file_size(bool strict_check)
   } else {
     LOG_DBA_ERROR_V2(OB_SERVER_READ_FILE_FAIL, OB_FILE_NOT_EXIST, "read ulimit.core_file_size file failed ");
   }
+#else
+  (void)strict_check;
+#endif
   return ret;
 }
 
 int CheckAllParams::check_ulimit_stack_size(bool strict_check)
 {
   int ret = OB_SUCCESS;
+#ifndef _WIN32
   struct rlimit rlim;
   // Check stack size limit
   if (getrlimit(RLIMIT_STACK, &rlim) == 0) {
@@ -304,6 +326,9 @@ int CheckAllParams::check_ulimit_stack_size(bool strict_check)
   } else {
     LOG_DBA_ERROR_V2(OB_SERVER_READ_FILE_FAIL, OB_FILE_NOT_EXIST, "read ulimit.stack_size file failed ");
   }
+#else
+  (void)strict_check;
+#endif
   return ret;
 }
 
@@ -367,10 +392,10 @@ int CheckAllParams::check_current_clocksource(bool strict_check)
 int check_os_params(bool strict_check_params = false)
 {
   int ret = OB_SUCCESS;
-#ifdef __APPLE__
-  // On macOS, skip OS parameter checks as they are Linux-specific
-  // (e.g., /proc/sys/vm/, /sys/devices/system/clocksource/)
-  LOG_INFO("[check OS params]:skipping OS parameter checks on macOS");
+#if defined(__APPLE__) || defined(_WIN32)
+  // On macOS/Windows, skip OS parameter checks as they are Linux-specific
+  // (e.g., /proc/sys/vm/, /sys/devices/system/clocksource/, getrlimit)
+  LOG_INFO("[check OS params]:skipping OS parameter checks on macOS/Windows");
 #else
   if (OB_FAIL(CheckAllParams::check_all_params(strict_check_params))) {
     LOG_DBA_ERROR_V2(OB_SERVER_CHECK_ALL_PARAMS_FAIL, OB_IMPROPER_OS_PARAM, "check os params failed ");

@@ -13,10 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_vec_scan_utils.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-
-#define USING_LOG_PREFIX SQL_DAS
 
 namespace oceanbase
 {
@@ -78,7 +77,7 @@ int ObDasVecScanUtils::get_distance_expr_type(ObExpr &expr,
     case T_FUN_SYS_COSINE_DISTANCE:
       dis_type = ObExprVectorDistance::ObVecDisType::COSINE;
       break;
-    default:
+    default: 
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("not support vector sort expr", K(ret), K(expr.type_));
       break;
@@ -92,21 +91,21 @@ int ObDasVecScanUtils::get_distance_expr_type(ObExpr &expr,
   return ret;
 }
 
-int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr,
-                                                   float &similarity_threshold,
+int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr, 
+                                                   float &similarity_threshold, 
                                                    float &distance_threshold)
 {
   int ret = OB_SUCCESS;
 
   switch (expr.type_) {
-    case T_FUN_SYS_L2_DISTANCE:
+    case T_FUN_SYS_L2_DISTANCE: 
       // l2_similarity = 1 / (1 + l2_square_distance), vsag l2_distance is l2_square_distance
       distance_threshold = 1 / similarity_threshold - 1;
       break;
     // currently we don't support ip similarity
     // case T_FUN_SYS_INNER_PRODUCT:
-    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT:
-
+    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT: 
+    
     case T_FUN_SYS_COSINE_DISTANCE:
       // cosine_similarity = (1 + cosine) / 2, vsag cosine_distance = 1 - cosine
       distance_threshold = 2 - 2 * similarity_threshold;
@@ -122,13 +121,13 @@ int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr,
 int ObDasVecScanUtils::check_ivf_support_similarity_threshold(ObExpr &expr)
 {
   int ret = OB_SUCCESS;
-
+  
   switch (expr.type_) {
-    case T_FUN_SYS_L2_DISTANCE:
+    case T_FUN_SYS_L2_DISTANCE: 
       break;
     // currently we don't support ip similarity
     // case T_FUN_SYS_INNER_PRODUCT:
-    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT:
+    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT: 
     case T_FUN_SYS_COSINE_DISTANCE:
       break;
     default:

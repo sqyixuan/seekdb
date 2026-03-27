@@ -19,8 +19,7 @@
 
 #ifdef __linux__
 #include <libaio.h>
-#elif defined(__APPLE__)
-// macOS doesn't have libaio, provide stub types
+#elif defined(__APPLE__) || defined(_WIN32)
 #include <stdint.h>
 #include <stddef.h>
 struct iocb {

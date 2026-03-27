@@ -56,19 +56,7 @@ void print_access_storage_log(
 int validate_uri_type(const common::ObString &uri)
 {
   int ret = OB_SUCCESS;
-  if (uri.prefix_match(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    STORAGE_LOG(WARN, "OSS storage is not supported", KR(ret), KS(uri));
-  } else if (uri.prefix_match(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    STORAGE_LOG(WARN, "COS storage is not supported", KR(ret), KS(uri));
-  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    STORAGE_LOG(WARN, "HDFS storage is not supported", KR(ret), KS(uri));
-  } else if (!uri.prefix_match(OB_S3_PREFIX) &&
+  if (!uri.prefix_match(OB_S3_PREFIX) &&
       !uri.prefix_match(OB_FILE_PREFIX) &&
       !uri.prefix_match(OB_AZBLOB_PREFIX)) {
     ret = OB_INVALID_BACKUP_DEST;
@@ -88,18 +76,6 @@ int get_storage_type_from_path(const common::ObString &uri, ObStorageType &type)
     type = OB_STORAGE_FILE;
   } else if (uri.prefix_match(OB_AZBLOB_PREFIX)) {
     type = OB_STORAGE_AZBLOB;
-  } else if (uri.prefix_match(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    STORAGE_LOG(WARN, "OSS storage is not supported", KR(ret), KS(uri));
-  } else if (uri.prefix_match(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    STORAGE_LOG(WARN, "COS storage is not supported", KR(ret), KS(uri));
-  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    STORAGE_LOG(WARN, "HDFS storage is not supported", KR(ret), KS(uri));
   } else {
     ret = OB_INVALID_BACKUP_DEST;
     STORAGE_LOG(ERROR, "invalid backup uri", KR(ret), KS(uri));
@@ -111,7 +87,11 @@ const char *get_storage_type_str(const ObStorageType &type)
 {
   const char *str = "UNKNOWN";
   STATIC_ASSERT(static_cast<int64_t>(OB_STORAGE_MAX_TYPE) == ARRAYSIZEOF(OB_STORAGE_TYPES_STR), "ObStorageType count mismatch");
+#ifdef _WIN32
+  if (type < OB_STORAGE_MAX_TYPE) {
+#else
   if (type >= 0 && type < OB_STORAGE_MAX_TYPE) {
+#endif
     str = OB_STORAGE_TYPES_STR[type];
   }
   return str;

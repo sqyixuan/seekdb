@@ -17,7 +17,12 @@
 #ifndef OCEANBASE_SHARE_CONFIG_OB_CONFIG_HELPER_H_
 #define OCEANBASE_SHARE_CONFIG_OB_CONFIG_HELPER_H_
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 #include "lib/hash/ob_hashmap.h"
 #include "lib/hash_func/murmur_hash.h"
 #include "lib/hash/ob_hashutils.h"

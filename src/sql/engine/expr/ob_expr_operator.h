@@ -1656,6 +1656,8 @@ public:
 #ifdef __APPLE__
     // macOS doesn't have isinff, use std::isinf instead
     return std::isinf(res);
+#elif _WIN32
+    return (0 != std::isinf(res));
 #else
     return (0 != isinff(res));
 #endif

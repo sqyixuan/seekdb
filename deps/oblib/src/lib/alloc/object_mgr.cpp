@@ -202,6 +202,14 @@ ABlock *ObjectMgr::alloc_block(uint64_t size, const ObMemAttr &attr)
   ABlock *block = NULL;
   const uint64_t start = common::get_itid();
   SubObjectMgr *sub_mgr = nullptr;
+#ifdef _WIN32
+  static bool diag_once = false;
+  if (!diag_once) {
+    fprintf(stderr, "[DIAG] ObjectMgr::alloc_block enter, sub_cnt=%d, parallel=%d, size=%lu\n",
+            (int)sub_cnt_, (int)parallel_, (unsigned long)size); fflush(stderr);
+    diag_once = true;
+  }
+#endif
   for (uint64_t i = 0; NULL == block && i < ATOMIC_LOAD(&sub_cnt_); i++) {
     uint64_t idx = (start + i) % sub_cnt_;
     sub_mgr = ATOMIC_LOAD(&sub_mgrs_[idx]);
@@ -274,19 +282,31 @@ SubObjectMgr *ObjectMgr::create_sub_mgr()
     {}
     AObject *realloc_object(AObject *obj,  const uint64_t size, const ObMemAttr &attr)
     {
-      sub_mgr_.lock();
+      int lock_ret = sub_mgr_.lock();
       AObject *new_obj = sub_mgr_.realloc_object(obj, size, attr);
       sub_mgr_.unlock();
+#ifdef _WIN32
+      fprintf(stderr, "[DIAG] SubObjectMgrWrapper::realloc_object lock_ret=%d, new_obj=%p, size=%lu\n",
+              lock_ret, new_obj, (unsigned long)size); fflush(stderr);
+#endif
       return new_obj;
     }
+#ifndef _WIN32
     void free_object(AObject *obj)
     {
       sub_mgr_.free_object(obj);
     }
+#endif
   private:
     SubObjectMgr& sub_mgr_;
   } root_mgr(static_cast<ObjectMgr&>(ta->get_block_mgr()).root_mgr_);
   void *ptr = ObTenantCtxAllocator::common_realloc(NULL, sizeof(SubObjectMgr), attr, *(ta.ref_allocator()), root_mgr);
+#ifdef _WIN32
+  if (OB_ISNULL(ptr)) {
+    fprintf(stderr, "[DIAG] ObjectMgr::create_sub_mgr common_realloc returned NULL, sizeof(SubObjectMgr)=%lu\n",
+            (unsigned long)sizeof(SubObjectMgr)); fflush(stderr);
+  }
+#endif
   if (OB_NOT_NULL(ptr)) {
     sub_mgr = new (ptr) SubObjectMgr(ta_, enable_no_log_,
         ablock_size_, enable_dirty_list_, blk_mgr_);

@@ -3,11 +3,18 @@
 
 #include "util/easy_pool.h"
 #include <easy_list.h>
+
+#ifdef _WIN32
+// Windows: use our ucontext compatibility layer based on Fibers
+#include "ucontext_win32.h"
+#else
+// Unix/Linux/macOS: use native ucontext
 // ucontext.h requires _XOPEN_SOURCE on macOS
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE
 #endif
 #include <ucontext.h>
+#endif
 
 /**
  * Create a user-mode thread
@@ -94,4 +101,4 @@ void easy_uthread_set_errcode(easy_uthread_t *t, int errcode);
 
 EASY_CPP_END
 
-#endif
+#endif // EASY_UTHREAD_H

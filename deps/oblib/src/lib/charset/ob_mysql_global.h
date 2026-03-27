@@ -75,8 +75,19 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
 #include <alloca.h>
+#else
+// Windows: alloca is in malloc.h
+#include <malloc.h>
+// Windows: ensure uint and ushort are defined
+#ifndef _UINT_DEFINED
+#define _UINT_DEFINED
+typedef unsigned int uint;
+typedef unsigned short ushort;
+#endif
+#endif
 
 #include <errno.h>
 #ifdef __linux__
@@ -194,7 +205,11 @@ typedef ulonglong uint64;
 #if SIZEOF_CHARP == SIZEOF_INT
 typedef int int_ptr;
 #elif SIZEOF_CHARP == SIZEOF_LONG
+#ifdef _WIN32
+typedef long long int_ptr;
+#else
 typedef long int_ptr;
+#endif
 #elif  SIZEOF_CHARP == SIZEOF_LONG_LONG
 typedef long long int_ptr;
 #else

@@ -15,7 +15,13 @@
  */
 
 #include "lib/alloc/alloc_failed_reason.h"
+#ifndef _WIN32
 #include <unistd.h>
+#else
+// Prevent windows.h from including winsock.h (we need winsock2.h instead)
+#define _WINSOCKAPI_
+#include <windows.h>
+#endif
 #include "lib/utility/ob_platform_utils.h"  // Platform compatibility layer
 #include "lib/allocator/ob_tc_malloc.h"
 #include "lib/allocator/ob_mod_define.h"
@@ -141,7 +147,11 @@ void print_alloc_failed_msg(uint64_t tenant_id, uint64_t ctx_id,
 #ifdef FATAL_ERROR_HANG
     if (REACH_TIME_INTERVAL(60 * 1000 * 1000)) {
       ObMemoryDump::get_instance().generate_mod_stat_task();
-      sleep(1);
+#ifdef _WIN32
+      Sleep(1000);  // Windows Sleep takes milliseconds
+#else
+      sleep(1);     // POSIX sleep takes seconds
+#endif
     }
 #endif
     const char *msg = alloc_failed_msg();
@@ -152,7 +162,9 @@ void print_alloc_failed_msg(uint64_t tenant_id, uint64_t ctx_id,
                 msg, tenant_id, ctx_id, get_global_ctx_info().get_ctx_name(ctx_id),
                 ctx_hold, ctx_limit, tenant_hold, tenant_limit, lbt());
     // 49 is the user defined signal to dump memory
+#ifndef _WIN32
     raise(49);
+#endif
   }
 }
 

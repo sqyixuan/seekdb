@@ -34,7 +34,11 @@ int print_human_tstamp(char *buf, const int64_t buf_len, int64_t &pos,
     tv.tv_sec = usec_tstamp / _SEC_;
     tv.tv_usec = usec_tstamp % _SEC_;
     struct tm tm;
+#ifdef _WIN32
+    ::localtime_s(&tm, (const time_t *) &tv.tv_sec);
+#else
     ::localtime_r((const time_t *) &tv.tv_sec, &tm);
+#endif
     ret = common::databuff_printf(buf, buf_len, pos,
                                   "[%04d-%02d-%02d %02d:%02d:%02d.%06ld]",
                                   tm.tm_year + 1900,

@@ -15,8 +15,10 @@
  */
 
 #include "ob_local_device.h"
+#ifndef _WIN32
 #include <sys/statvfs.h>
 #include <unistd.h>
+#endif
 #ifdef __linux__
 #include <sys/vfs.h>
 #include <linux/falloc.h>
@@ -28,9 +30,26 @@
 #include <mutex>
 #include <vector>
 #include <condition_variable>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <chrono>
+#include <mutex>
+#include <vector>
+#include <condition_variable>
 
-// macOS doesn't have libaio, provide a synchronous emulation
+#ifndef O_LARGEFILE
+#define O_LARGEFILE 0
+#endif
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+
+#include "share/ob_statvfs_win32.h"
+
+// Windows doesn't have libaio, provide a synchronous emulation
 struct io_event_queue {
   std::mutex mtx;
   std::condition_variable cv;
@@ -83,9 +102,19 @@ static inline int io_submit(io_context_t ctx, long nr, struct iocb **iocbpp) {
     struct iocb *iocb = iocbpp[i];
     ssize_t res = 0;
     if (iocb->aio_lio_opcode == 1) { // PWRITE
+#ifdef _WIN32
+      res = _lseek(iocb->aio_fildes, (long)iocb->aio_offset, SEEK_SET) == -1
+            ? -1 : _write(iocb->aio_fildes, iocb->aio_buf, (unsigned int)iocb->aio_nbytes);
+#else
       res = pwrite(iocb->aio_fildes, iocb->aio_buf, iocb->aio_nbytes, iocb->aio_offset);
+#endif
     } else if (iocb->aio_lio_opcode == 0) { // PREAD
+#ifdef _WIN32
+      res = _lseek(iocb->aio_fildes, (long)iocb->aio_offset, SEEK_SET) == -1
+            ? -1 : _read(iocb->aio_fildes, iocb->aio_buf, (unsigned int)iocb->aio_nbytes);
+#else
       res = pread(iocb->aio_fildes, iocb->aio_buf, iocb->aio_nbytes, iocb->aio_offset);
+#endif
     }
 
     struct io_event ev;
@@ -1511,6 +1540,22 @@ int ObLocalDevice::resize_block_file(const int64_t new_size)
       SHARE_LOG(WARN, "fail to expand file size", K(ret), K(sys_ret), K(block_file_size_),
           K(delta_size), K(new_size), K(errno), KERRMSG);
     }
+#elif defined(_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(block_fd_);
+    if (h != INVALID_HANDLE_VALUE) {
+      LARGE_INTEGER li;
+      li.QuadPart = block_file_size_ + delta_size;
+      if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+        sys_ret = -1;
+      }
+    } else {
+      sys_ret = -1;
+    }
+    if (0 != sys_ret) {
+      ret = ObIODeviceLocalFileOp::convert_sys_errno();
+      SHARE_LOG(WARN, "fail to expand file size", K(ret), K(sys_ret), K(block_file_size_),
+          K(delta_size), K(errno), KERRMSG);
+    }
 #else
     if (0 != (sys_ret = ::fallocate(block_fd_, 0, block_file_size_, delta_size))) {
       ret = ObIODeviceLocalFileOp::convert_sys_errno();
@@ -1519,7 +1564,7 @@ int ObLocalDevice::resize_block_file(const int64_t new_size)
     }
 #endif
   }
-
+  
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(new_free_block_array
         = (int64_t *) ob_malloc(sizeof(int64_t) * new_total_block_cnt, mem_attr))) {
