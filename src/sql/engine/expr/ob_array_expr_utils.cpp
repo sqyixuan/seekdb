@@ -115,7 +115,7 @@ int ObArrayExprUtils::vector_datum_add(ObDatum &res, const ObDatum &data, ObIAll
     float *float_res = reinterpret_cast<float *>(blob_res.ptr());
     for (int64_t i = 0; OB_SUCC(ret) && i < length; ++i) {
       negative ? float_res[i] -= float_data[i] : float_res[i] += float_data[i];
-      if (std::isinf(float_res[i]) != 0) {
+      if (isinff(float_res[i]) != 0) {
         ret = OB_OPERATE_OVERFLOW;
         SQL_LOG(WARN, "value overflow", K(ret), K(i), K(float_data[i]), K(float_res[i]));
       }
@@ -709,7 +709,7 @@ int ObVectorVectorArithFunc::operator()(ObDatum &res, const ObDatum &l, const Ob
       const float float_res = type == ADD ? data_l[i] + data_r[i] :
                               type == MUL ? data_l[i] * data_r[i] :
                               data_l[i] - data_r[i];
-      if (std::isinf(float_res) != 0) {
+      if (isinff(float_res) != 0) {
         ret = OB_OPERATE_OVERFLOW;
         LOG_WARN("value overflow", K(ret), K(i), K(data_l[i]), K(data_r[i]));
       } else if (OB_FAIL(float_array->push_back(float_res))) {
@@ -810,7 +810,7 @@ int ObVectorElemArithFunc::operator()(ObDatum &res, const ObDatum &l, const ObDa
       ObVectorF32Data *float_array = static_cast<ObVectorF32Data *>(arr_res);
       for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
         const float float_res = data_l[i] / data_r; // only support div now
-        if (std::isinf(float_res) != 0) {
+        if (isinff(float_res) != 0) {
           ret = OB_OPERATE_OVERFLOW;
           LOG_WARN("value overflow", K(ret), K(i), K(data_l[i]), K(data_r));
         } else if (OB_FAIL(float_array->push_back(float_res))) {
@@ -823,7 +823,7 @@ int ObVectorElemArithFunc::operator()(ObDatum &res, const ObDatum &l, const ObDa
       ObVectorU8Data *uint8_array = static_cast<ObVectorU8Data *>(arr_res);
       for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
         const uint8_t uint8_res = data_l[i] / data_r; // only support div now
-        if (std::isinf(static_cast<float>(uint8_res)) != 0) {
+        if (isinff(uint8_res) != 0) {
           ret = OB_OPERATE_OVERFLOW;
           LOG_WARN("value overflow", K(ret), K(i), K(data_l[i]), K(data_r));
         } else if (OB_FAIL(uint8_array->push_back(uint8_res))) {
@@ -1049,14 +1049,8 @@ int ObArrayExprUtils::calc_nested_expr_data_size(const ObExpr &expr, ObEvalCtx &
   ObIVector *root_vec = expr.get_vector(ctx);
   const char *payload = NULL;
   ObLength payload_len = 0;
-  ObCollectionTypeBase *coll_type = NULL;
   root_vec->get_payload(batch_idx, payload, payload_len);
   if (root_vec->is_null(batch_idx)) {
-  } else if (payload_len == 0 && OB_FAIL(get_coll_type_by_subschema_id(&ctx.exec_ctx_, expr.obj_meta_.get_subschema_id(), coll_type))) {
-    LOG_WARN("failed to get array type by subschema id", K(ret), K(expr));
-  } else if ((OB_NOT_NULL(coll_type) && coll_type->type_id_ == ObNestedType::OB_VECTOR_TYPE)) {
-    size = payload_len;
-    LOG_DEBUG("skip one row with vector type and length is 0", K(ret));
   } else if (ObCollectionExprUtil::is_compact_fmt_cell(payload)) {
     size = payload_len;
   } else if (payload_len != sizeof(ObCollectionExprCell)) {
