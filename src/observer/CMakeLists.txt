@@ -643,34 +643,23 @@ else()
     INTERFACE
     ${STDC_SHARED_LIB}
     PRIVATE
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,-z,notext>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--whole-archive>
+    -Wl,-z,notext
+    -Wl,--whole-archive
     "${ob_objects}" "${oblib_object_libraries}"
     ob_sql_static
     ob_storage_static
     ob_share_static
     ob_plugin
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--no-whole-archive>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+    -Wl,--no-whole-archive
+    -static-libgcc -static-libstdc++
     objit)
 endif()
 
-if(STDC_SHARED_LIB)
-  get_filename_component(STDC_SHARED_LIB_DIR ${STDC_SHARED_LIB} DIRECTORY)
-  target_link_options(oceanbase INTERFACE "-Wl,-rpath=${STDC_SHARED_LIB_DIR}")
-endif()
+get_filename_component(STDC_SHARED_LIB_DIR ${STDC_SHARED_LIB} DIRECTORY)
+target_link_options(oceanbase INTERFACE "-Wl,-rpath=${STDC_SHARED_LIB_DIR}")
 
 if (NOT OB_USE_ASAN)
-  # On macOS, malloc_hook conflicts with linked LLVM
-  # LLVM's global constructors run before main() and use hooked malloc,
-  # but free with system free, causing crashes
-  if (NOT APPLE)
-    set(link_malloc_hook malloc_hook)
-  else()
-    message(STATUS "Disabling malloc_hook on macOS (conflicts with dynamic LLVM)")
-    set(link_malloc_hook "")
-  endif()
+  set(link_malloc_hook malloc_hook)
 endif()
 
 add_library(ob_main OBJECT main.cpp ob_command_line_parser.cpp)
@@ -679,20 +668,20 @@ target_link_libraries(ob_main PUBLIC ob_base)
 add_executable(observer_without_bolt)
 target_link_libraries(observer_without_bolt
   PRIVATE
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group>
+  -Wl,--start-group
   ob_main
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:ob_malloc>
+  ob_malloc
   oceanbase_static
   ob_sql_static
   ob_storage_static
   ob_share_static
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--whole-archive>
+  -Wl,--end-group
+  -Wl,--whole-archive
   ob_plugin_export_static
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--no-whole-archive>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--export-dynamic-symbol=obp_*>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+  -Wl,--no-whole-archive
+  -Wl,--export-dynamic-symbol=obp_*
+  -static-libgcc
+  -static-libstdc++
   ${link_malloc_hook}
   ${BOLT_OPT}
 )
@@ -717,23 +706,23 @@ if (OB_ENABLE_BOLT)
     OUTPUT fake_observer_bolt
     COMMAND ${CMAKE_SOURCE_DIR}/cmake/script/do_bolt_opt --build_dir=${CMAKE_BINARY_DIR}
     DEPENDS observer_without_bolt)
-  add_custom_target(seekdb ALL
+  add_custom_target(observer ALL
     DEPENDS fake_observer_bolt)
 else()
   add_custom_command(
     OUTPUT fake_observer
-    COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/seekdb
+    COMMAND mv ${CMAKE_BINARY_DIR}/src/observer/observer_without_bolt ${CMAKE_BINARY_DIR}/src/observer/observer
     DEPENDS observer_without_bolt)
-  add_custom_target(seekdb ALL
+  add_custom_target(observer ALL
     DEPENDS fake_observer)
 endif()
 
-add_custom_target(observer ALL
-  DEPENDS seekdb
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-      ${CMAKE_BINARY_DIR}/src/observer/seekdb
+add_custom_target(seekdb ALL
+  DEPENDS observer
+  COMMAND ${CMAKE_COMMAND} -E copy
       ${CMAKE_BINARY_DIR}/src/observer/observer
-  COMMENT "Creating symbol link observer to seekdb"
+      ${CMAKE_BINARY_DIR}/src/observer/seekdb
+  COMMENT "Creating seekdb from observer"
 )
 
 configure_file(../share/ob_version.cpp.in ob_version.cpp)

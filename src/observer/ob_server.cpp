@@ -353,6 +353,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init network failed", KR(ret));
     } else if (OB_FAIL(init_interrupt())) {
       LOG_ERROR("init interrupt failed", KR(ret));
+    } else if (OB_FAIL(init_zlib_lite_compressor())) {
+      LOG_ERROR("init zlib lite compressor failed", KR(ret));
     } else if (OB_FAIL(init_plugin())) {
       LOG_ERROR("init plugin failed", KR(ret));
     } else if (OB_FAIL(rs_mgr_.init(&srv_rpc_proxy_, &config_, &sql_proxy_))) {
@@ -854,6 +856,8 @@ void ObServer::destroy()
     FLOG_INFO("cgroup service destroyed");
 
     deinit_plugin();
+
+    deinit_zlib_lite_compressor();
 
     FLOG_INFO("begin to destroy log io device wrapper");
     LOG_IO_DEVICE_WRAPPER.destroy();
@@ -2062,7 +2066,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
   } else if (nullptr == config_.redo_dir.get_value() || 0 == strlen(config_.redo_dir.get_value())) {
     ObString tmp_data_dir(data_dir.length(), data_dir.ptr());
     if (tmp_data_dir.empty()) {
-      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), static_cast<ObString::obstr_size_t>(strlen(config_.data_dir.get_value())));
+      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), strlen(config_.data_dir.get_value()));
     }
     if (OB_FAIL(redo_dir.assign_fmt("%.*s/redo", tmp_data_dir.length(), tmp_data_dir.ptr()))) {
       LOG_ERROR("failed to append redo dir", K(ret));
@@ -2077,7 +2081,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
     } else {
       ObString tmp_redo_dir(redo_dir.length(), redo_dir.ptr());
       if (tmp_redo_dir.prefix_match(current_dir)) {
-        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), static_cast<ObString::obstr_size_t>(tmp_redo_dir.length() - strlen(current_dir)));
+        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), tmp_redo_dir.length() - strlen(current_dir));
         while (tmp_redo_dir.prefix_match("/")) {
           tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + 1, tmp_redo_dir.length() - 1);
         }
@@ -2227,14 +2231,9 @@ int ObServer::init_pre_setting()
     ob_set_reserved_memory(reserved_memory);
   }
   if (OB_SUCC(ret)) {
-    const int64_t default_stack_size = 1L << 19; // 512KB
-    const int64_t stack_size = std::max(static_cast<int64_t>(default_stack_size), static_cast<int64_t>(GCONF.stack_size));
+    const int64_t stack_size = std::max(1L << 19, static_cast<int64_t>(GCONF.stack_size));
     LOG_INFO("set stack_size", K(stack_size));
     global_thread_stack_size = stack_size - SIG_STACK_SIZE - ACHUNK_PRESERVE_SIZE;
-#ifdef __APPLE__
-    const int ps = getpagesize();
-    global_thread_stack_size = (global_thread_stack_size + ps - 1) & ~(ps - 1);
-#endif
   }
   if (OB_SUCC(ret) && GCONF.use_ipv6) {
     enable_use_ipv6();
@@ -2344,6 +2343,16 @@ int ObServer::init_io()
                                                       &OB_IO_MANAGER,
                                                       &ObDeviceManager::get_instance()))) {
           LOG_ERROR("log_io_device_wrapper init failed", KR(ret));
+        } else {
+          if (log_block_mgr_.is_reserved()) {
+            int64_t clog_pool_in_use = 0;
+            int64_t clog_pool_total_size = 0;
+            if (OB_FAIL(log_block_mgr_.get_disk_usage(clog_pool_in_use, clog_pool_total_size))) {
+               LOG_ERROR("get clog disk size failed", KR(ret));
+            } else {
+              log_disk_size = clog_pool_total_size;
+            }
+          }
         }
         if (OB_SUCC(ret)) {
           storage_env_.data_disk_size_ = data_disk_size;
@@ -2441,6 +2450,39 @@ void ObServer::deinit_plugin()
     GCTX.plugin_mgr_ = nullptr;
   }
   LOG_INFO("plugin deinit done");
+}
+
+int ObServer::init_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else if (OB_FAIL(zlib_lite_compressor->init(0))) { // 0 means preserve 0 qpl job
+    LOG_ERROR("failed to init zlib lite compressor", K(ret));
+  } else {
+    const char *zlib_lite_compress_method = zlib_lite_compressor->compression_method();
+    LOG_INFO("zlib lite compressor init success", KCSTRING(zlib_lite_compress_method));
+  }
+  return ret;
+}
+
+void ObServer::deinit_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else {
+    zlib_lite_compressor->deinit();
+  }
+  LOG_INFO("zlib lite compressor deinit done");
 }
 
 int ObServer::init_loaddata_global_stat()
@@ -2702,6 +2744,7 @@ int ObServer::init_sequence()
 int ObServer::init_pl()
 {
   int ret = OB_SUCCESS;
+
   LOG_INFO("init pl");
   if (OB_FAIL(pl_engine_.init(sql_proxy_))) {
     LOG_ERROR("init pl engine failed", KR(ret));
@@ -2822,9 +2865,11 @@ int ObServer::init_storage()
   bool clogdir_is_empty = false;
 
   if (OB_SUCC(ret)) {
+    int64_t total_log_disk_size = 0;
     int64_t log_disk_in_use = 0;
     // Check if the clog directory is empty
-    if (OB_FAIL(log_block_mgr_.get_disk_usage(log_disk_in_use))) {
+    if (OB_FAIL(log_block_mgr_.get_disk_usage(
+            log_disk_in_use, total_log_disk_size))) {
       LOG_ERROR("ObServerLogBlockMgr get_disk_usage failed", K(ret));
     } else if (0 == log_disk_in_use
         && OB_FAIL(logservice::ObServerLogBlockMgr::check_clog_directory_is_empty(
