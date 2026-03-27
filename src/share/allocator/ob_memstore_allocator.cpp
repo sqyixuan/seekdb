@@ -25,7 +25,11 @@ namespace share
 int FrozenMemstoreInfoLogger::operator()(ObDLink* link)
 {
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, ObMemstoreAllocator::AllocHandle, total_list_);
+#else
   ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, typeof(*handle), total_list_);
+#endif
   memtable::ObMemtable& mt = handle->mt_;
   if (handle->is_frozen()) {
     if (OB_FAIL(databuff_print_obj(buf_, limit_, pos_, mt))) {
@@ -39,7 +43,11 @@ int FrozenMemstoreInfoLogger::operator()(ObDLink* link)
 int ActiveMemstoreInfoLogger::operator()(ObDLink* link)
 {
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, ObMemstoreAllocator::AllocHandle, total_list_);
+#else
   ObMemstoreAllocator::AllocHandle* handle = CONTAINER_OF(link, typeof(*handle), total_list_);
+#endif
   memtable::ObMemtable& mt = handle->mt_;
   if (handle->is_active()) {
     if (OB_FAIL(databuff_print_obj(buf_, limit_, pos_, mt))) {

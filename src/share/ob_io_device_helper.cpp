@@ -25,10 +25,27 @@
 #ifndef O_DIRECT
 #define O_DIRECT 0 // macOS does not support O_DIRECT
 #endif
+#elif defined(_WIN32)
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <stdint.h>
+#ifndef O_LARGEFILE
+#define O_LARGEFILE 0
+#endif
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+#ifndef F_OK
+#define F_OK 0
+#endif
+#include "share/ob_statvfs_win32.h"
 #else
 #include <sys/vfs.h>
 #endif
+#ifndef _WIN32
 #include <sys/statvfs.h>
+#endif
 #include "common/storage/ob_io_device.h"
 #include "share/ob_device_manager.h"
 #include "share/ob_io_device_helper.h"
@@ -292,7 +309,11 @@ int ObIODeviceLocalFileOp::mkdir(const char *pathname, mode_t mode)
   if (NULL == pathname || STRLEN(pathname) == 0) {
     ret = OB_INVALID_ARGUMENT;
     SHARE_LOG(WARN, "invalid arguments.", K(pathname), K(ret));
+#ifdef _WIN32
+  } else if (::mkdir(pathname) != 0) {
+#else
   } else if (::mkdir(pathname, mode) != 0) {
+#endif
     if (EEXIST == errno) {
       ret = OB_SUCCESS;
     } else {
@@ -562,6 +583,12 @@ int ObIODeviceLocalFileOp::fdatasync(const ObIOFd &fd)
 #ifdef __APPLE__
     // macOS doesn't have fdatasync, use fsync instead
     if (0 != (sys_ret = ::fsync(static_cast<int32_t>(fd.second_id_)))) {
+#elif defined(_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(static_cast<int32_t>(fd.second_id_));
+    if (h == INVALID_HANDLE_VALUE || !FlushFileBuffers(h)) {
+      sys_ret = -1;
+    }
+    if (0 != sys_ret) {
 #else
     if (0 != (sys_ret = ::fdatasync(static_cast<int32_t>(fd.second_id_)))) {
 #endif
@@ -605,6 +632,21 @@ int ObIODeviceLocalFileOp::fallocate(
         SHARE_LOG(WARN, "fail to ftruncate after preallocate", K(ret), K(fd), K(new_size), KERRMSG);
       }
     }
+#elif defined(_WIN32)
+    HANDLE h = (HANDLE)_get_osfhandle(static_cast<int32_t>(fd.second_id_));
+    if (h == INVALID_HANDLE_VALUE) {
+      sys_ret = -1;
+    } else {
+      LARGE_INTEGER li;
+      li.QuadPart = offset + len;
+      if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+        sys_ret = -1;
+      }
+    }
+    if (0 != sys_ret) {
+      ret = convert_sys_errno();
+      SHARE_LOG(WARN, "fail to fallocate", K(ret), K(sys_ret), K(fd), K(offset), K(len), KERRMSG);
+    }
 #else
     if (0 != (sys_ret = ::fallocate(static_cast<int32_t>(fd.second_id_), mode, offset, len))) {
       ret = convert_sys_errno();
@@ -640,7 +682,18 @@ int ObIODeviceLocalFileOp::truncate(const char *pathname, const int64_t len)
     SHARE_LOG(WARN, "invalid argument", K(ret), KP(pathname));
   } else {
     int sys_ret = 0;
-    if (0 != (sys_ret = ::truncate(pathname, len))) {
+#ifdef _WIN32
+    int fd = ::open(pathname, O_RDWR);
+    if (fd < 0) {
+      sys_ret = -1;
+    } else {
+      sys_ret = ::_chsize_s(fd, len);
+      ::close(fd);
+    }
+#else
+    sys_ret = ::truncate(pathname, len);
+#endif
+    if (0 != sys_ret) {
       ret = convert_sys_errno();
       SHARE_LOG(WARN, "fail to ftruncate", K(ret), K(sys_ret), K(pathname), K(len), KERRMSG);
     }
@@ -691,12 +744,22 @@ int ObIODeviceLocalFileOp::stat(const char *pathname, ObIODFileStat &statbuf)
       statbuf.uid_ = static_cast<uint64_t>(buf.st_uid);
       statbuf.gid_ = static_cast<uint64_t>(buf.st_gid);
       statbuf.size_ = static_cast<uint64_t>(buf.st_size);
+#ifdef _WIN32
+      statbuf.block_cnt_ = 0;
+      statbuf.block_size_ = 4096;
+#else
       statbuf.block_cnt_ = static_cast<uint64_t>(buf.st_blocks);
       statbuf.block_size_ = static_cast<uint64_t>(buf.st_blksize);
+#endif
+
 #ifdef __APPLE__
       statbuf.atime_s_ = static_cast<int64_t>(buf.st_atimespec.tv_sec);
       statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtimespec.tv_sec);
       statbuf.ctime_s_ = static_cast<int64_t>(buf.st_ctimespec.tv_sec);
+#elif defined(_WIN32)
+      statbuf.atime_s_ = static_cast<int64_t>(buf.st_atime);
+      statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtime);
+      statbuf.ctime_s_ = static_cast<int64_t>(buf.st_ctime);
 #else
       statbuf.atime_s_ = static_cast<int64_t>(buf.st_atim.tv_sec);
       statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtim.tv_sec);
@@ -729,18 +792,28 @@ int ObIODeviceLocalFileOp::fstat(const ObIOFd &fd, ObIODFileStat &statbuf)
       statbuf.uid_ = static_cast<uint64_t>(buf.st_uid);
       statbuf.gid_ = static_cast<uint64_t>(buf.st_gid);
       statbuf.size_ = static_cast<uint64_t>(buf.st_size);
+#ifdef __APPLE__
       statbuf.block_cnt_ = static_cast<uint64_t>(buf.st_blocks);
       statbuf.block_size_ = static_cast<uint64_t>(buf.st_blksize);
-#ifdef __APPLE__
       statbuf.atime_s_ = static_cast<int64_t>(buf.st_atimespec.tv_sec);
       statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtimespec.tv_sec);
       statbuf.ctime_s_ = static_cast<int64_t>(buf.st_ctimespec.tv_sec);
 #else
+#ifdef _WIN32
+      statbuf.block_cnt_ = 0;
+      statbuf.block_size_ = 4096;
+      statbuf.atime_s_ = static_cast<int64_t>(buf.st_atime);
+      statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtime);
+      statbuf.ctime_s_ = static_cast<int64_t>(buf.st_ctime);
+#else
+      statbuf.block_cnt_ = static_cast<uint64_t>(buf.st_blocks);
+      statbuf.block_size_ = static_cast<uint64_t>(buf.st_blksize);
       statbuf.atime_s_ = static_cast<int64_t>(buf.st_atim.tv_sec);
       statbuf.mtime_s_ = static_cast<int64_t>(buf.st_mtim.tv_sec);
       statbuf.ctime_s_ = static_cast<int64_t>(buf.st_ctim.tv_sec);
 #endif
-      statbuf.btime_s_ = INT64_MAX; // local file system stat does not offer birth time
+#endif
+      statbuf.btime_s_ = INT64_MAX;
     }
   }
   return ret;
@@ -794,7 +867,12 @@ int ObIODeviceLocalFileOp::pread_impl(
   int64_t read_offset = offset;
   ssize_t sz = 0;
   while (OB_SUCC(ret) && read_sz > 0) {
+#ifdef _WIN32
+    sz = ::_lseek(static_cast<int32_t>(fd), static_cast<long>(read_offset), SEEK_SET) == -1
+         ? -1 : ::_read(static_cast<int32_t>(fd), buffer, static_cast<unsigned int>(read_sz));
+#else
     sz = ::pread(static_cast<int32_t>(fd), buffer, read_sz, read_offset);
+#endif
     if (sz < 0) {
       if (EINTR == errno) {
         SHARE_LOG(INFO, "pread is interrupted before any data is read, just retry", K(errno), KERRMSG);
@@ -830,7 +908,12 @@ int ObIODeviceLocalFileOp::pwrite_impl(
   int64_t write_offset = offset;
   ssize_t sz = 0;
   while (OB_SUCC(ret) && write_sz > 0) {
+#ifdef _WIN32
+    sz = ::_lseek(static_cast<int32_t>(fd), static_cast<long>(write_offset), SEEK_SET) == -1
+         ? -1 : ::_write(static_cast<int32_t>(fd), buffer, static_cast<unsigned int>(write_sz));
+#else
     sz = ::pwrite(static_cast<int32_t>(fd), buffer, write_sz, write_offset);
+#endif
     if (sz <= 0) {
       // if physical end of medium is reached and there's no space for any byte, EFBIG is set
       // and we think pwrite will never return 0
@@ -877,7 +960,9 @@ int ObIODeviceLocalFileOp::convert_sys_errno(const int error_no)
     case EAGAIN:
       ret = OB_EAGAIN;
       break;
+#ifndef _WIN32
     case EDQUOT:
+#endif
     case ENOSPC:
       ret = OB_SERVER_OUTOF_DISK_SPACE;
       break;
@@ -1043,14 +1128,23 @@ int ObIODeviceLocalFileOp::open_block_file(
         fstore_t store = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, adjust_file_size, 0};
         sys_ret = fcntl(block_file_attr.block_fd_, F_PREALLOCATE, &store);
         if (-1 == sys_ret) {
-          // Try allocating non-contiguous space
           store.fst_flags = F_ALLOCATEALL;
           sys_ret = fcntl(block_file_attr.block_fd_, F_PREALLOCATE, &store);
         }
-        // F_PREALLOCATE only reserves space but doesn't change file size.
-        // We must call ftruncate to actually set the file size.
         if (0 == sys_ret) {
           sys_ret = ::ftruncate(block_file_attr.block_fd_, adjust_file_size);
+        }
+        if (0 != sys_ret) {
+#elif defined(_WIN32)
+        HANDLE h = (HANDLE)_get_osfhandle(block_file_attr.block_fd_);
+        if (h != INVALID_HANDLE_VALUE) {
+          LARGE_INTEGER li;
+          li.QuadPart = adjust_file_size;
+          if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+            sys_ret = -1;
+          }
+        } else {
+          sys_ret = -1;
         }
         if (0 != sys_ret) {
 #else

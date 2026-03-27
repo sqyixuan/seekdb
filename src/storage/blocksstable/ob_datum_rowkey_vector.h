@@ -300,7 +300,7 @@ struct ObRVIntegerIterator
   ObRVIntegerIterator(const int64_t pos, T *data, const bool *nulls)
     : pos_(pos), data_(data), nulls_(nulls) {}
   ~ObRVIntegerIterator() = default;
-  OB_INLINE value_type &operator*()
+  OB_INLINE value_type &operator*() const
   {
     cell_.d_ = data_[pos_];
     cell_.null_ = nulls_[pos_];
@@ -366,7 +366,7 @@ struct ObRVIntegerIterator
   int64_t pos_;
   T *data_;
   const bool *nulls_;
-  value_type cell_;
+  mutable value_type cell_;
 };
 
 // null first

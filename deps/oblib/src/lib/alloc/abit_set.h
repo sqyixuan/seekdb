@@ -24,6 +24,33 @@
 #include "lib/utility/ob_template_utils.h"
 #include "lib/alloc/alloc_assist.h"
 
+// Windows compatibility for ffsl and GCC builtins
+#ifdef _WIN32
+#include <intrin.h>
+inline int ffsl(long value) {
+  if (value == 0) return 0;
+  unsigned long index;
+  #ifdef _WIN64
+  _BitScanForward64(&index, static_cast<unsigned long long>(value));
+  #else
+  _BitScanForward(&index, static_cast<unsigned long>(value));
+  #endif
+  return static_cast<int>(index + 1);
+}
+#ifndef __clang__
+inline int __builtin_ctzll(unsigned long long value) {
+  unsigned long index;
+  _BitScanForward64(&index, value);
+  return static_cast<int>(index);
+}
+inline int __builtin_clzll(unsigned long long value) {
+  unsigned long index;
+  _BitScanReverse64(&index, value);
+  return 63 - static_cast<int>(index);
+}
+#endif
+#endif
+
 namespace oceanbase
 {
 namespace lib

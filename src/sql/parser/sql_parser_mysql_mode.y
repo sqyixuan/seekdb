@@ -20,6 +20,9 @@
 %locations
 %verbose
 %error-verbose
+%code requires {
+#include "parse_node.h"
+}
 %{
 #include <stdint.h>
 #define YYDEBUG 1
@@ -389,7 +392,7 @@ END_P SET_VAR DELIMITER
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
-%type <node> create_table_stmt create_table_like_stmt fork_table_stmt fork_database_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
+%type <node> create_table_stmt create_table_like_stmt fork_table_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> opt_force
 %type <node> index_or_heap
 %type <node> create_sequence_stmt alter_sequence_stmt drop_sequence_stmt opt_sequence_option_list sequence_option_list sequence_option simple_num
@@ -639,7 +642,6 @@ stmt:
   | drop_function_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_table_like_stmt  { $$ = $1; check_question_mark($$, result); }
   | fork_table_stmt         { $$ = $1; check_question_mark($$, result); }
-  | fork_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | create_database_stmt    { $$ = $1; check_question_mark($$, result); }
   | drop_database_stmt      { $$ = $1; check_question_mark($$, result); }
   | alter_database_stmt     { $$ = $1; check_question_mark($$, result); }
@@ -5571,13 +5573,6 @@ FORK TABLE relation_factor TO relation_factor
 }
 ;
 
-fork_database_stmt:
-FORK DATABASE database_factor TO database_factor
-{
-  malloc_non_terminal_node($$, result->malloc_pool_, T_FORK_DATABASE, 2, $5, $3);
-}
-;
-
 /*****************************************************************************
  *
  *	create table grammar
@@ -9526,7 +9521,7 @@ TYPE COMP_EQ STRING_VALUE
 }
 | COLUMN_BLOOM_FILTER COMP_EQ '(' intnum_list ')'
 {
-  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_BLOOM_FILTER, 1, $4)
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_BLOOM_FILTER, 1, $4);
 }
 | FILE_EXTENSION COMP_EQ STRING_VALUE
 {
@@ -11279,7 +11274,7 @@ INSERT
 
 /*TODO: support no_param_column_ref case*/
 column_list_with_boost:
-with_param_column_ref { $$ = $1}
+with_param_column_ref { $$ = $1; }
 | column_list_with_boost ',' with_param_column_ref
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
@@ -15220,7 +15215,7 @@ table_factor %prec LOWER_COMMA
 natural_join_type:
 NATURAL except_full_outer_join_type
 {
-  $$ = $2
+  $$ = $2;
 }
 | NATURAL FULL opt_outer JOIN
 {
@@ -16539,7 +16534,7 @@ calibration_info_list:
 }
 | STRING_VALUE
 {
-  $$ = $1
+  $$ = $1;
 }
 | calibration_info_list ',' STRING_VALUE
 {
@@ -21890,7 +21885,7 @@ FILE_ID opt_equal_mark INTNUM
 opt_file_id:
 file_id
 {
-  $$ = $1
+  $$ = $1;
 }
 |
 {
@@ -23613,7 +23608,7 @@ alter_with_opt_hint SYSTEM transfer_partition_clause opt_tenant_name
 | alter_with_opt_hint SYSTEM CANCEL BALANCE JOB opt_tenant_name
 {
   (void)($1);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_BALANCE_JOB, 1, $6)
+  malloc_non_terminal_node($$, result->malloc_pool_, T_CANCEL_BALANCE_JOB, 1, $6);
 }
 ;
 transfer_partition_clause:
@@ -24832,7 +24827,7 @@ MIN_MAX
 }
 | SUM
 {
-  malloc_terminal_node($$, result->malloc_pool_, T_COL_SKIP_INDEX_SUM)
+  malloc_terminal_node($$, result->malloc_pool_, T_COL_SKIP_INDEX_SUM);
 }
 ;
 

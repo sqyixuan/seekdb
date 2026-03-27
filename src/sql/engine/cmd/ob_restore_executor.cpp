@@ -159,7 +159,11 @@ int ObPhysicalRestoreTenantExecutor::sync_wait_tenant_created_(
         if (OB_FAIL(ObRestoreUtil::check_physical_restore_finish(*sql_proxy, job_id, is_finish, is_failed))) {
           LOG_WARN("failed to check physical restore finish", K(ret), K(job_id));
         } else if (!is_finish) {
+#ifdef _WIN32
+          Sleep(1000);
+#else
           sleep(1);
+#endif
           LOG_DEBUG("restore not finish, wait later", K(ret), K(user_tenant_id));
         } else if (is_failed) {
           char comment[OB_INNER_TABLE_DEFAULT_KEY_LENTH] = { 0 };

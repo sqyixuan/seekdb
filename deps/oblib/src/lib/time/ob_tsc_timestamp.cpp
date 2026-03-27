@@ -16,6 +16,9 @@
 
 #include "ob_tsc_timestamp.h"
 #include "lib/oblog/ob_log.h"
+#ifdef _WIN32
+#include "lib/hash/ob_hashutils.h"
+#endif
 
 using namespace oceanbase;
 using namespace oceanbase::common;

@@ -19,6 +19,112 @@
 #include "lib/utility/ob_sort.h"
 #include "lib/utility/ob_platform_utils.h"
 #include <sys/stat.h>
+#ifdef _WIN32
+// Windows specific headers and definitions
+#include <io.h>        // for access, _mkdir, _rmdir
+#include <direct.h>    // for _mkdir
+#include <sys/types.h>
+#include <sys/stat.h>
+
+// Define missing POSIX constants
+#ifndef F_OK
+#define F_OK 0  // Test for file existence
+#endif
+
+#ifndef EDQUOT
+#define EDQUOT 122  // Disk quota exceeded (not really used on Windows)
+#endif
+
+// O_SYNC is not supported on Windows, use 0 as fallback
+#ifndef O_SYNC
+#define O_SYNC 0
+#endif
+
+// stat64 mapping
+#define stat64 _stat64
+#define fstat64 _fstat64
+
+// lstat doesn't exist on Windows - use _stat64 directly
+// Note: We don't use #define here to avoid conflicts
+static inline int posix_lstat(const char* path, struct _stat64* buf) {
+    return _stat64(path, buf);
+}
+
+// mkdir wrapper - avoid macro to prevent conflicts with class methods
+static inline int posix_mkdir(const char* path, int mode) {
+    (void)mode;  // Windows ignores mode
+    return _mkdir(path);
+}
+
+// rmdir wrapper
+static inline int posix_rmdir(const char* path) {
+    return _rmdir(path);
+}
+
+// pread - Windows doesn't have this, provide implementation
+static inline ssize_t posix_pread(int fd, void* buf, size_t count, off_t offset) {
+    // Save current position
+    off_t orig_pos = _lseeki64(fd, 0, SEEK_CUR);
+    if (orig_pos == -1) {
+        return -1;
+    }
+    
+    // Seek to offset
+    if (_lseeki64(fd, offset, SEEK_SET) == -1) {
+        return -1;
+    }
+    
+    // Read
+    int bytes_read = _read(fd, buf, (unsigned int)count);
+    
+    // Restore position
+    _lseeki64(fd, orig_pos, SEEK_SET);
+    
+    return bytes_read;
+}
+
+// pwrite - Windows doesn't have this, provide implementation
+static inline ssize_t posix_pwrite(int fd, const void* buf, size_t count, off_t offset) {
+    // Save current position
+    off_t orig_pos = _lseeki64(fd, 0, SEEK_CUR);
+    if (orig_pos == -1) {
+        return -1;
+    }
+    
+    // Seek to offset
+    if (_lseeki64(fd, offset, SEEK_SET) == -1) {
+        return -1;
+    }
+    
+    // Write
+    int bytes_written = _write(fd, buf, (unsigned int)count);
+    
+    // Restore position
+    _lseeki64(fd, orig_pos, SEEK_SET);
+    
+    return bytes_written;
+}
+
+// File lock functions are not supported on Windows - provide no-op implementations
+struct flock {
+    short l_type;
+    short l_whence;
+    off_t l_start;
+    off_t l_len;
+};
+
+#define F_WRLCK 1
+#define F_UNLCK 2
+#define F_SETLK 3
+
+// fcntl is not supported on Windows, provide no-op
+static inline int fcntl(int fd, int cmd, struct flock* lock) {
+    (void)fd; (void)cmd; (void)lock;
+    return 0;  // Return success for compatibility
+}
+
+#endif // _WIN32
+
 #include <dirent.h>
 #include <errno.h>
 #include <string.h>
@@ -153,7 +259,11 @@ int ObStorageFileUtil::get_file_length(const common::ObString &uri, int64_t &fil
   int ret = OB_SUCCESS;
   char path[OB_MAX_URI_LENGTH];
   char errno_buf[OB_MAX_ERROR_MSG_LEN] = "";
+#ifdef _WIN32
+  struct _stat64 file_info;
+#else
   struct stat64 file_info;
+#endif
 
   file_length = -1;
 
@@ -181,7 +291,11 @@ int ObStorageFileUtil::head_object_meta(const common::ObString &uri, ObStorageOb
   int ret = OB_SUCCESS;
   char path[OB_MAX_URI_LENGTH];
   char errno_buf[OB_MAX_ERROR_MSG_LEN] = "";
+#ifdef _WIN32
+  struct _stat64 file_info;
+#else
   struct stat64 file_info;
+#endif
   obj_meta.reset();
 
   if (uri.empty()) {
@@ -316,7 +430,11 @@ int ObStorageFileUtil::mkdir(const common::ObString &uri)
         }
         if (0 == ::access(path, F_OK)) {
         } else if (ENOENT == errno) {
+#ifdef _WIN32
+          if (0 != posix_mkdir(path, S_IRWXU)) {
+#else
           if (0 != ::mkdir(path, S_IRWXU)) {
+#endif
             if (EEXIST == errno) {
               if (0 != ::access(path, F_OK)) {
                 convert_io_error(errno, ret);
@@ -568,7 +686,11 @@ int ObStorageFileUtil::del_dir(const common::ObString &uri)
   char dir_path[OB_MAX_URI_LENGTH];
   char errno_buf[OB_MAX_ERROR_MSG_LEN] = "";
 
+#ifdef _WIN32
+  struct _stat64 st;
+#else
   struct stat st;
+#endif
   DIR *open_dir = NULL;
   struct dirent entry;
   struct dirent *result;
@@ -579,7 +701,11 @@ int ObStorageFileUtil::del_dir(const common::ObString &uri)
     STORAGE_LOG(WARN, "invalid args", K(ret), K(uri));
   } else if (OB_FAIL(get_file_path(uri, dir_path, sizeof(dir_path)))) {
     STORAGE_LOG(WARN, "failed to fill path", K(ret), K(uri));
+#ifdef _WIN32
+  } else if (OB_FAIL(posix_lstat(dir_path, &st))) {
+#else
   } else if (OB_FAIL(::lstat(dir_path, &st))) {
+#endif
     if (ENOENT == errno) {
       ret = OB_SUCCESS;
       STORAGE_LOG(INFO, "dir do not exist", KCSTRING(dir_path),
@@ -614,7 +740,11 @@ int ObStorageFileUtil::del_dir(const common::ObString &uri)
       }
     }
     if (OB_SUCC(ret) && 0 == dir_file_count) {
+#ifdef _WIN32
+      if (0 != posix_rmdir(dir_path)) {
+#else
       if (0 != ::rmdir(dir_path)) {
+#endif
         convert_io_error(errno, ret);
         STORAGE_LOG(WARN, "failed to del file",
             K(ret), KCSTRING(dir_path), "errno", strerror_r(errno, errno_buf, sizeof(errno_buf)));
@@ -752,7 +882,11 @@ int ObStorageFileReader::open(const common::ObString &uri,
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   char errno_buf[OB_MAX_ERROR_MSG_LEN] = "";
+#ifdef _WIN32
+  struct _stat64 file_info;
+#else
   struct stat64 file_info;
+#endif
   UNUSED(storage_info);
 
   if (is_opened_) {
@@ -805,7 +939,11 @@ int ObStorageFileReader::pread(
   } else {
     int64_t one_read_size = 0;
     while (OB_SUCC(ret) && read_size < buf_size) {
+#ifdef _WIN32
+      one_read_size = posix_pread(fd_, buf + read_size, buf_size - read_size, offset + read_size);
+#else
       one_read_size = ::pread(fd_, buf + read_size, buf_size - read_size, offset + read_size);
+#endif
       if (0 == one_read_size) {
         break;
       } else if (one_read_size < 0) {
@@ -930,7 +1068,11 @@ int ObStorageFileBaseWriter::inner_pwrite(
   int64_t write_size = 0;
   int64_t one_write_size = 0;
   while (OB_SUCC(ret) && write_size < buf_size) {
+#ifdef _WIN32
+    one_write_size = posix_pwrite(fd_, buf + write_size, buf_size - write_size, offset + write_size);
+#else
     one_write_size = ::pwrite(fd_, buf + write_size, buf_size - write_size, offset + write_size);
+#endif
     if (one_write_size < 0) {
       convert_io_error(errno, ret);
       STORAGE_LOG(WARN, "failed to write file",
@@ -975,7 +1117,11 @@ int ObStorageFileSingleWriter::open(const common::ObString &uri, common::ObObjec
 {
   UNUSED(storage_info);
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  constexpr const char* TMP_NAME_FORMAT = "%s.tmp.%ld";
+#else
   const char *TMP_NAME_FORMAT = "%s.tmp.%ld";
+#endif
   const int64_t cur_ts = ObTimeUtil::current_time();
 
   if (is_file_path_obtained_) {
@@ -1095,7 +1241,11 @@ int ObStorageFileMultipleWriter::open(const common::ObString &uri, common::ObObj
 {
   UNUSED(storage_info);
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  constexpr const char* TMP_NAME_FORMAT = "%s.tmp.%ld";
+#else
   const char *TMP_NAME_FORMAT = "%s.tmp.%ld";
+#endif
   const int64_t cur_ts = ObTimeUtil::current_time();
   int flags = O_CREAT | O_WRONLY | O_TRUNC | O_EXCL | O_SYNC;
 

@@ -1464,6 +1464,8 @@ ob_set_subtarget(ob_sql udr
   udr/ob_udr_utils.cpp
 )
 
+add_definitions(-D_GLIBCXX_USE_CXX11_ABI=0)
+
 ob_add_new_object_target(ob_sql ob_sql)
 ob_add_new_object_target(ob_sql_extra ob_sql_extra)
 
@@ -1481,7 +1483,7 @@ ob_set_subtarget(ob_sql_simd common
 
 ob_server_add_target(ob_sql_simd)
 
-if (${ARCHITECTURE} STREQUAL "x86_64")
+if (${ARCHITECTURE} STREQUAL "x86_64" OR ${ARCHITECTURE} STREQUAL "amd64")
 	target_compile_options(ob_sql_simd
 	  PRIVATE
 		-mtune=core-avx2 -mavx2 -mfma -mbmi2 -mavx512vl -mavx512bw
@@ -1499,12 +1501,22 @@ target_link_libraries(ob_sql_static
   PUBLIC ob_sql ob_sql_extra
   ob_sql_server_parser_static)
 
-execute_process(
-  COMMAND env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
-  RESULT_VARIABLE RET
-  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
-  OUTPUT_FILE _gen_parser.output
-  ERROR_FILE _gen_parser.error)
+if(WIN32)
+  find_program(PWSH_EXE NAMES pwsh pwsh.exe powershell powershell.exe REQUIRED)
+  execute_process(
+    COMMAND ${PWSH_EXE} -NoProfile -ExecutionPolicy Bypass -File gen_parser_win.ps1
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
+    OUTPUT_FILE _gen_parser.output
+    ERROR_FILE _gen_parser.error)
+else()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env NEED_PARSER_CACHE=${NEED_PARSER_CACHE} bash gen_parser.sh
+    RESULT_VARIABLE RET
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/src/sql/parser
+    OUTPUT_FILE _gen_parser.output
+    ERROR_FILE _gen_parser.error)
+endif()
 if(RET AND NOT RET EQUAL 0)
   message(FATAL_ERROR "Generate sql parser failed and check error in ${PROJECT_SOURCE_DIR}/src/sql/parser/_gen_parser.error")
 endif()

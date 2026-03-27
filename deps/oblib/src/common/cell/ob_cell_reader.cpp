@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#ifdef _WIN32
+#define USING_LOG_PREFIX COMMON
+#endif
 #include "common/cell/ob_cell_reader.h"
 
 namespace oceanbase

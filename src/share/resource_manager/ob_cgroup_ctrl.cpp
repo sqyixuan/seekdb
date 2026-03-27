@@ -17,6 +17,15 @@
 #define USING_LOG_PREFIX SERVER_OMT
 
 #include "ob_cgroup_ctrl.h"
+#ifdef _WIN32
+#include <io.h>
+#ifndef R_OK
+#define R_OK 4
+#endif
+#ifndef W_OK
+#define W_OK 2
+#endif
+#endif
 #include "lib/file/file_directory_utils.h"
 #include "share/io/ob_io_manager.h"
 #include "share/resource_manager/ob_resource_manager.h"
@@ -147,6 +156,18 @@ int ObCgroupCtrl::check_cgroup_root_dir()
 {
   int ret = OB_SUCCESS;
   bool exist_cgroup = false;
+#ifdef _WIN32
+  if (OB_FAIL(FileDirectoryUtils::is_exists(OBSERVER_ROOT_CGROUP_DIR, exist_cgroup))) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("fail check file exist", K(OBSERVER_ROOT_CGROUP_DIR), K(ret));
+  } else if (!exist_cgroup) {
+    ret = OB_FILE_NOT_EXIST;
+    LOG_WARN("dir not exist", K(OBSERVER_ROOT_CGROUP_DIR), K(ret));
+  } else if (0 != _access(OBSERVER_ROOT_CGROUP_DIR, R_OK | W_OK)) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("no permission to access", K(OBSERVER_ROOT_CGROUP_DIR), K(ret));
+  }
+#else
   int link_len = 0;
   char real_cgroup_path[PATH_BUFSIZE];
   if (OB_FAIL(FileDirectoryUtils::is_exists(OBSERVER_ROOT_CGROUP_DIR, exist_cgroup))) {
@@ -163,6 +184,7 @@ int ObCgroupCtrl::check_cgroup_root_dir()
     ret = OB_ERR_SYS;
     LOG_WARN("no permission to access", K(OBSERVER_ROOT_CGROUP_DIR), K(ret));
   }
+#endif
   return ret;
 }
 

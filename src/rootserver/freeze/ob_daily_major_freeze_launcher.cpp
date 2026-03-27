@@ -133,7 +133,12 @@ int ObDailyMajorFreezeLauncher::try_launch_major_freeze()
     time(&cur_time);
     struct tm human_time;
     struct tm *human_time_ptr = nullptr;
-    if (nullptr == (human_time_ptr = (localtime_r(&cur_time, &human_time)))) {
+#ifdef _WIN32
+    human_time_ptr = (0 == localtime_s(&human_time, &cur_time)) ? &human_time : nullptr;
+#else
+    human_time_ptr = localtime_r(&cur_time, &human_time);
+#endif
+    if (nullptr == human_time_ptr) {
       ret = OB_ERR_SYS;
       LOG_WARN("fail to get localtime", KR(ret), K(errno));
     } else if ((human_time_ptr->tm_hour == hour) && (human_time_ptr->tm_min == minute)) {

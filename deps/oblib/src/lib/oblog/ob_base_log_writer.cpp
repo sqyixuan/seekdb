@@ -95,6 +95,10 @@ int ObBaseLogWriter::init(
 int ObBaseLogWriter::start()
 {
   int ret = OB_SUCCESS;
+#ifdef _WIN32
+  has_stopped_ = false;
+  return ret;
+#endif
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;

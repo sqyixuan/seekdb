@@ -24,6 +24,8 @@
 #include "lib/alloc/ob_malloc_time_monitor.h"
 #include "lib/resource/ob_affinity_ctrl.h"
 
+// ob_backtrace is implemented in ob_backtrace.cpp for Windows
+
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
 
@@ -71,7 +73,7 @@ void *ObMallocAllocator::alloc(const int64_t size, const oceanbase::lib::ObMemAt
 void *ObMallocAllocator::realloc(
   const void *ptr, const int64_t size, const oceanbase::lib::ObMemAttr &attr)
 {
-#ifdef OB_USE_ASAN
+#if defined(OB_USE_ASAN) || defined(_WIN32)
   UNUSED(attr);
   return ::realloc(const_cast<void *>(ptr), size);
 #else
@@ -93,13 +95,13 @@ void *ObMallocAllocator::realloc(
 
 void ObMallocAllocator::free(void *ptr)
 {
-#ifdef OB_USE_ASAN
+#if defined(OB_USE_ASAN) || defined(_WIN32)
   ::free(ptr);
 #else
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
   // directly free object instead of using tenant allocator.
   ObTenantCtxAllocator::common_free(ptr);
-#endif // OB_USE_ASAN
+#endif
 }
 
 ObTenantCtxAllocatorGuard ObMallocAllocator::get_tenant_ctx_allocator(uint64_t tenant_id,
@@ -468,7 +470,11 @@ void *ObMallocHook::alloc(const int64_t size)
     if (OB_LIKELY(NULL != obj)) {
       if (OB_UNLIKELY(sample_allowed)) {
         void *addrs[100] = {nullptr};
+#ifndef _WIN32
         backtrace(addrs, ARRAYSIZEOF(addrs));
+#else
+        _ob_backtrace(addrs, ARRAYSIZEOF(addrs));
+#endif
         MEMCPY(obj->bt(), (char*)addrs, AOBJECT_BACKTRACE_SIZE);
         obj->on_malloc_sample_ = true;
       }

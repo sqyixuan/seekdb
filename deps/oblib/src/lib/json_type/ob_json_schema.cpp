@@ -4360,7 +4360,11 @@ int ObJsonSchemaUtils::get_index_str(const int& idx, ObStringBuffer& buf)
   char* ptr = nullptr;
   if (OB_ISNULL(ptr = ObCharset::lltostr(idx, res_ptr, 10, 1))) {
     ret = OB_BAD_NULL_ERROR;
+#ifdef _WIN32
+    LOG_WARN("fail to transform the index(lltostr)", K(ret), K(idx));
+#else
     LOG_WARN("fail to transform the index(lltostr)", K(ret), K(index));
+#endif
   } else {
     buf.append(res_ptr, static_cast<int32_t>(ptr - res_ptr));
   }

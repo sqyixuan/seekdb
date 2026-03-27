@@ -49,7 +49,11 @@ const char *ObTime2Str::ob_timestamp_str(const int64_t ts)
   size_t idx = strftime(&buffer[0],
                         sizeof(buffer),
                         "%F %T",
+#ifdef _WIN32
+                        (localtime_s(&t, &ts_s), &t));
+#else
                         localtime_r(&ts_s, &t));
+#endif
   idx += snprintf(&buffer[idx], TIME_BUFFER_SIZE - idx, ".%ld", ts % 1000000);
   buffer[idx] = '\0';
   return buffer;

@@ -405,6 +405,8 @@ private:
 
 template<>
 int ObTagCtx<char*>::tostring(char* buf, const int64_t buf_len, int64_t& pos);
+template<>
+int ObTagCtx<void*>::tostring(char* buf, const int64_t buf_len, int64_t& pos);
 
 } // trace
 } // oceanbase

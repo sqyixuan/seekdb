@@ -17,6 +17,9 @@
 #include "lib/allocator/ob_allocator_v2.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
 #include "lib/resource/ob_affinity_ctrl.h"
+#ifdef _WIN32
+#include "lib/alloc/alloc_failed_reason.h"
+#endif
 
 using namespace oceanbase::lib;
 namespace oceanbase
@@ -31,6 +34,10 @@ void *ObAllocator::alloc(const int64_t size, const ObMemAttr &attr)
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = init();
+#ifdef _WIN32
+    fprintf(stderr, "[DIAG] ObAllocator::alloc init() ret=%d tenant=%lu ctx=%lu\n",
+            ret, (unsigned long)attr_.tenant_id_, (unsigned long)attr_.ctx_id_); fflush(stderr);
+#endif
   }
   if (OB_SUCC(ret)) {
     ObMemAttr inner_attr = attr_;
@@ -39,8 +46,22 @@ void *ObAllocator::alloc(const int64_t size, const ObMemAttr &attr)
     }
     auto ta = lib::ObMallocAllocator::get_instance()->get_tenant_ctx_allocator(inner_attr.tenant_id_,
                                                                                 inner_attr.ctx_id_);
+#ifdef _WIN32
+    if (OB_UNLIKELY(NULL == ta)) {
+      fprintf(stderr, "[DIAG] ObAllocator::alloc ta=NULL for tenant=%lu ctx=%lu\n",
+              (unsigned long)inner_attr.tenant_id_, (unsigned long)inner_attr.ctx_id_); fflush(stderr);
+    }
+#endif
     if (OB_LIKELY(NULL != ta)) {
       ptr = ObTenantCtxAllocator::common_realloc(NULL, size, inner_attr, *(ta.ref_allocator()), os_);
+#ifdef _WIN32
+      if (OB_UNLIKELY(NULL == ptr)) {
+        auto &afc = lib::g_alloc_failed_ctx();
+        fprintf(stderr, "[DIAG] ObAllocator::alloc common_realloc returned NULL, size=%ld, reason=%d"
+                " (0=UNKNOWN,1=INVALID_SZ,2=OVERFLOW,3=CTX_LIMIT,4=TENANT_LIMIT,5=SVR_LIMIT,6=PHYS_EXHAUST)\n",
+                (long)size, (int)afc.reason_); fflush(stderr);
+      }
+#endif
     }
   }
   return ptr;
