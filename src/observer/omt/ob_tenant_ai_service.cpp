@@ -23,6 +23,7 @@
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
+
 namespace oceanbase
 {
 namespace omt
@@ -87,8 +88,8 @@ int ObAiServiceGuard::check_access_privilege()
 {
   int ret = OB_SUCCESS;
   bool has_priv = false;
-
-  sql::ObSQLSessionInfo *session = nullptr;
+  
+  ObSQLSessionInfo *session = nullptr;
   if (OB_ISNULL(session = THIS_WORKER.get_session())) {
     // system background task thread do not have session, skip check
   } else {
@@ -118,7 +119,7 @@ int ObAiServiceGuard::check_access_privilege()
       }
     }
   }
-
+  
   return ret;
 }
 
@@ -126,7 +127,7 @@ int ObAiServiceGuard::get_ai_endpoint(const common::ObString &name, const share:
 {
   int ret = OB_SUCCESS;
   ObAiModelEndpointInfo *tmp_endpoint_info = nullptr;
-
+  
   if (OB_FAIL(check_access_privilege())) {
     LOG_WARN("failed to check access privilege", K(ret));
   } else if (OB_ISNULL(tmp_endpoint_info = OB_NEWx(ObAiModelEndpointInfo, &local_allocator_))) {
@@ -144,7 +145,7 @@ int ObAiServiceGuard::get_ai_endpoint_by_ai_model_name(const common::ObString &a
 {
   int ret = OB_SUCCESS;
   ObAiModelEndpointInfo *tmp_endpoint_info = nullptr;
-
+  
   if (need_check && OB_FAIL(check_access_privilege())) {
     LOG_WARN("failed to check access privilege", K(ret));
   } else if (OB_ISNULL(tmp_endpoint_info = OB_NEWx(ObAiModelEndpointInfo, &local_allocator_))) {
