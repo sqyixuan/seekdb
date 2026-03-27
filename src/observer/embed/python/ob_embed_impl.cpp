@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 #define USING_LOG_PREFIX SERVER
-#ifdef __APPLE__
-#include <libkern/OSByteOrder.h>
-// macOS doesn't have be64toh/htobe64, use OSSwapBigToHostInt64/OSSwapHostToBigInt64
-#define be64toh(x) OSSwapBigToHostInt64(x)
-#define htobe64(x) OSSwapHostToBigInt64(x)
-#elif defined(__linux__)
-#include <endian.h>
-#endif
 #include <pybind11/stl.h>
 #include <memory>
 #include "observer/embed/python/ob_embed_impl.h"
@@ -38,7 +30,7 @@
 #include "lib/charset/ob_charset.h"
 
 PYBIND11_MODULE(PYTHON_MODEL_NAME, m) {
-    m.doc() = "OceanBase seekdb";
+    m.doc() = "OceanBase SeekDB";
     char embed_version_str[oceanbase::common::OB_SERVER_VERSION_LENGTH];
     oceanbase::common::VersionUtil::print_version_str(embed_version_str, sizeof(embed_version_str), DATA_CURRENT_VERSION);
     m.attr("__version__") = embed_version_str;
@@ -228,7 +220,7 @@ int ObLiteEmbed::do_open_(const char* db_dir, int64_t port)
     MPRINT("db %s opened by other process", db_dir);
   } else if (FALSE_IT(pid_locked = true)) {
   } else {
-    OB_LOGGER.set_log_level(DEFAULT_LOG_LEVEL);
+    OB_LOGGER.set_log_level("INFO");
     ObSqlString log_file;
     if (OB_FAIL(log_file.assign_fmt("%s/log/seekdb.log", opts.base_dir_.ptr()))) {
       MPRINT("calculate log file failed %d", ret);
@@ -933,16 +925,6 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
         } else {
           val = pybind11::str(out_str.ptr(), out_str.length());
         }
-      }
-      break;
-    }
-    case ObHexStringType: {
-      ObObj obj;
-      if (OB_FAIL(result.get_obj(col_idx, obj))) {
-        LOG_WARN("get obj failed", K(ret), K(col_idx));
-      } else {
-        ObString hex_str = obj.get_hex_string();
-        val = pybind11::bytes(hex_str.ptr(), hex_str.length());
       }
       break;
     }
