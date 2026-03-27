@@ -140,9 +140,7 @@ public:
 
   PALF_PLUGINS_DELEGATE_PTR(locality_cb_, locality_cb_lock_, get_server_region);
 
-  PALF_PLUGINS_DELEGATE_PTR(reconfig_checker_cb_, reconfig_checker_cb_lock_, check_can_add_member);
-  PALF_PLUGINS_DELEGATE_PTR(reconfig_checker_cb_, reconfig_checker_cb_lock_, check_can_change_memberlist);
-  TO_STRING_KV(KP_(loc_cb), KP_(palf_monitor), KP_(palflite_monitor), KP_(reconfig_checker_cb));
+  TO_STRING_KV(KP_(loc_cb), KP_(palf_monitor), KP_(palflite_monitor));
 private:
   common::RWLock loc_lock_;
   PalfLocationCacheCb *loc_cb_;
@@ -152,8 +150,6 @@ private:
   PalfLiteMonitorCb *palflite_monitor_;
   common::RWLock locality_cb_lock_;
   PalfLocalityInfoCb *locality_cb_;
-  common::RWLock reconfig_checker_cb_lock_;
-  PalfReconfigCheckerCb *reconfig_checker_cb_;
 };
 } // end namespace palf
 } // end namespace oceanbase

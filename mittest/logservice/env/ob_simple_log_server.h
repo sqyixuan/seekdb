@@ -53,8 +53,6 @@
 #include "share/ob_occam_timer.h"
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "logservice/ob_net_keepalive_adapter.h"
-#include "logservice/leader_coordinator/ob_failure_detector.h"
-#include "logservice/arbserver/arb_tg_helper.h"
 #include <memory>
 #include <map>
 #include "share/ob_tenant_mem_limit_getter.h"
@@ -523,7 +521,6 @@ private:
   common::ObMySQLProxy sql_proxy_;
   MockNetKeepAliveAdapter *net_keepalive_;
   ObSrvRpcProxy srv_proxy_;
-  logservice::coordinator::ObFailureDetector detector_;
   MockElectionMap mock_election_map_;
   // ObTenantUnit and __all_unit_configs
   ObSpinLock log_disk_lock_;

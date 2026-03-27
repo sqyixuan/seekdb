@@ -38,7 +38,6 @@ public:
   MOCK_METHOD2(fetch_sys_lsn, int(share::ObLSReplica &replica,
                                          const ObRpcOpts &opts));
   MOCK_METHOD3(get_wrs_info, int(const ObGetWRSArg &arg, AsyncCB<OB_GET_WRS_INFO> *cb, const ObRpcOpts &opts));
-  MOCK_METHOD2(report_single_replica, int(const ObReportSingleReplicaArg &arg, const ObRpcOpts &opts));
   MOCK_METHOD3(check_migrate_task_exist, int(const share::ObTaskId &, Bool &, const ObRpcOpts &opts));
   MOCK_METHOD3(check_backup_task_exist, int(const obrpc::ObBackupCheckTaskArg &, Bool &, const ObRpcOpts &opts));
 

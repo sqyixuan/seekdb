@@ -1311,17 +1311,13 @@ bool ObSQLUtils::cause_implicit_commit(ParseResult &result)
         || T_CREATE_TABLE == type
         || T_ALTER_DATABASE == type
         || T_DROP_DATABASE == type
-        || T_CREATE_TENANT == type
-        || T_CREATE_STANDBY_TENANT == type
         || T_CREATE_VIEW == type
         || T_DROP_TABLE == type
         || T_DROP_INDEX == type
         || T_CREATE_DATABASE == type
-        || T_MODIFY_TENANT == type
         || T_CREATE_INDEX == type
         || T_CREATE_MLOG == type
         || T_DROP_MLOG == type
-        || T_DROP_TENANT == type
         /* pl item type*/
         || T_SP_CREATE_TYPE == type
         || T_SP_DROP_TYPE == type
@@ -1369,16 +1365,6 @@ bool ObSQLUtils::is_commit_stmt(const ParseResult &result)
   return bret;
 }
 
-bool ObSQLUtils::is_modify_tenant_stmt(ParseResult &result)
-{
-  ObItemType type = T_INVALID;
-  if (NULL != result.result_tree_
-      && NULL != result.result_tree_->children_
-      && NULL != result.result_tree_->children_[0]) {
-    type = result.result_tree_->children_[0]->type_;
-  }
-  return type == T_MODIFY_TENANT;
-}
 // Used to determine the statement types not supported by prepare statements in mysql mode
 bool ObSQLUtils::is_mysql_ps_not_support_stmt(const ParseResult &result)
 {

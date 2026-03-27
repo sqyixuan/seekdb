@@ -23,26 +23,22 @@
 #include "sql/resolver/ddl/ob_create_database_stmt.h"
 #include "sql/resolver/ddl/ob_alter_table_stmt.h"
 #include "src/sql/resolver/ddl/ob_sequence_stmt.h"
+#include "sql/resolver/cmd/ob_variable_set_stmt.h" // ObVariableSetStmt
 #include "sql/resolver/ddl/ob_create_outline_stmt.h"
 #include "sql/resolver/ddl/ob_alter_outline_stmt.h"
 #include "sql/resolver/ddl/ob_drop_outline_stmt.h"
 #include "sql/resolver/ddl/ob_drop_database_stmt.h"
 #include "sql/resolver/ddl/ob_drop_index_stmt.h"
-#include "sql/resolver/ddl/ob_lock_tenant_stmt.h"
-#include "sql/resolver/ddl/ob_drop_tenant_stmt.h"
 #include "sql/resolver/ddl/ob_drop_table_stmt.h"
 #include "sql/resolver/dcl/ob_revoke_stmt.h"
 #include "sql/resolver/dcl/ob_set_password_stmt.h"
 #include "sql/resolver/dml/ob_update_stmt.h"
 #include "sql/resolver/dcl/ob_grant_stmt.h"
 #include "sql/resolver/dcl/ob_revoke_stmt.h"
-#include "sql/resolver/ddl/ob_modify_tenant_stmt.h"
 #include "sql/resolver/ddl/ob_alter_database_stmt.h"
 #include "sql/resolver/ddl/ob_truncate_table_stmt.h"
 #include "sql/resolver/ddl/ob_rename_table_stmt.h"
 #include "sql/resolver/ddl/ob_create_table_like_stmt.h"
-#include "sql/resolver/ddl/ob_fork_table_stmt.h"
-#include "sql/resolver/ddl/ob_fork_database_stmt.h"
 #include "sql/resolver/ddl/ob_drop_tablegroup_stmt.h"
 #include "sql/resolver/ddl/ob_flashback_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
@@ -440,7 +436,7 @@ int get_dml_stmt_need_privs(
               }
             }
             
-            if (OB_SUCC(ret)
+            if (OB_SUCC(ret) 
                && ObTableType::EXTERNAL_TABLE == table_item->table_type_
                && common::OB_INVALID_ID != table_item->external_location_id_) {
               ObSchemaGetterGuard schema_guard;
@@ -729,7 +725,7 @@ int get_create_table_stmt_need_privs(
         const ObLocationSchema *location_schema = NULL;
         CK(GCTX.schema_service_ != NULL);
         OZ(GCTX.schema_service_->get_tenant_schema_guard(session_priv.tenant_id_, schema_guard));
-        if (OB_FAIL(schema_guard.get_location_schema_by_id(session_priv.tenant_id_,
+        if (OB_FAIL(schema_guard.get_location_schema_by_id(session_priv.tenant_id_, 
                                                            stmt->get_external_location_id(),
                                                            location_schema))) {
           LOG_WARN("failed to get location schema");
@@ -1377,7 +1373,6 @@ int get_create_user_privs(
     switch (stmt_type) {//TODO deleted switch
       case stmt::T_LOCK_USER :
       case stmt::T_ALTER_USER_PROFILE :
-      case stmt::T_ALTER_USER_PRIMARY_ZONE:
       case stmt::T_ALTER_USER:
       case stmt::T_SET_PASSWORD :
       case stmt::T_RENAME_USER :
@@ -1578,76 +1573,6 @@ int get_variable_set_stmt_need_privs(
   return ret;
 }
 
-int get_modify_tenant_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_MODIFY_TENANT != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_MODIFY_TENANT",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    const ObModifyTenantStmt *stmt = static_cast<const ObModifyTenantStmt *>(basic_stmt);
-    if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-      if (!stmt->is_for_current_tenant()) {
-        ret = OB_ERR_NO_PRIVILEGE;
-        LOG_WARN("Only sys tenant can do this operation for other tenant", K(ret));
-      } else {
-        bool normal_tenant_can_do = false;
-        if (OB_FAIL(stmt->check_normal_tenant_can_do(normal_tenant_can_do))) {
-          LOG_WARN("Failed to check normal tenant can do the job", K(ret));
-        } else if (!normal_tenant_can_do) {
-          ret = OB_ERR_NO_PRIVILEGE;
-          LOG_WARN("Include operation normal tenant can not do", K(ret));
-        } else { }
-      }
-    }
-    if (OB_SUCC(ret)) {
-      need_priv.priv_set_ = OB_PRIV_ALTER_TENANT;
-      need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
-int get_lock_tenant_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_LOCK_TENANT != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_LOCK_TENANT",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    const ObLockTenantStmt *stmt = static_cast<const ObLockTenantStmt *>(basic_stmt);
-    if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Only sys tenant can do this operation", K(ret));
-    } else if (stmt->get_tenant_name() == OB_SYS_TENANT_NAME) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Can not lock sys tenant", K(ret));
-    } else {
-      need_priv.priv_set_ = OB_PRIV_SUPER;
-      need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
 int get_routine_stmt_need_privs(
     const ObSessionPrivInfo &session_priv,
     const ObStmt *basic_stmt,
@@ -1791,37 +1716,6 @@ int get_event_stmt_need_privs(
   return ret;
 }
 
-int get_drop_tenant_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_DROP_TENANT != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_DROP_TENANT",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    const ObDropTenantStmt *stmt = static_cast<const ObDropTenantStmt *>(basic_stmt);
-    if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Only sys tenant can do this operation", K(ret));
-    } else if (stmt->get_tenant_name() == OB_SYS_TENANT_NAME) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Can not drop sys or gts tenant", K(ret));
-    } else {
-      need_priv.priv_set_ = OB_PRIV_SUPER;
-      need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
 int get_truncate_table_stmt_need_privs(
     const ObSessionPrivInfo &session_priv,
     const ObStmt *basic_stmt,
@@ -1942,88 +1836,6 @@ int get_create_table_like_stmt_need_privs(
   return ret;
 }
 
-int get_fork_table_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_FORK_TABLE != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_FORK_TABLE",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    const ObForkTableStmt *stmt = static_cast<const ObForkTableStmt *>(basic_stmt);
-    const obrpc::ObForkTableArg &fork_table_arg = stmt->get_fork_table_arg();
-    if (OB_FAIL(ret)) {
-    } else if (session_priv.tenant_id_ != fork_table_arg.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Can not fork other tenant's table. Should not be here except change"
-               "tenant which not suggested", K(ret));
-    } else if (OB_FAIL(ObPrivilegeCheck::can_do_operation_on_db(session_priv, fork_table_arg.dst_database_name_))) {
-      LOG_WARN("Can not do this operation on the database", K(session_priv), K(ret));
-    } else {
-      // Need SELECT privilege on source table
-      need_priv.db_ = fork_table_arg.src_database_name_;
-      need_priv.table_ = fork_table_arg.src_table_name_;
-      need_priv.priv_set_ = OB_PRIV_SELECT;
-      need_priv.priv_level_ = OB_PRIV_TABLE_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-      // Need CREATE privilege on destination database
-      need_priv.db_ = fork_table_arg.dst_database_name_;
-      need_priv.table_ = fork_table_arg.dst_table_name_;
-      need_priv.priv_set_ = OB_PRIV_CREATE;
-      need_priv.priv_level_ = OB_PRIV_TABLE_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
-int get_fork_database_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_FORK_DATABASE != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_FORK_DATABASE",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    const ObForkDatabaseStmt *stmt = static_cast<const ObForkDatabaseStmt *>(basic_stmt);
-    const obrpc::ObForkDatabaseArg &fork_database_arg = stmt->get_fork_database_arg();
-    if (OB_FAIL(ret)) {
-    } else if (session_priv.tenant_id_ != fork_database_arg.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Can not fork other tenant's database. Should not be here except change"
-               "tenant which not suggested", K(ret));
-    } else if (OB_FAIL(ObPrivilegeCheck::can_do_operation_on_db(session_priv, fork_database_arg.src_database_name_))) {
-      LOG_WARN("Can not do this operation on the source database", K(session_priv), K(ret));
-    } else {
-      // Need SELECT privilege on source database
-      need_priv.db_ = fork_database_arg.src_database_name_;
-      need_priv.priv_set_ = OB_PRIV_SELECT;
-      need_priv.priv_level_ = OB_PRIV_DB_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-      // Need CREATE privilege on destination database
-      need_priv.db_ = fork_database_arg.dst_database_name_;
-      need_priv.priv_set_ = OB_PRIV_CREATE;
-      need_priv.priv_level_ = OB_PRIV_DB_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
 int get_sys_tenant_super_priv(
     const ObSessionPrivInfo &session_priv,
     const ObStmt *basic_stmt,
@@ -2034,8 +1846,7 @@ int get_sys_tenant_super_priv(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Basic stmt should be not be NULL", K(ret));
   } else if (OB_SYS_TENANT_ID != session_priv.tenant_id_ &&
-             stmt::T_ALTER_SYSTEM_SET_PARAMETER != basic_stmt->get_stmt_type() &&
-             stmt::T_SWITCHOVER != basic_stmt->get_stmt_type()) {
+             stmt::T_ALTER_SYSTEM_SET_PARAMETER != basic_stmt->get_stmt_type()) {
     ret = OB_ERR_NO_PRIVILEGE;
     LOG_WARN("Only sys tenant can do this operation",
              K(ret), "stmt type", basic_stmt->get_stmt_type());
@@ -2072,10 +1883,8 @@ int get_sys_tenant_alter_system_priv(
              stmt::T_RECOVER != basic_stmt->get_stmt_type() &&
              stmt::T_TABLE_TTL != basic_stmt->get_stmt_type() &&
              stmt::T_ALTER_SYSTEM_RESET_PARAMETER != basic_stmt->get_stmt_type() &&
-             stmt::T_TRANSFER_PARTITION != basic_stmt->get_stmt_type() &&
              stmt::T_MODULE_DATA != basic_stmt->get_stmt_type() &&
              stmt::T_SERVICE_NAME != basic_stmt->get_stmt_type() &&
-             stmt::T_ALTER_LS_REPLICA != basic_stmt->get_stmt_type() &&
              stmt::T_TRIGGER_STORAGE_CACHE != basic_stmt->get_stmt_type()) {
     ret = OB_ERR_NO_PRIVILEGE;
     LOG_WARN("Only sys tenant can do this operation",
@@ -2085,86 +1894,6 @@ int get_sys_tenant_alter_system_priv(
     need_priv.priv_set_ = OB_PRIV_ALTER_SYSTEM;
     need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
     ADD_NEED_PRIV(need_priv);
-  }
-  return ret;
-}
-
-int get_sys_tenant_create_resource_pool_priv(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-    ret = OB_ERR_NO_PRIVILEGE;
-    LOG_WARN("Only sys tenant can do this operation",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else if (stmt::T_CREATE_RESOURCE_POOL != basic_stmt->get_stmt_type()
-             && stmt::T_DROP_RESOURCE_POOL  != basic_stmt->get_stmt_type()
-             && stmt::T_ALTER_RESOURCE_POOL != basic_stmt->get_stmt_type()
-             && stmt::T_SPLIT_RESOURCE_POOL != basic_stmt->get_stmt_type()
-             && stmt::T_ALTER_RESOURCE_TENANT != basic_stmt->get_stmt_type()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be create/alter/drop/split resource pool",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    need_priv.priv_set_ = OB_PRIV_CREATE_RESOURCE_POOL;
-    need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-    ADD_NEED_PRIV(need_priv);
-  }
-  return ret;
-}
-
-int get_sys_tenant_create_resource_unit_priv(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-    ret = OB_ERR_NO_PRIVILEGE;
-    LOG_WARN("Only sys tenant can do this operation",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else if (stmt::T_CREATE_RESOURCE_UNIT != basic_stmt->get_stmt_type()
-             && stmt::T_ALTER_RESOURCE_UNIT  != basic_stmt->get_stmt_type()
-             && stmt::T_DROP_RESOURCE_UNIT != basic_stmt->get_stmt_type()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be create/alter/drop resource",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    need_priv.priv_set_ = OB_PRIV_CREATE_RESOURCE_UNIT;
-    need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-    ADD_NEED_PRIV(need_priv);
-  }
-  return ret;
-}
-
-int get_change_tenant_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  int ret = OB_SUCCESS;
-  UNUSED(need_privs);
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_CHANGE_TENANT != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_CHANGE_TENANT",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-    ret = OB_ERR_NO_PRIVILEGE;
-    LOG_WARN("Only sys tenant can do this operation",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
   }
   return ret;
 }
@@ -2472,63 +2201,6 @@ int get_purge_database_stmt_need_privs(
   }
   return ret;
 
-}
-
-int get_flashback_tenant_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *basic_stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  UNUSED(session_priv);
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(basic_stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_FLASHBACK_TENANT != basic_stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be T_FLASHBACK_TENANT",
-             K(ret), "stmt type", basic_stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Only sys tenant can do this operation", K(ret));
-    } else {
-      need_priv.priv_set_ = OB_PRIV_SUPER;
-      need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
-}
-
-
-int get_purge_tenant_stmt_need_privs(
-    const ObSessionPrivInfo &session_priv,
-    const ObStmt *stmt,
-    ObIArray<ObNeedPriv> &need_privs)
-{
-  UNUSED(session_priv);
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(stmt)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Basic stmt should be not be NULL", K(ret));
-  } else if (OB_UNLIKELY(stmt::T_PURGE_TENANT != stmt->get_stmt_type())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Stmt type should be PURGE_TENANT",
-             K(ret), "stmt type", stmt->get_stmt_type());
-  } else {
-    ObNeedPriv need_priv;
-    if (OB_SYS_TENANT_ID != session_priv.tenant_id_) {
-      ret = OB_ERR_NO_PRIVILEGE;
-      LOG_WARN("Only sys tenant can do this operation", K(ret));
-    } else {
-      need_priv.priv_set_ = OB_PRIV_SUPER;
-      need_priv.priv_level_ = OB_PRIV_USER_LEVEL;
-      ADD_NEED_PRIV(need_priv);
-    }
-  }
-  return ret;
 }
 
 int get_restore_point_priv(

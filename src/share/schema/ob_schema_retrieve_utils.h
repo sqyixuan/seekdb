@@ -22,13 +22,10 @@
 #include "lib/mysqlclient/ob_mysql_result.h"
 #include "share/schema/ob_schema_service.h"
 #include "share/schema/ob_schema_utils.h"
-#include "share/ob_primary_zone_util.h"
 #include "share/system_variable/ob_system_variable_alias.h"
-#include "share/ob_replica_info.h"
 #include "share/ob_time_zone_info_manager.h"
 #include "observer/ob_server_struct.h"
 #include "observer/omt/ob_tenant_timezone_mgr.h"
-#include "rootserver/ob_locality_util.h"
 
 namespace oceanbase
 {
@@ -549,9 +546,9 @@ public:
                                   uint64_t &option);
 
   template<typename T>
-  static int fill_obj_mysql_priv_schema(const uint64_t tenant_id,
-                                        T &result,
-                                        ObObjMysqlPriv &obj_mysql_priv,
+  static int fill_obj_mysql_priv_schema(const uint64_t tenant_id, 
+                                        T &result, 
+                                        ObObjMysqlPriv &obj_mysql_priv, 
                                         bool &is_deleted);
 
   template<typename T>

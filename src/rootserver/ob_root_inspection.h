@@ -64,28 +64,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObInspectionTask);
 };
 
-class ObTenantChecker: public ObInspectionTask
-{
-  public:
-    ObTenantChecker(share::schema::ObMultiVersionSchemaService &schema_service,
-                    common::ObMySQLProxy &sql_proxy,
-                    obrpc::ObCommonRpcProxy &rpc_proxy)
-                   : schema_service_(&schema_service),
-                     sql_proxy_(&sql_proxy),
-                     rpc_proxy_(rpc_proxy) {}
-    virtual ~ObTenantChecker() {}
-
-    virtual int inspect(bool &passed, const char* &warning_info) override;
-    virtual const char* get_task_name() const { return "tenant_checker"; };
-  private:
-    int alter_tenant_primary_zone_();
-    int check_garbage_tenant_(bool &passed);
-  private:
-    share::schema::ObMultiVersionSchemaService *schema_service_;
-    common::ObMySQLProxy *sql_proxy_;
-    obrpc::ObCommonRpcProxy &rpc_proxy_;
-};
-
 class ObTableGroupChecker: public ObInspectionTask
 {
 public:

@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_access_service.h"
+#include "share/ob_io_device_helper.h" // LOCAL_DEVICE_INSTANCE
 #include "storage/ob_query_iterator_factory.h"
 #include "storage/access/ob_table_scan_iterator.h"
 #include "storage/retrieval/ob_block_stat_iter.h"
@@ -133,14 +134,16 @@ int ObAccessService::check_data_disk_full_(
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = MTL_ID();
-  ObFailureDetector* detector = MTL(ObFailureDetector*);
+  is_full = false;
   if (!is_user_tenant(tenant_id) || ls_id.is_sys_ls()) {
     is_full = false;
-  } else if (OB_ISNULL(detector)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("mtl module detector is null", K(ret), KP(detector));
-  } else {
-    is_full = detector->is_data_disk_full();
+  } else if (OB_FAIL(LOCAL_DEVICE_INSTANCE.check_write_limited())) {
+    if (OB_SERVER_OUTOF_DISK_SPACE != ret) {
+      LOG_WARN("check space full failed", KR(ret));
+    } else {
+      ret = OB_SUCCESS;
+      is_full = true;
+    }
   }
   return ret;
 }
@@ -478,28 +481,6 @@ int ObAccessService::table_rescan(
   }
   return ret;
 }
-
-int ObAccessService::table_advance_scan(ObVTableScanParam &vparam, ObNewRowIterator *result)
-{
-  int ret = OB_SUCCESS;
-  ObTableScanParam &param = static_cast<ObTableScanParam &>(vparam);
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("ob access service is not running.", K(ret));
-  } else if (OB_ISNULL(result) || OB_UNLIKELY(!vparam.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(result), K(vparam), K(lbt()));
-  } else if (OB_UNLIKELY(ObNewRowIterator::ObTableScanIterator != result->get_type())) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("only table scan iter can be rescan", K(ret), K(result->get_type()));
-  } else if (OB_FAIL(static_cast<ObTableScanIterator*>(result)->advance_scan(param))) {
-    LOG_WARN("advance scan ObTableScanIterator failed", K(ret), K(result), K(vparam));
-  } else {
-    LOG_DEBUG("table advance scan success", K(ret), K(result), K(vparam));
-  }
-  return ret;
-}
-
 int ObAccessService::get_write_store_ctx_guard(
     const share::ObLSID &ls_id,
     const int64_t timeout,

@@ -30,7 +30,6 @@ namespace oceanbase
 {
 namespace obrpc
 {
-class ObAdminZoneArg;
 class ObSrvRpcProxy;
 class ObCommonRpcProxy;
 }
@@ -45,7 +44,6 @@ class ObIZoneTrace;
 namespace rootserver
 {
 class FakeZoneManager;
-class ObLocalityDistribution;
 class ObZoneManagerBase : public share::ObIZoneTrace
 {
 public:
@@ -62,7 +60,6 @@ public:
   virtual int get_zone(const common::ObZone &zone, share::ObZoneInfo &info) const; // get with name
   virtual int get_zone(share::ObZoneInfo &info) const; // get zone with zone
   virtual int get_zone(const common::ObRegion &region, common::ObIArray<common::ObZone> &zone_list) const;
-  virtual int get_active_zone(share::ObZoneInfo &info) const; // get active zone info with zone
   virtual int get_zone(const share::ObZoneStatus::Status &status,
       common::ObIArray<common::ObZone> &zone_list) const;
   virtual int get_zone(common::ObIArray<share::ObZoneInfo> &infos) const;
@@ -73,17 +70,8 @@ public:
   virtual int check_zone_exist(const common::ObZone &zone, bool &zone_exist) const;
   virtual int check_zone_active(const common::ObZone &zone, bool &zone_active) const;
 
-  virtual int add_zone(const common::ObZone &zone, const common::ObRegion &region,
-                       const common::ObIDC &idc, const common::ObZoneType &zone_type);
-  virtual int delete_zone(const common::ObZone &zone);
-  virtual int start_zone(const common::ObZone &zone);
-  virtual int stop_zone(const common::ObZone &zone);
-  virtual int alter_zone(const obrpc::ObAdminZoneArg &arg);
-
   virtual int reload();
 
-  virtual int update_privilege_version(const int64_t privilege_version);
-  virtual int update_config_version(const int64_t config_version);
   virtual int update_recovery_status(const common::ObZone &zone,
                                      const share::ObZoneInfo::RecoveryStatus status);
 
@@ -91,11 +79,9 @@ public:
 
   virtual int get_cluster(common::ObFixedLengthString<common::MAX_ZONE_INFO_LENGTH> &cluster) const;
   virtual int get_config_version(int64_t &config_version) const;
-  virtual int get_time_zone_info_version(int64_t &time_zone_info_version) const;
   virtual int get_lease_info_version(int64_t &lease_info_version) const;
   virtual common::ObClusterRole get_cluster_role();
 
-  virtual int check_encryption_zone(const common::ObZone &zone, bool &encryption);
   virtual int get_storage_format_version(int64_t &version) const;
   virtual int set_storage_format_version(const int64_t version);
 
@@ -104,15 +90,7 @@ public:
 private:
   int update_zone_status(const common::ObZone &zone, const share::ObZoneStatus::Status &status);
 
-  // update info item and lease_info_version in one transaction
-  int update_value_with_lease(const common::ObZone &zone, share::ObZoneInfoItem &item,
-      int64_t value, const char *info = NULL);
-
   int find_zone(const common::ObZone &zone, int64_t &index) const;
-
-
-  // check all zone regions the same as region
-  int check_all_zone_regions_the_same_(const common::ObRegion &region);
 
 protected:
   common::SpinRWLock lock_;
@@ -139,15 +117,7 @@ public:
 
   int init(common::ObMySQLProxy &proxy);
   virtual int reload();
-  virtual int add_zone(const common::ObZone &zone, const common::ObRegion &region,
-                       const common::ObIDC &idc, const common::ObZoneType &zone_type);
-  virtual int delete_zone(const common::ObZone &zone);
-  virtual int start_zone(const common::ObZone &zone);
-  virtual int stop_zone(const common::ObZone &zone);
-  virtual int alter_zone(const obrpc::ObAdminZoneArg &arg) override;
 
-  virtual int update_privilege_version(const int64_t privilege_version);
-  virtual int update_config_version(const int64_t config_version);
   virtual int update_recovery_status(const common::ObZone &zone,
                                      const share::ObZoneInfo::RecoveryStatus status);
 

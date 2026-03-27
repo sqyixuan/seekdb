@@ -28,7 +28,6 @@
 #include "observer/report/ob_i_meta_report.h"
 #include "observer/report/ob_ls_table_updater.h"
 #include "observer/report/ob_tablet_table_updater.h"
-#include "observer/report/ob_server_meta_table_checker.h" // ObServerMetaTableChecker
 
 namespace oceanbase
 {
@@ -78,13 +77,6 @@ private:
   bool is_inited_;
 };
 
-class TelemetryTask : public common::ObTimerTask {
-public:
-  TelemetryTask(bool embed_mode);
-  virtual void runTimerTask() override;
-  bool embed_mode_;
-};
-
 class ObService : public ObIMetaReport
 {
 public:
@@ -94,7 +86,7 @@ public:
   int init(common::ObMySQLProxy &sql_proxy,
            share::ObIAliveServerTracer &server_tracer,
            bool need_bootstrap);
-  int start(bool embed_mode);
+  int start();
   void set_stop();
   void stop();
   void wait();
@@ -170,20 +162,12 @@ public:
                            obrpc::ObGetLSSyncScnRes &result);
   int force_set_ls_as_single_replica(const obrpc::ObForceSetLSAsSingleReplicaArg &arg);
   int force_set_server_list(const obrpc::ObForceSetServerListArg &arg, obrpc::ObForceSetServerListResult &result);
-  int refresh_tenant_info(const obrpc::ObRefreshTenantInfoArg &arg,
-                          obrpc::ObRefreshTenantInfoRes &result);
-  int get_ls_replayed_scn(const obrpc::ObGetLSReplayedScnArg &arg,
-                          obrpc::ObGetLSReplayedScnRes &result);
   int estimate_partition_rows(const obrpc::ObEstPartArg &arg,
                               obrpc::ObEstPartRes &res) const;
   int estimate_tablet_block_count(const obrpc::ObEstBlockArg &arg,
                                   obrpc::ObEstBlockRes &res) const;
   int estimate_skip_rate(const obrpc::ObEstSkipRateArg &arg,
                          obrpc::ObEstSkipRateRes &res) const;
-  int update_tenant_info_cache(const obrpc::ObUpdateTenantInfoCacheArg &arg,
-                                  obrpc::ObUpdateTenantInfoCacheRes &result);
-  int refresh_service_name(const obrpc::ObRefreshServiceNameArg &arg,
-                           obrpc::ObRefreshServiceNameRes &result);
   ////////////////////////////////////////////////////////////////
   // ObRpcMinorFreezeP @RS minor freeze
   int minor_freeze(const obrpc::ObMinorFreezeArg &arg,
@@ -223,7 +207,7 @@ public:
   int get_partition_count(obrpc::ObGetPartitionCountResult &result);
 
   ////////////////////////////////////////////////////////////////
-
+  
   // ObRpcPrepareServerForAddingServerP @RS add server
   int prepare_server_for_adding_server(
       const obrpc::ObPrepareServerForAddingServerArg &arg,
@@ -232,14 +216,9 @@ public:
   int get_server_resource_info(const obrpc::ObGetServerResourceInfoArg &arg, obrpc::ObGetServerResourceInfoResult &result);
   int get_server_resource_info(share::ObServerResourceInfo &resource_info);
   static int get_build_version(share::ObServerInfoInTable::ObBuildVersion &build_version);
-  // log stream replica task related
-  static int do_remove_ls_paxos_replica(const obrpc::ObLSDropPaxosReplicaArg &arg);
-  static int do_remove_ls_nonpaxos_replica(const obrpc::ObLSDropNonPaxosReplicaArg &arg);
-  static int do_add_ls_replica(const obrpc::ObLSAddReplicaArg &arg);
   // ObRpcCheckServerEmptyP @RS bootstrap
   int check_server_empty(const obrpc::ObCheckServerEmptyArg &arg, obrpc::Bool &is_empty);
   int check_server_empty_with_result(const obrpc::ObCheckServerEmptyArg &arg, obrpc::ObCheckServerEmptyResult &result);
-  static int do_migrate_ls_replica(const obrpc::ObLSMigrateReplicaArg &arg);
   // ObRpcIsEmptyServerP @RS bootstrap
 
   // ObRpcCheckDeploymentModeP
@@ -247,18 +226,9 @@ public:
   int get_leader_locations(
       const obrpc::ObGetLeaderLocationsArg &arg,
       obrpc::ObGetLeaderLocationsResult &result);
-  int batch_broadcast_schema(
-      const obrpc::ObBatchBroadcastSchemaArg &arg,
-      obrpc::ObBatchBroadcastSchemaResult &result);
 
   ////////////////////////////////////////////////////////////////
-  // ObReportReplicaP @RS::admin to report replicas
-  int report_replica();
   int load_leader_cluster_login_info();
-  // ObRecycleReplicaP @RS::admin to recycle replicas
-  int recycle_replica();
-  // ObClearLocationCacheP @RS::admin to clear location cache
-  int clear_location_cache();
   // ObDropReplicaP @RS::admin to drop replica
   int set_ds_action(const obrpc::ObDebugSyncActionArg &arg);
   // ObRequestHeartbeatP @RS::admin to cancel delete server
@@ -290,9 +260,6 @@ public:
   int handle_heartbeat(
       const share::ObHBRequest &hb_request,
       share::ObHBResponse &hb_response);
-  int check_storage_operation_status(
-      const obrpc::ObCheckStorageOperationStatusArg &arg,
-      obrpc::ObCheckStorageOperationStatusResult &result);
   int check_server_empty(bool &server_empty);
   int change_external_storage_dest(obrpc::ObAdminSetConfigArg &arg);
 
@@ -316,8 +283,6 @@ private:
   int generate_master_rs_ls_info_(
       const share::ObLSReplica &cur_leader,
       share::ObLSInfo &ls_info);
-  int generate_tenant_table_schemas_(const obrpc::ObBatchBroadcastSchemaArg &arg,
-      ObSArray<share::schema::ObTableSchema> &tables, ObIAllocator &allocator);
 private:
   bool inited_;
   bool in_register_process_;
@@ -337,8 +302,7 @@ private:
   ObRemoteMasterRsUpdateTask remote_master_rs_update_task_;
   // report
   ObLSTableUpdater ls_table_updater_;
-  ObServerMetaTableChecker meta_table_checker_;
-  TelemetryTask telemetry_task_;
+
   bool need_bootstrap_;
 };
 

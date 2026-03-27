@@ -17,11 +17,8 @@
 #define USING_LOG_PREFIX RS
 
 #include "rootserver/ob_upgrade_executor.h"
-#include "rootserver/ob_ls_service_helper.h"
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" //ObTenantSnapshotUtil
 #include "share/ob_global_stat_proxy.h"
 #include "share/ob_cluster_event_history_table_operator.h"//CLUSTER_EVENT_INSTANCE
-#include "rootserver/standby/ob_standby_service.h" // ObStandbyService
 #include "observer/ob_service.h"
 
 namespace oceanbase
@@ -134,11 +131,6 @@ int ObUpgradeCurrentDataVersionProcessorExecutor::update_data_version(const uint
       ObGlobalStatProxy end_proxy(trans, tenant_id_);
       if (OB_FAIL(end_proxy.update_current_data_version(data_version))) {
         LOG_WARN("fail to update current data version", KR(ret), K(tenant_id_), KDV(data_version));
-      } else if (is_user_tenant(tenant_id_) &&
-          OB_FAIL(OB_STANDBY_SERVICE.write_upgrade_data_version_barrier_log(
-              trans, tenant_id_, data_version))) {
-        LOG_WARN("fail to write_upgrade_data_version_barrier_log", KR(ret), K(tenant_id_),
-            KDV(data_version));
       }
     }
     if (trans.is_started()) {
@@ -756,12 +748,6 @@ int ObUpgradeExecutor::run_upgrade_begin_action_(
                 KR(ret), K(tenant_id), "cost", ObTimeUtility::current_time() - start_ts);
     } // end for
     ret = OB_SUCC(ret) ? backup_ret : ret;
-    if (OB_SUCC(ret)) {
-      int64_t start_ts_step2 = ObTimeUtility::current_time();
-      ret = ObLSServiceHelper::wait_all_tenants_user_ls_sync_scn(tenants_sys_ls_target_scn);
-      FLOG_INFO("[UPGRADE] finish run upgrade begin action step 2/2, wait all tenants' sync_scn",
-          KR(ret), "cost", ObTimeUtility::current_time() - start_ts_step2);
-    }
   }
   return ret;
 }
@@ -773,7 +759,6 @@ int ObUpgradeExecutor::run_upgrade_begin_action_(
   int ret = OB_SUCCESS;
   ObMySQLTransaction trans;
   share::SCN sys_ls_target_scn = SCN::invalid_scn();
-  ObConflictCaseWithClone case_to_check(ObConflictCaseWithClone::UPGRADE);
   if (OB_FAIL(check_inner_stat_())) {
     LOG_WARN("fail to check inner stat", KR(ret));
   } else if (OB_FAIL(check_stop())) {
@@ -799,11 +784,6 @@ int ObUpgradeExecutor::run_upgrade_begin_action_(
         LOG_WARN("fail to get upgrade begin data version", KR(ret), K(tenant_id));
       }
     }
-    // check tenant not in cloning procedure in trans
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id, case_to_check))) {
-      LOG_WARN("fail to check whether tenant is in cloning produre", KR(ret), K(tenant_id));
-    }
     // try update target_data_version
     if (OB_FAIL(ret)) {
     } else if (target_data_version >= DATA_CURRENT_VERSION) {
@@ -811,11 +791,6 @@ int ObUpgradeExecutor::run_upgrade_begin_action_(
                KR(ret), K(tenant_id), KDV(target_data_version));
     } else if (OB_FAIL(proxy.update_target_data_version(DATA_CURRENT_VERSION))) {
       LOG_WARN("fail to update target data version",
-               KR(ret), K(tenant_id), "version", DVP(DATA_CURRENT_VERSION));
-    } else if (is_user_tenant(tenant_id)
-               && OB_FAIL(OB_STANDBY_SERVICE.write_upgrade_barrier_log(
-                                                     trans, tenant_id, DATA_CURRENT_VERSION))) {
-      LOG_WARN("fail to write_upgrade_barrier_log",
                KR(ret), K(tenant_id), "version", DVP(DATA_CURRENT_VERSION));
     } else {
       LOG_INFO("[UPGRADE] update target data version",

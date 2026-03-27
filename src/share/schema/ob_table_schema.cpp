@@ -323,84 +323,6 @@ int ObSimpleTableSchemaV2::get_zone_list(
   return ret;
 }
 
-int ObSimpleTableSchemaV2::get_first_primary_zone_inherit(
-    share::schema::ObSchemaGetterGuard &schema_guard,
-    const common::ObIArray<rootserver::ObReplicaAddr> &replica_addrs,
-    common::ObZone &first_primary_zone) const
-{
-  int ret = OB_NOT_SUPPORTED;
-  return ret;
-}
-
-int ObSimpleTableSchemaV2::get_paxos_replica_num(
-    share::schema::ObSchemaGetterGuard &guard,
-    int64_t &num) const
-{
-  int ret = OB_SUCCESS;
-  num = 0;
-  common::ObArray<share::ObZoneReplicaAttrSet> zone_locality;
-  if (OB_FAIL(get_zone_replica_attr_array_inherit(guard, zone_locality))) {
-    LOG_WARN("fail to get zone replica num array", K(ret));
-  } else {
-    FOREACH_CNT_X(locality, zone_locality, OB_SUCCESS == ret) {
-      if (OB_ISNULL(locality)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get invalid locality set", K(ret), KP(locality));
-      } else {
-        num += locality->get_paxos_replica_num();
-      }
-    }
-  }
-  return ret;
-}
-
-/*
- * 1. Indexes, virtual tables, and other table schemas without partitions are not filled
- * 2. The locality field is not empty, directly fill it with zone_replica_attr_array of this table
- * 3. The all_dummy table of user tenants has a fully functional copy in each zone.
- * 4. The locality field is empty. If there is a tablegroup, it is filled with the zone_replica_attr_array of
- *  the corresponding tablegroup, otherwise it is filled with the zone_replica_attr_array of the corresponding tenant
- */
-int ObSimpleTableSchemaV2::get_zone_replica_attr_array_inherit(
-    ObSchemaGetterGuard &schema_guard,
-    ZoneLocalityIArray &locality) const
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = get_tenant_id();
-  locality.reuse();
-
-  // Locality is not set when creating table, take tenant's fill
-  const ObTenantSchema *tenant_schema = NULL;
-  if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant_schema))) {
-    LOG_WARN("fail to get tenant schema", K(ret), K(table_id_), K(tenant_id));
-  } else if (OB_UNLIKELY(NULL == tenant_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tenant schema null", K(ret), K(table_id_), K(tenant_id), KP(tenant_schema));
-  } else if (OB_FAIL(tenant_schema->get_zone_replica_attr_array_inherit(schema_guard, locality))) {
-    LOG_WARN("fail to get zone replica num array", K(ret), K(table_id_), K(tenant_id));
-  }
-  return ret;
-}
-
-int ObSimpleTableSchemaV2::get_primary_zone_inherit(
-    ObSchemaGetterGuard &schema_guard,
-    ObPrimaryZone &primary_zone) const
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = get_tenant_id();
-  primary_zone.reset();
-  const ObTenantSchema *tenant_schema = NULL;
-  if (OB_FAIL(schema_guard.get_tenant_info(tenant_id, tenant_schema))) {
-    LOG_WARN("fail to get tenant schema", K(ret), K(tenant_id));
-  } else if (OB_UNLIKELY(NULL == tenant_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tenant schema null", K(ret), K(tenant_id), KP(tenant_schema));
-  } else if (OB_FAIL(tenant_schema->get_primary_zone_inherit(schema_guard, primary_zone))) {
-    LOG_WARN("fail to get primary zone array", K(ret), K(tenant_id));
-  }
-  return ret;
-}
-
 int ObSimpleTableSchemaV2::set_simple_foreign_key_info_array(const common::ObIArray<ObSimpleForeignKeyInfo> &simple_fk_info_array)
 {
   int ret = OB_SUCCESS;
@@ -591,14 +513,6 @@ int ObSimpleTableSchemaV2::check_has_all_server_readonly_replica(
 {
   int ret = OB_SUCCESS;
   has = false;
-  common::ObArray<share::ObZoneReplicaAttrSet> zone_locality;
-  if (OB_FAIL(get_zone_replica_attr_array_inherit(guard, zone_locality))) {
-    LOG_WARN("fail to get zone replica num array", K(ret));
-  } else {
-    for (int64_t i = 0; i < zone_locality.count() && !has; ++i) {
-      has = OB_ALL_SERVER_CNT == zone_locality.at(i).get_readonly_replica_num();
-    }
-  }
   return ret;
 }
 
@@ -608,15 +522,7 @@ int ObSimpleTableSchemaV2::check_is_all_server_readonly_replica(
     bool &is) const
 {
   int ret = OB_SUCCESS;
-  is = true;
-  common::ObArray<share::ObZoneReplicaNumSet> zone_locality;
-  if (OB_FAIL(get_zone_replica_attr_array_inherit(guard, zone_locality))) {
-    LOG_WARN("fail to get zone replica num array", K(ret));
-  } else {
-    for (int64_t i = 0; i < zone_locality.count() && is; ++i) {
-      is = OB_ALL_SERVER_CNT == zone_locality.at(i).get_readonly_replica_num();
-    }
-  }
+  is = false;
   return ret;
 }
 
@@ -843,35 +749,6 @@ bool ObSimpleTableSchemaV2::is_user_subpartition_table() const
     }
   }
   return bret;
-}
-
-int ObSimpleTableSchemaV2::get_locality_str_inherit(
-    share::schema::ObSchemaGetterGuard &guard,
-    const common::ObString *&locality_str) const
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = get_tenant_id();
-  locality_str = NULL;
-  if (OB_FAIL(ret)) {
-  } else {
-    const ObSimpleTenantSchema *tenant = NULL;
-    if (OB_FAIL(guard.get_tenant_info(get_tenant_id(), tenant))) {
-      LOG_WARN("fail to get tenant schema", K(ret), "tenant_id", get_tenant_id());
-    } else if (OB_ISNULL(tenant)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("fail to get tenant schema", K(ret), "tenant_id", get_tenant_id());
-    } else {
-      locality_str = &tenant->get_locality_str();
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    if (OB_ISNULL(locality_str) || locality_str->empty()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("locality_str should not be null or empty", K(ret), K(*this));
-    }
-  }
-  return ret;
 }
 
 int ObSimpleTableSchemaV2::get_tablet_ids(common::ObIArray<ObTabletID> &tablet_ids) const
@@ -4914,7 +4791,7 @@ int ObTableSchema::check_alter_column_in_index(const ObColumnSchemaV2 &src_colum
   ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
 
   // Vector index dependency validation: （start）
-  // The logical rule is that if a vector index exists on a column, no modifications to the column are allowed.
+  // The logical rule is that if a vector index exists on a column, no modifications to the column are allowed. 
   // To accommodate potential user operations where the data type remains consistent before and after the change,
   // an additional conditional check has been implemented.
   bool is_column_has_vector_index = false;
@@ -4938,7 +4815,7 @@ int ObTableSchema::check_alter_column_in_index(const ObColumnSchemaV2 &src_colum
     if (OB_SUCC(ret) && !is_same_type) {
       ret = OB_NOT_SUPPORTED;
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "For columns with vector indexes, altering the column type is");
-      LOG_WARN("column type modification is not supported because it is depended by vector index",
+      LOG_WARN("column type modification is not supported because it is depended by vector index", 
                K(column_id), K(ret), K(src_column.get_data_type()), K(dst_column.get_data_type()));
     }
   }
@@ -6589,7 +6466,7 @@ uint64_t ObSimpleTableSchemaV2::extract_data_table_id_from_index_name(const ObSt
     } else {
       data_table_id_str.assign_ptr(
           index_name.ptr() + strlen(OB_INDEX_PREFIX),
-          static_cast<ObString::obstr_size_t>(pos - static_cast<int64_t>(strlen(OB_INDEX_PREFIX))));
+          static_cast<ObString::obstr_size_t>(pos) - strlen(OB_INDEX_PREFIX));
       int ret = (common_string_unsigned_integer(
                   0, ObVarcharType, CS_TYPE_UTF8MB4_GENERAL_CI, data_table_id_str, false, data_table_id));
       if (OB_FAIL(ret)) {
@@ -6920,7 +6797,7 @@ OB_DEF_SERIALIZE(ObTableSchema)
    * // !!! FOR STATIC CHECKER END
    * ```
    * formatted comments and code to remind the serialization check script to ignore this section of code
-   * Detailed documentation:
+   * Detailed documentation: 
    */
   return ret;
 }
@@ -7164,7 +7041,7 @@ OB_DEF_DESERIALIZE(ObTableSchema)
    * // !!! FOR STATIC CHECKER END
    * ```
    * formatted comments and code to remind the serialization check script to ignore this segment of code
-   * Detailed documentation:
+   * Detailed documentation: 
    */
   return ret;
 }
@@ -7305,7 +7182,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchema)
    * // !!! FOR STATIC CHECKER END
    * ```
    * formatted comments and code to remind the serialization check script to ignore this section of code
-   * Detailed documentation:
+   * Detailed documentation: 
    */
   return len;
 }

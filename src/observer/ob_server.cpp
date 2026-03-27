@@ -51,19 +51,12 @@
 #include "share/catalog/ob_cached_catalog_meta_getter.h"
 #include "share/ob_server_blacklist.h"
 #include "share/stat/ob_opt_stat_manager.h" // for ObOptStatManager
-#include "rootserver/standby/ob_standby_service.h" // ObStandbyService
 #include "share/scheduler/ob_partition_auto_split_helper.h"
 #include "share/longops_mgr/ob_longops_mgr.h"
 #include "share/ob_ddl_sim_point.h"
 #include "storage/ddl/ob_ddl_redo_log_writer.h"
 #include "observer/ob_server_utils.h"
 #include "share/ob_device_credential_task.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "logservice/arbserver/palf_env_lite_mgr.h"
-#include "logservice/arbserver/ob_arb_srv_network_frame.h"
-#include "logservice/arbserver/ob_arb_cluster_white_list.h"
-#include "logservice/arbserver/ob_arb_server_config.h"
-#endif
 #include "lib/xml/ob_libxml2_sax_handler.h"
 #include "ob_check_params.h"
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -77,9 +70,7 @@
 #include "common/ob_target_specific.h"
 #include "storage/fts/dict/ob_gen_dic_loader.h"
 #include "plugin/sys/ob_plugin_mgr.h"
-#include "share/ob_license_utils.h"
 #include "rpc/obrpc/ob_rpc_net_handler.h"
-#include "share/ob_service_epoch_proxy.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
 
 using namespace oceanbase::lib;
@@ -188,6 +179,7 @@ ObServer::ObServer()
     sql_mem_task_(),
     ctas_clean_up_task_(),
     refresh_active_time_task_(),
+    refresh_network_speed_task_(),
     refresh_cpu_frequency_task_(),
     refresh_io_calibration_task_(),
     schema_status_proxy_(sql_proxy_),
@@ -195,12 +187,8 @@ ObServer::ObServer()
     conn_res_mgr_(),
     unix_domain_listener_(),
     disk_usage_report_task_(),
-    log_block_mgr_()
-#ifdef OB_BUILD_ARBITRATION
-    ,arb_gcs_(),
-    arb_timer_()
-#endif
-    ,wr_service_()
+    log_block_mgr_(),
+    wr_service_()
 {
 }
 
@@ -252,31 +240,6 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
     }
   }
 
-  if (is_arbitration_mode()) {
-#ifdef OB_BUILD_ARBITRATION
-    FLOG_INFO("begin init observer in arbitration mode", KR(ret));
-    if (FAILEDx(OB_LOGGER.init(log_cfg, true))) {
-      LOG_ERROR("async log init error.", KR(ret));
-      ret = OB_ELECTION_ASYNC_LOG_WARN_INIT;
-    } else if (OB_FAIL(OB_LOG_COMPRESSOR.init())) {
-      LOG_ERROR("log compressor init error.", KR(ret));
-    } else if (OB_FAIL(OB_LOGGER.set_log_compressor(&OB_LOG_COMPRESSOR))) {
-      LOG_ERROR("set log compressor error.", KR(ret));
-    }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(init_pre_setting())) {
-      LOG_ERROR("init pre setting failed", KR(ret));
-    } else if (OB_FAIL(ObClockGenerator::init())) {
-      LOG_ERROR("init create clock generator failed", KR(ret));
-    } else if (OB_FAIL(init_version())) {
-      LOG_ERROR("init version failed", KR(ret));
-    } else if (OB_FAIL(init_server_in_arb_mode())) {
-      LOG_ERROR("init_server_in_arb_mode failed", KR(ret));
-    }
-    lib::g_runtime_enabled = true;
-    FLOG_INFO("end init observer in arbitration mode", KR(ret));
-#endif
-  } else {
     if (FAILEDx(OB_LOGGER.init(log_cfg, false))) {
       LOG_ERROR("async log init error.", KR(ret));
       ret = OB_ELECTION_ASYNC_LOG_WARN_INIT;
@@ -353,6 +316,8 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init network failed", KR(ret));
     } else if (OB_FAIL(init_interrupt())) {
       LOG_ERROR("init interrupt failed", KR(ret));
+    } else if (OB_FAIL(init_zlib_lite_compressor())) {
+      LOG_ERROR("init zlib lite compressor failed", KR(ret));
     } else if (OB_FAIL(init_plugin())) {
       LOG_ERROR("init plugin failed", KR(ret));
     } else if (OB_FAIL(rs_mgr_.init(&srv_rpc_proxy_, &config_, &sql_proxy_))) {
@@ -441,13 +406,10 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
       LOG_ERROR("init redef heart beat task failed", KR(ret));
     } else if (OB_FAIL(init_refresh_active_time_task())) {
       LOG_ERROR("init refresh active time task failed", KR(ret));
+    } else if (OB_FAIL(init_refresh_network_speed_task())) {
+      LOG_ERROR("init refresh network speed task failed", KR(ret));
     } else if (OB_FAIL(init_refresh_cpu_frequency())) {
       LOG_ERROR("init refresh cpu frequency failed", KR(ret));
-#ifdef OB_BUILD_SHARED_STORAGE
-    } else if (gctx_.is_shared_storage_mode() &&
-               OB_FAIL(init_device_manifest_task())) {
-      LOG_ERROR("init device manifest task failed", KR(ret));
-#endif
     } else if (OB_FAIL(init_refresh_io_calibration())) {
       LOG_ERROR("init refresh io calibration failed", KR(ret));
     } else if (OB_FAIL(ObOptStatManager::get_instance().init(
@@ -478,8 +440,6 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
     } else if (OB_FAIL(imc_tasks_.init())) {
       LOG_ERROR("init imc tasks failed", KR(ret));
 #endif
-    } else if (OB_FAIL(OB_STANDBY_SERVICE.init(&sql_proxy_, &schema_service_))) {
-      LOG_ERROR("init OB_PRIMARY_STANDBY_SERVICE failed", KR(ret));
     } else if (OB_FAIL(init_px_target_mgr())) {
       LOG_ERROR("init px target mgr failed", KR(ret));
     } else if (OB_FAIL(OB_BACKUP_INDEX_CACHE.init())) {
@@ -505,25 +465,11 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
     } else if (OB_FAIL(ObDDLSimPointMgr::get_instance().init())) {
       LOG_WARN("init ddl sim point mgr fail", KR(ret));
 #endif
-    }
-#ifdef OB_BUILD_ARBITRATION
-    else if (OB_FAIL(arb_gcs_.init(GCTX.self_addr(),
-                                   lib::TGDefIDs::ArbGCSTh,
-                                    GCTX.srv_rpc_proxy_, GCTX.sql_proxy_))) {
-      LOG_ERROR("init arb_gcs_ failed", KR(ret));
-    }
-#endif
-    else if (OB_FAIL(wr_service_.init())) {
+    } else if (OB_FAIL(wr_service_.init())) {
       LOG_WARN("failed to init wr service", K(ret));
-#ifdef OB_BUILD_SHARED_STORAGE
-    } else if (GCTX.is_shared_storage_mode()
-        && init_tenant_dir_gc_task()) {
-      LOG_WARN("failed to init_tenant_dir_gc_task", K(ret));
-#endif
     } else {
       GDS.set_rpc_proxy(&rs_rpc_proxy_);
     }
-  }
 
   if (OB_FAIL(ret)) {
     LOG_ERROR("[OBSERVER_NOTICE] fail to init observer", KR(ret));
@@ -561,11 +507,7 @@ void ObServer::destroy()
   config_mgr_.destroy();
   FLOG_INFO("destroy config manager success");
 
-  if (is_arbitration_mode()) {
-#ifdef OB_BUILD_ARBITRATION
-    destroy_server_in_arb_mode();
-#endif
-  } else if (!has_destroy_ && has_stopped_) {
+  if (!has_destroy_ && has_stopped_) {
 
     FLOG_INFO("begin to destroy OB_LOGGER");
     OB_LOGGER.destroy();
@@ -733,6 +675,10 @@ void ObServer::destroy()
     net_frame_.destroy();
     FLOG_INFO("net frame destroyed");
 
+    FLOG_INFO("begin to destroy oss storage");
+    fin_oss_env();
+    FLOG_INFO("oss storage destroyed");
+
     FLOG_INFO("begin to destroy io manager");
     ObIOManager::get_instance().destroy();
     FLOG_INFO("io manager destroyed");
@@ -807,10 +753,6 @@ void ObServer::destroy()
     ObVirtualTenantManager::get_instance().destroy();
     FLOG_INFO("virtual tenant manager destroyed");
 
-    FLOG_INFO("begin to destroy OB_STANDBY_SERVICE");
-    OB_STANDBY_SERVICE.destroy();
-    FLOG_INFO("OB_STANDBY_SERVICE destroyed");
-
     FLOG_INFO("begin to destroy rootservice event history");
     ROOTSERVICE_EVENT_INSTANCE.destroy();
     FLOG_INFO("rootservice event history destroyed");
@@ -838,11 +780,6 @@ void ObServer::destroy()
     ObClockGenerator::destroy();
     FLOG_INFO("clock generator destroyed");
 
-#ifdef OB_BUILD_ARBITRATION
-    arb_gcs_.destroy();
-    FLOG_INFO("ArbGarbageCollectSerivce destroyed");
-#endif
-
     FLOG_INFO("begin to destroy WR service");
     wr_service_.destroy();
     FLOG_INFO("WR service destroyed");
@@ -854,6 +791,8 @@ void ObServer::destroy()
     FLOG_INFO("cgroup service destroyed");
 
     deinit_plugin();
+
+    deinit_zlib_lite_compressor();
 
     FLOG_INFO("begin to destroy log io device wrapper");
     LOG_IO_DEVICE_WRAPPER.destroy();
@@ -874,18 +813,6 @@ int ObServer::start(bool embed_mode)
                   DBA_STEP_INC_INFO(server_start),
                   "observer start begin.");
 
-  if (is_arbitration_mode()) {
-#ifdef OB_BUILD_ARBITRATION
-    if (OB_FAIL(start_server_in_arb_mode())) {
-      LOG_ERROR("start_server_in_arb_mode failed", K(ret));
-    } else {
-      FLOG_INFO("[OBSERVER_NOTICE] server instance start succeed");
-      prepare_stop_ = false;
-      stop_ = false;
-      has_stopped_ = false;
-    }
-#endif
-  } else {
     LOG_DBA_INFO_V2(OB_SERVER_INSTANCE_START_BEGIN,
                     DBA_STEP_INC_INFO(server_start),
                     "observer instance start begin.");
@@ -993,7 +920,7 @@ int ObServer::start(bool embed_mode)
       FLOG_INFO("success to start root service monitor");
     }
 
-    if (FAILEDx(ob_service_.start(embed_mode))) {
+    if (FAILEDx(ob_service_.start())) {
       LOG_ERROR("fail to start oceanbase service", KR(ret));
     } else {
       FLOG_INFO("success to start oceanbase service");
@@ -1060,32 +987,6 @@ int ObServer::start(bool embed_mode)
     } else {
       FLOG_INFO("success to start location service");
     }
-
-#ifdef OB_BUILD_ARBITRATION
-    if (FAILEDx(arb_gcs_.start())) {
-      LOG_ERROR("start arb_gcs_ failed", KR(ret));
-    } else {
-      FLOG_INFO("success to start ArbGarbageCollectSerivce");
-    }
-#endif
-
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (gctx_.is_shared_storage_mode()) {
-      if (FAILEDx(check_all_device_connectivity())) {
-        // e.g., before observer crash, dump old ak/sk to manifest. after observer crash, generate
-        // new ak/sk and forbid old ak/sk. after observer restart, fail to check connectivity with
-        // old ak/sk. in this case, try update device configs and check connectivity again.
-        LOG_WARN("fail to check all device connectivity, will try update device configs and check "
-                "connectivity again", KR(ret));
-        ret = OB_SUCCESS; // ignore ret
-        if (OB_FAIL(ObDeviceManifestTask::get_instance().try_update_new_device_configs())) {
-          LOG_ERROR("fail to update new device configs", KR(ret));
-        } else if (OB_FAIL(check_all_device_connectivity())) {
-          LOG_ERROR("fail to check all device connectivity", KR(ret));
-        }
-      }
-    }
-#endif
 
     if (OB_SUCC(ret)) {
       FLOG_INFO("[OBSERVER_NOTICE] server instance start succeed");
@@ -1166,15 +1067,6 @@ int ObServer::start(bool embed_mode)
             "replay_log_cost_us", ObTimeUtility::current_time() - schema_refreshed_ts);
       }
     }
-
-    if (OB_SUCC(ret)) {
-      (void) ObLicenseUtils::clear_license_table_if_need();
-      if (OB_FAIL(ObLicenseUtils::start_license_mgr())) {
-        FLOG_ERROR("failed to start license manager", KR(ret));
-      }
-    }
-
-  }
 
   int64_t start_service_time = ObTimeUtility::current_time();
   if (OB_SUCC(ret) && !stop_) {
@@ -1269,7 +1161,7 @@ int ObServer::check_if_schema_ready()
   while (OB_SUCC(ret) && !stop_ && !schema_ready) {
     schema_ready = schema_service_.is_sys_full_schema();
     if (!schema_ready) {
-      ob_usleep(10 * 1000);
+      SLEEP(1);
     }
   }
   FLOG_INFO("check if schema ready", KR(ret), K(stop_), K(schema_ready));
@@ -1290,17 +1182,16 @@ int ObServer::check_if_timezone_usable()
 {
   int ret = OB_SUCCESS;
   bool timezone_usable = false;
-  while (OB_SUCC(ret) && !stop_ && !timezone_usable) {
-    timezone_usable = tenant_timezone_mgr_.is_usable();
-    if (!timezone_usable) {
-      (void) (tenant_timezone_mgr_.refresh_timezone_info());
-      ob_usleep(10 * 1000);
-    }
-  }
   if (FAILEDx(tenant_timezone_mgr_.start())) {
     LOG_ERROR("fail to start tenant timezone mgr", KR(ret));
   } else {
     FLOG_INFO("success to start tenant timezone mgr");
+  }
+  while (OB_SUCC(ret) && !stop_ && !timezone_usable) {
+    timezone_usable = tenant_timezone_mgr_.is_usable();
+    if (!timezone_usable) {
+      ob_usleep(10 * 1000);
+    }
   }
   FLOG_INFO("check if timezone usable", KR(ret), K(stop_), K(timezone_usable));
   return ret;
@@ -1353,11 +1244,6 @@ int ObServer::stop()
   config_mgr_.stop();
   FLOG_INFO("stop config manager success");
 
-  if (is_arbitration_mode()) {
-#ifdef OB_BUILD_ARBITRATION
-    (void) stop_server_in_arb_mode();
-#endif
-  } else {
 #ifdef ENABLE_IMC
     FLOG_INFO("begin to stop imc tasks", KR(ret));
     ret = imc_tasks_.stop();
@@ -1534,11 +1420,6 @@ int ObServer::stop()
     ObIOManager::get_instance().stop();
     FLOG_INFO("io manager stopped");
 
-#ifdef OB_BUILD_ARBITRATION
-      arb_gcs_.stop();
-      FLOG_INFO("ArbGarbageCollectSerivce stopped");
-#endif
-
     FLOG_INFO("begin to stop WR service");
     wr_service_.stop();
     FLOG_INFO("WR service stopped");
@@ -1585,8 +1466,6 @@ int ObServer::stop()
     ObClockGenerator::get_instance().stop();
     FLOG_INFO("clock generator stopped");
 
-  }
-
   has_stopped_ = true;
   FLOG_INFO("[OBSERVER_NOTICE] stop observer end", KR(ret));
   if (OB_SUCCESS != fail_ret) {
@@ -1626,12 +1505,6 @@ int ObServer::wait()
   FLOG_INFO("begin to wait config manager");
   config_mgr_.wait();
   FLOG_INFO("wait config manager success");
-
-  if (is_arbitration_mode()) {
-#ifdef OB_BUILD_ARBITRATION
-    (void) wait_server_in_arb_mode();
-#endif
-  } else {
 
     FLOG_INFO("begin to wait OB_LOGGER");
     OB_LOGGER.wait();
@@ -1827,11 +1700,6 @@ int ObServer::wait()
     palf::election::GLOBAL_REPORT_TIMER.wait();
     FLOG_INFO("wait global election report timer success");
 
-   #ifdef OB_BUILD_ARBITRATION
-     arb_gcs_.wait();
-     FLOG_INFO("wait ArbGarbageCollectSerivce success");
-   #endif
-
     FLOG_INFO("begin to wait WR service");
     wr_service_.wait();
     FLOG_INFO("wait WR service success");
@@ -1872,7 +1740,6 @@ int ObServer::wait()
     } else {
       LOG_DBA_INFO_V2(OB_SERVER_WAIT_SUCCESS, "observer process wait succcess.");
     }
-  }
 
   return ret;
 }
@@ -1898,7 +1765,7 @@ int ObServer::init_config(const ObServerOptions &opts)
     LOG_ERROR("failed to load data_version_mgr file", KR(ret));
   } else {
     // set dump path
-    const char *dump_path = "etc/seekdb.config.bin";
+    const char *dump_path = "etc/observer.config.bin";
     char buffer[PATH_MAX];
     ObSqlString abs_dump_path;
     if (getcwd(buffer, sizeof(buffer)) == nullptr) {
@@ -1935,21 +1802,14 @@ int ObServer::init_config(const ObServerOptions &opts)
   }
 
   if (OB_FAIL(ret)) {
-  } else if (!is_arbitration_mode() && OB_FAIL(config_.strict_check_special())) {
+  } else if (OB_FAIL(config_.strict_check_special())) {
     LOG_ERROR("some config setting is not valid", KR(ret));
   } else if (OB_FAIL(GMEMCONF.reload_config(config_))) {
     LOG_ERROR("reload memory config failed", KR(ret));
-  } else if (!is_arbitration_mode() && OB_FAIL(set_running_mode())) {
+  } else if (OB_FAIL(set_running_mode())) {
     LOG_ERROR("set running mode failed", KR(ret));
   } else if (OB_FAIL(init_self_addr())) {
     LOG_ERROR("init self_addr failed", KR(ret));
-  } else if (is_arbitration_mode()) {
-    // arbitration mode, dump config params to file directly
-    if (OB_FAIL(config_mgr_.dump2file())) {
-      LOG_ERROR("config_mgr_ dump2file failed", KR(ret));
-    } else {
-      LOG_INFO("config_mgr_ dump2file success", KR(ret));
-    }
   } else if (OB_FAIL(init_config_module(optstr.ptr()))) {
     LOG_ERROR("init config module failed", KR(ret));
   } else {
@@ -2062,7 +1922,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
   } else if (nullptr == config_.redo_dir.get_value() || 0 == strlen(config_.redo_dir.get_value())) {
     ObString tmp_data_dir(data_dir.length(), data_dir.ptr());
     if (tmp_data_dir.empty()) {
-      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), static_cast<ObString::obstr_size_t>(strlen(config_.data_dir.get_value())));
+      tmp_data_dir.assign_ptr(config_.data_dir.get_value(), strlen(config_.data_dir.get_value()));
     }
     if (OB_FAIL(redo_dir.assign_fmt("%.*s/redo", tmp_data_dir.length(), tmp_data_dir.ptr()))) {
       LOG_ERROR("failed to append redo dir", K(ret));
@@ -2077,7 +1937,7 @@ int ObServer::init_data_dir_and_redo_dir(const ObServerOptions &opts)
     } else {
       ObString tmp_redo_dir(redo_dir.length(), redo_dir.ptr());
       if (tmp_redo_dir.prefix_match(current_dir)) {
-        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), static_cast<ObString::obstr_size_t>(tmp_redo_dir.length() - strlen(current_dir)));
+        tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + strlen(current_dir), tmp_redo_dir.length() - strlen(current_dir));
         while (tmp_redo_dir.prefix_match("/")) {
           tmp_redo_dir.assign_ptr(tmp_redo_dir.ptr() + 1, tmp_redo_dir.length() - 1);
         }
@@ -2227,14 +2087,9 @@ int ObServer::init_pre_setting()
     ob_set_reserved_memory(reserved_memory);
   }
   if (OB_SUCC(ret)) {
-    const int64_t default_stack_size = 1L << 19; // 512KB
-    const int64_t stack_size = std::max(static_cast<int64_t>(default_stack_size), static_cast<int64_t>(GCONF.stack_size));
+    const int64_t stack_size = std::max(1L << 19, static_cast<int64_t>(GCONF.stack_size));
     LOG_INFO("set stack_size", K(stack_size));
     global_thread_stack_size = stack_size - SIG_STACK_SIZE - ACHUNK_PRESERVE_SIZE;
-#ifdef __APPLE__
-    const int ps = getpagesize();
-    global_thread_stack_size = (global_thread_stack_size + ps - 1) & ~(ps - 1);
-#endif
   }
   if (OB_SUCC(ret) && GCONF.use_ipv6) {
     enable_use_ipv6();
@@ -2344,6 +2199,16 @@ int ObServer::init_io()
                                                       &OB_IO_MANAGER,
                                                       &ObDeviceManager::get_instance()))) {
           LOG_ERROR("log_io_device_wrapper init failed", KR(ret));
+        } else {
+          if (log_block_mgr_.is_reserved()) {
+            int64_t clog_pool_in_use = 0;
+            int64_t clog_pool_total_size = 0;
+            if (OB_FAIL(log_block_mgr_.get_disk_usage(clog_pool_in_use, clog_pool_total_size))) {
+               LOG_ERROR("get clog disk size failed", KR(ret));
+            } else {
+              log_disk_size = clog_pool_total_size;
+            }
+          }
         }
         if (OB_SUCC(ret)) {
           storage_env_.data_disk_size_ = data_disk_size;
@@ -2441,6 +2306,39 @@ void ObServer::deinit_plugin()
     GCTX.plugin_mgr_ = nullptr;
   }
   LOG_INFO("plugin deinit done");
+}
+
+int ObServer::init_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else if (OB_FAIL(zlib_lite_compressor->init(0))) { // 0 means preserve 0 qpl job
+    LOG_ERROR("failed to init zlib lite compressor", K(ret));
+  } else {
+    const char *zlib_lite_compress_method = zlib_lite_compressor->compression_method();
+    LOG_INFO("zlib lite compressor init success", KCSTRING(zlib_lite_compress_method));
+  }
+  return ret;
+}
+
+void ObServer::deinit_zlib_lite_compressor()
+{
+  int ret = OB_SUCCESS;
+  ObCompressor *compressor = nullptr;
+  ZLIB_LITE::ObZlibLiteCompressor *zlib_lite_compressor = nullptr;
+  ret = ObCompressorPool::get_instance().get_compressor(ZLIB_LITE_COMPRESSOR, compressor);
+  if (OB_FAIL(ret) || OB_ISNULL(compressor)) {
+    LOG_ERROR("failed to get zlib lite compressor");
+  } else if (FALSE_IT(zlib_lite_compressor = static_cast<ZLIB_LITE::ObZlibLiteCompressor *>(compressor))) {
+  } else {
+    zlib_lite_compressor->deinit();
+  }
+  LOG_INFO("zlib lite compressor deinit done");
 }
 
 int ObServer::init_loaddata_global_stat()
@@ -2702,6 +2600,7 @@ int ObServer::init_sequence()
 int ObServer::init_pl()
 {
   int ret = OB_SUCCESS;
+
   LOG_INFO("init pl");
   if (OB_FAIL(pl_engine_.init(sql_proxy_))) {
     LOG_ERROR("init pl engine failed", KR(ret));
@@ -2767,9 +2666,6 @@ int ObServer::init_global_context()
   gctx_.locality_manager_ = &locality_manager_;
   gctx_.disk_reporter_ = &disk_usage_report_task_;
   gctx_.log_block_mgr_ = &log_block_mgr_;
-#ifdef OB_BUILD_ARBITRATION
-  gctx_.arb_gcs_ = &arb_gcs_;
-#endif
   (void)gctx_.set_upgrade_stage(obrpc::OB_UPGRADE_STAGE_INVALID);
   gctx_.wr_service_ = &wr_service_;
   gctx_.startup_accel_handler_ = &startup_accel_handler_;
@@ -2822,9 +2718,11 @@ int ObServer::init_storage()
   bool clogdir_is_empty = false;
 
   if (OB_SUCC(ret)) {
+    int64_t total_log_disk_size = 0;
     int64_t log_disk_in_use = 0;
     // Check if the clog directory is empty
-    if (OB_FAIL(log_block_mgr_.get_disk_usage(log_disk_in_use))) {
+    if (OB_FAIL(log_block_mgr_.get_disk_usage(
+            log_disk_in_use, total_log_disk_size))) {
       LOG_ERROR("ObServerLogBlockMgr get_disk_usage failed", K(ret));
     } else if (0 == log_disk_in_use
         && OB_FAIL(logservice::ObServerLogBlockMgr::check_clog_directory_is_empty(
@@ -2900,6 +2798,22 @@ int ObServer::init_log_kv_cache()
   if (OB_FAIL(OB_LOG_KV_CACHE.init(palf::OB_LOG_KV_CACHE_NAME, 1, palf::LOG_CACHE_MEMORY_LIMIT))) {
     LOG_WARN("init OB_LOG_KV_CACHE failed", KR(ret));
   }
+  return ret;
+}
+
+int ObServer::get_network_speed_from_sysfs(int64_t &network_speed)
+{
+  int ret = OB_SUCCESS;
+  // sys_bkgd_net_percentage_ = config_.sys_bkgd_net_percentage;
+
+  int tmp_ret = OB_SUCCESS;
+  if (OB_FAIL(get_ethernet_speed(config_.devname.str(), network_speed))) {
+    LOG_WARN("cannot get Ethernet speed, use default", K(tmp_ret), "devname", config_.devname.str());
+  } else if (network_speed <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid Ethernet speed, use default", "devname", config_.devname.str());
+  }
+
   return ret;
 }
 
@@ -3041,7 +2955,16 @@ int ObServer::get_network_speed_from_config_file(int64_t &network_speed)
 int ObServer::init_bandwidth_throttle()
 {
   int ret = OB_SUCCESS;
-  int64_t network_speed = DEFAULT_ETHERNET_SPEED;
+  int64_t network_speed = 0;
+
+  if (OB_SUCC(get_network_speed_from_config_file(network_speed))) {
+    LOG_DEBUG("got network speed from config file", K(network_speed));
+  } else if (OB_SUCC(get_network_speed_from_sysfs(network_speed))) {
+    LOG_DEBUG("got network speed from sysfs", K(network_speed));
+  } else {
+    network_speed = DEFAULT_ETHERNET_SPEED;
+    LOG_DEBUG("using default network speed", K(network_speed));
+  }
 
   sys_bkgd_net_percentage_ = config_.sys_bkgd_net_percentage;
   if (network_speed > 0) {
@@ -3073,8 +2996,37 @@ int ObServer::reload_config()
                                                    GCONF.bf_cache_priority,
                                                    GCONF.storage_meta_cache_priority))) {
     LOG_WARN("set cache priority fail, ", KR(ret));
+  } else if (OB_FAIL(reload_bandwidth_throttle_limit(ethernet_speed_))) {
+    LOG_WARN("failed to reload_bandwidth_throttle_limit", KR(ret));
   }
 
+  return ret;
+}
+
+int ObServer::reload_bandwidth_throttle_limit(int64_t network_speed)
+{
+  int ret = OB_SUCCESS;
+  const int64_t sys_bkgd_net_percentage = config_.sys_bkgd_net_percentage;
+
+  if ((sys_bkgd_net_percentage_ != sys_bkgd_net_percentage) || (ethernet_speed_ != network_speed)) {
+    if (network_speed <= 0) {
+      LOG_WARN("wrong network speed.", K(ethernet_speed_));
+      network_speed = DEFAULT_ETHERNET_SPEED;
+    }
+
+    int64_t rate = network_speed * sys_bkgd_net_percentage / 100;
+    if (OB_FAIL(bandwidth_throttle_.set_rate(rate))) {
+      LOG_WARN("failed to reset bandwidth throttle", KR(ret), K(rate), K(ethernet_speed_));
+    } else {
+      LOG_INFO("succeed to reload_bandwidth_throttle_limit",
+          "old_percentage", sys_bkgd_net_percentage_,
+          "new_percentage", sys_bkgd_net_percentage,
+          K(network_speed),
+          K(rate));
+      sys_bkgd_net_percentage_ = sys_bkgd_net_percentage;
+      ethernet_speed_ = network_speed;
+    }
+  }
   return ret;
 }
 
@@ -3343,6 +3295,44 @@ int ObServer::refresh_temp_table_sess_active_time()
   return ret;
 }
 
+ObServer::ObRefreshNetworkSpeedTask::ObRefreshNetworkSpeedTask()
+: obs_(nullptr), is_inited_(false)
+{}
+
+int ObServer::ObRefreshNetworkSpeedTask::init(ObServer *obs, int tg_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(is_inited_)) {
+    ret = OB_INIT_TWICE;
+    LOG_ERROR("ObRefreshNetworkSpeedTask has already been inited", KR(ret));
+  } else if (OB_ISNULL(obs)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("ObRefreshNetworkSpeedTask init with null ptr", KR(ret), K(obs));
+  } else {
+    obs_ = obs;
+    is_inited_ = true;
+    if (OB_FAIL(TG_SCHEDULE(tg_id, *this, REFRESH_INTERVAL, true /*schedule repeatly*/))) {
+      LOG_ERROR("fail to schedule task ObRefreshNetworkSpeedTask", KR(ret));
+    }
+  }
+  return ret;
+}
+
+
+void ObServer::ObRefreshNetworkSpeedTask::runTimerTask()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObRefreshNetworkSpeedTask has not been inited", KR(ret));
+  } else if (OB_ISNULL(obs_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("ObRefreshNetworkSpeedTask cleanup task got null ptr", KR(ret));
+  } else if (OB_FAIL(obs_->refresh_network_speed())) {
+    LOG_WARN("ObRefreshNetworkSpeedTask reload bandwidth throttle limit failed", KR(ret));
+  }
+}
+
 ObServer::ObRefreshCpuFreqTimeTask::ObRefreshCpuFreqTimeTask()
 : obs_(nullptr), is_inited_(false)
 {}
@@ -3393,6 +3383,31 @@ int ObServer::refresh_cpu_frequency()
   if (cpu_frequency != cpu_frequency_) {
     LOG_INFO("Cpu frequency changed", "from", cpu_frequency_, "to", cpu_frequency);
     cpu_frequency_ = cpu_frequency;
+  }
+
+  return ret;
+}
+
+int ObServer::refresh_network_speed()
+{
+  int ret = OB_SUCCESS;
+  int64_t network_speed = 0;
+
+  if (OB_SUCC(get_network_speed_from_config_file(network_speed))) {
+    LOG_DEBUG("got network speed from config file", K(network_speed));
+  } else if (OB_SUCC(get_network_speed_from_sysfs(network_speed))) {
+    LOG_DEBUG("got network speed from sysfs", K(network_speed));
+  } else {
+    network_speed = DEFAULT_ETHERNET_SPEED;
+    LOG_DEBUG("using default network speed", K(network_speed));
+  }
+
+  if ((network_speed > 0) && (network_speed != ethernet_speed_)) {
+    LOG_INFO("network speed changed", "from", ethernet_speed_, "to", network_speed);
+    OB_IO_MANAGER.get_tc().set_device_bandwidth(network_speed);
+    if (OB_FAIL(reload_bandwidth_throttle_limit(network_speed))) {
+      LOG_WARN("ObRefreshNetworkSpeedTask reload bandwidth throttle limit failed", KR(ret));
+    }
   }
 
   return ret;
@@ -3475,17 +3490,6 @@ int ObServer::init_redef_heart_beat_task()
   return ret;
 }
 
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObServer::init_tenant_dir_gc_task()
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(tenant_dir_gc_task_.init(lib::TGDefIDs::TenantDirGCTimer))) {
-    LOG_ERROR("fail to init tenant_dir_gc_task", KR(ret));
-  }
-  return ret;
-}
-#endif
-
 int ObServer::init_ddl_heart_beat_task_container()
 {
   int ret = OB_SUCCESS;
@@ -3495,69 +3499,20 @@ int ObServer::init_ddl_heart_beat_task_container()
   return ret;
 }
 
+int ObServer::init_refresh_network_speed_task()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(refresh_network_speed_task_.init(this, lib::TGDefIDs::ServerGTimer))) {
+    LOG_ERROR("fail to init refresh network speed task", KR(ret));
+  }
+  return ret;
+}
+
 int ObServer::init_refresh_cpu_frequency()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(refresh_cpu_frequency_task_.init(this, lib::TGDefIDs::ServerGTimer))) {
     LOG_ERROR("fail to init refresh cpu frequency task", KR(ret));
-  }
-  return ret;
-}
-
-int ObServer::init_device_manifest_task()
-{
-  int ret = OB_SUCCESS;
-  const int64_t delay = ObDeviceManifestTask::SCHEDULE_INTERVAL_US;
-  const bool repeat = true;
-  ObDeviceManifestTask &device_manifest_task = ObDeviceManifestTask::get_instance();
-  if (OB_FAIL(device_manifest_task.init(&sql_proxy_))) {
-    LOG_ERROR("fail to init device manifest task", KR(ret));
-  } else if (OB_FAIL(TG_SCHEDULE(lib::TGDefIDs::ServerGTimer, device_manifest_task, delay, repeat))) {
-    LOG_ERROR("fail to schedule device manifest task", KR(ret), K(delay), K(repeat));
-  }
-  return ret;
-}
-
-int ObServer::check_all_device_connectivity()
-{
-  int ret = OB_SUCCESS;
-  SMART_VAR(ObArray<ObDeviceConfig>, device_configs) {
-    if (OB_FAIL(device_config_mgr_.get_all_device_configs(device_configs))) {
-      LOG_ERROR("fail to get all device configs", KR(ret));
-    } else {
-      ObDeviceConnectivityCheckManager dev_conn_check_mgr;
-      const int64_t device_config_cnt = device_configs.count();
-      for (int64_t i = 0; OB_SUCC(ret) && (i < device_config_cnt); ++i) {
-        ObDeviceConfig &tmp_device_config = device_configs.at(i);
-        ObZoneStorageState::STATE tmp_state = ObZoneStorageState::get_state(tmp_device_config.state_);
-        if ((ObZoneStorageState::STATE::MAX == tmp_state)
-            || (ObZoneStorageState::STATE::DROPPING == tmp_state)
-            || (ObZoneStorageState::STATE::DROPPED == tmp_state)) {
-          // device configs with state=DROPPING/DROPPED are directly removed from memory and file.
-          ret = OB_ERR_UNEXPECTED;
-          LOG_ERROR("unexpected state", KR(ret), K(tmp_state), K(tmp_device_config));
-        } else if ((ObZoneStorageState::STATE::ADDED == tmp_state)
-                   || (ObZoneStorageState::STATE::CHANGED == tmp_state)) {
-          ObBackupDest storage_dest;
-          if (OB_FAIL(storage_dest.set(tmp_device_config.path_, tmp_device_config.endpoint_,
-                      tmp_device_config.access_info_, tmp_device_config.extension_))) {
-            LOG_ERROR("fail to set storage_dest", KR(ret), K(tmp_device_config));
-          } else if ((ObStorageType::OB_STORAGE_FILE != storage_dest.get_storage_info()->device_type_) &&
-                     OB_FAIL(dev_conn_check_mgr.check_device_connectivity(storage_dest))) {
-            LOG_ERROR("fail to check device connectivity", KR(ret), K(storage_dest));
-          }
-        } else if ((ObZoneStorageState::STATE::ADDING == tmp_state)
-                   || (ObZoneStorageState::STATE::CHANGING == tmp_state)) {
-          // do not check device connectivity for ADDING/CHANGING device configs, since
-          // these device configs may be set with wrong access_key/ram_url.
-          LOG_INFO("skip checking device connectivity for ADDING/CHANGING device configs",
-                   K(tmp_device_config));
-        }
-      }
-    }
-    if (OB_SUCC(ret)) {
-      FLOG_INFO("succ to check all device connectivity", K(device_configs));
-    }
   }
   return ret;
 }
@@ -3751,204 +3706,5 @@ int ObServer::update_table_all_server(int64_t start_service_time)
   return ret;
 }
 
-// ---------------------------------- arb server start -------------------------------
-#ifdef OB_BUILD_ARBITRATION
-int ObServer::init_server_in_arb_mode()
-{
-  int ret = OB_SUCCESS;
-  // init GCTX's config members.
-  gctx_.config_ = &config_;
-  gctx_.config_mgr_ = &config_mgr_;
-  // set_extra_payload() call is necessary, or dest may return -4007 when deserialie rpc packet.
-  obrpc::ObIRpcExtraPayload::set_extra_payload(ObRpcExtraPayload::extra_payload_instance());
-  palflite::PalfEnvLiteMgr &palf_env_mgr = palflite::PalfEnvLiteMgr::get_instance();
-  arbserver::ObArbSrvNetworkFrame &net_work_farme = arbserver::ObArbSrvNetworkFrame::get_instance();
-  rpc::frame::ObNetOptions opts;
-  arbserver::ArbNetOptions arb_opts;
-  const uint32_t rpc_port = static_cast<uint32_t>(GCONF.rpc_port);
-
-  int rpc_io_cnt = static_cast<int>(GCONF.net_thread_count);
-  // make net thread count adaptive
-  if (0 == rpc_io_cnt) {
-    rpc_io_cnt = get_default_net_thread_count();
-  }
-  const int hp_io_cnt = static_cast<int>(GCONF.high_priority_net_thread_count);
-  opts.rpc_io_cnt_ = rpc_io_cnt;                     // rpc io thread count
-  opts.high_prio_rpc_io_cnt_ = hp_io_cnt;
-  // Do not need set mysql/batch io cnt for arb server
-  // opts.mysql_io_cnt_ = io_cnt;
-  // opts.batch_rpc_io_cnt_ = io_cnt;
-  opts.use_ipv6_ = GCONF.use_ipv6;
-  //TODO(tony.wzh): fix opts.tcp_keepidle  negative
-  opts.tcp_user_timeout_ = static_cast<int>(GCONF.dead_socket_detection_timeout);
-  opts.tcp_keepidle_     = static_cast<int>(GCONF.tcp_keepidle);
-  opts.tcp_keepintvl_    = static_cast<int>(GCONF.tcp_keepintvl);
-  opts.tcp_keepcnt_      = static_cast<int>(GCONF.tcp_keepcnt);
-
-  if (GCONF.enable_tcp_keepalive) {
-    opts.enable_tcp_keepalive_ = 1;
-  } else {
-    opts.enable_tcp_keepalive_ = 0;
-  }
-
-  arb_opts.opts_ = opts;
-  arb_opts.self_ = self_addr_;
-
-  LOG_INFO("io thread connection negotiation enabled!");
-  arb_opts.negotiation_enable_ = 1;          // enable negotiation
-  arb_opts.rpc_port_ = rpc_port;
-  const int64_t max_io_depth = 256;
-  ObIOConfig io_config;
-  io_config.disk_io_thread_count_ = GCONF.disk_io_thread_count;
-  const double io_memory_ratio = 0.2;
-  if (OB_FAIL(net_work_farme.init(arb_opts, &palf_env_mgr))) {
-    LOG_ERROR("init ObArbSrvNetworkFrame failed", K(ret), K(arb_opts));
-  } else if (OB_FAIL(ObIOManager::get_instance().init(GMEMCONF.get_server_memory_limit() * io_memory_ratio))) {
-    LOG_ERROR("init io manager fail", K(ret));
-  } else if (OB_FAIL(ObIOManager::get_instance().set_io_config(io_config))) {
-    LOG_ERROR("config io manager fail, ", K(ret));
-  } else if (OB_FAIL(ObIOManager::get_instance().start())) {
-    LOG_ERROR("start ObIOManager failed", K(ret));
-  } else if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
-    LOG_ERROR("init device manager failed", K(ret));
-  } else if (OB_FAIL(LOG_IO_DEVICE_WRAPPER.init(GCONF.data_dir, io_config.disk_io_thread_count_, max_io_depth, &OB_IO_MANAGER, &ObDeviceManager::get_instance()))) {
-    LOG_ERROR("log_io_adapter init failed", K(ret));
-  } else if (OB_FAIL(palf_env_mgr.init(GCONF.data_dir, self_addr_, net_work_farme.get_req_transport(), LOG_IO_DEVICE_WRAPPER.get_local_device(), &G_RES_MGR, &OB_IO_MANAGER))) {
-    LOG_ERROR("init PalfEnvLiteMgr failed", K(ret), K(arb_opts));
-  } else if (OB_FAIL(arb_timer_.init(lib::TGDefIDs::ArbServerTimer, &palf_env_mgr))) {
-    LOG_ERROR("init ArbServerTimer failed", K(ret));
-  #ifndef OB_USE_ASAN
-  } else if (OB_FAIL(ObMemoryDump::get_instance().init())) {
-    LOG_ERROR("init memory dumper failed", KR(ret));
-  #endif
-  } else if (OB_FAIL(arbserver::ObArbWhiteList::get_instance().init())) {
-    LOG_ERROR("init ObArbWhiteList failed", K(ret));
-  } else if (OB_FAIL(ASCONF.init())){
-    LOG_ERROR("init ObArbServerConfig failed", K(ret));
-  } else if (OB_FAIL(ASCONF.init_config_with_file())) {
-    LOG_ERROR("init config with file failed", K(ret));
-  } else {
-    LOG_INFO("init_server_in_arb_mode success", K(ret), K(arb_opts));
-  }
-
-  return ret;
-}
-
-int ObServer::start_server_in_arb_mode()
-{
-  int ret = OB_SUCCESS;
-  arbserver::ObArbSrvNetworkFrame &net_work_farme = arbserver::ObArbSrvNetworkFrame::get_instance();
-  if (OB_FAIL(net_work_farme.start())) {
-    LOG_ERROR("start ObArbSrvNetworkFrame failed", K(ret));
-  } else if (OB_FAIL(arb_timer_.start())) {
-    LOG_ERROR("start ObArbServerTimer failed", K(ret));
-  } else {
-    LOG_INFO("start_server_in_arb_mode success", K(ret));
-  }
-  return ret;
-}
-
-int ObServer::stop_server_in_arb_mode()
-{
-  int ret = OB_SUCCESS;
-  palf::election::GLOBAL_REPORT_TIMER.stop();
-  FLOG_INFO("global election report timer stopped");
-
-  if (OB_FAIL(arb_timer_.stop())) {
-    LOG_ERROR("stop ObArbServerTimer failed", K(ret));
-  } else {
-    FLOG_INFO("stop net_frame success");
-    FLOG_INFO("begin to stop OB_LOGGER");
-    OB_LOGGER.stop();
-    FLOG_INFO("stop OB_LOGGER success");
-
-    FLOG_INFO("begin to stop OB_LOG_COMPRESSOR");
-    OB_LOG_COMPRESSOR.stop();
-    FLOG_INFO("stop OB_LOG_COMPRESSOR success");
-
-    FLOG_INFO("begin to stop task controller");
-    ObTaskController::get().stop();
-    FLOG_INFO("stop task controller success");
-
-    FLOG_INFO("begin stop arbserver config");
-    ASCONF.stop();
-    FLOG_INFO("stop arbserver config success");
-
-    FLOG_INFO("begin to stop memory dump");
-    ObMemoryDump::get_instance().stop();
-    FLOG_INFO("memory dump stopped");
-  }
-
-  FLOG_INFO("stop_server_in_arb_mode success", K(ret));
-  return ret;
-}
-
-int ObServer::wait_server_in_arb_mode()
-{
-  int ret = OB_SUCCESS;
-  palf::election::GLOBAL_REPORT_TIMER.wait();
-  FLOG_INFO("wait global election report timer success");
-
-  FLOG_INFO("begin to wait OB_LOGGER");
-  OB_LOGGER.wait();
-  FLOG_INFO("wait OB_LOGGER success");
-
-  FLOG_INFO("begin to wait OB_LOG_COMPRESSOR");
-  OB_LOG_COMPRESSOR.wait();
-  FLOG_INFO("wait OB_LOG_COMPRESSOR success");
-
-  FLOG_INFO("begin to wait task controller");
-  ObTaskController::get().wait();
-  FLOG_INFO("wait task controller success");
-
-  arbserver::ObArbSrvNetworkFrame &net_work_farme = arbserver::ObArbSrvNetworkFrame::get_instance();
-  FLOG_INFO("begin to wait net_frame");
-  net_work_farme.wait();
-  FLOG_INFO("wait net_frame success");
-
-  FLOG_INFO("begin to wait arb_server");
-  arb_timer_.wait();
-  FLOG_INFO("wait arb_server success");
-
-  FLOG_INFO("begin wait arbserver config");
-  ASCONF.wait();
-  FLOG_INFO("wait arbserver config success");
-
-  FLOG_INFO("begin to wait memory dump");
-  ObMemoryDump::get_instance().wait();
-  FLOG_INFO("wait memory dump success");
-
-  FLOG_INFO("wait_server_in_arb_mode success", K(ret));
-  return ret;
-}
-
-int ObServer::destroy_server_in_arb_mode()
-{
-  int ret = OB_SUCCESS;
-  OB_LOGGER.destroy();
-  OB_LOG_COMPRESSOR.destroy();
-  ObTaskController::get().destroy();
-  palflite::PalfEnvLiteMgr &palf_env_mgr = palflite::PalfEnvLiteMgr::get_instance();
-  arbserver::ObArbSrvNetworkFrame &net_work_farme = arbserver::ObArbSrvNetworkFrame::get_instance();
-  palf_env_mgr.destroy();
-  net_work_farme.destroy();
-  arb_timer_.destroy();
-  ObMemoryDump::get_instance().destroy();
-  ASCONF.destroy();
-  palf::election::GLOBAL_REPORT_TIMER.destroy();
-  LOG_IO_DEVICE_WRAPPER.destroy();
-  ObIOManager::get_instance().destroy();
-  LOG_WARN("destroy_server_in_arb_mode success", K(ret));
-  return ret;
-}
-#endif
-
-bool ObServer::is_arbitration_mode() const
-{
-  return false;
-}
-
-
-// ------------------------------- arb server end -------------------------------------------
 } // end of namespace observer
 } // end of namespace oceanbase

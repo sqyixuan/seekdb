@@ -436,22 +436,17 @@ int LockForReadFunctor::operator()(const ObTxData &tx_data, ObTxCCCtx *tx_cc_ctx
 int LockForReadFunctor::check_clog_disk_full_()
 {
   int ret = OB_SUCCESS;
-  logservice::coordinator::ObFailureDetector *detector =
-    MTL(logservice::coordinator::ObFailureDetector *);
-
-  if (NULL != detector && detector->is_clog_disk_has_fatal_error()) {
-    if (detector->is_clog_disk_has_full_error()) {
-      ret = OB_LOG_OUTOF_DISK_SPACE;
-      TRANS_LOG(ERROR, "disk full error", K(ret), KPC(this));
-    } else if (detector->is_clog_disk_has_hang_error()) {
-      ret = OB_CLOG_DISK_HANG;
-      TRANS_LOG(ERROR, "disk hang error", K(ret), KPC(this));
-    } else {
-      ret = OB_IO_ERROR;
-      TRANS_LOG(ERROR, "unexpected io error", K(ret), KPC(this));
-    }
+  bool clog_is_full = false;
+  bool clog_is_hang = false;
+  if (OB_FAIL(ObShareUtil::check_clog_disk_full_or_hang(clog_is_full, clog_is_hang))) {
+    TRANS_LOG(WARN, "fail to check clog disk status", KR(ret));
+  } else if (clog_is_full) {
+    ret = OB_LOG_OUTOF_DISK_SPACE;
+    TRANS_LOG(ERROR, "disk full error", K(ret), KPC(this));
+  } else if (clog_is_hang) {
+    ret = OB_CLOG_DISK_HANG;
+    TRANS_LOG(ERROR, "disk hang error", K(ret), KPC(this));
   }
-
   return ret;
 }
 

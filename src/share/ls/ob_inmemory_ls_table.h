@@ -30,8 +30,6 @@ class ObIRsListChangeCb
 {
 public:
   virtual int submit_update_rslist_task(const bool force_update = false) = 0;
-  virtual int submit_report_replica() = 0;
-  virtual int submit_report_replica(const int64_t tenant_id, const ObLSID &ls_id) = 0;
 };
 
 // [class_full_name] ObInMemoryLSTable

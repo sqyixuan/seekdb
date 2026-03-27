@@ -1931,20 +1931,6 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       SET_STMT_TYPE(T_EXECUTE);
       SET_STMT_TYPE(T_DEALLOCATE);
       // ddl
-      // tenant resource
-      SET_STMT_TYPE(T_CREATE_RESOURCE_POOL);
-      SET_STMT_TYPE(T_DROP_RESOURCE_POOL);
-      SET_STMT_TYPE(T_ALTER_RESOURCE_POOL);
-      SET_STMT_TYPE(T_SPLIT_RESOURCE_POOL);
-      SET_STMT_TYPE(T_MERGE_RESOURCE_POOL);
-      SET_STMT_TYPE(T_CREATE_RESOURCE_UNIT);
-      SET_STMT_TYPE(T_ALTER_RESOURCE_UNIT);
-      SET_STMT_TYPE(T_DROP_RESOURCE_UNIT);
-      SET_STMT_TYPE(T_CREATE_TENANT);
-      SET_STMT_TYPE(T_CREATE_STANDBY_TENANT);
-      SET_STMT_TYPE(T_DROP_TENANT);
-      SET_STMT_TYPE(T_MODIFY_TENANT);
-      SET_STMT_TYPE(T_LOCK_TENANT);
       // database
       SET_STMT_TYPE(T_CREATE_DATABASE);
       SET_STMT_TYPE(T_ALTER_DATABASE);
@@ -1959,7 +1945,6 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       SET_STMT_TYPE(T_RENAME_TABLE);
       SET_STMT_TYPE(T_TRUNCATE_TABLE);
       SET_STMT_TYPE(T_CREATE_TABLE_LIKE);
-      SET_STMT_TYPE(T_FORK_TABLE);
       SET_STMT_TYPE(T_ALTER_TABLE);
       SET_STMT_TYPE(T_OPTIMIZE_TABLE);
       SET_STMT_TYPE(T_OPTIMIZE_TENANT);
@@ -1972,14 +1957,12 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       SET_STMT_TYPE(T_CREATE_INDEX);
       SET_STMT_TYPE(T_DROP_INDEX);
       // flashback
-      SET_STMT_TYPE(T_FLASHBACK_TENANT);
       SET_STMT_TYPE(T_FLASHBACK_DATABASE);
       SET_STMT_TYPE(T_FLASHBACK_TABLE_FROM_RECYCLEBIN);
       SET_STMT_TYPE(T_FLASHBACK_TABLE_TO_SCN);
       SET_STMT_TYPE(T_FLASHBACK_INDEX);
       // purge
       SET_STMT_TYPE(T_PURGE_RECYCLEBIN);
-      SET_STMT_TYPE(T_PURGE_TENANT);
       SET_STMT_TYPE(T_PURGE_DATABASE);
       SET_STMT_TYPE(T_PURGE_TABLE);
       SET_STMT_TYPE(T_PURGE_INDEX);
@@ -6001,8 +5984,8 @@ int ObResolverUtils::foreign_key_column_match_index_column(const ObTableSchema &
     // check_partial_match_columns: allow matching a prefix, such as (a, b) matching (a, b, c)
     if (OB_FAIL(check_partial_match_columns(parent_columns, pk_columns, tmp_is_match))) {
       LOG_WARN("Failed to check_partial_match_columns", K(ret));
-    }
-
+    } 
+ 
     if (OB_FAIL(ret)) {
       // do nothing
     } else if (tmp_is_match) {
@@ -6800,37 +6783,6 @@ int ObResolverUtils::set_parallel_info(sql::ObSQLSessionInfo &session_info,
   return ret;
 }
 
-int ObResolverUtils::wait_for_sys_package_ready(ObSQLSessionInfo &session_info)
-{
-  int ret = OB_SUCCESS;
-  if (GCONF._enable_async_load_sys_package && !GCTX.sys_package_ready_ && session_info.is_user_session()) {
-    const int64_t retry_interval_us = 100L * 1000L; // 100ms
-    bool waited = false;
-    while (!GCTX.sys_package_ready_ && OB_SUCC(ret)) {
-      if (NULL != session_info.get_cur_exec_ctx() && OB_FAIL(session_info.get_cur_exec_ctx()->check_status())) {
-        LOG_WARN("check status failed", K(ret));
-      } else {
-        if (!waited) {
-          LOG_INFO("sys package not ready yet, waiting for loading completion");
-          waited = true;
-        }
-        ob_usleep(retry_interval_us);
-      }
-    }
-    if (OB_FAIL(ret)) {
-      LOG_WARN("sys package waiting interrupted", K(ret));
-    } else if (!GCTX.sys_package_ready_) {
-      LOG_WARN("sys package not ready after waiting");
-    } else {
-      if (waited) {
-        LOG_INFO("sys package ready after waiting");
-      }
-      // Return OB_SCHEMA_EAGAIN to retry acquiring schema
-      ret = OB_SCHEMA_EAGAIN;
-    }
-  }
-  return ret;
-}
 
 int ObResolverUtils::resolve_external_symbol(common::ObIAllocator &allocator,
                                              sql::ObRawExprFactory &expr_factory,
@@ -6871,8 +6823,32 @@ int ObResolverUtils::resolve_external_symbol(common::ObIAllocator &allocator,
 
   if (OB_SUCC(ret)) {
     // Wait for sys package to be loaded if not ready yet
-    OZ (wait_for_sys_package_ready(session_info));
-    if (OB_SUCC(ret)) {
+    if (GCONF._enable_async_load_sys_package && !GCTX.sys_package_ready_ && session_info.is_user_session()) {
+      const int64_t retry_interval_us = 100L * 1000L; // 100ms
+      bool waited = false;
+      while (!GCTX.sys_package_ready_ && OB_SUCC(ret)) {
+        if (NULL != session_info.get_cur_exec_ctx() && OB_FAIL(session_info.get_cur_exec_ctx()->check_status())) {
+          LOG_WARN("check status failed", K(ret));
+        } else {
+          if (!waited) {
+            LOG_INFO("sys package not ready yet, waiting for loading completion", K(q_name));
+            waited = true;
+          }
+          ob_usleep(retry_interval_us);
+        }
+      }
+      if (OB_FAIL(ret)) {
+        LOG_WARN("sys package waiting interrupted", K(ret), K(q_name));
+      } else if (!GCTX.sys_package_ready_) {
+        LOG_WARN("sys package not ready after waiting", K(q_name));
+      } else {
+        if (waited) {
+          LOG_INFO("sys package ready after waiting", K(q_name));
+        }
+        // Return OB_SCHEMA_EAGAIN to retry acquiring schema
+        ret = OB_SCHEMA_EAGAIN;
+      }
+    } else {
       pl::ObPLResolver pl_resolver(allocator,
                                   session_info,
                                   schema_guard,
@@ -8618,29 +8594,6 @@ int ObResolverUtils::resolve_file_format_string_value(const ParseNode *node,
         LOG_WARN("failed to convert charset", K(ret));
       } else {
         result_value = ObString(res_len, buf);
-      }
-    }
-  }
-  return ret;
-}
-
-int ObResolverUtils::check_not_supported_tenant_name(const ObString &tenant_name)
-{
-  int ret = OB_SUCCESS;
-  if (OB_NOT_NULL(tenant_name.find('$'))) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "since 4.2.1, manually creating a tenant name containing '$' is");
-  }
-  if (OB_SUCC(ret)) {
-    const char *const forbid_list[] = {"all", "all_user", "all_meta"};
-    int64_t list_len = ARRAYSIZEOF(forbid_list);
-    for (int64_t i = 0; OB_SUCC(ret) && (i < list_len); ++i) {
-      if (0 == tenant_name.case_compare(forbid_list[i])) {
-        ret = OB_NOT_SUPPORTED;
-        char err_info[128] = {'\0'};
-        snprintf(err_info, sizeof(err_info), "since 4.2.1, using \"%s\" (case insensitive) "
-            "as a tenant name is", forbid_list[i]);
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, err_info);
       }
     }
   }

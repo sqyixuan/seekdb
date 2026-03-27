@@ -16,11 +16,9 @@
 
 #include "ob_garbage_collector.h"
 #include "ob_log_service.h"
-#include "ob_switch_leader_adapter.h"
 #include "rpc/obrpc/ob_rpc_net_handler.h"
 #include "storage/tx/ob_ts_mgr.h"
 #include "share/ls/ob_ls_life_manager.h"
-#include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "storage/meta_store/ob_server_storage_meta_service.h"
 #include "storage/concurrency_control/ob_data_validation_service.h"
 #include "logservice/common_util/ob_log_time_utils.h"
@@ -844,10 +842,8 @@ int ObGCHandler::try_check_and_set_wait_gc_when_log_archive_is_off_(
       CLOG_LOG(INFO, "Tenant is dropped and the log stream can be removed, try_check_and_set_wait_gc_ success",
           K(tenant_id), K(ls_id), K(gc_state), K(offline_scn), K(readable_scn));
     } else if (offline_scn.is_valid() &&
-        (MTL_GET_TENANT_ROLE_CACHE() == share::ObTenantRole::RESTORE_TENANT ||
-         MTL_GET_TENANT_ROLE_CACHE() == share::ObTenantRole::CLONE_TENANT)) {
+        MTL_GET_TENANT_ROLE_CACHE() == share::ObTenantRole::RESTORE_TENANT) {
       // restore tenant, not need gc delay
-      // for clone tenant, we can ensure no ls's changes during clone procedure, so no need to deal with gc status
       if (OB_FAIL(ls_->set_gc_state(LSGCState::WAIT_GC))) {
         CLOG_LOG(WARN, "set_gc_state failed", K(ls_id), K(gc_state), K(ret));
       }
@@ -923,16 +919,8 @@ int ObGCHandler::check_if_tenant_is_dropping_or_dropped_(const uint64_t tenant_i
 int ObGCHandler::get_tenant_readable_scn_(SCN &readable_scn)
 {
   int ret = OB_SUCCESS;
-  rootserver::ObTenantInfoLoader *tenant_info_loader = MTL(rootserver::ObTenantInfoLoader*);
-
-  if (OB_ISNULL(tenant_info_loader)) {
-    ret = OB_ERR_UNEXPECTED;
-    CLOG_LOG(WARN, "mtl pointer is null", KR(ret), KP(tenant_info_loader));
-  } else if (OB_FAIL(tenant_info_loader->get_readable_scn(readable_scn))) {
-    CLOG_LOG(WARN, "get readable_scn failed", KR(ret));
-  } else if (OB_UNLIKELY(! readable_scn.is_valid())) {
-    ret = OB_EAGAIN;
-    CLOG_LOG(WARN, "readable_scn not valid", KR(ret), K(readable_scn));
+  if (OB_FAIL(ObShareUtil::get_sys_ls_readable_scn(readable_scn))) {
+    LOG_WARN("failed to get_max_decided_scn", KR(ret));
   }
   return ret;
 }
@@ -1801,11 +1789,8 @@ void ObGarbageCollector::execute_gc_(ObGCCandidateArray &gc_candidates)
           gc_handler->set_log_sync_stopped();
         }
       }
-      ObSwitchLeaderAdapter switch_leader_adapter;
       if (OB_SUCCESS != (tmp_ret = (gc_handler->execute_pre_remove()))) {
         CLOG_LOG(WARN, "failed to execute_pre_remove", K(tmp_ret), K(id), K_(self_addr));
-      } else if (OB_SUCCESS != (tmp_ret = switch_leader_adapter.remove_from_election_blacklist(id.id(), self_addr_))) {
-        CLOG_LOG(WARN, "remove_from_election_blacklist failed", K(tmp_ret), K(id), K_(self_addr));
       } else if (OB_SUCCESS != (tmp_ret = ls_service_->remove_ls(id))) {
         CLOG_LOG(WARN, "remove_ls failed", K(tmp_ret), K(id));
       } else {
