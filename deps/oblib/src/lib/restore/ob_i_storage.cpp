@@ -148,24 +148,16 @@ int handle_listed_directory(ObBaseDirEntryOperator &op,
 int get_storage_prefix_from_path(const common::ObString &uri, const char *&prefix)
 {
   int ret = OB_SUCCESS;
-  if (uri.prefix_match(OB_S3_PREFIX)) {
+  if (uri.prefix_match(OB_OSS_PREFIX)) {
+    prefix = OB_OSS_PREFIX;
+  } else if (uri.prefix_match(OB_S3_PREFIX)) {
     prefix = OB_S3_PREFIX;
   } else if (uri.prefix_match(OB_FILE_PREFIX)) {
     prefix = OB_FILE_PREFIX;
+  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
+    prefix = OB_HDFS_PREFIX;
   } else if (uri.prefix_match(OB_AZBLOB_PREFIX)) {
     prefix = OB_AZBLOB_PREFIX;
-  } else if (uri.prefix_match(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    STORAGE_LOG(WARN, "OSS storage is not supported", K(ret), K(uri));
-  } else if (uri.prefix_match(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    STORAGE_LOG(WARN, "COS storage is not supported", K(ret), K(uri));
-  } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    STORAGE_LOG(WARN, "HDFS storage is not supported", K(ret), K(uri));
   } else {
     ret = OB_INVALID_BACKUP_DEST;
     STORAGE_LOG(ERROR, "invalid backup uri", K(ret), K(uri));
@@ -369,6 +361,13 @@ int ob_set_field(const char *value, char *field, const uint32_t field_length)
       field[value_len] = '\0';
     }
   }
+  return ret;
+}
+
+int ob_apr_abort_fn(int retcode)
+{
+  int ret = OB_ALLOCATE_MEMORY_FAILED;
+  OB_LOG(ERROR, "fail to alloc mem for OSS", K(ret), K(retcode));
   return ret;
 }
 
@@ -804,7 +803,7 @@ int ObStoragePartInfoHandler::add_part_info(
     ret = OB_NOT_INIT;
     OB_LOG(WARN, "ObStoragePartInfoHandler not inited", K(ret));
   // checksum is allowed to be null
-  // e.g. S3 use md5 | OBS 
+  // e.g. S3 use md5 | OSS | OBS 
   } else if (OB_UNLIKELY(part_id < 1) || OB_ISNULL(etag)) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid args", K(ret), K(part_id), KP(etag));
@@ -825,20 +824,28 @@ int ObStoragePartInfoHandler::add_part_info(
 
 static lib::ObMemAttr get_mem_attr_from_storage_info(const ObObjectStorageInfo *storage_info)
 {
+  static lib::ObMemAttr oss_attr;
   static lib::ObMemAttr s3_attr;
   static lib::ObMemAttr nfs_attr;
+  static lib::ObMemAttr hdfs_attr;
   static lib::ObMemAttr default_attr;
+  oss_attr.label_ = "OSS_SDK";
   s3_attr.label_ = "S3_SDK";
   nfs_attr.label_ = "NFS_SDK";
+  hdfs_attr.label_ = "HDFS_SDK";
   default_attr.label_ = "OBJECT_STORAGE";
 
   lib::ObMemAttr ret_attr = default_attr;
   if (OB_NOT_NULL(storage_info) && storage_info->is_valid()) {
     const ObStorageType type = storage_info->get_type();
-    if (OB_STORAGE_S3 == type) {
+    if (OB_STORAGE_OSS == type) {
+      ret_attr = oss_attr;
+    } else if (OB_STORAGE_S3 == type) {
       ret_attr = s3_attr;
     } else if (OB_STORAGE_FILE == type) {
       ret_attr = nfs_attr;
+    } else if (OB_STORAGE_HDFS == type) {
+      ret_attr = hdfs_attr;
     }
   }
   return ret_attr;

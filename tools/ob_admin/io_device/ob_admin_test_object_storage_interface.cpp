@@ -166,7 +166,9 @@ int ObAdminTestIODeviceExecutor::test_object_storage_interface_async_upload_(Tes
 bool adaptive_append_mode(const ObObjectStorageInfo &storage_info)
 {
   const ObStorageType type = storage_info.get_type();
-  return ObStorageType::OB_STORAGE_S3 == type;
+  const bool enable_worm = storage_info.is_enable_worm();
+  return ObStorageType::OB_STORAGE_S3 == type
+      || (ObStorageType::OB_STORAGE_OSS == type && enable_worm);
 }
 
 int ObAdminTestIODeviceExecutor::test_object_storage_interface_is_exist_(TestObjectStorageInterfaceContext &ctx)
