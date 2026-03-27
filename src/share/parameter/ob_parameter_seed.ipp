@@ -459,7 +459,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//[INTERNAL_URL]
+//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -642,9 +642,9 @@ DEF_TIME(tablet_meta_table_check_interval, OB_CLUSTER_PARAMETER, "30m", "[1m,)",
          "the time interval that observer compares tablet meta table with local ls replica info "
          "and make adjustments to ensure the correctness of tablet meta table. Range: [1m,+∞)",
          ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "1.2.0.0", "the min observer version",
+DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "1.1.0.0", "the min observer version",
         ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_VERSION(compatible, OB_CLUSTER_PARAMETER, "1.2.0.0", "compatible version for persisted data",
+DEF_VERSION(compatible, OB_CLUSTER_PARAMETER, "1.1.0.0", "compatible version for persisted data",
             ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_BOOL(enable_ddl, OB_CLUSTER_PARAMETER, "True", "specifies whether DDL operation is turned on. "
          "Value:  True:turned on;  False: turned off",
@@ -2594,7 +2594,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// [INTERNAL_URL]
+// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
