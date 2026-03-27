@@ -55,6 +55,7 @@ private:
     EDIT_LEVEL,
     DEFAULT_VALUE,
     ISDEFAULT,
+    TENANT_ID
   };
   common::ObConfigContainer::const_iterator sys_iter_;
   omt::ObTenantConfigGuard tenant_config_;

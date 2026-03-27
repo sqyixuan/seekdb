@@ -4129,6 +4129,21 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_schema(ObTableSchema &
   }
 
   if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("value_strict", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      OB_MAX_EXTRA_CONFIG_LENGTH, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("info", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -4144,6 +4159,21 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_schema(ObTableSchema &
   }
 
   if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("need_reboot", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("section", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -4152,6 +4182,21 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_schema(ObTableSchema &
       ObVarcharType, //column_type
       CS_TYPE_INVALID, //column_collation_type
       OB_MAX_CONFIG_SECTION_LEN, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("visible_level", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      OB_MAX_CONFIG_VISIBLE_LEVEL_LEN, //column_length
       -1, //column_precision
       -1, //column_scale
       false, //is_nullable
@@ -4204,21 +4249,6 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_schema(ObTableSchema &
   }
 
   if (OB_SUCC(ret)) {
-    ADD_COLUMN_SCHEMA("tenant_id", //column_name
-      ++column_id, //column_id
-      0, //rowkey_id
-      0, //index_id
-      0, //part_key_pos
-      ObIntType, //column_type
-      CS_TYPE_INVALID, //column_collation_type
-      sizeof(int64_t), //column_length
-      -1, //column_precision
-      -1, //column_scale
-      true, //is_nullable
-      false); //is_autoincrement
-  }
-
-  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("default_value", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -4245,6 +4275,21 @@ int ObInnerTableSchema::all_virtual_tenant_parameter_stat_schema(ObTableSchema &
       -1, //column_precision
       -1, //column_scale
       false, //is_nullable
+      false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("tenant_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
       false); //is_autoincrement
   }
   if (OB_SUCC(ret)) {
