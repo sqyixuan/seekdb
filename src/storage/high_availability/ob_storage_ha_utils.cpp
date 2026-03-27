@@ -23,7 +23,6 @@
 #include "observer/ob_server_event_history_table_operator.h"
 #include "storage/tx/ob_ts_mgr.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "rootserver/ob_tenant_info_loader.h"
 #include "observer/omt/ob_tenant.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
 #include "share/ob_io_device_helper.h"
@@ -84,7 +83,7 @@ int ObStorageHAUtils::fetch_src_tablet_meta_info_(const uint64_t tenant_id, cons
   int ret = OB_SUCCESS;
   ObTabletTableOperator op;
   ObTabletReplica tablet_replica;
-  if (OB_FAIL(op.init(share::OBCG_STORAGE, sql_client))) {
+  if (OB_FAIL(op.init(GCTX.meta_db_pool_))) {
     LOG_WARN("failed to init operator", K(ret));
   } else if (OB_FAIL(op.get(tenant_id, tablet_id, ls_id, src_addr, tablet_replica))) {
     LOG_WARN("failed to get tablet meta info", K(ret), K(tenant_id), K(tablet_id), K(ls_id), K(src_addr));
@@ -174,44 +173,9 @@ int ObStorageHAUtils::check_transfer_ls_can_rebuild(
     bool &need_rebuild)
 {
   int ret = OB_SUCCESS;
-  SCN readable_scn = SCN::base_scn();
   need_rebuild = false;
-  if (!replay_scn.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("argument invalid", K(ret), K(replay_scn));
-  } else if (MTL_TENANT_ROLE_CACHE_IS_INVALID()) {
-    ret = OB_NEED_RETRY;
-    LOG_WARN("tenant role is invalid, need retry", KR(ret), K(replay_scn));
-  } else if (MTL_TENANT_ROLE_CACHE_IS_PRIMARY()) {
-    need_rebuild = true;
-  } else if (OB_FAIL(get_readable_scn_(readable_scn))) {
-    LOG_WARN("failed to get readable scn", K(ret), K(replay_scn));
-  } else if (readable_scn >= replay_scn) {
-    need_rebuild = true;
-  } else {
-    need_rebuild = false;
-  }
   return ret;
 }
-
-
-int ObStorageHAUtils::get_readable_scn_(share::SCN &readable_scn)
-{
-  int ret = OB_SUCCESS;
-  readable_scn.set_base();
-  rootserver::ObTenantInfoLoader *info = MTL(rootserver::ObTenantInfoLoader*);
-  if (OB_ISNULL(info)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tenant info is null", K(ret), KP(info));
-  } else if (OB_FAIL(info->get_readable_scn(readable_scn))) {
-    LOG_WARN("failed to get readable scn", K(ret), K(readable_scn));
-  } else if (!readable_scn.is_valid()) {
-    ret = OB_EAGAIN;
-    LOG_WARN("readable_scn not valid", K(ret), K(readable_scn));
-  }
-  return ret;
-}
-
 
 int ObStorageHAUtils::check_disk_space()
 {
@@ -489,14 +453,6 @@ void ObTransferUtils::clear_transfer_module()
     THIS_WORKER.set_module_type(type);
   }
 #endif
-}
-
-
-void ObTransferUtils::set_transfer_related_info(
-    const share::ObLSID &dest_ls_id,
-    const share::ObTransferTaskID &task_id,
-    const share::SCN &start_scn)
-{
 }
 
 int ObTransferUtils::get_ls_(
