@@ -223,7 +223,7 @@ public:
   int get_partition_count(obrpc::ObGetPartitionCountResult &result);
 
   ////////////////////////////////////////////////////////////////
-
+  
   // ObRpcPrepareServerForAddingServerP @RS add server
   int prepare_server_for_adding_server(
       const obrpc::ObPrepareServerForAddingServerArg &arg,
