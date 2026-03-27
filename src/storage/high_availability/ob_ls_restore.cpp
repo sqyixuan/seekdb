@@ -1059,7 +1059,7 @@ int ObStartLSRestoreTask::update_ls_meta_and_create_all_tablets_()
             } else {
               LOG_WARN("failed to get next tablet meta", K(ret));
             }
-          } else if (OB_FAIL(logic_tablet_id.init(tablet_info.tablet_id_, tablet_info.param_.transfer_info_.transfer_seq_))) {
+          } else if (OB_FAIL(logic_tablet_id.init(tablet_info.tablet_id_, 0))) {
             LOG_WARN("failed to init logicl tablet id", K(ret), K(tablet_info));
           } else if (tablet_info.param_.tablet_id_.is_ls_inner_tablet()
                      && OB_FAIL(ctx_->sys_tablet_id_array_.push_back(logic_tablet_id))) {
@@ -2057,8 +2057,6 @@ int ObTabletGroupMetaRestoreTask::create_or_update_tablet_(
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(param.transfer_info_.init())) {
-      LOG_WARN("failed to init transfer info", K(ret), K(param));
     } else if (OB_FAIL(param.ha_status_.set_restore_status(restore_status))) {
       LOG_WARN("failed to set restore status", K(ret), K(restore_status));
     } else if (OB_FAIL(param.ha_status_.set_data_status(data_status))) {

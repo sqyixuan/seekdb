@@ -548,24 +548,6 @@ ObCopyLSViewArg::ObCopyLSViewArg()
 OB_SERIALIZE_MEMBER(ObCopyLSViewArg, tenant_id_, ls_id_);
 
 
-ObUpdateTransferMetaInfoArg::ObUpdateTransferMetaInfoArg()
-  : tenant_id_(OB_INVALID_ID),
-    dest_ls_id_(),
-    transfer_meta_info_()
-{
-}
-
-
-bool ObUpdateTransferMetaInfoArg::is_valid() const
-{
-  return OB_INVALID_ID != tenant_id_
-      && dest_ls_id_.is_valid()
-      && transfer_meta_info_.is_valid();
-}
-
-
-OB_SERIALIZE_MEMBER(ObUpdateTransferMetaInfoArg, tenant_id_, dest_ls_id_, transfer_meta_info_);
-
 template <ObRpcPacketCode RPC_CODE>
 ObStorageStreamRpcP<RPC_CODE>::ObStorageStreamRpcP(common::ObInOutBandwidthThrottle *bandwidth_throttle)
   : bandwidth_throttle_(bandwidth_throttle),

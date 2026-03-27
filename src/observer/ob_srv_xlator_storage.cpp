@@ -94,30 +94,11 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcRemoteWriteDDLCommitLogP, gctx_);
     RPC_PROCESSOR(ObRpcSetTabletAutoincSeqP, gctx_);
     RPC_PROCESSOR(ObRpcRemoteWriteDDLIncCommitLogP, gctx_);
-    RPC_PROCESSOR(ObRpcDRTaskReplyToMetaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSCancelReplicaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSMigrateReplicaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSAddReplicaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSTypeTransformP, gctx_);
-    RPC_PROCESSOR(ObRpcLSRemovePaxosReplicaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSRemoveNonPaxosReplicaP, gctx_);
-    RPC_PROCESSOR(ObRpcLSModifyPaxosReplicaNumberP, gctx_);
-    RPC_PROCESSOR(ObRpcLSCheckDRTaskExistP, gctx_);
-    RPC_PROCESSOR(ObAdminDRTaskP, gctx_);
     RPC_PROCESSOR(ObRpcCreateTenantUserLSP, gctx_);
     RPC_PROCESSOR(ObRpcLoadTenantTableSchemaP, gctx_);
     RPC_PROCESSOR(ObRpcGenUniqueIDP, gctx_);
-    RPC_PROCESSOR(ObRpcStartTransferTaskP, gctx_);
-#ifdef OB_BUILD_ARBITRATION
-    RPC_PROCESSOR(ObRpcAddArbP, gctx_);
-    RPC_PROCESSOR(ObRpcRemoveArbP, gctx_);
-#endif
     RPC_PROCESSOR(ObRpcDDLCheckTabletMergeStatusP, gctx_);
     RPC_PROCESSOR(ObRpcCreateDuplicateLSP, gctx_);
-    RPC_PROCESSOR(ObRpcNotifyTenantSnapshotSchedulerP, gctx_);
-    RPC_PROCESSOR(ObRpcInnerCreateTenantSnapshotP, gctx_);
-    RPC_PROCESSOR(ObRpcInnerDropTenantSnapshotP, gctx_);
-    RPC_PROCESSOR(ObRpcNotifyCloneSchedulerP, gctx_);
     RPC_PROCESSOR(ObRpcNotifyTenantThreadP, gctx_);
     RPC_PROCESSOR(ObRpcTabletMajorFreezeP, gctx_);
     RPC_PROCESSOR(ObRpcDetectSessionAliveP, gctx_);
@@ -125,7 +106,6 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObCollectMvMergeInfoP, gctx_);
     RPC_PROCESSOR(ObFetchStableMemberListP, gctx_);
     RPC_PROCESSOR(ObRpcPrepareTabletSplitTaskRangesP, gctx_);
-    RPC_PROCESSOR(ObRpcCheckStorageOperationStatusP, gctx_);
 #ifdef OB_BUILD_SHARED_STORAGE
     RPC_PROCESSOR(ObRpcRemoteWriteDDLFinishLogP, gctx_);
     RPC_PROCESSOR(ObFetchReplicaPrewarmMicroBlockP, gctx_.bandwidth_throttle_);
@@ -146,11 +126,7 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObSetSSCacheSizeRatioP, gctx_);
     RPC_PROCESSOR(ObTriggerStorageCacheP, gctx_);
 #endif
-    RPC_PROCESSOR(ObNotifySharedStorageInfoP, gctx_);
     RPC_PROCESSOR(ObRpcBroadcastConfigVersionP, gctx_);
     RPC_PROCESSOR(ObRpcNotifyLSRestoreFinishP, gctx_);
-#ifdef OB_BUILD_ARBITRATION
-    RPC_PROCESSOR(ObFetchArbMemberP, gctx_);
-#endif
     RPC_PROCESSOR(ObRpcStartArchiveP, gctx_);
 }

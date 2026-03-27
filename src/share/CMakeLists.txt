@@ -158,7 +158,6 @@ ob_set_subtarget(ob_share cache
 ob_set_subtarget(ob_share common
   ob_alive_server_tracer.cpp
   ob_all_server_tracer.cpp
-  ob_arbitration_service_status.cpp
   ob_autoincrement_param.cpp
   ob_autoincrement_service.cpp
   ob_bg_thread_monitor.cpp
@@ -170,7 +169,6 @@ ob_set_subtarget(ob_share common
   ob_core_table_proxy.cpp
   ob_ddl_checksum.cpp
   ob_ddl_sim_point.cpp
-  ob_fork_table_util.cpp
   ob_ddl_common.cpp
   ob_ddl_error_message_table_operator.cpp
   ob_tablet_reorganize_history_table_operator.cpp
@@ -244,7 +242,6 @@ ob_set_subtarget(ob_share common
   ob_tablet_replica_checksum_operator.cpp
   ob_tablet_meta_table_compaction_operator.cpp
   ob_task_define.cpp
-  ob_telemetry.cpp
   ob_tenant_info_proxy.cpp
   ob_tenant_role.cpp
   ob_tenant_switchover_status.cpp
@@ -355,13 +352,10 @@ ob_set_subtarget(ob_share common_mixed
   table/ob_table_load_dml_stat.cpp
   table/ob_table_load_row.cpp
   transfer/ob_transfer_info.cpp
-  transfer/ob_transfer_task_operator.cpp
   table/ob_table_load_sql_statistics.cpp
   tenant_snapshot/ob_tenant_snapshot_id.cpp
-  tenant_snapshot/ob_tenant_snapshot_table_operator.cpp
   table/ob_ttl_util.cpp
   table/ob_table_config_util.cpp
-  restore/ob_tenant_clone_table_operator.cpp
   index_usage/ob_index_usage_info_mgr.cpp
   index_usage/ob_index_usage_report_task.cpp
   table/ob_table_util.cpp
@@ -602,6 +596,8 @@ ob_set_subtarget(ob_share stat
 )
 
 ob_set_subtarget(ob_share external_table
+  external_table/ob_hdfs_storage_info.cpp
+  external_table/ob_hdfs_table_device.cpp
   external_table/ob_external_table_file_mgr.cpp
   external_table/ob_external_table_file_rpc_processor.cpp
   external_table/ob_external_table_file_task.cpp
@@ -616,6 +612,8 @@ ob_set_subtarget(ob_share catalog
   catalog/ob_catalog_meta_getter.cpp
   catalog/ob_cached_catalog_meta_getter.cpp
   catalog/ob_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog_utils.cpp
+  catalog/odps/ob_odps_catalog.cpp
 )
 
 
@@ -634,13 +632,6 @@ ob_set_subtarget(ob_share unit
   unit/ob_unit_config.cpp
   unit/ob_unit_resource.cpp
   unit/ob_unit_info.cpp
-)
-ob_set_subtarget(ob_share balance
-  ob_balance_define.cpp
-  balance/ob_balance_job_table_operator.cpp
-  balance/ob_balance_task_table_operator.cpp
-  balance/ob_balance_task_helper_operator.cpp
-  balance/ob_transfer_partition_task_table_operator.cpp
 )
 
 ob_set_subtarget(ob_share ncomp_dll
@@ -681,8 +672,6 @@ ob_set_subtarget(ob_share object_storage
   object_storage/ob_device_config_parser.cpp
   object_storage/ob_device_connectivity.cpp
   object_storage/ob_device_manifest.cpp
-  object_storage/ob_device_manifest_task.cpp
-  object_storage/ob_zone_storage_table_operation.cpp
   object_storage/ob_object_storage_struct.cpp
 )
 

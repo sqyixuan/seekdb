@@ -22,7 +22,6 @@
 #include "storage/ddl/ob_macro_meta_store_manager.h"
 #include "storage/ddl/ob_ddl_pipeline.h"
 #include "storage/ob_storage_schema_util.h"
-#include "storage/ddl/ob_ddl_merge_helper.h"
 
 #define USING_LOG_PREFIX STORAGE
 
@@ -33,37 +32,18 @@ using namespace oceanbase::blocksstable;
 using namespace oceanbase::share;
 
 
-ObDDLTabletContext::MergeCtx::~MergeCtx()
+ObDDLTabletContext::MergeCtx::~MergeCtx() 
 {
   fifo_.reset();
-  for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = slice_cg_sstables_.begin();
+  for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = slice_cg_sstables_.begin(); 
       iter != slice_cg_sstables_.end();
       iter++) {
     if (nullptr != iter->second) {
       iter->second->~ObArray<ObTableHandleV2>();
     }
   }
-  if (nullptr != merge_helper_) {
-    merge_helper_->~ObIDDLMergeHelper();
-    merge_helper_ = nullptr;
-  }
   slice_cg_sstables_.destroy();
   arena_.reset();
-  is_inited_ = false;
-}
-
-int ObDDLTabletContext::MergeCtx::init(const ObDirectLoadType direct_load_type)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(is_inited_)) {
-    ret = OB_INIT_TWICE;
-    LOG_WARN("init twice", K(ret), K(is_inited_));
-  } else if (OB_FAIL(ObIDDLMergeHelper::get_merge_helper(arena_, direct_load_type, merge_helper_))) {
-    LOG_WARN("failed to get merge helper", K(ret));
-  } else {
-    is_inited_ = true;
-  }
-  return ret;
 }
 
 ObDDLSlice::ObDDLSlice()
@@ -243,7 +223,7 @@ int init_tablet_param(ObTablet *tablet, ObStorageSchema *storage_schema, const O
   } else {
     ObDDLKvMgrHandle ddl_kv_mgr_handle;
     const ObTabletMeta &tablet_meta = tablet->get_tablet_meta();
-    tablet_param.tablet_transfer_seq_ = tablet_meta.transfer_info_.transfer_seq_;
+    tablet_param.tablet_transfer_seq_ = 0;
     tablet_param.is_micro_index_clustered_ = tablet_meta.micro_index_clustered_;
     tablet_param.storage_schema_ = storage_schema;
     if (is_incremental_minor_direct_load(direct_load_type)) {
@@ -293,8 +273,6 @@ int ObDDLTabletContext::init(
         LOG_WARN("ddl get tablet failed", K(ret), K(ls_handle), K(tablet_id));
       } else if (OB_FAIL(init_tablet_param(tablet_handle.get_obj(), ddl_table_schema.storage_schema_, direct_load_type, arena_, tablet_param_))) {
         LOG_WARN("init tablet param failed", K(ret));
-      } else if (OB_FAIL(merge_ctx_.init(direct_load_type))) {
-        LOG_WARN("failed to init merge ctx", K(ret));
       } else if (is_incremental_major_direct_load(direct_load_type)) {
         if (!tablet_param_.storage_schema_->is_row_store() || !tablet_param_.storage_schema_->is_user_data_table()) {
           // do nothing
@@ -321,8 +299,6 @@ int ObDDLTabletContext::init(
           LOG_WARN("ddl get tablet failed", K(ret), K(ls_handle), KPC(this));
         } else if (OB_FAIL(init_tablet_param(lob_meta_tablet_handle.get_obj(), ddl_table_schema.lob_meta_storage_schema_, direct_load_type, arena_, lob_meta_tablet_param_))) {
           LOG_WARN("init lob meta tablet param failed", K(ret));
-        } else if (OB_FAIL(lob_merge_ctx_.init(direct_load_type))) {
-          LOG_WARN("failed to init merge ctx", K(ret));
         }
       }
     }
@@ -515,3 +491,4 @@ int ObDDLTabletContext::get_all_slices(ObIArray<ObDDLSlice *> &ddl_slices)
   }
   return ret;
 }
+

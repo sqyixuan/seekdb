@@ -228,8 +228,7 @@ public:
       const bool micro_index_clustered,
       const bool need_generate_cs_replica_cg_array,
       const bool has_cs_replica,
-      ObFreezer *freezer,
-      const share::ObForkTabletInfo &fork_info = share::ObForkTabletInfo());
+      ObFreezer *freezer);
   // dump/merge build new multi version tablet
   int init_for_merge(
       common::ObArenaAllocator &allocator,
@@ -473,7 +472,6 @@ public:
       const int64_t len,
       share::ObLSID &ls_id,
       common::ObTabletID &tablet_id);
-  static int check_transfer_seq_equal(const ObTablet &tablet, const int64_t transfer_seq);
 
   // migration section
   // used for migration source generating create tablet rpc argument
@@ -481,8 +479,7 @@ public:
       ObMigrationTabletParam &mig_tablet_param) const;
   int build_migration_sstable_param(
       const ObITable::TableKey &table_key,
-      blocksstable::ObMigrationSSTableParam &mig_sstable_param,
-      const bool is_fork_table) const;
+      blocksstable::ObMigrationSSTableParam &mig_sstable_param) const;
   int build_migration_sstable_param(
       const ObITable::TableKey &table_key,
       const blocksstable::ObSSTableMergeRes &res,
@@ -536,7 +533,7 @@ public:
   share::SCN get_mds_checkpoint_scn() const { return tablet_meta_.mds_checkpoint_scn_; }
   int64_t get_snapshot_version() const { return tablet_meta_.snapshot_version_; }
   int64_t get_multi_version_start() const { return tablet_meta_.multi_version_start_; }
-  int64_t get_transfer_seq() const { return tablet_meta_.transfer_info_.transfer_seq_; }
+  int64_t get_transfer_seq() const { return 0; }
   int get_snapshot_version(share::SCN &scn) const;
 
   //TODO huronghui.hrh: rename function for row store sstable
@@ -665,7 +662,6 @@ public:
       const ObDDLMacroBlock &macro_block,
       const int64_t snapshot_version,
       const uint64_t data_format_version);
-  int get_fork_info(share::ObForkTabletInfo &fork_info) const;
 protected:// for MDS use
   virtual bool check_is_inited_() const override final { return is_inited_; }
   virtual const ObTabletMeta &get_tablet_meta_() const override final { return tablet_meta_; }
@@ -819,9 +815,6 @@ private:
       const int64_t snapshot_version,
       ObTabletTableIterator &iter,
       bool &succ_get_split_dst_tables);
-  int get_fork_src_read_tables_(
-      ObTabletTableIterator &iter,
-      const bool allow_no_ready_read);
 
   int allow_to_read_();
 

@@ -20,7 +20,6 @@
 #include "storage/multi_data_source/ob_mds_table_merge_dag.h"
 #include "storage/multi_data_source/ob_mds_table_merge_dag_param.h"
 #include "storage/ddl/ob_tablet_lob_split_task.h"
-#include "storage/ddl/ob_tablet_fork_task.h"
 #include "storage/compaction/ob_batch_freeze_tablets_dag.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/compaction/ob_tablet_refresh_dag.h"
@@ -145,15 +144,6 @@ int ObScheduleDagFunc::schedule_and_get_lob_tablet_split_dag(
   return ret;
 }
 
-int ObScheduleDagFunc::schedule_tablet_fork_dag(
-    storage::ObTabletForkParam &param,
-    const bool is_emergency)
-{
-  int ret = OB_SUCCESS;
-  CREATE_DAG(ObTabletForkDag);
-  return ret;
-}
-
 int ObScheduleDagFunc::schedule_mds_table_merge_dag(
     storage::mds::ObMdsTableMergeDagParam &param,
     const bool is_emergency)
@@ -244,7 +234,6 @@ int ObDagParamFunc::fill_param(
     param.tablet_id_ = tablet.get_tablet_meta().tablet_id_;
     param.merge_type_ = merge_type;
     param.merge_version_ = merge_snapshot_version;
-    param.schedule_transfer_seq_ = tablet.get_tablet_meta().transfer_info_.transfer_seq_;
     param.exec_mode_ = exec_mode;
   }
   return ret;
@@ -273,7 +262,6 @@ int ObDagParamFunc::fill_param(
     param.merge_type_ = merge_type;
     param.merge_version_ = merge_snapshot_version;
     param.compat_mode_ = tablet.get_tablet_meta().compat_mode_;
-    param.schedule_transfer_seq_ = tablet.get_tablet_meta().transfer_info_.transfer_seq_;
     param.exec_mode_ = exec_mode;
     if (OB_UNLIKELY(nullptr != dag_net_id)) {
       param.dag_net_id_ = *dag_net_id;

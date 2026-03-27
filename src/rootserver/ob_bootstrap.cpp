@@ -223,10 +223,6 @@ int ObPreBootstrap::prepare_bootstrap(ObAddr &master_rs)
   } else if (!is_empty) {
     ret = OB_INIT_TWICE;
     LOG_WARN("cannot do bootstrap on not empty server", KR(ret));
-#ifdef OB_BUILD_SHARED_STORAGE
-  } else if (OB_FAIL(check_and_notify_shared_storage_info())) {
-    LOG_WARN("fail to notify shared-storage info", KR(ret));
-#endif
   } else if (OB_FAIL(notify_sys_tenant_server_unit_resource())) {
     LOG_WARN("fail to notify sys tenant server unit resource", KR(ret));
   } else if (OB_FAIL(notify_sys_tenant_config_())) {
@@ -245,78 +241,6 @@ int ObPreBootstrap::prepare_bootstrap(ObAddr &master_rs)
   }
   return ret;
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-/*
- * Parse and check the validity of shared_storage info.
- * Check connectivity and whether ss-format file exist.
- * Then write the ss-format file and notify rs-list nodes with shared_storage info.
- */
-int ObPreBootstrap::check_and_notify_shared_storage_info()
-{
-  int ret = OB_SUCCESS;
-  if (!GCTX.is_shared_storage_mode()) {
-    // do nothing in shared_nothing mode
-  } else {
-    const ObString &shared_storage_info_str = arg_.shared_storage_info_;
-    ObAdminStorageArg shared_storage_infos;
-    ObBackupDest storage_dest;
-    ObDeviceConnectivityCheckManager device_conn_check_mgr;
-    if (OB_UNLIKELY(shared_storage_info_str.empty())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("shared_storage_infos is empty in SS mode", KR(ret), K(arg_));
-    } else if (OB_FAIL(ObStorageDestCheck::parse_shared_storage_info(shared_storage_info_str,
-                  shared_storage_infos, storage_dest))) {
-      LOG_WARN("failed to parse shared_storage_infos", KR(ret), K(shared_storage_infos));
-    } else if (OB_UNLIKELY(!shared_storage_infos.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("shared_storage_infos is invalid", KR(ret), K(shared_storage_infos));
-    }
-    // Check storage-dest connectivity
-    if (FAILEDx(device_conn_check_mgr.check_device_connectivity(storage_dest))) {
-      LOG_WARN("fail to check device connectivity", KR(ret), K(storage_dest));
-    }
-    // Check and write the ss-format file to prevent from write conflict with another cluster
-    //   in same shared-storage directory
-    bool is_ss_format_exist = false;
-    ObSSFormat ss_format;
-    if (FAILEDx(ObSSFormatUtil::is_exist_ss_format(storage_dest, is_ss_format_exist))) {
-      LOG_WARN("fail to judge ss_format exist", KR(ret), K(storage_dest), K(is_ss_format_exist));
-    } else if (OB_UNLIKELY(is_ss_format_exist)) {
-      ret = OB_FILE_ALREADY_EXIST;
-      LOG_ERROR("ss_format file already exist, shared storage must use new path"
-                "as the object storage path", KR(ret), K(is_ss_format_exist), K(storage_dest));
-      LOG_USER_ERROR(OB_ENTRY_EXIST, "ss_format file already exist,"
-                    "shared storage must use new path as the object storage path");
-    } else if (OB_FAIL(ss_format.init(CLUSTER_CURRENT_VERSION, ObTimeUtility::fast_current_time()))) {
-      LOG_WARN("fail to init ss_format", KR(ret), K(CLUSTER_CURRENT_VERSION));
-    } else if (OB_FAIL(ObSSFormatUtil::write_ss_format(storage_dest, ss_format))) {
-      LOG_ERROR("fail to write ss_format file", KR(ret), K(storage_dest), K(ss_format));
-    }
-    // Notify rs_list nodes with shared-storage info
-    if (OB_SUCC(ret)) {
-      ObNotifySharedStorageInfoArg rpc_arg;
-      ObNotifySharedStorageInfoResult rpc_result;
-      // NOTICE: For now, shared-storage info in bootstrap only include one storage-dest and used for all zones.
-      //         Its zone and region are not specified and need to be assigned from rs_list.
-      for (int64_t i = 0; OB_SUCC(ret) && i < rs_list_.count(); i++) {
-        shared_storage_infos.zone_ = rs_list_[i].zone_;
-        shared_storage_infos.region_ = rs_list_[i].region_;
-        if (OB_FAIL(rpc_arg.init(shared_storage_infos))) {
-          LOG_WARN("fail to init rpc_arg", KR(ret), K(shared_storage_infos));
-        } else if (OB_FAIL(rpc_proxy_.to(rs_list_[i].server_)
-                                      .notify_shared_storage_info(rpc_arg, rpc_result))) {
-          LOG_WARN("fail to send rpc notify_shared_stoarge_info", KR(ret), K(rpc_arg), K(rs_list_[i].server_));
-        } else if (OB_FAIL(rpc_result.get_ret())) {
-          LOG_WARN("notfiy_shared_storage_info via rpc failed", KR(ret), K(rpc_arg), K(rs_list_[i].server_));
-        }
-      }
-    }
-  }
-  BOOTSTRAP_CHECK_SUCCESS();
-  return ret;
-}
-#endif
 
 int ObPreBootstrap::notify_sys_tenant_server_unit_resource()
 {
@@ -1339,9 +1263,6 @@ int ObBootstrap::create_sys_tenant()
       LOG_WARN("set_comment failed", "comment", "system tenant", K(ret));
     } else if (OB_FAIL(set_replica_options(tenant))) {
       LOG_WARN("failed to set replica options", KR(ret));
-    } else if (OB_FAIL(tenant_ddl_service_.check_primary_zone_locality_condition(
-            tenant, zone_list, zone_region_list, dummy_schema_guard))) {
-      LOG_WARN("fail to check primary zone region condition", K(ret));
     } else if (OB_FAIL(tenant_ddl_service_.create_sys_tenant(arg, tenant))) {
       LOG_WARN("create tenant failed", K(ret), K(tenant));
     } else if (OB_FAIL(insert_sys_ls_(tenant, zone_list))) {
@@ -1520,7 +1441,7 @@ int ObBootstrap::create_sys_resource_pool()
   } else if (OB_FAIL(unit_mgr_.grant_pools(
           trans, new_ug_id_array,
           lib::Worker::CompatMode::MYSQL, pool_names,
-          OB_SYS_TENANT_ID, is_bootstrap, OB_INVALID_TENANT_ID/*source_tenant_id*/,
+          OB_SYS_TENANT_ID, is_bootstrap,
           check_data_version))) {
     LOG_WARN("grant_pools_to_tenant failed", K(pool_names),
         "tenant_id", static_cast<uint64_t>(OB_SYS_TENANT_ID), K(ret));
@@ -1623,66 +1544,6 @@ int ObBootstrap::init_all_zone_table()
   BOOTSTRAP_CHECK_SUCCESS();
   return ret;
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObBootstrap::write_shared_storage_args()
-{
-  int ret = OB_SUCCESS;
-  ObAdminStorageArg shared_storage_args;
-  if (GCTX.is_shared_storage_mode()) {
-    const ObString &shared_storage_info = arg_.shared_storage_info_;
-    if (shared_storage_info.empty()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("shared_storage_info is empty", KR(ret), K(arg_));
-    } else if (OB_FAIL(ObStorageDestCheck::parse_shared_storage_info(shared_storage_info,
-            shared_storage_args))) {
-      LOG_WARN("failed to parse shared_storage_info", KR(ret), K(shared_storage_args));
-    } else if (OB_UNLIKELY(!shared_storage_args.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("shared_storage_args is invalid", KR(ret), K(shared_storage_args));
-    } else {
-      for (int64_t i = 0; OB_SUCC(ret) && i < rs_list_.count(); i++) {
-        const ObZone &zone = rs_list_.at(i).zone_;
-        const ObRegion &region = rs_list_.at(i).region_;
-        if (OB_FAIL(write_shared_storage_args_for_zone(zone, region, shared_storage_args))) {
-          LOG_WARN("failed to write shared storage args for zone", KR(ret), K(zone), K(shared_storage_args));
-        } else {}
-      }
-    }
-  }
-  BOOTSTRAP_CHECK_SUCCESS();
-  return ret;
-}
-
-int ObBootstrap::write_shared_storage_args_for_zone(const ObZone &zone, const ObRegion &region,
-    const obrpc::ObAdminStorageArg &storage_args)
-{
-  int ret = OB_SUCCESS;
-  obrpc::ObAdminStorageArg full_args;
-  ObMySQLProxy &sql_proxy = ddl_service_.get_sql_proxy();
-  if (OB_ISNULL(GCTX.root_service_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("root_service_ is NULL", KR(ret), KP(GCTX.root_service_));
-  } else if (OB_UNLIKELY(zone.is_empty() || region.is_empty())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("empty zone or region", KR(ret), K(zone), K(region));
-  } else if (OB_UNLIKELY(!storage_args.is_valid())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("storage_args is invalid", KR(ret), K(storage_args));
-  } else if (OB_FAIL(full_args.assign(storage_args))) {
-    LOG_WARN("failed to assign full_args", KR(ret), K(zone), K(region), K(storage_args));
-  } else {
-    full_args.zone_ = zone;
-    full_args.region_ = region;
-    if (OB_FAIL(GCTX.root_service_->add_storage(full_args))) {
-      LOG_WARN("failed to add storage", KR(ret), K(full_args));
-    } else {
-      FLOG_INFO("add storage succeed", KR(ret), K(zone), K(storage_args));
-    }
-  }
-  return ret;
-}
-#endif
 
 template<typename SCHEMA>
 int ObBootstrap::set_replica_options(SCHEMA &schema)

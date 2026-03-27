@@ -280,7 +280,7 @@ void ObClearTabletLSCacheTimerTask::runTimerTask()
 }
 
 ObTabletLocationBroadcastTask::ObTabletLocationBroadcastTask()
-  : tenant_id_(OB_INVALID_TENANT_ID), task_id_() ,
+  : tenant_id_(OB_INVALID_TENANT_ID), //task_id_() ,
     ls_id_(), tablet_list_()
 {
   tablet_list_.set_attr(SET_USE_500("BroTabletList"));
@@ -295,7 +295,7 @@ int ObTabletLocationBroadcastTask::assign(const ObTabletLocationBroadcastTask &o
       LOG_WARN("failed to assign tablet_list_", KR(ret));
     } else {
       tenant_id_ = other.tenant_id_;
-      task_id_ = other.task_id_;
+      //task_id_ = other.task_id_;
       ls_id_ = other.ls_id_;
     }
   }
@@ -305,7 +305,7 @@ int ObTabletLocationBroadcastTask::assign(const ObTabletLocationBroadcastTask &o
 void ObTabletLocationBroadcastTask::reset()
 {
   tenant_id_ = OB_INVALID_TENANT_ID;
-  task_id_.reset();
+  //task_id_.reset();
   ls_id_.reset();
   tablet_list_.reset();
 }
@@ -313,7 +313,7 @@ void ObTabletLocationBroadcastTask::reset()
 bool ObTabletLocationBroadcastTask::is_valid() const
 {
   return OB_INVALID_TENANT_ID != tenant_id_
-         && task_id_.is_valid()
+    //     && task_id_.is_valid()
          && ls_id_.is_valid()
          && !tablet_list_.empty();
 }
@@ -322,7 +322,7 @@ int64_t ObTabletLocationBroadcastTask::hash() const
 {
   uint64_t hash_val = 0;
   hash_val = murmurhash(&tenant_id_, sizeof(tenant_id_), hash_val);
-  hash_val = murmurhash(&task_id_, sizeof(task_id_), hash_val);
+  //hash_val = murmurhash(&task_id_, sizeof(task_id_), hash_val);
   return hash_val;
 }
 
@@ -335,7 +335,7 @@ bool ObTabletLocationBroadcastTask::operator ==(const ObTabletLocationBroadcastT
     equal = true;
   } else {
     equal = tenant_id_ == other.tenant_id_
-            && task_id_ == other.task_id_;
+    ;//        && task_id_ == other.task_id_;
   }
   return equal;
 }
@@ -353,7 +353,7 @@ bool ObTabletLocationBroadcastTask::compare_without_version
 
 OB_SERIALIZE_MEMBER(ObTabletLocationBroadcastTask,
                     tenant_id_,
-                    task_id_,
+       //             task_id_,
                     ls_id_,
                     tablet_list_)
 
