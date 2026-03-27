@@ -120,76 +120,72 @@ int GenerateMemtableRow::operator()(const storage::checkpoint::ObTraceInfo &trac
       case OB_APP_MIN_COLUMN_ID + 3:
         virtual_table_.cur_row_.cells_[i].set_int(virtual_table_.addr_.get_port());
         break;
-      // ls_id
-      case OB_APP_MIN_COLUMN_ID + 4:
-        virtual_table_.cur_row_.cells_[i].set_int(trace_info.ls_id_.id());
-        break;
       // checkpoint_thread_name
-      case OB_APP_MIN_COLUMN_ID + 5:
+      case OB_APP_MIN_COLUMN_ID + 4:
           virtual_table_.cur_row_.cells_[i].set_varchar(trace_info.thread_name_);
           virtual_table_.cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       // checkpoint_start_time
-      case OB_APP_MIN_COLUMN_ID + 6:
+      case OB_APP_MIN_COLUMN_ID + 5:
         virtual_table_.cur_row_.cells_[i].set_timestamp(trace_info.checkpoint_start_time_);
         break;
       // tablet_id
-      case OB_APP_MIN_COLUMN_ID + 7:
+      case OB_APP_MIN_COLUMN_ID + 6:
         virtual_table_.cur_row_.cells_[i].set_int(key.tablet_id_.id());
         break;
       // ptr
-      case OB_APP_MIN_COLUMN_ID + 8:
+      case OB_APP_MIN_COLUMN_ID + 7:
         MEMSET(ptr_buf, 0, 16);
         databuff_print_obj(ptr_buf, 16, pos, key.checkpoint_unit_ptr_);
         virtual_table_.cur_row_.cells_[i].set_varchar(ptr_buf);
         virtual_table_.cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       // start_scn
-      case OB_APP_MIN_COLUMN_ID + 9:
+      case OB_APP_MIN_COLUMN_ID + 8:
         virtual_table_.cur_row_.cells_[i].set_uint64(memtable_diagnose_info.start_scn_.get_val_for_inner_table_field());
         break;
       // end_scn
-      case OB_APP_MIN_COLUMN_ID + 10:
+      case OB_APP_MIN_COLUMN_ID + 9:
         virtual_table_.cur_row_.cells_[i].set_uint64(memtable_diagnose_info.end_scn_.get_val_for_inner_table_field());
         break;
       // rec_scn
-      case OB_APP_MIN_COLUMN_ID + 11:
+      case OB_APP_MIN_COLUMN_ID + 10:
         virtual_table_.cur_row_.cells_[i].set_uint64(memtable_diagnose_info.rec_scn_.get_val_for_inner_table_field());
         break;
       // create_flush_dag_time
-      case OB_APP_MIN_COLUMN_ID + 12:
+      case OB_APP_MIN_COLUMN_ID + 11:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.create_flush_dag_time_);
         break;
       // merge_finish_time
-      case OB_APP_MIN_COLUMN_ID + 13:
+      case OB_APP_MIN_COLUMN_ID + 12:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.merge_finish_time_);
         break;
       // start_gc_time
-      case OB_APP_MIN_COLUMN_ID + 14:
+      case OB_APP_MIN_COLUMN_ID + 13:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.start_gc_time_);
         break;
       // frozen_finish_time
-      case OB_APP_MIN_COLUMN_ID + 15:
+      case OB_APP_MIN_COLUMN_ID + 14:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.frozen_finish_time_);
         break;
       // merge_start_time
-      case OB_APP_MIN_COLUMN_ID + 16:
+      case OB_APP_MIN_COLUMN_ID + 15:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.merge_start_time_);
         break;
       // release_time
-      case OB_APP_MIN_COLUMN_ID + 17:
+      case OB_APP_MIN_COLUMN_ID + 16:
         virtual_table_.cur_row_.cells_[i].set_timestamp(memtable_diagnose_info.release_time_);
         break;
       // memtable_occupy_size
-      case OB_APP_MIN_COLUMN_ID + 18:
+      case OB_APP_MIN_COLUMN_ID + 17:
         virtual_table_.cur_row_.cells_[i].set_int(memtable_diagnose_info.memtable_occupy_size_);
         break;
       // occupy_size
-      case OB_APP_MIN_COLUMN_ID + 19:
+      case OB_APP_MIN_COLUMN_ID + 18:
         virtual_table_.cur_row_.cells_[i].set_int(memtable_diagnose_info.occupy_size_);
         break;
       // concurrent_cnt
-      case OB_APP_MIN_COLUMN_ID + 20:
+      case OB_APP_MIN_COLUMN_ID + 19:
         virtual_table_.cur_row_.cells_[i].set_int(memtable_diagnose_info.concurrent_cnt_);
         break;
       default:
@@ -275,52 +271,48 @@ int GenerateCheckpointUnitRow::operator()(const storage::checkpoint::ObTraceInfo
       case OB_APP_MIN_COLUMN_ID + 3:
         virtual_table_.cur_row_.cells_[i].set_int(virtual_table_.addr_.get_port());
         break;
-      // ls_id
-      case OB_APP_MIN_COLUMN_ID + 4:
-        virtual_table_.cur_row_.cells_[i].set_int(trace_info.ls_id_.id());
-        break;
       // checkpoint_thread_name
-      case OB_APP_MIN_COLUMN_ID + 5:
+      case OB_APP_MIN_COLUMN_ID + 4:
           virtual_table_.cur_row_.cells_[i].set_varchar(trace_info.thread_name_);
           virtual_table_.cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       // checkpoint_start_time
-      case OB_APP_MIN_COLUMN_ID + 6:
+      case OB_APP_MIN_COLUMN_ID + 5:
         virtual_table_.cur_row_.cells_[i].set_timestamp(trace_info.checkpoint_start_time_);
         break;
       // tablet_id
-      case OB_APP_MIN_COLUMN_ID + 7:
+      case OB_APP_MIN_COLUMN_ID + 6:
         virtual_table_.cur_row_.cells_[i].set_int(key.tablet_id_.id());
         break;
       // ptr
-      case OB_APP_MIN_COLUMN_ID + 8:
+      case OB_APP_MIN_COLUMN_ID + 7:
         MEMSET(ptr_buf, 0, 16);
         databuff_print_obj(ptr_buf, 16, pos, key.checkpoint_unit_ptr_);
         virtual_table_.cur_row_.cells_[i].set_varchar(ptr_buf);
         virtual_table_.cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       // start_scn
-      case OB_APP_MIN_COLUMN_ID + 9:
+      case OB_APP_MIN_COLUMN_ID + 8:
         virtual_table_.cur_row_.cells_[i].set_uint64(checkpoint_unit_diagnose_info.start_scn_.get_val_for_inner_table_field());
         break;
       // end_scn
-      case OB_APP_MIN_COLUMN_ID + 10:
+      case OB_APP_MIN_COLUMN_ID + 9:
         virtual_table_.cur_row_.cells_[i].set_uint64(checkpoint_unit_diagnose_info.end_scn_.get_val_for_inner_table_field());
         break;
       // rec_scn
-      case OB_APP_MIN_COLUMN_ID + 11:
+      case OB_APP_MIN_COLUMN_ID + 10:
         virtual_table_.cur_row_.cells_[i].set_uint64(checkpoint_unit_diagnose_info.rec_scn_.get_val_for_inner_table_field());
         break;
       // create_flush_dag_time
-      case OB_APP_MIN_COLUMN_ID + 12:
+      case OB_APP_MIN_COLUMN_ID + 11:
         virtual_table_.cur_row_.cells_[i].set_timestamp(checkpoint_unit_diagnose_info.create_flush_dag_time_);
         break;
       // merge_finish_time
-      case OB_APP_MIN_COLUMN_ID + 13:
+      case OB_APP_MIN_COLUMN_ID + 12:
         virtual_table_.cur_row_.cells_[i].set_timestamp(checkpoint_unit_diagnose_info.merge_finish_time_);
         break;
       // start_gc_time
-      case OB_APP_MIN_COLUMN_ID + 14:
+      case OB_APP_MIN_COLUMN_ID + 13:
         virtual_table_.cur_row_.cells_[i].set_timestamp(checkpoint_unit_diagnose_info.start_gc_time_);
         break;
       default:

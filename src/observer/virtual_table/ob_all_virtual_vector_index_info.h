@@ -68,7 +68,6 @@ public:
     SVR_IP  = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    LS_ID,
     ROWKEY_VID_TABLE_ID,
     VID_ROWKEY_TABLE_ID,
     INC_INDEX_TABLE_ID,

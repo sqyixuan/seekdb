@@ -156,10 +156,6 @@ int ObAllVirtualTabletBufferInfo::gen_row(
         ? "TP_LARGE" : "TP_NORMAL");
       cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
-    case LS_ID:
-      //ls_id
-      cur_row_.cells_[i].set_int(buffer_info.ls_id_.id());
-      break;
     case TABLET_ID:
       //tablet_id
       cur_row_.cells_[i].set_int(buffer_info.tablet_id_.id());

@@ -28,7 +28,6 @@ namespace observer
 ObAllVirtualTabletDDLKVInfo::ObAllVirtualTabletDDLKVInfo()
     : ObVirtualTableScannerIterator(),
       addr_(),
-      ls_id_(share::ObLSID::INVALID_LS_ID),
       ls_iter_guard_(),
       ls_tablet_iter_(ObMDSGetTabletMode::READ_ALL_COMMITED),
       ddl_kvs_handle_(),
@@ -51,7 +50,6 @@ void ObAllVirtualTabletDDLKVInfo::reset()
 
 void ObAllVirtualTabletDDLKVInfo::release_last_tenant()
 {
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
   ddl_kv_idx_ = -1;
   ddl_kvs_handle_.reset();
   curr_tablet_id_.reset();
@@ -88,8 +86,6 @@ int ObAllVirtualTabletDDLKVInfo::get_next_ls(ObLS *&ls)
   } else if (OB_ISNULL(ls)) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(ERROR, "ls is null", K(ret));
-  } else {
-    ls_id_ = ls->get_ls_id().id();
   }
   return ret;
 }
@@ -196,30 +192,26 @@ int ObAllVirtualTabletDDLKVInfo::process_curr_tenant(ObNewRow *&row)
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
         case OB_APP_MIN_COLUMN_ID + 3:
-          // ls_id
-          cur_row_.cells_[i].set_int(ls_id_);
-          break;
-        case OB_APP_MIN_COLUMN_ID + 4:
           // tablet_id
           cur_row_.cells_[i].set_int(curr_tablet_id_.id());
           break;
-        case OB_APP_MIN_COLUMN_ID + 5:
+        case OB_APP_MIN_COLUMN_ID + 4:
           // freeze_scn
           cur_row_.cells_[i].set_uint64(cur_kv->get_freeze_scn().get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 6:
+        case OB_APP_MIN_COLUMN_ID + 5:
           // start_scn
           cur_row_.cells_[i].set_uint64(cur_kv->get_ddl_start_scn().get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 7:
+        case OB_APP_MIN_COLUMN_ID + 6:
           // min_scn
           cur_row_.cells_[i].set_uint64(cur_kv->get_min_scn().get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 8:
+        case OB_APP_MIN_COLUMN_ID + 7:
           // macro_block_cnt
           cur_row_.cells_[i].set_int(cur_kv->get_macro_block_cnt());
           break;
-        case OB_APP_MIN_COLUMN_ID + 9:
+        case OB_APP_MIN_COLUMN_ID + 8:
           // ref_cnt
           cur_row_.cells_[i].set_int(cur_kv->get_ref());
           break;

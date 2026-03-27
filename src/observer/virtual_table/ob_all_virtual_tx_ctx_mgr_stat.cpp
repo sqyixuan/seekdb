@@ -99,22 +99,18 @@ int ObGVTxCtxMgrStat::inner_get_next_row(ObNewRow *&row)
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.get_addr().get_port());
           break;
         case OB_APP_MIN_COLUMN_ID + 2:
-          // table_id
-          cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.get_ls_id().id());
-          break;
-        case OB_APP_MIN_COLUMN_ID + 3:
            // is_master_
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.is_master()? 1 : 0);
           break;
-        case OB_APP_MIN_COLUMN_ID + 4:
+        case OB_APP_MIN_COLUMN_ID + 3:
           // is_stopped_
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.is_stopped()? 1 : 0);
           break;
-        case OB_APP_MIN_COLUMN_ID + 5:
+        case OB_APP_MIN_COLUMN_ID + 4:
           // state_
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.get_state());
           break;
-        case OB_APP_MIN_COLUMN_ID + 6: {
+        case OB_APP_MIN_COLUMN_ID + 5: {
           // state_str
           ObCStringHelper helper;
           int64_t state = ls_tx_ctx_mgr_stat.get_state();
@@ -122,11 +118,11 @@ int ObGVTxCtxMgrStat::inner_get_next_row(ObNewRow *&row)
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 7:
+        case OB_APP_MIN_COLUMN_ID + 6:
           // total_tx_ctx_count
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.get_total_tx_ctx_count());
           break;
-        case OB_APP_MIN_COLUMN_ID + 8:
+        case OB_APP_MIN_COLUMN_ID + 7:
           cur_row_.cells_[i].set_int(ls_tx_ctx_mgr_stat.get_mgr_addr());
           break;
         default:

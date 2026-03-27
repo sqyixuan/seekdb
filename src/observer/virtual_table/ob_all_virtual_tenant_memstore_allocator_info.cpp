@@ -37,10 +37,8 @@ public:
     Item item;
     Handle* handle = CONTAINER_OF(link, Handle, total_list_);
     memtable::ObMemtable& mt = handle->mt_;
-    ObLSID ls_id;
     item.protection_clock_ = handle->get_protection_clock();
     item.is_active_ = handle->is_active();
-    item.ls_id_ = mt.get_ls_id().id();
     item.tablet_id_ = mt.get_key().tablet_id_.id();
     item.scn_range_ = mt.get_scn_range();
     item.mt_addr_ = &mt;
@@ -185,10 +183,6 @@ int ObAllVirtualTenantMemstoreAllocatorInfo::inner_get_next_row(ObNewRow *&row)
             }
             case TENANT_ID: {
               cells[i].set_int(static_cast<int64_t>(tenant_id));
-              break;
-            }
-            case LS_ID: {
-              cells[i].set_int(info.ls_id_);
               break;
             }
             case TABLET_ID: {

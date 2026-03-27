@@ -30,7 +30,6 @@ ObAllVirtualTableLSTabletIter::ObAllVirtualTableLSTabletIter()
   : ObVirtualTableScannerIterator(),
     ObMultiTenantOperator(),
     addr_(),
-    ls_id_(share::ObLSID::INVALID_LS_ID),
     ls_iter_guard_(),
     ls_tablet_iter_(ObMDSGetTabletMode::READ_WITHOUT_CHECK)
 {
@@ -88,7 +87,6 @@ void ObAllVirtualTableLSTabletIter::inner_reset()
 {
   ls_tablet_iter_.reset();
   ls_iter_guard_.reset();
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
 }
 
 int ObAllVirtualTableLSTabletIter::check_need_iterate_ls(const ObLS &ls, bool &need_iterate)
@@ -118,7 +116,6 @@ int ObAllVirtualTableLSTabletIter::get_next_ls(ObLS *&ls)
     } else if (OB_FAIL(check_need_iterate_ls(*ls, need_iterate))) {
       SERVER_LOG(WARN, "fail to check if ls need iterate", K(ret), KPC(ls));
     } else if (need_iterate) {
-      ls_id_ = ls->get_ls_id().id();
       if (OB_FAIL(inner_get_ls_infos(*ls))) {
         SERVER_LOG(WARN, "fail to get ls infos", K(ret), KPC(ls));
       }
@@ -242,9 +239,6 @@ int ObAllVirtualCSReplicaTabletStats::process_curr_tenant(common::ObNewRow *&row
           break;
         case SVR_PORT:
           cur_row_.cells_[i].set_int(addr_.get_port());
-          break;
-        case LS_ID:
-          cur_row_.cells_[i].set_int(ls_id_);
           break;
         case TABLET_ID:
           cur_row_.cells_[i].set_int(tablet->get_tablet_id().id());

@@ -44,7 +44,6 @@ class ObAllVirtualTabletBufferInfo : public common::ObVirtualTableScannerIterato
     TABLET_BUFFER_PTR,
     TABLET_OBJ_PTR,
     POOL_TYPE,
-    LS_ID,
     TABLET_ID,
     IN_MAP,
     LAST_ACCESS_TIME

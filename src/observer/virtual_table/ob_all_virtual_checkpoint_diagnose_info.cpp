@@ -62,25 +62,21 @@ int GenerateTraceRow::operator()(const storage::checkpoint::ObTraceInfo &trace_i
       case OB_APP_MIN_COLUMN_ID + 2:
         virtual_table_.cur_row_.cells_[i].set_int(virtual_table_.addr_.get_port());
         break;
-      // ls_id
-      case OB_APP_MIN_COLUMN_ID + 3:
-        virtual_table_.cur_row_.cells_[i].set_int(trace_info.ls_id_.id());
-        break;
       // trace_id
-      case OB_APP_MIN_COLUMN_ID + 4:
+      case OB_APP_MIN_COLUMN_ID + 3:
         virtual_table_.cur_row_.cells_[i].set_int(trace_info.trace_id_);
         break;
       // freeze_clock
-      case OB_APP_MIN_COLUMN_ID + 5:
+      case OB_APP_MIN_COLUMN_ID + 4:
         virtual_table_.cur_row_.cells_[i].set_uint32(trace_info.freeze_clock_);
         break;
       // checkpoint_thread_name
-      case OB_APP_MIN_COLUMN_ID + 6:
+      case OB_APP_MIN_COLUMN_ID + 5:
         virtual_table_.cur_row_.cells_[i].set_varchar(trace_info.thread_name_);
         virtual_table_.cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
       // checkpoint_start_time
-      case OB_APP_MIN_COLUMN_ID + 7:
+      case OB_APP_MIN_COLUMN_ID + 6:
         virtual_table_.cur_row_.cells_[i].set_timestamp(trace_info.checkpoint_start_time_);
         break;
       default:

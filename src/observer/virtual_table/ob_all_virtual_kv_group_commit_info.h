@@ -43,7 +43,6 @@ private:
     SVR_PORT,
     TENANT_ID,
     GROUP_TYPE,
-    LS_ID,
     TABLE_ID,
     SCHEMA_VERSION,
     QUEUE_SIZE,

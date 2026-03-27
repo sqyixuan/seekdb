@@ -1800,21 +1800,6 @@ int ObInnerTableSchema::all_virtual_lock_wait_stat_schema(ObTableSchema &table_s
   }
 
   if (OB_SUCC(ret)) {
-    ADD_COLUMN_SCHEMA("ls_id", //column_name
-      ++column_id, //column_id
-      0, //rowkey_id
-      0, //index_id
-      0, //part_key_pos
-      ObIntType, //column_type
-      CS_TYPE_INVALID, //column_collation_type
-      sizeof(int64_t), //column_length
-      -1, //column_precision
-      -1, //column_scale
-      false, //is_nullable
-      false); //is_autoincrement
-  }
-
-  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("assoc_session_id", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -2319,21 +2304,6 @@ int ObInnerTableSchema::all_virtual_tenant_memstore_allocator_info_schema(ObTabl
   }
 
   if (OB_SUCC(ret)) {
-    ADD_COLUMN_SCHEMA("ls_id", //column_name
-      ++column_id, //column_id
-      0, //rowkey_id
-      0, //index_id
-      0, //part_key_pos
-      ObIntType, //column_type
-      CS_TYPE_INVALID, //column_collation_type
-      sizeof(int64_t), //column_length
-      -1, //column_precision
-      -1, //column_scale
-      false, //is_nullable
-      false); //is_autoincrement
-  }
-
-  if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("tablet_id", //column_name
       ++column_id, //column_id
       0, //rowkey_id
@@ -2540,21 +2510,6 @@ int ObInnerTableSchema::all_virtual_table_mgr_schema(ObTableSchema &table_schema
 
   if (OB_SUCC(ret)) {
     ADD_COLUMN_SCHEMA("tenant_id", //column_name
-      ++column_id, //column_id
-      0, //rowkey_id
-      0, //index_id
-      0, //part_key_pos
-      ObIntType, //column_type
-      CS_TYPE_INVALID, //column_collation_type
-      sizeof(int64_t), //column_length
-      -1, //column_precision
-      -1, //column_scale
-      false, //is_nullable
-      false); //is_autoincrement
-  }
-
-  if (OB_SUCC(ret)) {
-    ADD_COLUMN_SCHEMA("ls_id", //column_name
       ++column_id, //column_id
       0, //rowkey_id
       0, //index_id
