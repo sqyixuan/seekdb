@@ -93,7 +93,8 @@ ObVectorIndexTabletContext::ObVectorIndexTabletContext()
       lob_inrow_threshold_(0), rowkey_cnt_(0), column_cnt_(0), snapshot_version_(0), index_type_(share::VIAT_MAX), helper_(nullptr),
       allocator_("VecIndexCtx", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       memory_context_(MTL(ObPluginVectorIndexService *)->get_memory_context()),
-      all_vsag_use_mem_(MTL(ObPluginVectorIndexService *)->get_all_vsag_use_mem())
+      all_vsag_use_mem_(MTL(ObPluginVectorIndexService *)->get_all_vsag_use_mem()),
+      table_id_(0)
 {
 
 }
@@ -120,6 +121,8 @@ int ObVectorIndexTabletContext::init(
     rowkey_cnt_ = ddl_table_schema.table_item_.rowkey_column_num_;
     column_cnt_ = ddl_table_schema.column_items_.count();
     snapshot_version_ = snapshot_version;
+    table_id_ = ddl_table_schema.table_id_;
+
     if (schema::is_vec_index_snapshot_data_type(index_type)) {
       if (OB_FAIL(init_hnsw_index(ddl_table_schema))) {
         LOG_WARN("init hnsw index failed", K(ret));
@@ -159,12 +162,6 @@ int ObVectorIndexTabletContext::init_hnsw_index(const ObDDLTableSchema &ddl_tabl
   const ObIArray<ObColumnSchemaItem> &col_array = ddl_table_schema.column_items_;
   const ObIArray<ObColDesc> &col_desc_array = ddl_table_schema.column_descs_;
   index_type_ = VIAT_MAX;
-  vector_key_col_idx_ = -1;
-  vector_vid_col_idx_ = -1;
-  vector_col_idx_ = -1;
-  vector_data_col_idx_ = -1;
-  int64_t pk_increment_col_idx = -1;
-
   if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
     LOG_WARN("failed to get log stream", K(ret), K(ls_id_));
   } else if (OB_ISNULL(ls_handle.get_ls())) {
@@ -185,10 +182,14 @@ int ObVectorIndexTabletContext::init_hnsw_index(const ObDDLTableSchema &ddl_tabl
   for (int64_t i = 0; OB_SUCC(ret) && i < col_array.count(); i++) {
     // version control col is not valid
     if (!col_array.at(i).is_valid_) {
-    } else if (ObSchemaUtils::is_vec_hnsw_vid_column(col_array.at(i).column_flags_)) {
-      vector_vid_col_idx_ = i;
-    } else if (col_desc_array.at(i).col_id_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
-      pk_increment_col_idx = i;
+    } else if (ObSchemaUtils::is_vec_hnsw_vid_column(col_array.at(i).column_flags_) ||
+      col_desc_array.at(i).col_id_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
+      if (vector_vid_col_idx_ == -1) {
+        vector_vid_col_idx_ = i;
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_vid_col_idx_), K(i), K(col_array));
+      }
     } else if (ObSchemaUtils::is_vec_hnsw_vector_column(col_array.at(i).column_flags_)) {
       vector_col_idx_ = i;
     } else if (ObSchemaUtils::is_vec_hnsw_key_column(col_array.at(i).column_flags_)) {
@@ -197,17 +198,6 @@ int ObVectorIndexTabletContext::init_hnsw_index(const ObDDLTableSchema &ddl_tabl
       vector_data_col_idx_ = i;
     } else if (OB_FAIL(extra_column_idx_types_.push_back(ObExtraInfoIdxType(i, col_array.at(i).col_type_)))) {
       LOG_WARN("failed to push back extra info col idx", K(ret), K(i));
-    }
-  }
-  if (OB_FAIL(ret)) {
-  } else if (vector_vid_col_idx_ == -1 && pk_increment_col_idx == -1) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get valid vector index col idx", K(ret), K(vector_vid_col_idx_), K(pk_increment_col_idx), K(col_array));
-  } else if (vector_vid_col_idx_ == -1 && pk_increment_col_idx != -1) {
-    vector_vid_col_idx_ = pk_increment_col_idx;
-  } else if (vector_vid_col_idx_ != -1 && pk_increment_col_idx != -1) {
-    if (OB_FAIL(extra_column_idx_types_.push_back(ObExtraInfoIdxType(pk_increment_col_idx, col_array.at(pk_increment_col_idx).col_type_)))) {
-      LOG_WARN("failed to push back extra info col idx", K(ret), K(pk_increment_col_idx));
     }
   }
   if (OB_SUCC(ret)) {
@@ -610,7 +600,7 @@ int ObIVFCenterRowIterator::get_next_row(
           LOG_WARN("failed to set center_id to string", K(ret), K(center_id), K(cid_str));
         } else if (vec_res.length() > lob_inrow_threshold_ || cid_str.length() > lob_inrow_threshold_) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected outrow datum in ivf vector index",
+          LOG_WARN("unexpected outrow datum in ivf vector index", 
                     K(ret), K(vec_res.length()), K(cid_str.length()), K(lob_inrow_threshold_));
         } else {
           for (int64_t idx = rowkey_cnt_ + extra_rowkey_cnt; idx < request_cnt; ++idx) {
@@ -698,7 +688,7 @@ int ObIVFSq8MetaRowIterator::get_next_row(
           LOG_WARN("failed to set center_id to string", K(ret), K(center_id), K(cid_str));
         } else if (vec_res.length() > lob_inrow_threshold_ || cid_str.length() > lob_inrow_threshold_) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected outrow datum in ivf vector index",
+          LOG_WARN("unexpected outrow datum in ivf vector index", 
                     K(ret), K(vec_res.length()), K(cid_str.length()), K(lob_inrow_threshold_));
         } else {
           for (int64_t i = 0; i < current_row_.get_column_count(); ++i) {
@@ -797,7 +787,7 @@ int ObIVFPqRowIterator::get_next_row(
           LOG_WARN("failed to set center_id to string", K(ret), K(pq_center_id), K(pq_cid_str));
         } else if (vec_res.length() > lob_inrow_threshold_ || pq_cid_str.length() > lob_inrow_threshold_) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected outrow datum in ivf vector index",
+          LOG_WARN("unexpected outrow datum in ivf vector index", 
                     K(ret), K(vec_res.length()), K(pq_cid_str.length()), K(lob_inrow_threshold_));
         } else {
           for (int64_t i = 0; i < current_row_.get_column_count(); ++i) {
@@ -1674,13 +1664,18 @@ int ObHNSWEmbeddingOperator::init(const ObTabletID &tablet_id)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("error unexpected, vector index ctx is null", K(ret));
   } else {
+    const uint64_t table_id = vector_index_ctx->table_id_;
     vec_dim_ = vector_index_ctx->vec_dim_;
     rowkey_cnt_ = vector_index_ctx->rowkey_cnt_;
     text_col_idx_ = vector_index_ctx->vector_chunk_col_idx_;
     extra_column_idxs_.reset();
     ObVectorIndexParam index_param;
+    ObSchemaGetterGuard schema_guard;
+    ObCollationType col_type = CS_TYPE_INVALID;
 
-    if (OB_FAIL(vector_index_ctx->build_extra_column_idxs(static_cast<int32_t>(text_col_idx_), extra_column_idxs_))) {
+    if (OB_FAIL(ObVectorIndexUtil::get_index_column_collation_type(MTL_ID(), table_id, col_type))) {
+      LOG_WARN("fail to get vector column collation type", K(ret), K(text_col_idx_), K(table_id));
+    } else if (OB_FAIL(vector_index_ctx->build_extra_column_idxs(static_cast<int32_t>(text_col_idx_), extra_column_idxs_))) {
       LOG_WARN("build_extra_column_idxs failed", K(ret), K(text_col_idx_));
     } else if (OB_FAIL(ObVectorIndexUtil::parser_params_from_string(vector_index_ctx->vec_idx_param_, ObVectorIndexType::VIT_HNSW_INDEX, index_param, false))) {
       LOG_WARN("failed to parser params from string", K(ret));
@@ -1692,12 +1687,12 @@ int ObHNSWEmbeddingOperator::init(const ObTabletID &tablet_id)
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("failed to alloc ObEmbeddingTaskMgr", K(ret));
       } else {
-        embedmgr_ = new (buf) ObEmbeddingTaskMgr();
+        embedmgr_ = new (buf) ObEmbeddingTaskMgr(*this);
       }
     }
 
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(embedmgr_->init(model_id_))) {
+      if (OB_FAIL(embedmgr_->init(model_id_, col_type))) {
         embedmgr_->~ObEmbeddingTaskMgr();
         op_allocator_.free(embedmgr_);
         embedmgr_ = nullptr;
@@ -1717,7 +1712,7 @@ int ObHNSWEmbeddingOperator::init(const ObTabletID &tablet_id)
             current_batch_ = nullptr;
           }
         }
-
+        
         if (OB_SUCC(ret)) {
           is_inited_ = true;
           cur_file_idx_ = 0;
@@ -1819,7 +1814,7 @@ int ObHNSWEmbeddingOperator::get_ready_results(ObChunk &output_chunk, ResultStat
   } else {
     ObTaskBatchInfo *batch_info = nullptr;
     int ret_code = OB_SUCCESS;
-
+    
     if (OB_FAIL(embedmgr_->get_ready_batch_info(batch_info, ret_code))) {
       if (OB_ITER_END != ret) {
         LOG_WARN("fetch ready batch info failed", K(ret));
@@ -2179,14 +2174,14 @@ int ObHNSWEmbeddingWriteMacroOperator::init(const ObTabletID &tablet_id, const i
     } else {
       is_inited_ = true;
     }
-
+    
     if (OB_FAIL(ret) && OB_NOT_NULL(slice_writer_)) {
       slice_writer_->~ObTabletSliceWriter();
       op_allocator_.free(slice_writer_);
       slice_writer_ = nullptr;
     }
   }
-
+  
   return ret;
 }
 
