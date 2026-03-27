@@ -1,0 +1,87 @@
+db_p=OBI(cluster=1,proxy_num=0,role=primary);
+db_p.reboot;
+db_s1=OBI(cluster=1,proxy_num=0,primary=db_p);
+db_s1.reboot;
+db_s2=OBI(cluster=1,proxy_num=0,primary=db_s1);
+db_s2.reboot;
+========== Initialization: Verify Cascade Topology ==========
+db_p.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'PRIMARY', 1, 30;
+db_s1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'STANDBY', 1, 30;
+db_s2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'STANDBY', 1, 30;
+db_p.z1.obs0.check_log_until_success -c ".*finish do_restart(ret=0,.*";
+db_p.z1.obs0.check_log_until_success -c ".*finish do_restart(ret=0,.*";
+db_p.z1.obs0.check_log_until_success -c ".*finish do_restart(ret=0,.*";
+db_s2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where log_restore_source like '%:$db_s1_rpc_port', 1, 30;
+Initialization completed: Cascade topology verified (db_p -> db_s1 -> db_s2)
+========== Case 1: Verify Cascade Sync ==========
+create table if not exists test_cascade_standby(id int primary key, name varchar(100), value int);
+insert into test_cascade_standby values(1, 'init_data', 100);
+insert into test_cascade_standby values(2, 'init_data_2', 200);
+db_s1.check_until_timeout select count(*) from test_cascade_standby where id = 1, 1, 120;
+db_s1.check_until_timeout select count(*) from test_cascade_standby where id = 2, 1, 30;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 1, 1, 180;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 2, 1, 60;
+select count(*) from test_cascade_standby;
+count(*)
+2
+select count(*) from test_cascade_standby;
+count(*)
+2
+Case 1 completed: Cascade sync verified (db_p -> db_s1 -> db_s2)
+========== Case 2: Switchover in Cascade Topology ==========
+db_p.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where log_restore_source like '%:$db_s1_rpc_port', 1, 30;
+insert into test_cascade_standby values(3, 'before_switchover', 300);
+db_s1.check_until_timeout select count(*) from test_cascade_standby where id = 3, 1, 120;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 3, 1, 180;
+ALTER SYSTEM SWITCHOVER TO STANDBY;
+db_p.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'STANDBY', 1, 60;
+ALTER SYSTEM SWITCHOVER TO PRIMARY;
+db_s1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'PRIMARY', 1, 60;
+insert into test_cascade_standby values(4, 'after_switchover', 400);
+db_p.check_until_timeout select count(*) from test_cascade_standby where id = 4, 1, 120;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 4, 1, 180;
+select count(*) from test_cascade_standby;
+count(*)
+4
+Case 2 completed: Switchover in cascade topology verified
+========== Case 3: Roundtrip Switchover in Cascade Topology ==========
+db_s1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where log_restore_source like '%:$db_p_rpc_port', 1, 30;
+insert into test_cascade_standby values(5, 'before_roundtrip', 500);
+db_p.check_until_timeout select count(*) from test_cascade_standby where id = 5, 1, 120;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 5, 1, 180;
+ALTER SYSTEM SWITCHOVER TO STANDBY;
+db_s1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'STANDBY', 1, 60;
+ALTER SYSTEM SWITCHOVER TO PRIMARY;
+db_p.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'PRIMARY', 1, 60;
+insert into test_cascade_standby values(6, 'after_roundtrip', 600);
+db_s1.check_until_timeout select count(*) from test_cascade_standby where id = 6, 1, 120;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 6, 1, 180;
+select count(*) from test_cascade_standby;
+count(*)
+6
+select count(*) from test_cascade_standby;
+count(*)
+6
+select count(*) from test_cascade_standby;
+count(*)
+6
+Case 3 completed: Roundtrip switchover in cascade topology verified
+========== Case 4: Failover in Cascade Topology ==========
+db_s1.check_until_timeout select count(*) from test_cascade_standby where id = 7, 1, 120;
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 7, 1, 180;
+ALTER SYSTEM ACTIVATE STANDBY;
+db_s1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'PRIMARY', 1, 60;
+insert into test_cascade_standby values(8, 'after_failover', 800);
+db_s2.check_until_timeout select count(*) from test_cascade_standby where id = 8, 1, 180;
+select count(*) from test_cascade_standby;
+count(*)
+8
+db_p.check_until_timeout select count(*) from oceanbase.__all_virtual_server_stat where role = 'PRIMARY', 1, 30;
+Case 4 completed: Failover in cascade topology verified
+========== Test Summary ==========
+All cascade standby test cases completed successfully:
+1. Cascade sync verification (db_p -> db_s1 -> db_s2): PASSED
+2. Switchover in cascade topology: PASSED
+3. Roundtrip switchover in cascade topology: PASSED
+4. Failover in cascade topology: PASSED
+Cascade standby topology verified successfully
