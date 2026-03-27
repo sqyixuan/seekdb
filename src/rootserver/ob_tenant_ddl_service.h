@@ -105,7 +105,6 @@ public:
   virtual int create_sys_tenant(const obrpc::ObCreateTenantArg &arg,
                                 share::schema::ObTenantSchema &tenant_schema);
   virtual int create_tenant_end(const uint64_t tenant_id);
-  virtual int commit_alter_tenant_locality(const rootserver::ObCommitAlterTenantLocalityArg &arg);
   virtual int drop_tenant(const obrpc::ObDropTenantArg &arg);
   virtual int flashback_tenant(const obrpc::ObFlashBackTenantArg &arg);
   virtual int purge_tenant(const obrpc::ObPurgeTenantArg &arg);
@@ -117,9 +116,6 @@ public:
   void stop() { stopped_ = true; }
   void restart() { stopped_ = false; }
   bool is_stopped() { return stopped_; }
-  int force_set_locality(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      share::schema::ObTenantSchema &new_tenant);
 
   int init(
       ObUnitManager &unit_mgr_,
@@ -151,12 +147,6 @@ public:
   int construct_zone_region_list(
       common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
       const common::ObIArray<common::ObZone> &zone_list);
-  template <typename SCHEMA>
-  int check_primary_zone_locality_condition(
-       const SCHEMA &schema,
-       const ObIArray<common::ObZone> &zone_list,
-       const ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-       share::schema::ObSchemaGetterGuard &schema_guard);
 
   static int gen_tenant_init_config(
              const uint64_t tenant_id,
@@ -222,13 +212,6 @@ private:
   int init_tenant_sys_stats_(const uint64_t tenant_id,
       common::ObMySQLTransaction &trans);
 
-  int insert_restore_or_clone_tenant_job_(
-      const uint64_t tenant_id,
-      const ObString &tenant_name,
-      const share::ObTenantRole &tenant_role,
-      const uint64_t source_tenant_id,
-      ObMySQLTransaction &trans);
-
   int set_log_restore_source_(
       const uint64_t tenant_id,
       const common::ObString &log_restore_source,
@@ -250,42 +233,11 @@ private:
   int load_sys_table_schemas(
       const ObTenantSchema &tenant_schema,
       common::ObIArray<share::schema::ObTableSchema> &tables);
-  template <typename SCHEMA>
-  int extract_first_primary_zone_array(
-      const SCHEMA &schema,
-      const ObIArray<common::ObZone> &zone_list,
-      ObIArray<common::ObZone> &first_primary_zone_array);
-  template <typename SCHEMA>
-  int check_pools_unit_num_enough_for_schema_locality(
-      const common::ObIArray<share::ObResourcePoolName> &pools,
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const SCHEMA &schema);
-  template<typename SCHEMA>
-  int trim_and_set_primary_zone(
-      SCHEMA &new_schema,
-      const SCHEMA &orig_schema,
-      const common::ObIArray<common::ObZone> &zone_list,
-      share::schema::ObSchemaGetterGuard &schema_guard);
   template<typename SCHEMA>
   int check_create_schema_replica_options(
       SCHEMA &schema,
       common::ObArray<common::ObZone> &zone_list,
       share::schema::ObSchemaGetterGuard &schema_guard);
-  template<typename SCHEMA>
-  int check_empty_primary_zone_locality_condition(
-      SCHEMA &schema,
-      const common::ObIArray<common::ObZone> &zone_list,
-      share::schema::ObSchemaGetterGuard &schema_guard);
-  template<typename SCHEMA>
-  int check_and_set_primary_zone(
-      SCHEMA &schema,
-      const common::ObIArray<common::ObZone> &zone_list,
-      share::schema::ObSchemaGetterGuard &schema_guard);
-  template<typename SCHEMA>
-  int get_schema_primary_regions(
-     const SCHEMA &schema,
-     share::schema::ObSchemaGetterGuard &schema_guard,
-     common::ObIArray<common::ObRegion> &primary_regions);
   template<typename SCHEMA>
   int set_schema_replica_num_options(
        SCHEMA &schema,
@@ -317,11 +269,6 @@ private:
       const share::schema::ObTenantSchema &orig_schema,
       common::ObArray<common::ObZone> &zone_list,
       share::schema::ObSchemaGetterGuard &schema_guard);
-  int check_alter_tenant_locality_type(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const share::schema::ObTenantSchema &orig_tenant_schema,
-      const share::schema::ObTenantSchema &new_tenant_schema,
-      AlterLocalityType &alter_locality_type);
   int check_and_modify_tenant_locality(
       const obrpc::ObModifyTenantArg &arg,
       share::schema::ObTenantSchema &new_tenant_schema,
@@ -329,56 +276,13 @@ private:
       const common::ObIArray<common::ObZone> &zones_in_pool,
       const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list);
 
-  int check_alter_tenant_when_rebalance_is_disabled_(
-      const share::schema::ObTenantSchema &orig_tenant_schema,
-      const share::schema::ObTenantSchema &new_tenant_schema);
-  int check_revoke_pools_permitted(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const common::ObIArray<share::ObResourcePoolName> &new_pool_name_list,
-      const share::schema::ObTenantSchema &tenant_schema,
-      bool &is_permitted);
-  int check_normal_tenant_revoke_pools_permitted(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const common::ObIArray<share::ObResourcePoolName> &new_pool_name_list,
-      const share::schema::ObTenantSchema &tenant_schema,
-      bool &is_permitted);
 
-  int check_create_tenant_schema(
-      const ObIArray<ObString> &pool_list,
-      ObTenantSchema &tenant_schema,
-      share::schema::ObSchemaGetterGuard &schema_guard);
-
-  int check_create_tenant_replica_options(
-      share::schema::ObTenantSchema &tenant_schema,
-      share::schema::ObSchemaGetterGuard &schema_guard);
-  int check_tenant_primary_zone_(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const share::schema::ObTenantSchema &new_tenant_schema);
-
-  int check_create_tenant_locality(
-      const common::ObIArray<common::ObString> &pool_list,
-      share::schema::ObTenantSchema &tenant_schema,
-      share::schema::ObSchemaGetterGuard &schema_guard);
   int check_schema_zone_list(
       common::ObArray<common::ObZone> &zone_list);
-  int do_check_primary_zone_locality_condition(
-      const ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      const ObIArray<common::ObZone> &first_primary_zone_array,
-      const ObIArray<common::ObZone> &zones_in_primary_regions,
-      const ObIArray<common::ObRegion> &primary_regions,
-      const ObIArray<share::ObZoneReplicaAttrSet> &zone_locality);
   int do_check_primary_zone_region_condition(
       const ObIArray<common::ObZone> &zones_in_primary_regions,
       const ObIArray<common::ObRegion> &primary_regions,
       const ObIArray<share::ObZoneReplicaAttrSet> &zone_locality);
-  int do_check_mixed_zone_locality_condition(
-      const ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      const ObIArray<share::ObZoneReplicaAttrSet> &zone_locality);
-  int do_check_mixed_locality_primary_zone_condition(
-      const ObIArray<common::ObZone> &first_primary_zone_array,
-      const ObIArray<share::ObZoneReplicaAttrSet> &zone_locality);
-
-  int check_locality_compatible_(ObTenantSchema &schema, const bool for_create_tenant);
 
   // When alter tenant modifies the locality, call the following function to get the zone_list of
   // the resource pool corresponding to the new tenant schema
@@ -388,11 +292,6 @@ private:
       common::ObIArray<share::ObResourcePoolName> &resource_pool_names,
       common::ObIArray<common::ObZone> &zones_in_pool,
       common::ObIArray<share::schema::ObZoneRegion> &zone_region_list);
-
-  int format_primary_zone_from_zone_score_array(
-      common::ObIArray<share::schema::ObZoneScore> &zone_score_array,
-      char *buf,
-      int64_t buf_len);
 
   int get_tenant_schema_guard_with_version_in_inner_table(const uint64_t tenant_id,
       share::schema::ObSchemaGetterGuard &schema_guard);
@@ -406,22 +305,6 @@ private:
   int set_raw_tenant_options(
       const obrpc::ObModifyTenantArg &arg,
       share::schema::ObTenantSchema &new_tenant_schema);
-
-  int try_rollback_modify_tenant_locality(
-      const obrpc::ObModifyTenantArg &arg,
-      share::schema::ObTenantSchema &new_tenant_schema,
-      const share::schema::ObTenantSchema &orig_tenant_schema,
-      const common::ObIArray<common::ObZone> &zones_in_pool,
-      const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      AlterLocalityOp &alter_locality_op);
-  int try_modify_tenant_locality(
-      const obrpc::ObModifyTenantArg &arg,
-      share::schema::ObTenantSchema &new_tenant_schema,
-      const share::schema::ObTenantSchema &orig_tenant_schema,
-      const common::ObIArray<common::ObZone> &zones_in_pool,
-      const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      AlterLocalityOp &alter_locality_op);
-
 
   /*
    * Check and set various options of modify tenant, among which the modifications of zone_list,
@@ -451,30 +334,6 @@ private:
                            share::schema::ObSysVariableSchema &new_sys_variable,
                            bool& value_changed);
 
-  int cal_resource_pool_list_diff(
-      const common::ObIArray<share::ObResourcePoolName> &long_pool_name_list,
-      const common::ObIArray<share::ObResourcePoolName> &short_pool_name_list,
-      common::ObIArray<share::ObResourcePoolName> &diff_pools);
-  int record_tenant_locality_event_history(
-      const AlterLocalityOp &alter_locality_op,
-      const obrpc::ObModifyTenantArg &arg,
-      const share::schema::ObTenantSchema &tenant_schema,
-      ObMySQLTransaction &trans);
-
-  // try_alter_meta_tenant_schema: modify meta tenant options
-  // @param [in] ddl_operator, operator to do ddl
-  // @param [in] arg, tenant options modified by client
-  // @param [in] trans, to make sure user-tenant and meta_tenant in the same trans
-  // @param [in] sys_schema_guard, to get meta tenant schema
-  // @param [in] related_tenant_schema, related user-tenant schema
-  // ATTENTION: only locality and primary_zone can be modified in meta_tenant
-  int try_alter_meta_tenant_schema(
-      ObDDLOperator &ddl_operator,
-      const obrpc::ObModifyTenantArg &arg,
-      common::ObMySQLTransaction &trans,
-      share::schema::ObSchemaGetterGuard &sys_schema_guard,
-      const share::schema::ObTenantSchema &related_tenant_schema);
-
   int drop_resource_pool_pre(const uint64_t tenant_id,
                              common::ObIArray<uint64_t> &drop_ug_id_array,
                              ObIArray<share::ObResourcePoolName> &pool_names,
@@ -494,21 +353,6 @@ private:
       ObString &object_name,
       common::ObIAllocator *allocator,
       const bool is_flashback);
-#ifdef OB_BUILD_ARBITRATION
-  int check_tenant_arbitration_service_status_(
-      ObMySQLTransaction &trans,
-      const uint64_t tenant_id,
-      const share::ObArbitrationServiceStatus &old_status,
-      const share::ObArbitrationServiceStatus &new_status);
-#endif
-  int modify_and_cal_resource_pool_diff(
-      common::ObMySQLTransaction &trans,
-      common::ObIArray<uint64_t> &new_ug_id_array,
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const share::schema::ObTenantSchema &new_tenant_schema,
-      const common::ObIArray<common::ObString> &new_pool_list,
-      bool &grant,
-      common::ObIArray<share::ObResourcePoolName> &diff_pools);
 
   int init_tenant_schema(
       const obrpc::ObCreateTenantArg &create_tenant_arg,
@@ -549,9 +393,6 @@ private:
       const share::schema::ObSysVariableSchema &sys_variable,
       share::schema::ObSysParam *sys_params,
       int64_t params_capacity);
-  int construct_region_list(
-      common::ObIArray<common::ObRegion> &region_list,
-      const common::ObIArray<common::ObZone> &zone_list);
 
   int parse_and_set_create_tenant_new_locality_options(
       share::schema::ObSchemaGetterGuard &schema_guard,
@@ -563,16 +404,6 @@ private:
       const share::schema::ZoneLocalityIArray &zone_locality,
       const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
       common::ObArray<common::ObZone> &zone_list) const;
-  int get_primary_regions_and_zones(
-      const ObIArray<common::ObZone> &zone_list,
-      const ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      const ObIArray<common::ObZone> &first_primary_zone_array,
-      ObIArray<common::ObRegion> &primary_regions,
-      ObIArray<common::ObZone> &zones_in_primary_regions);
-  int get_zone_region(
-      const common::ObZone &zone,
-      const common::ObIArray<share::schema::ObZoneRegion> &zone_region_list,
-      common::ObRegion &region);
   int create_tenant_schema(
       const obrpc::ObCreateTenantArg &arg,
       share::schema::ObSchemaGetterGuard &schema_guard,

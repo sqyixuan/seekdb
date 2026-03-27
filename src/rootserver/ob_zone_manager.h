@@ -30,7 +30,6 @@ namespace oceanbase
 {
 namespace obrpc
 {
-class ObAdminZoneArg;
 class ObSrvRpcProxy;
 class ObCommonRpcProxy;
 }
@@ -72,13 +71,6 @@ public:
   virtual int get_zone_count(const common::ObRegion &region, int64_t &zone_count) const;
   virtual int check_zone_exist(const common::ObZone &zone, bool &zone_exist) const;
   virtual int check_zone_active(const common::ObZone &zone, bool &zone_active) const;
-
-  virtual int add_zone(const common::ObZone &zone, const common::ObRegion &region,
-                       const common::ObIDC &idc, const common::ObZoneType &zone_type);
-  virtual int delete_zone(const common::ObZone &zone);
-  virtual int start_zone(const common::ObZone &zone);
-  virtual int stop_zone(const common::ObZone &zone);
-  virtual int alter_zone(const obrpc::ObAdminZoneArg &arg);
 
   virtual int reload();
 
@@ -139,12 +131,6 @@ public:
 
   int init(common::ObMySQLProxy &proxy);
   virtual int reload();
-  virtual int add_zone(const common::ObZone &zone, const common::ObRegion &region,
-                       const common::ObIDC &idc, const common::ObZoneType &zone_type);
-  virtual int delete_zone(const common::ObZone &zone);
-  virtual int start_zone(const common::ObZone &zone);
-  virtual int stop_zone(const common::ObZone &zone);
-  virtual int alter_zone(const obrpc::ObAdminZoneArg &arg) override;
 
   virtual int update_privilege_version(const int64_t privilege_version);
   virtual int update_config_version(const int64_t config_version);

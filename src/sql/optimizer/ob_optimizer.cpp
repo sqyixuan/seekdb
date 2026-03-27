@@ -21,7 +21,6 @@
 #include "sql/optimizer/ob_opt_cost_model_parameter.h"
 #include "src/share/stat/ob_opt_stat_manager.h"
 #include "src/sql/engine/px/ob_dfo_scheduler.h"
-#include "share/ob_license_utils.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -982,20 +981,6 @@ int ObOptimizer::init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &s
   }
 
   if (OB_FAIL(ret)) {
-  } else if (!ctx_.get_session_info()->is_user_session() || ctx_.force_disable_parallel()) {
-  } else if (OB_FAIL(ObLicenseUtils::check_olap_allowed(session.get_effective_tenant_id()))) {
-    ret = OB_SUCCESS;
-    if ((ctx_.get_parallel() > 1
-              && (ctx_.get_parallel_rule() == PXParallelRule::SESSION_FORCE_PARALLEL
-                  || ctx_.get_parallel_rule() == PXParallelRule::MANUAL_HINT))
-             || ctx_.get_parallel_rule() == PXParallelRule::AUTO_DOP) {
-      LOG_WARN("parallel dml is not allowed", KR(ret));
-      LOG_USER_WARN(OB_LICENSE_SCOPE_EXCEEDED, "parallel dml is not supported due to the absence of the OLAP module");
-    }
-    ctx_.set_parallel_rule(PXParallelRule::LICENSE_NOT_ALLOW_OLAP);
-  }
-
-  if (OB_FAIL(ret)) {
   } else if (ctx_.is_use_auto_dop() && OB_FAIL(set_auto_dop_params(session))) {
     LOG_WARN("failed to set auto dop params", K(ret));
   } else if (OB_FAIL(init_px_node_opt_info(session.get_effective_tenant_id()))) {
@@ -1152,7 +1137,7 @@ int ObOptimizer::set_auto_dop_params(const ObSQLSessionInfo &session)
       LOG_WARN("fail read tenant variable", K(ret), K(session.get_effective_tenant_id()));
     } else {
       params.unit_min_cpu_ = std::max(tenant->unit_min_cpu(), 0.0);
-      params.parallel_servers_target_ = std::max(parallel_servers_target, static_cast<int64_t>(0));
+      params.parallel_servers_target_ = std::max(parallel_servers_target, 0L);
     }
   }
 

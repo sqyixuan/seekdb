@@ -1727,35 +1727,8 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
         break;
       }
       case T_XA_RECOVER: {
-          if (OB_UNLIKELY(parse_tree.num_child_ != 1)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("parse tree is wrong",
-                K(ret),
-                K(parse_tree.num_child_),
-                K(parse_tree.children_));
-          } else {
-            if(parse_tree.children_[0] == NULL) {
-                  GEN_SQL_STEP_1(ObShowSqlSet::XA_RECOVER);
-                  GEN_SQL_STEP_2(ObShowSqlSet::XA_RECOVER,
-                                 OB_SYS_DATABASE_NAME,
-                                 OB_ALL_VIRTUAL_GLOBAL_TRANSACTION_TNAME,
-                                 transaction::ObXATransState::PREPARED);
-            } else {
-              if(parse_tree.children_[0]->value_ != 0) {
-                ret = OB_ERR_UNEXPECTED;
-                LOG_WARN("parse tree is wrong",
-                  K(ret),
-                  K(parse_tree.num_child_),
-                  K(parse_tree.children_));
-              } else {
-                  GEN_SQL_STEP_1(ObShowSqlSet::XA_RECOVER_CONVERT_XID);
-                  GEN_SQL_STEP_2(ObShowSqlSet::XA_RECOVER_CONVERT_XID,
-                                 OB_SYS_DATABASE_NAME,
-                                 OB_ALL_VIRTUAL_GLOBAL_TRANSACTION_TNAME,
-                                 transaction::ObXATransState::PREPARED);
-              }
-            }
-          }
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("xa recover is not supported in lite version", KR(ret));
         break;
       }
       case T_SHOW_CATALOGS: {
@@ -1834,7 +1807,7 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
           }
           if (OB_SUCC(ret)) {
             GEN_SQL_STEP_1(ObShowSqlSet::SHOW_CREATE_LOCATION);
-            GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_LOCATION, OB_SYS_DATABASE_NAME,
+            GEN_SQL_STEP_2(ObShowSqlSet::SHOW_CREATE_LOCATION, OB_SYS_DATABASE_NAME, 
                            OB_TENANT_VIRTUAL_SHOW_CREATE_LOCATION_TNAME, location_id);
           }
         }
@@ -1905,7 +1878,7 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
             pattern = tmp_pattern.string();
           }
           GEN_SQL_STEP_1(ObShowSqlSet::LOCATION_UTILS_LIST);
-          GEN_SQL_STEP_2(ObShowSqlSet::LOCATION_UTILS_LIST,
+          GEN_SQL_STEP_2(ObShowSqlSet::LOCATION_UTILS_LIST, 
                         OB_SYS_DATABASE_NAME,
                         OB_TENANT_VIRTUAL_LIST_FILE_TNAME,
                         location_id,

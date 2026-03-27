@@ -440,7 +440,7 @@ int ObServerTableOperator::update_status(
         "WHERE svr_ip = '%s' AND svr_port = %d",
         OB_ALL_SERVER_TNAME, display_status_str,
         // set min gmt_modified to 1 second to avoid mysql 1292 error.
-        std::max(last_hb_time, static_cast<int64_t>(1000000L)), ip, server.get_port()))) {
+        std::max(last_hb_time, 1000000L), ip, server.get_port()))) {
       LOG_WARN("assign_fmt failed", K(ret));
     } else if (OB_FAIL(trans.write(sql.ptr(), affected_rows))) {
       LOG_WARN("execute sql failed", K(sql), K(ret));
@@ -453,45 +453,6 @@ int ObServerTableOperator::update_status(
   if (OB_SUCC(ret)) {
     LOG_INFO("update server status succeed", K(server), K(status), K(last_hb_time));
   }
-  return ret;
-}
-
-int ObServerTableOperator::update_stop_time(const ObAddr &server,
-    const int64_t stop_time)
-{
-  int ret = OB_SUCCESS;
-  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (stop_time < 0) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("stop time can not smaller than 0", K(stop_time), K(ret));
-  } else if (!server.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("server is invalid", K(server), K(ret));
-  } else if (!server.ip_to_string(ip, sizeof(ip))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("convert server ip to string failed", K(server), K(ret));
-  } else {
-    int64_t affected_rows = 0;
-    ObSqlString sql;
-    ObTimeoutCtx ctx;
-    if (OB_FAIL(ObRootUtils::get_rs_default_timeout_ctx(ctx))) {
-      LOG_WARN("fail to get timeout ctx", K(ret), K(ctx));
-    } else if (OB_FAIL(sql.assign_fmt(
-        "UPDATE %s SET stop_time = %ld "
-        "WHERE svr_ip = '%s' AND svr_port = %d",
-        OB_ALL_SERVER_TNAME, stop_time, ip, server.get_port()))) {
-      LOG_WARN("assign fmt failed", K(ret));
-    } else if (OB_FAIL(proxy_->write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(sql), K(ret));
-    } else if (!is_single_row(affected_rows)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("expect updating one row", K(affected_rows), K(sql), K(ret));
-    }
-  }
-
   return ret;
 }
 
@@ -924,38 +885,6 @@ int ObServerTableOperator::update_start_info(
   return ret;
 }
 
-int ObServerTableOperator::update_stop_time(
-    ObMySQLTransaction &trans,
-    const common::ObAddr &server,
-    const int64_t old_stop_time,
-    const int64_t new_stop_time)
-{
-  int ret = OB_SUCCESS;
-  const int64_t now = ObTimeUtility::current_time();
-  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
-  if (OB_UNLIKELY(!server.is_valid()
-      || !server.ip_to_string(ip, sizeof(ip)))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(server));
-  } else if (old_stop_time == new_stop_time
-      || old_stop_time < 0
-      || new_stop_time < 0
-      || (old_stop_time > 0 && new_stop_time > 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(old_stop_time), K(new_stop_time));
-  } else {
-    ObSqlString sql;
-    if (OB_FAIL(sql.assign_fmt(
-        "UPDATE %s SET stop_time = %ld "
-        "WHERE svr_ip = '%s' AND svr_port = %d AND stop_time = %ld",
-        OB_ALL_SERVER_TNAME, new_stop_time, ip, server.get_port(), old_stop_time))) {
-      LOG_WARN("assign fmt failed", K(ret));
-    } else if (OB_FAIL(exec_write(trans, sql, false /* is_multi_rows_affected */))) {
-      LOG_WARN("fail to update the table", KR(ret), K(sql));
-    } else {}
-  }
-  return ret;
-}
 int ObServerTableOperator::insert_dml_builder(
     const ObServerStatus &server_status,
     ObDMLSqlSplicer &dml)

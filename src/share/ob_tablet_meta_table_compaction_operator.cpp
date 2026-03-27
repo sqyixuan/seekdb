@@ -16,7 +16,6 @@
  
 #define USING_LOG_PREFIX SHARE
 #include "ob_tablet_meta_table_compaction_operator.h"
-#include "share/ob_service_epoch_proxy.h"
 #include "share/tablet/ob_tablet_table_operator.h"
 namespace oceanbase
 {
@@ -364,8 +363,7 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
     const uint64_t tenant_id,
     const uint64_t global_broadcast_scn_val,
     const ObTabletReplica::ScnStatus &except_status,
-    const volatile bool &stop,
-    const int64_t expected_epoch)
+    const volatile bool &stop)
 {
   int ret = OB_SUCCESS;
   const int64_t start_time_us = ObTimeUtil::current_time();
@@ -374,12 +372,11 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id));
   } else {
-    LOG_INFO("start to batch update report scn", KR(ret), K(tenant_id), K(global_broadcast_scn_val), K(expected_epoch));
+    LOG_INFO("start to batch update report scn", KR(ret), K(tenant_id), K(global_broadcast_scn_val));
     const uint64_t meta_tenant_id = gen_meta_tenant_id(tenant_id);
     bool update_done = false;
     SMART_VAR(ObArray<ObTabletID>, tablet_ids) {
       while (OB_SUCC(ret) && !update_done && !stop) {
-        bool is_match = true;
         ObMySQLTransaction trans;
         ObSqlString sql;
         int64_t affected_rows = 0;
@@ -396,16 +393,8 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
                    K(global_broadcast_scn_val), K(except_status));
         } else if (OB_FAIL(trans.start(GCTX.sql_proxy_, meta_tenant_id))) {
           LOG_WARN("fail to start transaction", KR(ret), K(tenant_id), K(meta_tenant_id));
-        } else if (OB_FAIL(ObServiceEpochProxy::check_service_epoch_with_trans(trans, tenant_id,
-                   ObServiceEpochProxy::FREEZE_SERVICE_EPOCH, expected_epoch, is_match))) {
-          LOG_WARN("fail to check service_epoch with trans", KR(ret), K(tenant_id), K(expected_epoch));
-        } else if (is_match) {
-          if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
-            LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
-          }
-        } else { // !is_match
-          ret = OB_FREEZE_SERVICE_EPOCH_MISMATCH;
-          LOG_WARN("freeze_service_epoch mismatch, do not update report_scn on this server", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
+          LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
         }
         ret = trans.handle_trans_in_the_end(ret);
         LOG_INFO("finish one round of batch update report scn", KR(ret), K(tenant_id),
@@ -417,8 +406,7 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
 }
 
 int ObTabletMetaTableCompactionOperator::batch_update_status(
-    const uint64_t tenant_id,
-    const int64_t expected_epoch)
+    const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   const int64_t start_time_us = ObTimeUtil::current_time();
@@ -427,12 +415,11 @@ int ObTabletMetaTableCompactionOperator::batch_update_status(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id));
   } else {
-    LOG_INFO("start to batch update status", KR(ret), K(tenant_id), K(expected_epoch));
+    LOG_INFO("start to batch update status", KR(ret), K(tenant_id));
     const uint64_t meta_tenant_id = gen_meta_tenant_id(tenant_id);
     bool update_done = false;
     SMART_VAR(ObArray<ObTabletID>, tablet_ids) {
       while (OB_SUCC(ret) && !update_done) {
-        bool is_match = true;
         ObMySQLTransaction trans;
         ObSqlString sql;
         int64_t affected_rows = 0;
@@ -447,16 +434,8 @@ int ObTabletMetaTableCompactionOperator::batch_update_status(
           LOG_WARN("fail to construct batch update sql str", KR(ret), K(tenant_id));
         } else if (OB_FAIL(trans.start(GCTX.sql_proxy_, meta_tenant_id))) {
           LOG_WARN("fail to start transaction", KR(ret), K(tenant_id), K(meta_tenant_id));
-        } else if (OB_FAIL(ObServiceEpochProxy::check_service_epoch_with_trans(trans, tenant_id,
-                   ObServiceEpochProxy::FREEZE_SERVICE_EPOCH, expected_epoch, is_match))) {
-          LOG_WARN("fail to check service_epoch with trans", KR(ret), K(tenant_id), K(expected_epoch));
-        } else if (is_match) {
-          if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
-            LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
-          }
-        } else { // !is_match
-          ret = OB_FREEZE_SERVICE_EPOCH_MISMATCH;
-          LOG_WARN("freeze_service_epoch mismatch, do not update status on this server", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
+          LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
         }
         ret = trans.handle_trans_in_the_end(ret);
         LOG_INFO("finish one round of batch update status", KR(ret), K(tenant_id), K(affected_rows), K(BATCH_UPDATE_CNT));
@@ -595,8 +574,7 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
     const uint64_t tenant_id,
     const uint64_t global_broadcast_scn_val,
     const ObIArray<ObTabletLSPair> &tablet_pairs,
-    const ObTabletReplica::ScnStatus &except_status,
-    const int64_t expected_epoch)
+    const ObTabletReplica::ScnStatus &except_status)
 {
   int ret = OB_SUCCESS;
   int64_t affected_rows = 0;
@@ -611,7 +589,6 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
       const int64_t cur_end_idx = MIN(i + MAX_BATCH_COUNT, all_pair_cnt);
       ObMySQLTransaction trans;
       ObSqlString sql;
-      bool is_match = true;
       if (OB_FAIL(sql.append_fmt(
           "UPDATE %s SET report_scn = '%lu' WHERE tenant_id = %ld AND (tablet_id,ls_id) IN (",
           OB_ALL_TABLET_META_TABLE_TNAME,
@@ -641,18 +618,10 @@ int ObTabletMetaTableCompactionOperator::batch_update_report_scn(
             K(global_broadcast_scn_val));
         } else if (OB_FAIL(trans.start(GCTX.sql_proxy_, meta_tenant_id))) {
           LOG_WARN("fail to start transaction", KR(ret), K(tenant_id), K(meta_tenant_id));
-        } else if (OB_FAIL(ObServiceEpochProxy::check_service_epoch_with_trans(trans, tenant_id,
-                   ObServiceEpochProxy::FREEZE_SERVICE_EPOCH, expected_epoch, is_match))) {
-          LOG_WARN("fail to check service_epoch with trans", KR(ret), K(tenant_id), K(expected_epoch));
-        } else if (is_match) {
-          if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
-            LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
-          } else {
-            LOG_TRACE("success to update report_scn", KR(ret), K(tenant_id), K(meta_tenant_id), K(tablet_pairs), K(sql));
-          }
-        } else { // !is_match
-          ret = OB_FREEZE_SERVICE_EPOCH_MISMATCH;
-          LOG_WARN("freeze_service_epoch mismatch, do not update report_scn on this server", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(trans.write(meta_tenant_id, sql.ptr(), affected_rows))) {
+          LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(meta_tenant_id), K(sql));
+        } else {
+          LOG_TRACE("success to update report_scn", KR(ret), K(tenant_id), K(meta_tenant_id), K(tablet_pairs), K(sql));
         }
       }
       ret = trans.handle_trans_in_the_end(ret);

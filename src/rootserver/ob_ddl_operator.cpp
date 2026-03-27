@@ -1237,7 +1237,7 @@ int ObDDLOperator::create_table(ObTableSchema &table_schema,
 
   if (OB_SUCC(ret) && (table_schema.is_vec_delta_buffer_type() ||
       table_schema.is_hybrid_vec_index_log_type()) &&
-      OB_FAIL(ObVectorIndexUtil::add_dbms_vector_jobs(trans, tenant_id,
+      OB_FAIL(ObVectorIndexUtil::add_dbms_vector_jobs(trans, tenant_id, 
                                                       table_schema.get_table_id(),
                                                       table_schema.get_exec_env()))) {
     LOG_WARN("failed to add dbms_vector jobs", K(ret), K(tenant_id), K(table_schema));
@@ -3618,7 +3618,6 @@ int ObDDLOperator::inner_alter_table_rename_index_(
   int ret = OB_SUCCESS;
   int64_t new_schema_version = OB_INVALID_VERSION;
   ObSchemaService *schema_service = schema_service_.get_schema_service();
-  const bool in_offline_ddl_white_list = new_index_table_schema.get_in_offline_ddl_white_list();
   if (OB_ISNULL(schema_service)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema_service is NULL", K(ret));
@@ -3642,7 +3641,6 @@ int ObDDLOperator::inner_alter_table_rename_index_(
     }
     new_index_table_schema.set_is_in_deleting(is_in_deleting);
     new_index_table_schema.set_name_generated_type(GENERATED_TYPE_USER);
-    new_index_table_schema.set_in_offline_ddl_white_list(in_offline_ddl_white_list || new_index_table_schema.get_in_offline_ddl_white_list());
     if (OB_FAIL(new_index_table_schema.set_table_name(new_index_name))) {
       RS_LOG(WARN, "failed to set new table name!", K(new_index_table_schema), K(ret));
     } else if (OB_FAIL(schema_service->get_table_sql_service().update_table_options(
@@ -5683,15 +5681,6 @@ int ObDDLOperator::init_tenant_schemas(
     LOG_WARN("insert freeze info failed", K(tenant_id), KR(ret));
   } else if (OB_FAIL(init_tenant_srs(tenant_id, trans))) {
     LOG_WARN("insert tenant srs failed", K(tenant_id), K(ret));
-  } else if (OB_SYS_TENANT_ID == tenant_id) {
-    if (OB_FAIL(init_sys_tenant_charset(trans))) {
-      LOG_WARN("insert charset failed", K(tenant_id), K(ret));
-    } else if (OB_FAIL(init_sys_tenant_collation(trans))) {
-      LOG_WARN("insert collation failed", K(tenant_id), K(ret));
-    } else if (OB_FAIL(init_sys_tenant_privilege(trans))) {
-      LOG_WARN("insert privilege failed", K(tenant_id), K(ret));
-    }
-    //TODO [profile]
   }
 
   return ret;
@@ -6093,150 +6082,6 @@ int ObDDLOperator::init_tenant_srs(const uint64_t tenant_id,
 
   LOG_INFO("init tenant srs", K(ret), K(tenant_id),
            "cost", ObTimeUtility::current_time() - start);
-  return ret;
-}
-
-int ObDDLOperator::init_sys_tenant_charset(ObMySQLTransaction &trans)
-{
-  int ret = OB_SUCCESS;
-  const ObCharsetWrapper *charset_wrap_arr = NULL;
-  int64_t charset_wrap_arr_len = 0;
-  ObSqlString sql;
-  if (OB_FAIL(sql.assign_fmt("insert into %s "
-      "(charset, description, default_collation, max_length) values ",
-      OB_ALL_CHARSET_TNAME))) {
-    LOG_WARN("sql append failed", K(ret));
-  } else {
-    ObCharset::get_charset_wrap_arr(charset_wrap_arr, charset_wrap_arr_len);
-    if (OB_ISNULL(charset_wrap_arr) ||
-        OB_UNLIKELY(ObCharset::VALID_CHARSET_TYPES != charset_wrap_arr_len)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("charset wrap array is NULL or charset_wrap_arr_len is not CHARSET_WRAPPER_COUNT",
-                K(ret), K(charset_wrap_arr), K(charset_wrap_arr_len));
-    } else {
-      for (int64_t i = 0; OB_SUCC(ret) && i < charset_wrap_arr_len; ++i) {
-        ObCharsetWrapper charset_wrap = charset_wrap_arr[i];
-        if (OB_FAIL(sql.append_fmt("%s('%s', '%s', '%s', %ld)",
-           (0 == i) ? "" : ", ", ObCharset::charset_name(charset_wrap.charset_),
-           charset_wrap.description_,
-           ObCharset::collation_name(ObCharset::get_default_collation(charset_wrap.charset_)),
-                                     charset_wrap.maxlen_))) {
-          LOG_WARN("sql append failed", K(ret));
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    LOG_INFO("create charset sql", K(sql));
-    int64_t affected_rows = 0;
-    if (OB_FAIL(trans.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(ret), K(sql));
-    } else if (charset_wrap_arr_len != affected_rows) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("unexpected affected_rows", K(affected_rows),
-          "expected", (charset_wrap_arr_len));
-    }
-  }
-  return ret;
-}
-
-int ObDDLOperator::init_sys_tenant_collation(ObMySQLTransaction &trans)
-{
-  int ret = OB_SUCCESS;
-  const ObCollationWrapper *collation_wrap_arr = NULL;
-  int64_t collation_wrap_arr_len = 0;
-  ObSqlString sql;
-  int64_t total_valid_collations = 0;
-  if (OB_FAIL(sql.assign_fmt("insert into %s "
-      "(collation, charset, id, `is_default`, is_compiled, sortlen) values ",
-      OB_ALL_COLLATION_TNAME))) {
-    LOG_WARN("sql append failed", K(ret));
-  } else {
-    ObCharset::get_collation_wrap_arr(collation_wrap_arr, collation_wrap_arr_len);
-    if (OB_ISNULL(collation_wrap_arr) ||
-        OB_UNLIKELY(ObCharset::VALID_COLLATION_TYPES != collation_wrap_arr_len)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("collation wrap array is NULL or collation_wrap_arr_len is not COLLATION_WRAPPER_COUNT",
-                K(ret), K(collation_wrap_arr), K(collation_wrap_arr_len));
-    } else {
-      for (int64_t i = 0; OB_SUCC(ret) && i < collation_wrap_arr_len; ++i) {
-        ObCollationWrapper collation_wrap = collation_wrap_arr[i];
-        if (CS_TYPE_INVALID != collation_wrap.collation_) {
-          if (OB_FAIL(sql.append_fmt("%s('%s', '%s', %ld, '%s', '%s', %ld)",
-              (0 == total_valid_collations) ? "" : ", ",
-              ObCharset::collation_name(collation_wrap.collation_),
-              ObCharset::charset_name(collation_wrap.charset_),
-              collation_wrap.id_,
-              (true == collation_wrap.default_) ? "Yes" : "",
-              (true == collation_wrap.compiled_) ? "Yes" : "",
-              collation_wrap.sortlen_))) {
-            LOG_WARN("sql append failed", K(ret));
-          }
-          total_valid_collations++;
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    LOG_INFO("create collation sql", K(sql));
-    int64_t affected_rows = 0;
-    if (OB_FAIL(trans.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(ret), K(sql));
-    } else if (total_valid_collations != affected_rows) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("unexpected affected_rows", K(affected_rows),
-          "expected", (collation_wrap_arr_len));
-    }
-  }
-  return ret;
-}
-
-int ObDDLOperator::init_sys_tenant_privilege(ObMySQLTransaction &trans)
-{
-  int ret = OB_SUCCESS;
-
-  ObSqlString sql;
-  int64_t row_count = 0;
-  if (OB_FAIL(sql.assign_fmt("INSERT /*+ use_plan_cache(none) */ INTO %s "
-      "(Privilege, Context, Comment) values ",
-        OB_ALL_PRIVILEGE_TNAME))) {
-    LOG_WARN("sql append failed", K(ret));
-  } else {
-    const PrivilegeRow *current_row = all_privileges;
-    if (OB_ISNULL(current_row)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("current_row is null", K(ret));
-    } else {
-      bool is_first_row = true;
-      for (; OB_SUCC(ret) && NULL != current_row && NULL != current_row->privilege_;
-           ++current_row) {
-        if (OB_FAIL(sql.append_fmt("%s('%s', '%s', '%s')",
-            is_first_row ? "" : ", ",
-            current_row->privilege_,
-            current_row->context_,
-            current_row->comment_))) {
-          LOG_WARN("sql append failed", K(ret));
-        } else {
-          ++row_count;
-          is_first_row = false;
-        }
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    LOG_INFO("create privileges sql", K(sql));
-    int64_t affected_rows = 0;
-    if (OB_FAIL(trans.write(sql.ptr(), affected_rows))) {
-      LOG_WARN("execute sql failed", K(ret), K(sql));
-    } else if (row_count != affected_rows) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_ERROR("unexpected affected_rows", K(affected_rows));
-    }
-  }
-
   return ret;
 }
 

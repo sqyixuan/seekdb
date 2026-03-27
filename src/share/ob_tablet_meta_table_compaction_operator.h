@@ -105,19 +105,16 @@ public:
       const uint64_t tenant_id,
       const uint64_t global_broadcast_scn_val,
       const common::ObIArray<ObTabletLSPair> &tablet_pairs,
-      const ObTabletReplica::ScnStatus &except_status,
-      const int64_t expected_epoch);
+      const ObTabletReplica::ScnStatus &except_status);
   // after major_freeze, update all tablets' report_scn to global_broadcast_scn_val
   static int batch_update_report_scn(
       const uint64_t tenant_id,
       const uint64_t global_broadcast_scn_val,
       const ObTabletReplica::ScnStatus &except_status,
-      const volatile bool &stop,
-      const int64_t expected_epoch);
+      const volatile bool &stop);
   // designed for 'clear merge error'. it updates all tablets' status to SCN_STATUS_IDLE
   static int batch_update_status(
-      const uint64_t tenant_id,
-      const int64_t expected_epoch);
+      const uint64_t tenant_id);
   static int batch_update_unequal_report_scn_tablet(
       const uint64_t tenant_id,
       const share::ObLSID &ls_id,

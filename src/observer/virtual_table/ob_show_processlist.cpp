@@ -462,12 +462,7 @@ bool ObShowProcesslist::FillScanner::operator()(sql::ObSQLSessionMgr::Key key, O
             break;
           }
           case SERVICE_NAME: {
-            if (!sess_info->get_service_name().is_empty()) {
-              cur_row_->cells_[cell_idx].set_varchar(sess_info->get_service_name().ptr());
-              cur_row_->cells_[cell_idx].set_collation_type(default_collation);
-            } else {
-              cur_row_->cells_[cell_idx].set_null();
-            }
+            cur_row_->cells_[cell_idx].set_null();
             break;
           }
           case TOTAL_CPU_TIME: {
