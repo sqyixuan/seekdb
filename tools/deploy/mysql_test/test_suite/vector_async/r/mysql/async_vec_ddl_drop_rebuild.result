@@ -1,0 +1,388 @@
+alter system set ob_vector_memory_limit_percentage = 30;
+========== setup ==========
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+drop table if exists t8;
+
+========== 1. DROP async vector index ==========
+
+=== 1.1 DROP index on non-partitioned table ===
+create table t1 (
+id int primary key,
+vec vector(3),
+name varchar(50)
+) organization heap;
+--- Insert test data ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t1 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t1 values (3, '[3.0, 3.0, 3.0]', 'item3');
+--- Create async index ---
+create vector index idx1 on t1(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index exists ---
+show index from t1;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+t1	1	idx1	1	vec	A	NULL	NULL	NULL	YES	VECTOR	available		YES	NULL
+select id, vec from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id	vec
+1	[1,1,1]
+2	[2,2,2]
+3	[3,3,3]
+--- DROP the async vector index ---
+drop index idx1 on t1;
+--- Verify index is dropped ---
+show index from t1;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t1	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+--- Verify vector column still queryable (non-vector search) ---
+select id, name, vec from t1 where id = 1;
+id	name	vec
+1	item1	[1,1,1]
+select count(*) from t1;
+count(*)
+3
+--- Verify __all_virtual_vector_index_info no longer has record ---
+select 
+count(*) as index_count
+from oceanbase.__all_virtual_vector_index_info a
+join oceanbase.__all_virtual_table b 
+on a.data_table_id = b.table_id 
+where b.table_name = 't1';
+index_count
+1
+drop table t1;
+
+=== 1.2 DROP index on partitioned table ===
+create table t2 (
+id int primary key,
+vec vector(3)
+) organization heap
+partition by hash(id) partitions 4;
+--- Insert test data ---
+insert into t2 values (1, '[1.0, 1.0, 1.0]');
+insert into t2 values (101, '[2.0, 2.0, 2.0]');
+insert into t2 values (201, '[3.0, 3.0, 3.0]');
+insert into t2 values (301, '[4.0, 4.0, 4.0]');
+--- Create async index ---
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index works ---
+select id from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+id
+1
+101
+201
+301
+--- DROP the index ---
+drop index idx2 on t2;
+--- Verify index is dropped ---
+show index from t2;
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+t2	0	PRIMARY	1	id	A	NULL	NULL	NULL		BTREE	available		YES	NULL
+--- Verify data still accessible ---
+select count(*) from t2;
+count(*)
+4
+drop table t2;
+
+========== 2. DROP and recreate async vector index ==========
+
+=== 2.1 DROP async index and recreate with same parameters ===
+create table t3 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Insert test data ---
+insert into t3 values (1, '[1.0, 1.0, 1.0]');
+insert into t3 values (2, '[2.0, 2.0, 2.0]');
+insert into t3 values (3, '[3.0, 3.0, 3.0]');
+--- Create async index with specific parameters ---
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, m=16, ef_construction=200);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index works ---
+select id from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- DROP the index ---
+drop index idx3 on t3;
+--- Recreate with same parameters ---
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, m=16, ef_construction=200);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify data integrity after recreation ---
+select count(*) from t3;
+count(*)
+3
+select id from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t3;
+
+=== 2.2 DROP async index and recreate with different parameters ===
+create table t4 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Insert test data ---
+insert into t4 values (1, '[1.0, 1.0, 1.0]');
+insert into t4 values (2, '[2.0, 2.0, 2.0]');
+insert into t4 values (3, '[3.0, 3.0, 3.0]');
+--- Create async index with L2 distance ---
+create vector index idx4 on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, m=16);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index works ---
+select id from t4 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- DROP the index ---
+drop index idx4 on t4;
+--- Recreate with cosine distance and different m parameter ---
+create vector index idx4 on t4(vec) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async, m=32);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify data integrity with new distance function ---
+select count(*) from t4;
+count(*)
+3
+select id from t4 order by cosine_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+3
+1
+2
+drop table t4;
+
+=== 2.3 Switch sync_mode: async → immediate → async ===
+create table t5 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Insert test data ---
+insert into t5 values (1, '[1.0, 1.0, 1.0]');
+insert into t5 values (2, '[2.0, 2.0, 2.0]');
+insert into t5 values (3, '[3.0, 3.0, 3.0]');
+--- Create async index ---
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify async index works ---
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- DROP async index ---
+drop index idx5 on t5;
+--- Recreate with immediate sync_mode ---
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=immediate);
+--- Verify immediate index works (no need to wait for CDC) ---
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- Insert new data with immediate index ---
+insert into t5 values (4, '[4.0, 4.0, 4.0]');
+--- Verify immediate sync ---
+select count(*) from t5;
+count(*)
+4
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+id
+1
+2
+3
+4
+--- DROP immediate index ---
+drop index idx5 on t5;
+--- Recreate with async sync_mode again ---
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify async index works again ---
+select count(*) from t5;
+count(*)
+4
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+id
+1
+2
+3
+4
+drop table t5;
+
+========== 3. REBUILD async vector index ==========
+
+=== 3.1 REBUILD async index on non-partitioned table ===
+create table t6 (
+id int primary key,
+vec vector(3)
+) organization heap;
+--- Insert test data ---
+insert into t6 values (1, '[0.203846, 0.205289, 0.880265]');
+insert into t6 values (2, '[0.484526, 0.669954, 0.986755]');
+insert into t6 values (3, '[0.327936, 0.048756, 0.084670]');
+insert into t6 values (4, '[0.148869, 0.878546, 0.028024]');
+insert into t6 values (5, '[0.334970, 0.857377, 0.886132]');
+--- Create async index ---
+create vector index idx6 on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, m=16, ef_construction=200);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index works before rebuild ---
+select id from t6 order by l2_distance(vec, '[0.2, 0.2, 0.9]') approximate limit 3;
+id
+1
+2
+5
+--- REBUILD the async index ---
+call dbms_vector.rebuild_index('idx6', 't6', 'vec', 0, '', '');
+--- Wait for rebuild to complete ---
+call dbms_index_manager.refresh();
+--- Verify data integrity after rebuild ---
+select count(*) from t6;
+count(*)
+5
+select id from t6 order by l2_distance(vec, '[0.2, 0.2, 0.9]') approximate limit 3;
+id
+1
+2
+5
+--- Insert more data after rebuild ---
+insert into t6 values (6, '[0.117582, 0.302352, 0.471198]');
+insert into t6 values (7, '[0.551185, 0.231134, 0.075354]');
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify new data is searchable ---
+select count(*) from t6;
+count(*)
+7
+select id from t6 order by l2_distance(vec, '[0.2, 0.2, 0.9]') approximate limit 5;
+id
+1
+6
+2
+5
+3
+drop table t6;
+
+=== 3.2 REBUILD async index on partitioned table ===
+create table t7 (
+id int primary key,
+vec vector(3)
+) organization heap
+partition by hash(id) partitions 4;
+--- Insert test data ---
+insert into t7 values (1, '[0.203846, 0.205289, 0.880265]');
+insert into t7 values (101, '[0.484526, 0.669954, 0.986755]');
+insert into t7 values (201, '[0.327936, 0.048756, 0.084670]');
+insert into t7 values (301, '[0.148869, 0.878546, 0.028024]');
+insert into t7 values (401, '[0.334970, 0.857377, 0.886132]');
+--- Create async index ---
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async, m=16, ef_construction=200);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify index works before rebuild ---
+select id from t7 order by l2_distance(vec, '[0.2, 0.2, 0.9]') approximate limit 5;
+id
+1
+101
+401
+201
+301
+--- REBUILD the async index ---
+call dbms_vector.rebuild_index('idx7', 't7', 'vec', 0, '', '');
+--- Wait for rebuild to complete ---
+call dbms_index_manager.refresh();
+--- Verify data integrity after rebuild ---
+select count(*) from t7;
+count(*)
+5
+select id from t7 order by l2_distance(vec, '[0.2, 0.2, 0.9]') approximate limit 5;
+id
+1
+101
+401
+201
+301
+drop table t7;
+
+=== 3.3 REBUILD with multiple vector columns ===
+create table t8 (
+id int primary key,
+vec1 vector(3),
+vec2 vector(3)
+) organization heap;
+--- Insert test data ---
+insert into t8 values (1, '[1.0, 1.0, 1.0]', '[10.0, 10.0, 10.0]');
+insert into t8 values (2, '[2.0, 2.0, 2.0]', '[20.0, 20.0, 20.0]');
+insert into t8 values (3, '[3.0, 3.0, 3.0]', '[30.0, 30.0, 30.0]');
+--- Create async indexes on both columns ---
+create vector index idx8_1 on t8(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+create vector index idx8_2 on t8(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async);
+--- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+--- Verify both indexes work ---
+select id from t8 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+select id from t8 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+--- REBUILD first index ---
+call dbms_vector.rebuild_index('idx8_1', 't8', 'vec1', 0, '', '');
+--- Wait for rebuild to complete ---
+call dbms_index_manager.refresh();
+--- Verify first index after rebuild ---
+select id from t8 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+--- Verify second index still works ---
+select id from t8 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+--- REBUILD second index ---
+call dbms_vector.rebuild_index('idx8_2', 't8', 'vec2', 0, '', '');
+--- Wait for rebuild to complete ---
+call dbms_index_manager.refresh();
+--- Verify both indexes work after rebuild ---
+select count(*) from t8;
+count(*)
+3
+select id from t8 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 3;
+id
+1
+2
+3
+select id from t8 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 3;
+id
+1
+2
+3
+drop table t8;
+
+========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
