@@ -74,7 +74,7 @@ int ObBackupSetDecryptionStmt::add_passwd(const ObString &passwd)
   int ret = OB_SUCCESS;
   char passwd_buf[OB_MAX_PASSWORD_LENGTH];
   ObString encrypted_passwd;
-  encrypted_passwd.assign_ptr(passwd_buf, static_cast<ObString::obstr_size_t>(sizeof(passwd_buf)));
+  encrypted_passwd.assign_ptr(passwd_buf, sizeof(passwd_buf));
 
   if (pos_ != 0) {
     if (FAILEDx(databuff_printf(passwd_array_, sizeof(passwd_array_), pos_, ","))) {
@@ -91,21 +91,6 @@ int ObBackupSetDecryptionStmt::add_passwd(const ObString &passwd)
 
   COMMON_LOG(INFO, "add passwd", K(passwd), K(encrypted_passwd), K_(passwd_array));
 
-  return ret;
-}
-
-ObSetRegionBandwidthStmt::ObSetRegionBandwidthStmt()
-  : ObSystemCmdStmt(stmt::T_SET_REGION_NETWORK_BANDWIDTH)
-{
-  max_bw_ = -1;
-}
-
-int ObSetRegionBandwidthStmt::set_param(const char *src_region, const char *dst_region, const int64_t max_bw)
-{
-  int ret = common::OB_SUCCESS;
-  snprintf(src_region_, MAX_REGION_LENGTH, "%s", src_region);
-  snprintf(dst_region_, MAX_REGION_LENGTH, "%s", dst_region);
-  max_bw_ = max_bw;
   return ret;
 }
 

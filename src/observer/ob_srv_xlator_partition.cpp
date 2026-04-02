@@ -43,7 +43,6 @@
 #include "observer/table_load/resource/ob_table_load_resource_processor.h"
 #include "observer/net/ob_net_endpoint_ingress_rpc_processor.h"
 #include "share/wr/ob_wr_snapshot_rpc_processor.h"
-#include "observer/net/ob_shared_storage_net_throt_rpc_processor.h"
 
 using namespace oceanbase;
 using namespace oceanbase::observer;
@@ -88,15 +87,9 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObHandlePartTransCtxP, gctx_);
   RPC_PROCESSOR(ObRpcSetMemberListP, gctx_);
   RPC_PROCESSOR(ObRpcCreateLSP, gctx_);
-#ifdef OB_BUILD_ARBITRATION
-  RPC_PROCESSOR(ObRpcCreateArbP, gctx_);
-  RPC_PROCESSOR(ObRpcDeleteArbP, gctx_);
-#endif
   RPC_PROCESSOR(ObRpcCheckLSCanOfflineP, gctx_);
   RPC_PROCESSOR(ObCleanSequenceCacheP, gctx_);
   RPC_PROCESSOR(ObRegisterTxDataP, gctx_);
-  RPC_PROCESSOR(ObRpcGetLSAccessModeP, gctx_);
-  RPC_PROCESSOR(ObRpcChangeLSAccessModeP, gctx_);
   RPC_PROCESSOR(ObTabletLocationReceiveP, gctx_);
   RPC_PROCESSOR(ObForceSetTenantLogDiskP, gctx_);
   RPC_PROCESSOR(ObForceDumpServerUsageP, gctx_);
@@ -235,7 +228,6 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObRefreshTenantInfoP, gctx_);
   RPC_PROCESSOR(ObRpcGetLSReplayedScnP, gctx_);
   RPC_PROCESSOR(ObUpdateTenantInfoCacheP, gctx_);
-  RPC_PROCESSOR(ObRefreshServiceNameP, gctx_);
 
   RPC_PROCESSOR(ObSyncRewriteRulesP, gctx_);
 
@@ -258,11 +250,6 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObWrAsyncPurgeSnapshotTaskP, gctx_);
   RPC_PROCESSOR(ObWrSyncUserSubmitSnapshotTaskP, gctx_);
   RPC_PROCESSOR(ObWrSyncUserModifySettingsTaskP, gctx_);
-
-  // share storage net throt
-  RPC_PROCESSOR(ObSharedStorageNetThrotRegisterP, gctx_);
-  RPC_PROCESSOR(ObSharedStorageNetThrotPredictP, gctx_);
-  RPC_PROCESSOR(ObSharedStorageNetThrotSetP, gctx_);
 
   // kill client session
   RPC_PROCESSOR(ObKillClientSessionP, gctx_);

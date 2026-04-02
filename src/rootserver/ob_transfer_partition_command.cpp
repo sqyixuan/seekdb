@@ -19,7 +19,6 @@
 
 #include "share/balance/ob_transfer_partition_task_table_operator.h"
 #include "share/balance/ob_balance_job_table_operator.h"//ObBalanceJobTableOperator
-#include "rootserver/standby/ob_standby_service.h"
 #include "storage/tablelock/ob_lock_utils.h"//table_lock
 
 
@@ -236,8 +235,8 @@ int ObTransferPartitionCommand::check_tenant_status_(const uint64_t tenant_id)
   } else if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(OB_STANDBY_SERVICE.get_tenant_status(tenant_id, tenant_status))) {
-    LOG_WARN("fail to get tenant status", KR(ret), K(tenant_id));
+//  } else if (OB_FAIL(OB_STANDBY_SERVICE.get_tenant_status(tenant_id, tenant_status))) {
+//    LOG_WARN("fail to get tenant status", KR(ret), K(tenant_id));
   } else if (OB_UNLIKELY(!is_tenant_normal(tenant_status))) {
     ret = OB_OP_NOT_ALLOW;
     LOG_WARN("the tenant's status is not normal", KR(ret), K(tenant_status));

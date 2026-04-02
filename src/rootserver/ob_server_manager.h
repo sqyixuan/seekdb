@@ -49,7 +49,6 @@ class ObZoneManager;
 class ObIStatusChangeCallback
 {
 public:
-  virtual int wakeup_balancer() = 0;
   virtual int wakeup_daily_merger() = 0;
   //FIXME(jingqian): make it suitable for different task type, this is just a sample iterface
   virtual int on_server_status_change(const common::ObAddr &server) = 0;
@@ -83,12 +82,6 @@ public:
            obrpc::ObSrvRpcProxy &rpc_proxy);
   inline bool is_inited() const { return inited_; }
   virtual int add_server(const common::ObAddr &server, const common::ObZone &zone);
-  virtual int delete_server(const common::ObIArray<common::ObAddr> &servers,
-      const common::ObZone &zone);
-  virtual int end_delete_server(const common::ObAddr &server, const common::ObZone &zone,
-                                const bool commit = true);
-  virtual int start_server_list(const obrpc::ObServerList &server_list, const common::ObZone &zone);
-  virtual int stop_server_list(const obrpc::ObServerList &server_list, const common::ObZone &zone);
 
   // server_id is OB_INVALID_ID before build server manager from __all_server
   int receive_hb(const share::ObLeaseRequest &lease_request,
@@ -143,10 +136,6 @@ public:
   void reset();
 
   virtual int is_server_stopped(const common::ObAddr &server, bool &is_stopped) const;
-  static int try_delete_server_working_dir(
-      const common::ObZone &zone,
-      const common::ObAddr &server,
-      const int64_t svr_seq);
 protected:
   int construct_not_empty_server_set(
       common::hash::ObHashSet<common::ObAddr> &not_empty_server_set);
@@ -162,10 +151,6 @@ protected:
   int find(const common::ObAddr &server, const share::ObServerStatus *&status) const;
   int find(const common::ObAddr &server, share::ObServerStatus *&status);
   int fetch_new_server_id(uint64_t &server_id);
-  int start_or_stop_server(const common::ObAddr &server,
-      const common::ObZone &zone, const bool is_start);
-  virtual int start_server(const common::ObAddr &server, const common::ObZone &zone);
-  virtual int stop_server(const common::ObAddr &server, const common::ObZone &zone);
 protected:
   bool inited_;
   bool has_build_;                          // has been loaded from __all_server table

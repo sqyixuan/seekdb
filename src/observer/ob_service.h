@@ -28,7 +28,6 @@
 #include "observer/report/ob_i_meta_report.h"
 #include "observer/report/ob_ls_table_updater.h"
 #include "observer/report/ob_tablet_table_updater.h"
-#include "observer/report/ob_server_meta_table_checker.h" // ObServerMetaTableChecker
 
 namespace oceanbase
 {
@@ -78,13 +77,6 @@ private:
   bool is_inited_;
 };
 
-class TelemetryTask : public common::ObTimerTask {
-public:
-  TelemetryTask(bool embed_mode);
-  virtual void runTimerTask() override;
-  bool embed_mode_;
-};
-
 class ObService : public ObIMetaReport
 {
 public:
@@ -94,7 +86,7 @@ public:
   int init(common::ObMySQLProxy &sql_proxy,
            share::ObIAliveServerTracer &server_tracer,
            bool need_bootstrap);
-  int start(bool embed_mode);
+  int start();
   void set_stop();
   void stop();
   void wait();
@@ -182,8 +174,6 @@ public:
                          obrpc::ObEstSkipRateRes &res) const;
   int update_tenant_info_cache(const obrpc::ObUpdateTenantInfoCacheArg &arg,
                                   obrpc::ObUpdateTenantInfoCacheRes &result);
-  int refresh_service_name(const obrpc::ObRefreshServiceNameArg &arg,
-                           obrpc::ObRefreshServiceNameRes &result);
   ////////////////////////////////////////////////////////////////
   // ObRpcMinorFreezeP @RS minor freeze
   int minor_freeze(const obrpc::ObMinorFreezeArg &arg,
@@ -223,7 +213,7 @@ public:
   int get_partition_count(obrpc::ObGetPartitionCountResult &result);
 
   ////////////////////////////////////////////////////////////////
-
+  
   // ObRpcPrepareServerForAddingServerP @RS add server
   int prepare_server_for_adding_server(
       const obrpc::ObPrepareServerForAddingServerArg &arg,
@@ -232,14 +222,9 @@ public:
   int get_server_resource_info(const obrpc::ObGetServerResourceInfoArg &arg, obrpc::ObGetServerResourceInfoResult &result);
   int get_server_resource_info(share::ObServerResourceInfo &resource_info);
   static int get_build_version(share::ObServerInfoInTable::ObBuildVersion &build_version);
-  // log stream replica task related
-  static int do_remove_ls_paxos_replica(const obrpc::ObLSDropPaxosReplicaArg &arg);
-  static int do_remove_ls_nonpaxos_replica(const obrpc::ObLSDropNonPaxosReplicaArg &arg);
-  static int do_add_ls_replica(const obrpc::ObLSAddReplicaArg &arg);
   // ObRpcCheckServerEmptyP @RS bootstrap
   int check_server_empty(const obrpc::ObCheckServerEmptyArg &arg, obrpc::Bool &is_empty);
   int check_server_empty_with_result(const obrpc::ObCheckServerEmptyArg &arg, obrpc::ObCheckServerEmptyResult &result);
-  static int do_migrate_ls_replica(const obrpc::ObLSMigrateReplicaArg &arg);
   // ObRpcIsEmptyServerP @RS bootstrap
 
   // ObRpcCheckDeploymentModeP
@@ -290,9 +275,6 @@ public:
   int handle_heartbeat(
       const share::ObHBRequest &hb_request,
       share::ObHBResponse &hb_response);
-  int check_storage_operation_status(
-      const obrpc::ObCheckStorageOperationStatusArg &arg,
-      obrpc::ObCheckStorageOperationStatusResult &result);
   int check_server_empty(bool &server_empty);
   int change_external_storage_dest(obrpc::ObAdminSetConfigArg &arg);
 
@@ -337,8 +319,7 @@ private:
   ObRemoteMasterRsUpdateTask remote_master_rs_update_task_;
   // report
   ObLSTableUpdater ls_table_updater_;
-  ObServerMetaTableChecker meta_table_checker_;
-  TelemetryTask telemetry_task_;
+
   bool need_bootstrap_;
 };
 

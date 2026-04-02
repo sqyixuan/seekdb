@@ -20,7 +20,6 @@
 #include "deps/oblib/src/lib/container/ob_iarray.h"
 
 #include "rootserver/ob_root_service.h"
-#include "share/ob_service_epoch_proxy.h"
 #include "share/ob_zone_table_operation.h"
 #include "share/object_storage/ob_zone_storage_table_operation.h"
 #include "share/object_storage/ob_device_connectivity.h"
@@ -326,8 +325,6 @@ int ObZoneStorageManagerBase::add_storage_operation(const ObBackupDest &storage_
       } else if (OB_FAIL(trans_adding.start(proxy_, OB_SYS_TENANT_ID))) {
         LOG_WARN("start transaction failed", KR(ret));
         // locked the service epoch to make storage operation exclusive with server operation
-      } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans_adding))) {
-        LOG_WARN("failed to check and update service epoch", KR(ret));
       } else if (OB_FAIL(ObStorageInfoOperator::select_for_update(trans_adding, zone))) {
         LOG_WARN("failed to select for update", KR(ret), K(zone));
       } else if (OB_FAIL(ObStorageInfoOperator::insert_storage(trans_adding, storage_dest, used_for,
@@ -408,8 +405,6 @@ int ObZoneStorageManagerBase::drop_storage_operation(const ObString &storage_pat
     ObArray<ObServerStatus> servers_status;
     if (OB_FAIL(trans_dropping.start(proxy_, OB_SYS_TENANT_ID))) {
       LOG_WARN("start transaction failed", KR(ret));
-    } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans_dropping))) {
-      LOG_WARN("failed to check and update service epoch", KR(ret));
     } else if (OB_FAIL(ObServerTableOperator::get(trans_dropping, zone, servers_status))) {
       LOG_WARN("failed to check zone empty", KR(ret), K(zone));
     } else if (!servers_status.empty()) {
@@ -505,8 +500,6 @@ int ObZoneStorageManagerBase::alter_storage_authorization(const ObBackupDest &st
     ObMySQLTransaction trans_changing;
     if (OB_FAIL(trans_changing.start(proxy_, OB_SYS_TENANT_ID))) {
       LOG_WARN("start transaction failed", KR(ret));
-    } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans_changing))) {
-      LOG_WARN("failed to check and update service epoch", KR(ret));
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < zone_storage_infos_.count(); i++) {
       ObBackupDest table_dest;
@@ -595,8 +588,6 @@ int ObZoneStorageManagerBase::alter_storage_attribute(const ObString &storage_pa
     ObMySQLTransaction trans_changing;
     if (OB_FAIL(trans_changing.start(proxy_, OB_SYS_TENANT_ID))) {
       LOG_WARN("start transaction failed", KR(ret));
-    } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans_changing))) {
-      LOG_WARN("failed to check and update service epoch", KR(ret));
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < zone_storage_infos_.count(); i++) {
       if (0 == STRNCMP(zone_storage_infos_.at(i).dest_attr_.path_, root_path, sizeof(root_path)) &&

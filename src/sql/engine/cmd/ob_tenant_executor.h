@@ -60,16 +60,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObCreateTenantExecutor);
 };
 
-class ObCreateStandbyTenantExecutor
-{
-public:
-  ObCreateStandbyTenantExecutor() {}
-  virtual ~ObCreateStandbyTenantExecutor() {}
-  int execute(ObExecContext &ctx, ObCreateTenantStmt &stmt);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObCreateStandbyTenantExecutor);
-};
-
 class ObDropTenantExecutor
 {
 public:

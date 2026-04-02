@@ -1312,7 +1312,6 @@ bool ObSQLUtils::cause_implicit_commit(ParseResult &result)
         || T_ALTER_DATABASE == type
         || T_DROP_DATABASE == type
         || T_CREATE_TENANT == type
-        || T_CREATE_STANDBY_TENANT == type
         || T_CREATE_VIEW == type
         || T_DROP_TABLE == type
         || T_DROP_INDEX == type

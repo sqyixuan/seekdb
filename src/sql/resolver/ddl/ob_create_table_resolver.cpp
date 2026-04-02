@@ -25,7 +25,6 @@
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "share/vector_index/ob_vector_index_util.h"
 #include "share/ob_vec_index_builder_util.h"
-#include "share/ob_license_utils.h"
 
 
 namespace oceanbase
@@ -286,15 +285,8 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
               }
               break;
             case T_EXTERNAL: {
-              if (OB_FAIL(ObLicenseUtils::check_olap_allowed(session_info_->get_effective_tenant_id()))) {
-                ret = OB_LICENSE_SCOPE_EXCEEDED;
-                LOG_WARN("external table is not allowed", KR(ret));
-                LOG_USER_ERROR(OB_LICENSE_SCOPE_EXCEEDED,
-                               "external table is not supported due to the absence of the OLAP module");
-              } else {
-                create_table_stmt->get_create_table_arg().schema_.set_table_type(EXTERNAL_TABLE);
-                is_external_table_ = true;
-              }
+              create_table_stmt->get_create_table_arg().schema_.set_table_type(EXTERNAL_TABLE);
+              is_external_table_ = true;
               break;
             }
             default:
@@ -409,13 +401,6 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
         } else if (!is_inner_table(table_id_) && 
                     OB_FAIL(resolve_table_organization(tenant_config, create_table_node->children_[4]))) {
           SQL_RESV_LOG(WARN, "resolve table organization failed", K(ret));
-        } else if (is_organization_set_to_heap()) {
-          if (OB_FAIL(ObLicenseUtils::check_olap_allowed(session_info_->get_effective_tenant_id()))) {
-            ret = OB_LICENSE_SCOPE_EXCEEDED;
-            LOG_WARN("heap organization table is not allowed", KR(ret));
-            LOG_USER_ERROR(OB_LICENSE_SCOPE_EXCEEDED,
-                           "heap organization table is not supported due to the absence of the OLAP module");
-          }
         }
 
         //consider index can be defined before column, so column should be
@@ -659,7 +644,7 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
         LOG_WARN("fail to check location constraint", K(ret), K(table_schema));
       }
     }
-
+    
     if (OB_SUCC(ret)) {
       ObTableSchema &table_schema = create_table_stmt->get_create_table_arg().schema_;
       if (!table_schema.get_kv_attributes().empty() &&

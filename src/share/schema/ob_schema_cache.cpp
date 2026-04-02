@@ -588,7 +588,6 @@ bool ObSchemaCache::is_necessary_table(const uint64_t table_id) const
          || OB_ALL_HISTOGRAM_STAT_TID == table_id
          || OB_ALL_COLUMN_STAT_HISTORY_TID == table_id
          || OB_ALL_HISTOGRAM_STAT_HISTORY_TID == table_id
-         || OB_ALL_SERVICE_EPOCH_TID == table_id
          || OB_ALL_SERVER_EVENT_HISTORY_TID == table_id
          || OB_ALL_SERVER_EVENT_HISTORY_AUX_LOB_META_TID == table_id
          || OB_ALL_SERVER_EVENT_HISTORY_AUX_LOB_PIECE_TID == table_id

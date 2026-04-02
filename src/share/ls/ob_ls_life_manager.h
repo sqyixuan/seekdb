@@ -20,7 +20,6 @@
 #include "share/ls/ob_ls_status_operator.h"       //ObLSStatusInfo, ObLSStatusOperator
 #include "share/ls/ob_ls_recovery_stat_operator.h"//ObLSRecoveryStatOperator
 #include "share/ls/ob_ls_i_life_manager.h"
-#include "share/ls/ob_ls_election_reference_info_operator.h"
 
 namespace oceanbase
 {
@@ -53,7 +52,6 @@ class ObLSLifeAgentManager
     //set agent to table_operator
     agents_[STATUS_AGENT] = &status_operator_;
     agents_[RECOVERY_AGENT] = &recovery_operator_;
-    agents_[ELECTION_AGENT] = &election_operator_;
     inited_ = true;
   }
   virtual ~ObLSLifeAgentManager() {}
@@ -64,7 +62,6 @@ public:
   {
     STATUS_AGENT  = 0,
     RECOVERY_AGENT = 1,
-    ELECTION_AGENT = 2,
     MAX_AGENT_NUM
   };
 public:
@@ -115,7 +112,6 @@ private:
   ObLSLifeIAgent *agents_[MAX_AGENT_NUM];
   ObLSStatusOperator status_operator_;
   ObLSRecoveryStatOperator recovery_operator_;
-  ObLsElectionReferenceInfoOperator election_operator_;
   common::ObMySQLProxy *proxy_;
   DISALLOW_COPY_AND_ASSIGN(ObLSLifeAgentManager);
 };

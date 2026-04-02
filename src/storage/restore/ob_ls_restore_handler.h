@@ -275,8 +275,6 @@ protected:
       bool &replayed) const;
   bool need_notify_rs_restore_finish_(const ObLSRestoreStatus &ls_restore_status);
 
-  void notify_rs_restore_finish_();
-
 protected:
   bool is_inited_;
   int64_t cluster_id_;

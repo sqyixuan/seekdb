@@ -26,7 +26,6 @@
 #include "common/ob_member_list.h"
 #include "share/ob_tenant_info_proxy.h"//tenant switchover status
 #include "share/ls/ob_ls_info.h" //ObLSReplica::MemberList
-#include "share/ls/ob_ls_log_stat_info.h" //ObLSLogStatInfo
 #include "share/ls/ob_ls_recovery_stat_operator.h"  //ObLSRecoveryStat
 #include "share/ls/ob_ls_operator.h"
 
@@ -460,37 +459,6 @@ public:
       const int64_t switchover_epoch,
       ObMySQLProxy &client);
 
-  ////////////////////////////////////////////////////////////////////////////////
-  // Get all ls paxos from __all_virtual_ls_status and __all_virtual_log_stat except 
-  // those whose status is OB_LS_CREATE_ABORT. And then, check majority and log_in_sync.
-  //
-  // @param [in] zone_mgr: zone manager from rs
-  // @param [in] to_stop_servers: servers to be stopped
-  // @param [in] skip_log_sync_check: whether skip log_sync check
-  // @param [in] print_str: string of operation. Used to print LOG_USER_ERROR "'print_str' not allowed"
-  // @param [in] schema_service: schema_service from rs
-  // @param [in] client: sql client for inner sql
-  // @param [out] need_retry: if the check need retry
-  // @return: OB_SUCCESS if all check is passed.
-  //          OB_OP_NOT_ALLOW if ls doesn't have leader/enough member or ls' log is not in sync.
-  int check_all_ls_has_majority_and_log_sync(
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      schema::ObMultiVersionSchemaService &schema_service,
-      ObISQLClient &client,
-      bool &need_retry);
-  // Get all ls paxos from __all_virtual_ls_status and __all_virtual_log_stat except 
-  // those whose status is OB_LS_CREATE_ABORT. And then, check each ls does have leader.
-  // @param [in] client: sql client for inner sql
-  // @param [in] print_str: string of operation. Used to print LOG_USER_ERROR "'print_str' not allowed"
-  // @param [out] has_ls_without_leader: whether there is an LS without a leader
-  // @param [out] valid_error_msg: if has ls without leader, print ls and tenant_id error message 
-  int check_all_ls_has_leader(
-      ObISQLClient &client,
-      const char *print_str,
-      bool &has_ls_without_leader,
-      ObSqlString &error_msg);
   /*
    * description: get all tenant ls status. for user tenant: get user tenant ls status info and meta tenant ls status info 
    * @param[in] sql_proxy
@@ -547,35 +515,6 @@ private:
                      ObMember &arb_member, common::GlobalLearnerList &learner_list,
                      const int32_t group_id);
 
-  int construct_ls_primary_info_sql_(common::ObSqlString &sql);
-
-  //////////for checking all ls log_stat_info/////////
-  int construct_ls_log_stat_info_sql_(common::ObSqlString &sql);
-  int parse_result_and_check_paxos_(
-      common::sqlclient::ObMySQLResult &result,
-      schema::ObMultiVersionSchemaService &schema_service,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      bool &need_retry);
-  // tenant_id and ls_id is used for printing error info
-  int construct_ls_log_stat_replica_(
-      const common::sqlclient::ObMySQLResult &result,
-      ObLSLogStatReplica &replica,
-      uint64_t &tenant_id,
-      int64_t &ls_id);
-  // check majority and log_sync for each ls paxos
-  int check_ls_log_stat_info_(
-      schema::ObMultiVersionSchemaService &schema_service,
-      const ObLSLogStatInfo &ls_log_stat_info,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      const bool skip_log_sync_check,
-      const char *print_str,
-      bool &need_retry);
-  int generate_valid_servers_(
-      const ObLSReplica::MemberList &member_list,
-      const common::ObIArray<ObAddr> &to_stop_servers,
-      common::ObIArray<ObAddr> &valid_servers);
   int construct_ls_leader_info_sql_(common::ObSqlString &sql);
 
 private:

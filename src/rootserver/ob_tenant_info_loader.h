@@ -20,9 +20,7 @@
 #include "lib/thread/ob_reentrant_thread.h"//ObRsReentrantThread
 #include "lib/utility/ob_print_utils.h" //TO_STRING_KV
 #include "share/ob_tenant_info_proxy.h"//ObAllTenantInfo
-#include "share/ob_service_name_proxy.h"//ObServiceName
 #include "lib/lock/ob_spin_rwlock.h" //lock
-#include "rootserver/standby/ob_tenant_role_transition_service.h"//ObTenantRoleTransitionConstants
 
 namespace oceanbase {
 namespace common
@@ -35,8 +33,7 @@ class SCN;
 }
 namespace rootserver
 {
-
-class ObRecoveryLSService;
+static constexpr int64_t DEFAULT_TENANT_INFO_REFRESH_TIME_US = 1000 * 1000;  // 1s
 class ObAllTenantInfoCache
 {
 public:
@@ -60,14 +57,14 @@ public:
   int refresh_tenant_info(const uint64_t tenant_id, common::ObMySQLProxy *sql_proxy, bool &content_changed);
   void reset();
   void set_refresh_interval_for_sts();
-  int update_tenant_info_cache(const int64_t new_ora_rowscn, const ObAllTenantInfo &new_tenant_info,
+  int update_tenant_info_cache(const int64_t new_ora_rowscn, const share::ObAllTenantInfo &new_tenant_info,
                                const uint64_t new_finish_data_version,
                                const share::SCN &new_data_version_barrier_scn, bool &refreshed);
   int is_data_version_crossed(bool &is_data_version_crossed, share::SCN &data_version_barrier_scn);
 
 private:
   bool is_tenant_info_valid_();
-  int assign_new_tenant_info_(const int64_t new_ora_rowscn, const ObAllTenantInfo &new_tenant_info,
+  int assign_new_tenant_info_(const int64_t new_ora_rowscn, const share::ObAllTenantInfo &new_tenant_info,
                               const uint64_t new_finish_data_version,
                               const share::SCN &new_data_version_barrier_scn, bool &assigned);
   int query_new_finish_data_version_(const uint64_t tenant_id, common::ObMySQLProxy *sql_proxy,
@@ -92,43 +89,10 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObAllTenantInfoCache);
 };
 
-class ObAllServiceNamesCache
-{
-public:
-  ObAllServiceNamesCache()
-    : lock_(),
-      tenant_id_(OB_INVALID_TENANT_ID),
-      epoch_(0),
-      all_service_names_(),
-      dump_service_names_interval_(DUMP_SERVICE_NAMES_INTERVAL),
-      last_refresh_time_(OB_INVALID_TIMESTAMP),
-      is_service_name_enabled_(false) {}
-  ~ObAllServiceNamesCache() {}
-  int init(const uint64_t tenant_id);
-  int refresh_service_name();
-  int update_service_name(const int64_t epoch, const common::ObIArray<share::ObServiceName> &service_name_list);
-  bool need_refresh();
-  int check_if_the_service_name_is_stopped(const ObServiceNameString &service_name_str) const;
-  int get_service_name(const ObServiceNameID &service_name_id, ObServiceName &service_name) const;
-  void reset();
-private:
-  static constexpr int64_t DUMP_SERVICE_NAMES_INTERVAL = 5 * 1000L * 1000L; // 5s
-  static constexpr int64_t REFRESH_INTERVAL = 2 * 1000L * 1000L; // 2s
-  common::SpinRWLock lock_;
-  uint64_t tenant_id_;
-  int64_t epoch_;
-  ObArray<ObServiceName> all_service_names_;
-  common::ObTimeInterval dump_service_names_interval_;
-  int64_t last_refresh_time_;
-  bool is_service_name_enabled_;
-  DISALLOW_COPY_AND_ASSIGN(ObAllServiceNamesCache);
-};
-
 /*description:
  * Periodically cache tenant info.*/
 class ObTenantInfoLoader : public share::ObReentrantThread
 {
-  friend class ObRecoveryLSService;
 public:
  ObTenantInfoLoader()
      : is_inited_(false),
@@ -139,8 +103,7 @@ public:
        rpc_update_times_(0),
        sql_update_times_(0),
        last_rpc_update_time_us_(OB_INVALID_TIMESTAMP),
-       dump_tenant_info_cache_update_action_interval_(DUMP_TENANT_INFO_CACHE_UPDATE_ACTION_INTERVAL),
-       service_names_cache_() {}
+       dump_tenant_info_cache_update_action_interval_(DUMP_TENANT_INFO_CACHE_UPDATE_ACTION_INTERVAL) {}
  ~ObTenantInfoLoader() {}
  static int mtl_init(ObTenantInfoLoader *&ka);
  int init();
@@ -241,30 +204,10 @@ public:
  int check_is_primary_normal_status(bool &is_primary_normal_status);
 
  int refresh_tenant_info();
- int update_service_name(const int64_t epoch, const common::ObIArray<share::ObServiceName> &service_name_list);
- int update_tenant_info_cache(const int64_t new_ora_rowscn, const ObAllTenantInfo &new_tenant_info,
+ int update_tenant_info_cache(const int64_t new_ora_rowscn, const share::ObAllTenantInfo &new_tenant_info,
                               const uint64_t new_finish_data_version,
                               const share::SCN &new_data_version_barrier_scn);
  bool need_refresh(const int64_t refresh_time_interval_us);
- /**
-  * @description:
-  *    check if service_status of the given service_name is STOPPED or STOPPING
-  * @param[in] service_name_str service_name string
-  * @return return code
-  *         OB_SERVICE_NAME_NOT_FOUND service_name is not found, cannot check its service_status
-  *         OB_SERVICE_STOPPED service_status is STOPPED or STOPPING
-  *         OB_SUCCESS service_name exists and its service_status is STARTED
-  *         others
-  */
- int check_if_the_service_name_is_stopped(const ObServiceNameString &service_name_str) const
- {
-  return service_names_cache_.check_if_the_service_name_is_stopped(service_name_str);
- }
- bool get_service_name(const ObServiceNameID &service_name_id, ObServiceName &service_name) const
- {
-  return service_names_cache_.get_service_name(service_name_id, service_name);
- }
-
 
 protected:
  /**
@@ -285,7 +228,6 @@ private:
       const int64_t broadcast_cost_time, 
       const int64_t end_time_us, 
       int64_t &last_dump_time_us);
- bool act_as_standby_();
 
 public:
  TO_STRING_KV(K_(is_inited), K_(tenant_id), K_(tenant_info_cache), K_(broadcast_times), K_(rpc_update_times), K_(sql_update_times), K_(last_rpc_update_time_us));
@@ -303,7 +245,6 @@ private:
   uint64_t sql_update_times_;
   int64_t last_rpc_update_time_us_;
   common::ObTimeInterval dump_tenant_info_cache_update_action_interval_;
-  ObAllServiceNamesCache service_names_cache_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTenantInfoLoader);
 };

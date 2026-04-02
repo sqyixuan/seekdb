@@ -17,7 +17,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/cmd/ob_tenant_executor.h"
 
-#include "rootserver/standby/ob_standby_service.h" // ObStandbyService
 #include "sql/resolver/ddl/ob_create_tenant_stmt.h"
 #include "sql/resolver/ddl/ob_drop_tenant_stmt.h"
 #include "sql/resolver/ddl/ob_lock_tenant_stmt.h"
@@ -69,7 +68,7 @@ int ObCreateTenantExecutor::execute(ObExecContext &ctx, ObCreateTenantStmt &stmt
   } else if (OB_ISNULL(common_rpc_proxy = task_exec_ctx->get_common_rpc())) {
     ret = OB_NOT_INIT;
     LOG_WARN("get common rpc proxy failed");
-  } else if (OB_FAIL(ObTenantDDLService::schedule_create_tenant(create_tenant_arg, tenant_id))) {
+  } else if (OB_FAIL(rootserver::ObTenantDDLService::schedule_create_tenant(create_tenant_arg, tenant_id))) {
     LOG_WARN("rpc proxy create tenant failed", K(ret));
   } else if (!create_tenant_arg.if_not_exist_ && OB_INVALID_ID == tenant_id) {
     ret = OB_ERR_UNEXPECTED;
@@ -201,54 +200,6 @@ int ObCreateTenantExecutor::wait_user_ls_valid_(const uint64_t tenant_id)
                "cost", ObTimeUtility::current_time() - start_ts);
     }
   }
-  return ret;
-}
-
-int ObCreateStandbyTenantExecutor::execute(ObExecContext &ctx, ObCreateTenantStmt &stmt)
-{
-  int ret = OB_SUCCESS;
-  int64_t start_ts = ObTimeUtility::current_time();
-  ObTaskExecutorCtx *task_exec_ctx = NULL;
-  obrpc::ObCommonRpcProxy *common_rpc_proxy = NULL;
-  obrpc::UInt64 tenant_id;
-  obrpc::ObCreateTenantArg &create_tenant_arg = stmt.get_create_tenant_arg();
-  ObString first_stmt;
-  ObCompatibilityMode compat_mode = ObCompatibilityMode::OCEANBASE_MODE;
-  uint64_t compat_ver = 0;
-
-  if (OB_FAIL(stmt.get_first_stmt(first_stmt))) {
-    LOG_WARN("fail to get first stmt" , K(ret));
-  } else {
-    const_cast<obrpc::ObCreateTenantArg&>(create_tenant_arg).ddl_stmt_str_ = first_stmt;
-  }
-
-  if (OB_FAIL(ret)){
-  } else if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get task executor context failed");
-  } else if (OB_ISNULL(common_rpc_proxy = task_exec_ctx->get_common_rpc())) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("get common rpc proxy failed");
-  } else if (OB_FAIL(OB_STANDBY_SERVICE.check_can_create_standby_tenant(
-                         create_tenant_arg.log_restore_source_, compat_mode))) {
-    LOG_WARN("check can create standby_tenant failed", KR(ret), K(create_tenant_arg));
-  } else {
-    create_tenant_arg.tenant_schema_.set_compatibility_mode(compat_mode);
-  }
-
-  if (OB_FAIL(ret)){
-  } else if (OB_FAIL(ObTenantDDLService::schedule_create_tenant(create_tenant_arg, tenant_id))) {
-    LOG_WARN("rpc proxy create tenant failed", K(ret));
-  } else if (!create_tenant_arg.if_not_exist_ && OB_INVALID_ID == tenant_id) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("if_not_exist not set and tenant_id invalid tenant_id", KR(ret), K(create_tenant_arg), K(tenant_id));
-  } else if (OB_INVALID_ID != tenant_id) {
-    if (OB_FAIL(OB_STANDBY_SERVICE.wait_create_standby_tenant_end(tenant_id))) {
-      LOG_WARN("failed to wait user create end", KR(ret), K(tenant_id));
-    }
-  }
-  LOG_INFO("[CREATE STANDBY TENANT] create standby tenant", KR(ret), K(create_tenant_arg),
-           "cost", ObTimeUtility::current_time() - start_ts);
   return ret;
 }
 

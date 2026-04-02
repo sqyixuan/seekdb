@@ -96,7 +96,6 @@ class ObTenantMdsService;
   class ObLobManager;
   class ObTenantRestoreInfoMgr;
   class ObTableScanIterator;
-  class ObTenantSnapshotService;
   class ObTenantCGReadInfoMgr;
   class ObDDLMergeBucketLock;
   class ObTenantDirectLoadMgr;
@@ -180,25 +179,16 @@ namespace rootserver
   class ObPrimaryMajorFreezeService;
   class ObRestoreMajorFreezeService;
   class ObTenantInfoLoader;
-  class ObLSRecoveryReportor;
-  class ObCreateStandbyFromNetActor;
   class ObPrimaryLSService;
   class ObCommonLSService;
   class ObDRService;
-  class ObRestoreService;
-  class ObRecoveryLSService;
   class ObTenantTransferService;
-  class ObTenantBalanceService;
-  class ObBalanceTaskExecuteService;
   class ObBackupTaskScheduler;
   class ObBackupDataService;
   class ObBackupCleanService;
   class ObArchiveSchedulerService;
-  class ObArbitrationService;
   class ObDBMSSchedService;
   class ObStandbySchemaRefreshTrigger;
-  class ObTenantSnapshotScheduler;
-  class ObCloneScheduler;
   class ObMViewMaintenanceService;
   class ObDDLScheduler;
   class ObDDLServiceLauncher;
@@ -240,7 +230,6 @@ class ObTenantErrsimModuleMgr;
 class ObTenantErrsimEventMgr;
 class ObSharedMemAllocMgr;
 class ObIndexUsageInfoMgr;
-class ObStorageIOUsageRepoter;
 class ObResourceLimitCalculator;
 class ObWorkloadRepositoryContext;
 class ObPluginVectorIndexService;
@@ -253,12 +242,6 @@ namespace detector
 {
   class ObDeadLockDetectorMgr;
 }
-
-#ifndef OB_BUILD_ARBITRATION
-#define ArbMTLMember
-#else
-#define ArbMTLMember rootserver::ObArbitrationService*,
-#endif
 
 #ifdef ERRSIM
 #define TenantErrsimModule share::ObTenantErrsimModuleMgr*,
@@ -332,15 +315,9 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       observer::QueueThread *,                       \
       storage::ObStorageHAHandlerService*,           \
       rootserver::ObTenantInfoLoader*,         \
-      rootserver::ObCreateStandbyFromNetActor*,         \
       rootserver::ObStandbySchemaRefreshTrigger*,    \
-      rootserver::ObLSRecoveryReportor*,         \
       rootserver::ObCommonLSService*,               \
       rootserver::ObPrimaryLSService*,               \
-      rootserver::ObBalanceTaskExecuteService*,               \
-      rootserver::ObRecoveryLSService*,              \
-      rootserver::ObRestoreService*,                 \
-      rootserver::ObTenantBalanceService*,           \
       rootserver::ObBackupTaskScheduler*,            \
       rootserver::ObBackupDataService*,              \
       rootserver::ObBackupCleanService*,             \
@@ -392,7 +369,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       storage::ObAccessService*,                     \
       rootserver::ObTenantTransferService*,          \
       datadict::ObDataDictService*,                  \
-      ArbMTLMember                                   \
       observer::ObTableLoadService*,                 \
       observer::ObTableLoadResourceService*,         \
       concurrency_control::ObMultiVersionGarbageCollector*, \
@@ -409,14 +385,10 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       table::ObHTableLockMgr*,                      \
       table::ObTTLService*,                         \
       table::ObTableObjectPoolMgr*,                \
-      rootserver::ObTenantSnapshotScheduler*,       \
-      storage::ObTenantSnapshotService*,            \
-      rootserver::ObCloneScheduler*,                \
       share::ObIndexUsageInfoMgr*,                  \
       storage::ObTabletMemtableMgrPool*,            \
       rootserver::ObMViewMaintenanceService*,       \
       PublicBlockGCService                          \
-      share::ObStorageIOUsageRepoter*,              \
       share::ObResourceLimitCalculator*,            \
       storage::checkpoint::ObCheckpointDiagnoseMgr*, \
       storage::ObGlobalIteratorPool*,                \
@@ -450,8 +422,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
 #define MTL_TENANT_ROLE_CACHE_IS_INVALID() share::ObTenantEnv::get_tenant()->is_invalid_tenant()
 // Is the tenant in the process of recovery
 #define MTL_TENANT_ROLE_CACHE_IS_RESTORE() share::ObTenantEnv::get_tenant()->is_restore_tenant()
-// Is the tenant in the cloning process
-#define MTL_TENANT_ROLE_CACHE_IS_CLONE() share::ObTenantEnv::get_tenant()->is_clone_tenant()
 // Update tenant role
 #define MTL_SET_TENANT_ROLE_CACHE(tenant_role) share::ObTenantEnv::get_tenant()->set_tenant_role(tenant_role)
 // get tenant role
@@ -662,11 +632,6 @@ public:
   bool is_restore_tenant()
   {
     return share::is_restore_tenant(ATOMIC_LOAD(&tenant_role_value_));
-  }
-
-  bool is_clone_tenant()
-  {
-    return share::is_clone_tenant(ATOMIC_LOAD(&tenant_role_value_));
   }
 
   bool is_invalid_tenant()

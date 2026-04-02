@@ -19,7 +19,6 @@
 #include "share/ob_max_id_fetcher.h"
 #include "share/ls/ob_ls_life_manager.h"//ObLSLifeAgentManager
 #include "share/ob_primary_zone_util.h"//ObPrimaryZoneUtil
-#include "rootserver/standby/ob_recovery_ls_service.h"//ObRecoveryLSHelper
 #include "logservice/ob_log_service.h"//ObLogService
 
 namespace oceanbase
