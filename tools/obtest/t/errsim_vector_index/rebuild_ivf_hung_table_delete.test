@@ -1,0 +1,49 @@
+# owner: yangjiali.yjl
+# owner group: shenzhen
+# description: test building vec index fail and hung in offline ddl
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+let $ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $mysql_port0 = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn_sys, $ip0, root@sys, , oceanbase, $mysql_port0);
+connection conn_sys;
+
+connect(conn_obtest1,$ip0,root@obtest,,test,$mysql_port0);
+
+#test alter table path for building vec ivf index
+connection conn_obtest1;
+create table t1(c1 int, c2 int(3), c3 vector(3));
+create index idx0 on t1(c2);
+create vector index idx1 on t1(c3) with (distance=l2, type=ivf_flat);
+insert into t1 values (0, 1, '[1,1,1]');
+insert into t1 values (1, 2, '[1,1,1]');
+insert into t1 values (2, 3, '[1,1,1]');
+
+connection conn_sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BUILD_VECTOR_INDEX_PREPARE_STATUS wait_for continue_signal_ivf_afterward execute 10000';
+
+connection conn_obtest1;
+ob1.z1.obs0.mysql alter system set_tp tp_no = 545, error_code = 4184, frequency = 1;
+
+send alter table t1 add primary key (c1);
+sleep 8;
+
+connection conn_sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'now broadcast continue_signal_ivf_afterward';
+
+connection conn_obtest1;
+--error 4184
+reap;
+
+connection conn_sys;
+sleep 8;
+select * from __all_virtual_ddl_task_status;
