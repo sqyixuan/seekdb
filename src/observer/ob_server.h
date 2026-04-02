@@ -24,10 +24,8 @@
 
 
 #include "share/object_storage/ob_device_config_mgr.h"
-#include "share/object_storage/ob_device_manifest_task.h"
 #include "share/stat/ob_opt_stat_service.h"
 
-#include "share/ls/ob_ls_table_operator.h"
 #include "share/tablet/ob_tablet_table_operator.h"
 #include "share/location_cache/ob_location_service.h"
 #include "share/ob_alive_server_tracer.h"
@@ -66,27 +64,21 @@
 #include "observer/dbms_job/ob_dbms_job_rpc_proxy.h"
 #include "observer/ob_inner_sql_rpc_proxy.h"
 #include "observer/ob_startup_accel_task_handler.h"
-#include "share/ls/ob_ls_table_operator.h" // for ObLSTableOperator
 #include "storage/ob_locality_manager.h"
 #include "storage/ddl/ob_ddl_heart_beat_task.h"
 
 #include "storage/ob_disk_usage_reporter.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_job_rpc_proxy.h"
 #include "logservice/ob_server_log_block_mgr.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "logservice/arbserver/ob_arb_srv_garbage_collect_service.h"
-#include "logservice/arbserver/ob_arb_server_timer.h"
-#endif
 
 #include "share/table/ob_table_rpc_proxy.h"
 #include "share/wr/ob_wr_service.h"
 
 #include "sql/engine/table/ob_external_table_access_service.h"
 #include "share/external_table/ob_external_table_file_rpc_proxy.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "close_modules/shared_storage/storage/shared_storage/ob_tenant_gc_task.h"
-#endif
 #include "share/ob_device_credential_task.h"
+#include "grpc/ob_grpc_server.h"
+#include "storage/ob_storage_grpc.h"
 
 namespace oceanbase
 {
@@ -159,6 +151,19 @@ public:
     virtual void runTimerTask() override;
   private:
     const static int64_t REFRESH_INTERVAL = 60L * 60L * 1000L * 1000L;//1hr
+    ObServer *obs_;
+    bool is_inited_;
+  };
+
+  class ObRefreshNetworkSpeedTask: public common::ObTimerTask
+  {
+  public:
+    ObRefreshNetworkSpeedTask();
+    virtual ~ObRefreshNetworkSpeedTask() {}
+    int init(ObServer *observer, int tg_id);
+    virtual void runTimerTask() override;
+  private:
+    const static int64_t REFRESH_INTERVAL = 1L * 1000L * 1000L;//1hr
     ObServer *obs_;
     bool is_inited_;
   };
@@ -248,7 +253,6 @@ public:
   sql::ObConnectResourceMgr& get_conn_res_mgr() { return conn_res_mgr_; }
   obrpc::ObTableRpcProxy &get_table_rpc_proxy() { return table_rpc_proxy_; }
   share::ObLocationService &get_location_service() { return location_service_; }
-  bool is_arbitration_mode() const;
 private:
   int stop();
 
@@ -257,7 +261,7 @@ private:
   ~ObServer();
 
   int init_config(const ObServerOptions &opts);
-  int init_opts_config(bool has_config_file, const ObServerOptions &opts, const char *optstr); // init configs from command line
+  int init_opts_config(const ObServerOptions &opts, const char *optstr); // init configs from command line
   int init_data_dir_and_redo_dir(const ObServerOptions &opts);
   int init_self_addr();
   int init_config_module(const char *optstr);
@@ -266,6 +270,7 @@ private:
   int init_network();
   int init_interrupt();
   int init_plugin();
+  int init_zlib_lite_compressor();
   int init_multi_tenant();
   int init_sql_proxy();
   int init_io();
@@ -295,21 +300,20 @@ private:
   int init_table_lock_rpc_client();
   int start_log_mgr();
   int stop_log_mgr();
+  int reload_bandwidth_throttle_limit(int64_t network_speed);
+  int get_network_speed_from_sysfs(int64_t &network_speed);
+  int refresh_network_speed();
   int refresh_cpu_frequency();
   int refresh_io_calibration();
   int clean_up_invalid_tables();
   int clean_up_invalid_tables_by_tenant(const uint64_t tenant_id);
   int init_ctas_clean_up_task(); //Regularly clean up the residuals related to querying and building tables and temporary tables
   int init_redef_heart_beat_task();
-#ifdef OB_BUILD_SHARED_STORAGE
-  int init_tenant_dir_gc_task();
-#endif
   int init_ddl_heart_beat_task_container();
   int refresh_temp_table_sess_active_time();
   int init_refresh_active_time_task(); //Regularly update the sess_active_time of the temporary table created by the proxy connection sess
+  int init_refresh_network_speed_task();
   int init_refresh_cpu_frequency();
-  int init_device_manifest_task();
-  int check_all_device_connectivity();
   int init_refresh_io_calibration();
   int set_running_mode();
   void check_user_tenant_schema_refreshed(const common::ObIArray<uint64_t> &tenant_ids, const int64_t expire_time);
@@ -319,16 +323,8 @@ private:
   int check_if_schema_ready();
   int check_if_timezone_usable();
   int parse_mode();
+  void deinit_zlib_lite_compressor();
   void deinit_plugin();
-
-  // ------------------------------- arb server start ------------------------------------
-  int start_sig_worker_and_handle();
-  int init_server_in_arb_mode();
-  int start_server_in_arb_mode();
-  int stop_server_in_arb_mode();
-  int wait_server_in_arb_mode();
-  int destroy_server_in_arb_mode();
-  // ------------------------------- arb server end --------------------------------------
 
   int update_table_all_server(int64_t start_service_time);
 public:
@@ -356,10 +352,13 @@ private:
   obrpc::ObBatchRpc batch_rpc_;
 
 
+  ObStorageGrpcServiceImpl storage_grpc_service_impl_;
+  obgrpc::ObGrpcServer grpc_server_;
   ObInnerSQLConnectionPool sql_conn_pool_;
   ObInnerSQLConnectionPool ddl_conn_pool_;
   ObResourceInnerSQLConnectionPool res_inner_conn_pool_;
   ObRestoreCtx restore_ctx_;
+
 
   // The two proxies by which local OceanBase server has ability to
   // communicate with other server.
@@ -399,7 +398,6 @@ private:
   pl::ObPL pl_engine_;
 
   // The Oceanbase partition table relating to
-  share::ObLSTableOperator lst_operator_;
   share::ObTabletTableOperator tablet_operator_;
   share::ObAliveServerTracer server_tracer_;
   share::ObLocationService location_service_;
@@ -451,6 +449,7 @@ private:
   ObCTASCleanUpTask ctas_clean_up_task_;     // repeat & no retry
   ObRedefTableHeartBeatTask redef_table_heart_beat_task_;
   ObRefreshTimeTask refresh_active_time_task_; // repeat & no retry
+  ObRefreshNetworkSpeedTask refresh_network_speed_task_; // repeat & no retry
   ObRefreshCpuFreqTimeTask refresh_cpu_frequency_task_;
   ObRefreshIOCalibrationTimeTask refresh_io_calibration_task_; // retry to success & no repeat
   blocksstable::ObStorageEnv storage_env_;
@@ -466,19 +465,12 @@ private:
   ObDiskUsageReportTask disk_usage_report_task_;
 
   logservice::ObServerLogBlockMgr log_block_mgr_;
-#ifdef OB_BUILD_ARBITRATION
-  arbserver::ObArbGarbageCollectService arb_gcs_;
-  arbserver::ObArbServerTimer arb_timer_;
-#endif
   share::ObWorkloadRepositoryService wr_service_;
 
   // This handler is used to process tasks during startup. it can speed up the startup process.
   // If you have tasks that need to be processed in parallel, you can use this handler,
   // but please note that this handler will be destroyed after observer startup.
   ObStartupAccelTaskHandler startup_accel_handler_;
-#ifdef OB_BUILD_SHARED_STORAGE
-  ObTenantGCTask tenant_dir_gc_task_;
-#endif
 }; // end of class ObServer
 
 inline ObServer &ObServer::get_instance()

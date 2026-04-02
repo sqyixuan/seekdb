@@ -6375,19 +6375,6 @@ int ObDbmsWorkloadRepository::print_top_db_object(const AshReportParams &ash_rep
       } else if (OB_FAIL(sql_string.append_fmt(
             " table_name_info AS ( "
                 " SELECT DISTINCT "
-                  " %s, "
-                  " table_id, "
-                  " tablet_id, "
-                  " data_table_id, "
-                  " database_name, "
-                  " table_name, "
-                  " table_type, "
-                  " partition_name, "
-                  " subpartition_name, "
-                  " index_name "
-                " FROM %s "
-                " UNION "
-                " SELECT DISTINCT "
                     " A.tenant_id as tenant_id, "
                     " A.table_id as table_id, "
                     " A.table_id as tablet_id, "
@@ -6407,11 +6394,7 @@ int ObDbmsWorkloadRepository::print_top_db_object(const AshReportParams &ash_rep
                     " 'NULL' as subpartition_name, "
                     " A.table_name as index_name "
                 "  FROM %s A JOIN %s D ON A.DATABASE_ID = D.DATABASE_ID "
-                " WHERE table_id BETWEEN 10000 AND 20000 "
             " ),",
-          is_sys_tenant(request_tenant_id)? " tenant_id " : " EFFECTIVE_TENANT_ID() as tenant_id ",
-          /*dba_ob_table_locations*/
-          lib::is_oracle_mode()? " SYS.DBA_OB_TABLE_LOCATIONS ": is_sys_tenant(request_tenant_id)? " oceanbase.CDB_OB_TABLE_LOCATIONS " : " oceanbase.DBA_OB_TABLE_LOCATIONS ",
           /*all_virtual_table*/
           lib::is_oracle_mode()? " SYS.ALL_VIRTUAL_TABLE_REAL_AGENT ": " oceanbase.__ALL_VIRTUAL_TABLE ",
           /*all_virtual_database*/

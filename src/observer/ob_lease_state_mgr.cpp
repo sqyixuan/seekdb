@@ -139,9 +139,6 @@ int ObLeaseStateMgr::register_self_busy_wait()
         int tmp_ret = OB_SUCCESS;
         if (OB_SUCCESS != (tmp_ret = rs_mgr_->renew_master_rootserver())) {
           LOG_WARN("renew_master_rootserver failed", K(tmp_ret));
-          if (OB_SUCCESS != (tmp_ret = ob_service_->refresh_sys_tenant_ls())) {
-            LOG_WARN("fail to refresh core partition", K(tmp_ret));
-          }
         } else {
           LOG_INFO("renew_master_rootserver successfully, try register again");
         }
@@ -165,52 +162,6 @@ int ObLeaseStateMgr::register_self_busy_wait()
 int ObLeaseStateMgr::try_report_sys_ls()
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (OB_UNLIKELY(stopped_)) {
-    ret = OB_SERVER_IS_STOPPING;
-    LOG_WARN("lease manager is stopped", KR(ret));
-  } else {
-    const uint64_t tenant_id = OB_SYS_TENANT_ID;
-    const ObLSID ls_id = SYS_LS;
-    MTL_SWITCH(tenant_id) {
-      bool ls_exist = false;
-      ObLSService *ls_svr = NULL;
-      if (OB_ISNULL(ls_svr = MTL(ObLSService*))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("tenant storage ptr is null", KR(ret), K(tenant_id));
-      } else if (OB_FAIL(ls_svr->check_ls_exist(ls_id, ls_exist))) {
-        LOG_WARN("fail to check log stream exist", KR(ret), K(ls_id));
-      } else if (!ls_exist) {
-        // core log stream not exist
-      } else {
-        share::ObLSTableOperator *lst_operator = GCTX.lst_operator_;
-        share::ObLSReplica ls_replica;
-        if (OB_ISNULL(ob_service_) || OB_ISNULL(lst_operator)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("ob_service or lst_operator ptr is null",
-                   KR(ret), KP(ob_service_), KP(lst_operator));
-        } else if (OB_FAIL(ob_service_->fill_ls_replica(
-                   tenant_id, ls_id, ls_replica))) {
-          LOG_WARN("fail to fill log stream replica", KR(ret),
-                   K(tenant_id), K(ls_replica));
-        } else if (OB_FAIL(lst_operator->update(ls_replica, false/*inner_table_only*/))) {
-          LOG_WARN("fail to report sys log stream", KR(ret), K(ls_replica));
-        } else if (OB_FAIL(ob_service_->submit_ls_update_task(tenant_id, ls_id))) {
-          LOG_WARN("fail to add async update task", KR(ret), K(tenant_id), K(ls_id));
-        } else {
-          LOG_INFO("try report sys log stream succeed");
-        }
-      }
-    } else {
-      if (OB_TENANT_NOT_IN_SERVER == ret) {
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("fail to switch tenant", KR(ret), K(tenant_id));
-      }
-    }
-  }
   return ret;
 }
 
@@ -235,9 +186,6 @@ int ObLeaseStateMgr::renew_lease()
       if (OB_FAIL(rs_mgr_->renew_master_rootserver())) {
         LOG_WARN("renew_master_rootserver failed", K(ret));
         int tmp_ret = OB_SUCCESS;
-        if (OB_SUCCESS != (tmp_ret = ob_service_->refresh_sys_tenant_ls())) {
-          LOG_WARN("fail to refresh core partition", K(tmp_ret));
-        }
       } else {
         NG_TRACE(renew_lease_end);
         LOG_INFO("renew_master_rootserver successfully, try renew lease again");

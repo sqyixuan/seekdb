@@ -917,7 +917,7 @@ int ObInitialTabletGroupRestoreTask::check_local_tablets_restore_status_()
       } else if (action_restore_status == tablet_restore_status) {
         LOG_INFO("tablet restore status is equal to restore action, skip restore it", K(tablet_id),
             K(action_restore_status), K(tablet_restore_status), K(ctx_->arg_));
-      } else if (OB_FAIL(logic_tablet_id.init(tablet_id, tablet->get_tablet_meta().transfer_info_.transfer_seq_))) {
+      } else if (OB_FAIL(logic_tablet_id.init(tablet_id, 0))) {
         LOG_WARN("failed to init logic tablet id", K(ret), K(tablet_id), KPC(tablet));
       } else if (OB_FAIL(ctx_->tablet_id_array_.push_back(logic_tablet_id))) {
         LOG_WARN("failed to push tablet id into array", K(ret), K(tablet_id), KPC(ctx_));
@@ -2583,7 +2583,6 @@ int ObTabletRestoreTask::generate_tablet_copy_finish_task_(
 {
   int ret = OB_SUCCESS;
   tablet_copy_finish_task = nullptr;
-  observer::ObIMetaReport *reporter = GCTX.ob_service_;
   const ObMigrationTabletParam *src_tablet_meta = nullptr;
 
   if (!is_inited_) {
@@ -2599,7 +2598,6 @@ int ObTabletRestoreTask::generate_tablet_copy_finish_task_(
     param.ls_ = ls_;
     param.tablet_id_ = tablet_restore_ctx_->tablet_id_;
     param.copy_tablet_ctx_ = tablet_restore_ctx_;
-    param.reporter_ = reporter;
     param.restore_action_ = tablet_restore_ctx_->action_;
     param.src_tablet_meta_ = src_tablet_meta;
     param.is_leader_restore_ = tablet_restore_ctx_->is_leader_;

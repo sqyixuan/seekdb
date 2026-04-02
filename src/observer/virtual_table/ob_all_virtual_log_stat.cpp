@@ -245,16 +245,17 @@ int ObAllVirtualPalfStat::member_list_to_string_(
     const common::ObMemberList &member_list)
 {
   int ret = OB_SUCCESS;
-  share::ObLSReplica::MemberList tmp_member_list;
-  if (OB_FAIL(share::ObLSReplica::transform_ob_member_list(
-      member_list,
-      tmp_member_list))) {
-    SERVER_LOG(WARN, "fail to transform member_list", KR(ret), K(member_list));
-  } else if (OB_FAIL(share::ObLSReplica::member_list2text(
-      tmp_member_list,
-      member_list_buf_))) {
-    SERVER_LOG(WARN, "member_list2text failed", KR(ret),
-               K(member_list), K(tmp_member_list), K(member_list_buf_));
+  char ip_port[MAX_IP_PORT_LENGTH];
+  common::ObMember member;
+  if (OB_UNLIKELY(1 != member_list.get_member_number())) {
+    ret = OB_INVALID_ARGUMENT;
+    SERVER_LOG(WARN, "invalid member list count", KR(ret));
+  } else if (OB_FAIL(member_list.get_member_by_index(0/*index*/, member))) {
+    SERVER_LOG(WARN, "fail to get member by index", KR(ret));
+  } else if (OB_FAIL(member.get_server().ip_port_to_string(ip_port, sizeof(ip_port)))) {
+    SERVER_LOG(WARN, "convert server to string failed", KR(ret), K(member));
+  } else if (OB_FAIL(member_list_buf_.append_fmt("%.*s:%ld", static_cast<int>(sizeof(ip_port)), ip_port, member.get_timestamp()))) {
+    SERVER_LOG(WARN, "failed to append ip_port to string", KR(ret), K(member));
   }
   return ret;
 }
