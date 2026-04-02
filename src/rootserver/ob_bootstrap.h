@@ -19,7 +19,6 @@
 
 #include <typeinfo>
 #include "share/ob_define.h"
-#include "share/ob_leader_election_waiter.h"
 #include "share/inner_table/ob_inner_table_schema.h"
 #include "rootserver/ob_ddl_service.h"
 #include "rootserver/ob_unit_manager.h"
@@ -38,7 +37,6 @@ class ObISQLClient;
 namespace obrpc
 {
 class ObSrvRpcProxy;
-class ObAdminStorageArg;
 }
 
 namespace share
@@ -106,17 +104,12 @@ private:
 
   virtual int check_is_all_server_empty(bool &is_empty);
   virtual int check_all_server_bootstrap_mode_match(bool &match);
-#ifdef OB_BUILD_SHARED_STORAGE
-  virtual int check_and_notify_shared_storage_info();
-#endif
   virtual int notify_sys_tenant_server_unit_resource();
   virtual int create_ls();
-  virtual int wait_elect_ls(common::ObAddr &master_rs);
 
   int notify_sys_tenant_config_();
 private:
   volatile bool stop_;
-  share::ObLSLeaderElectionWaiter ls_leader_waiter_;
   int64_t begin_ts_;
   const obrpc::ObBootstrapArg &arg_;
   obrpc::ObCommonRpcProxy &common_proxy_;
@@ -184,11 +177,6 @@ private:
   virtual int init_all_zone_table();
   virtual int init_multiple_zone_deployment_table(common::ObISQLClient &sql_client);
   virtual int add_servers_in_rs_list(rootserver::ObServerZoneOpService &server_zone_op_service);
-#ifdef OB_BUILD_SHARED_STORAGE
-  virtual int write_shared_storage_args();
-  virtual int write_shared_storage_args_for_zone(const ObZone &zone, const ObRegion &region,
-      const obrpc::ObAdminStorageArg &storage_args);
-#endif
   template<typename SCHEMA>
     int set_replica_options(SCHEMA &schema);
   int build_zone_region_list(
@@ -199,16 +187,10 @@ private:
   int create_sys_resource_pool();
   int gen_sys_resource_pool(share::ObResourcePool &pool);
   int create_sys_tenant();
-  int gen_sys_tenant_locality_str(
-      share::schema::ObTenantSchema &tenant_schema);
-  int gen_multiple_zone_deployment_sys_tenant_locality_str(
-      share::schema::ObTenantSchema &tenant_schema);
   int set_in_bootstrap();
   int add_sys_table_lob_aux_table(
       uint64_t data_table_id,
       ObIArray<ObTableSchema> &table_schemas);
-  int insert_sys_ls_(const share::schema::ObTenantSchema &tenant_schema,
-                     const ObIArray<ObZone> &zone_list);
 
 private:
   share::ObLSTableOperator &lst_operator_;
