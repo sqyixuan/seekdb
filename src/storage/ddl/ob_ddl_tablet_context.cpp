@@ -22,7 +22,6 @@
 #include "storage/ddl/ob_macro_meta_store_manager.h"
 #include "storage/ddl/ob_ddl_pipeline.h"
 #include "storage/ob_storage_schema_util.h"
-#include "storage/ddl/ob_ddl_merge_helper.h"
 
 #define USING_LOG_PREFIX STORAGE
 
@@ -33,10 +32,10 @@ using namespace oceanbase::blocksstable;
 using namespace oceanbase::share;
 
 
-ObDDLTabletContext::MergeCtx::~MergeCtx()
+ObDDLTabletContext::MergeCtx::~MergeCtx() 
 {
   fifo_.reset();
-  for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = slice_cg_sstables_.begin();
+  for (hash::ObHashMap<int64_t, ObArray<ObTableHandleV2>*>::const_iterator iter = slice_cg_sstables_.begin(); 
       iter != slice_cg_sstables_.end();
       iter++) {
     if (nullptr != iter->second) {
@@ -515,3 +514,4 @@ int ObDDLTabletContext::get_all_slices(ObIArray<ObDDLSlice *> &ddl_slices)
   }
   return ret;
 }
+
