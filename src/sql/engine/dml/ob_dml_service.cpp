@@ -28,6 +28,7 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "lib/geo/ob_geo_utils.h"
 #include "sql/engine/ob_batch_rows.h"
+#include "share/vector_index/ob_vector_index_util.h"
 namespace oceanbase
 {
 using namespace common;
@@ -1611,6 +1612,17 @@ int ObDMLService::init_dml_param(const ObDASDMLBaseCtDef &base_ctdef,
   dml_param.is_batch_stmt_ = base_ctdef.is_batch_stmt_;
   dml_param.dml_allocator_ = &das_alloc;
   dml_param.is_main_table_in_fts_ddl_ = base_ctdef.is_main_table_in_fts_ddl_;
+  dml_param.has_async_index_ = false;
+  if (!base_ctdef.table_param_.get_data_table().get_vec_index_param().empty()) {
+    share::ObVectorIndexParam vec_param;
+    if (OB_SUCCESS == share::ObVectorIndexUtil::parser_params_from_string(
+            base_ctdef.table_param_.get_data_table().get_vec_index_param(),
+            share::ObVectorIndexType::VIT_HNSW_INDEX,
+            vec_param,
+            true)) {
+      dml_param.has_async_index_ = vec_param.sync_mode_async_;
+    }
+  }
   if (OB_FAIL(dml_param.snapshot_.assign(snapshot))) {
     LOG_WARN("assign snapshot fail", K(ret));
   }
