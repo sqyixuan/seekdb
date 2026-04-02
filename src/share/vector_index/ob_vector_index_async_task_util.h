@@ -25,7 +25,6 @@
 #include "lib/thread/thread_mgr_interface.h"
 #include "storage/access/ob_dml_param.h"
 #include "storage/tx/ob_trans_define_v4.h"
-#include "storage/ob_value_row_iterator.h"
 
 namespace oceanbase
 {
@@ -94,7 +93,6 @@ struct ObVecIndexTaskStatus
   int64_t status_;
   SCN target_scn_;
   int64_t ret_code_;
-  int64_t last_error_code_;
   // ObString trace_id_str_;
   TraceId trace_id_;
   bool all_finished_;
@@ -110,13 +108,12 @@ struct ObVecIndexTaskStatus
                             status_(ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_INVALID),
                             target_scn_(),
                             ret_code_(VEC_ASYNC_TASK_DEFAULT_ERR_CODE),
-                            last_error_code_(VEC_ASYNC_TASK_DEFAULT_ERR_CODE),
                             trace_id_(),
                             all_finished_(false) {}
 
   TO_STRING_KV(K_(gmt_create), K_(gmt_modified), K_(tenant_id), K_(table_id),
                 K_(tablet_id), K_(task_type), K_(trigger_type), K_(task_id),
-                K_(status), K_(target_scn), K_(trace_id), K_(ret_code), K_(all_finished), K_(last_error_code));
+                K_(status), K_(target_scn), K_(trace_id), K_(ret_code), K_(all_finished));
 };
 
 struct ObVecIndexTaskKey
@@ -288,8 +285,7 @@ public:
         old_adapter_(nullptr),
         mem_attr_(mem_attr),
         allocator_(ObMemAttr(MTL_ID(), "VecIdxASyTask")),
-        vid_obj_(),
-        all_finished_(false)
+        vid_obj_()
   {}
   virtual ~ObVecIndexIAsyncTask() {}
   int init(const uint64_t tenant_id, const ObLSID &ls_id, const int task_type,
@@ -298,7 +294,6 @@ public:
   ObLSID &get_ls_id() { return ls_id_; }
   ObVecIndexAsyncTaskCtx *get_task_ctx() { return ctx_; }
   void set_old_adapter(ObPluginVectorIndexAdaptor* adapter) { old_adapter_ = adapter; }
-  bool all_finished() { return all_finished_; }
   virtual void check_task_free() {}
   virtual int do_work() = 0;
 
@@ -315,44 +310,13 @@ protected:
   ObMemAttr mem_attr_;
   common::ObArenaAllocator allocator_;
   ObObj vid_obj_;
-  bool all_finished_;
   DISALLOW_COPY_AND_ASSIGN(ObVecIndexIAsyncTask);
-};
-
-class ObVecIndexATaskUpdIterator : public blocksstable::ObDatumRowIterator
-{
-public:
-  ObVecIndexATaskUpdIterator()
-    : got_old_row_(false),
-      is_iter_end_(false)
-  {}
-
-  virtual ~ObVecIndexATaskUpdIterator() {
-    old_row_.reset();
-    new_row_.reset();
-  }
-
-  int init();
-  int add_row(blocksstable::ObDatumRow &old_datum_row, blocksstable::ObDatumRow &new_datum_row);
-
-  virtual int get_next_row(blocksstable::ObDatumRow *&row) override;
-  virtual void reset() override {}
-
-private:
-  // disallow copy
-  DISALLOW_COPY_AND_ASSIGN(ObVecIndexATaskUpdIterator);
-
-private:
-  storage::ObValueRowIterator old_row_;
-  storage::ObValueRowIterator new_row_;
-  bool got_old_row_;
-  bool is_iter_end_;
 };
 
 class ObVecIndexAsyncTask : public ObVecIndexIAsyncTask
 {
 public:
-  ObVecIndexAsyncTask()
+  ObVecIndexAsyncTask() 
       : ObVecIndexIAsyncTask(ObMemAttr(MTL_ID(), "VecIdxASyTask"))
   {
   }
@@ -450,7 +414,7 @@ public:
       const char* tname,
       const bool for_update,
       const ObVecIndexFieldArray& filters,
-      storage::ObLS *ls,
+      ObLS *ls,
       common::ObISQLClient& proxy,
       ObVecIndexTaskStatusArray& result_arr,
       common::ObIAllocator *allocator);

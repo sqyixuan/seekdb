@@ -1,0 +1,2 @@
+oblib_addtest(test_allocators.cpp)
+target_link_libraries(test_allocators PRIVATE oblib_base malloc_hook)

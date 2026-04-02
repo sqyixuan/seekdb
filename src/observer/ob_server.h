@@ -163,6 +163,19 @@ public:
     bool is_inited_;
   };
 
+  class ObRefreshNetworkSpeedTask: public common::ObTimerTask
+  {
+  public:
+    ObRefreshNetworkSpeedTask();
+    virtual ~ObRefreshNetworkSpeedTask() {}
+    int init(ObServer *observer, int tg_id);
+    virtual void runTimerTask() override;
+  private:
+    const static int64_t REFRESH_INTERVAL = 1L * 1000L * 1000L;//1hr
+    ObServer *obs_;
+    bool is_inited_;
+  };
+
   class ObRefreshCpuFreqTimeTask: public common::ObTimerTask
   {
   public:
@@ -266,6 +279,7 @@ private:
   int init_network();
   int init_interrupt();
   int init_plugin();
+  int init_zlib_lite_compressor();
   int init_multi_tenant();
   int init_sql_proxy();
   int init_io();
@@ -295,6 +309,9 @@ private:
   int init_table_lock_rpc_client();
   int start_log_mgr();
   int stop_log_mgr();
+  int reload_bandwidth_throttle_limit(int64_t network_speed);
+  int get_network_speed_from_sysfs(int64_t &network_speed);
+  int refresh_network_speed();
   int refresh_cpu_frequency();
   int refresh_io_calibration();
   int clean_up_invalid_tables();
@@ -307,6 +324,7 @@ private:
   int init_ddl_heart_beat_task_container();
   int refresh_temp_table_sess_active_time();
   int init_refresh_active_time_task(); //Regularly update the sess_active_time of the temporary table created by the proxy connection sess
+  int init_refresh_network_speed_task();
   int init_refresh_cpu_frequency();
   int init_device_manifest_task();
   int check_all_device_connectivity();
@@ -319,6 +337,7 @@ private:
   int check_if_schema_ready();
   int check_if_timezone_usable();
   int parse_mode();
+  void deinit_zlib_lite_compressor();
   void deinit_plugin();
 
   // ------------------------------- arb server start ------------------------------------
@@ -451,6 +470,7 @@ private:
   ObCTASCleanUpTask ctas_clean_up_task_;     // repeat & no retry
   ObRedefTableHeartBeatTask redef_table_heart_beat_task_;
   ObRefreshTimeTask refresh_active_time_task_; // repeat & no retry
+  ObRefreshNetworkSpeedTask refresh_network_speed_task_; // repeat & no retry
   ObRefreshCpuFreqTimeTask refresh_cpu_frequency_task_;
   ObRefreshIOCalibrationTimeTask refresh_io_calibration_task_; // retry to success & no repeat
   blocksstable::ObStorageEnv storage_env_;

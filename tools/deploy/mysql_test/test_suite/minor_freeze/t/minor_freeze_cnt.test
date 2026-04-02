@@ -1,0 +1,69 @@
+#owner: cxf262476
+#owner group: trans
+#tags: tenant freeze cnt
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+# 1. test minor freeze and cnt
+let $freeze_cnt = query_get_value(select freeze_cnt from __all_virtual_tenant_memstore_info where tenant_id = $sys_tenant_id order by svr_port, freeze_cnt, 1);
+alter system minor freeze tenant="sys";
+let $new_freeze_cnt = query_get_value(select freeze_cnt from __all_virtual_tenant_memstore_info where tenant_id = $sys_tenant_id order by svr_port, freeze_cnt, 1);
+if ($new_freeze_cnt == $freeze_cnt)
+{
+  --echo freeze cnt does not increase after minor freeze
+}
+
+# 2. test major freeze command
+connection sys_conn;
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set enable_major_freeze = true;
+
+alter system major freeze tenant="sys";
+--source mysql_test/include/wait_daily_merge.inc
+
+connection sys_conn;
+let $new_freeze_cnt = query_get_value(select freeze_cnt from __all_virtual_tenant_memstore_info where tenant_id = $sys_tenant_id order by svr_port, freeze_cnt, 1);
+if ($new_freeze_cnt != 0)
+{
+  --echo freeze cnt does not reset after major freeze
+}
+
+# 3. test daily major merge
+alter system minor freeze tenant="sys";
+let $new_freeze_cnt = query_get_value(select freeze_cnt from __all_virtual_tenant_memstore_info where tenant_id = $sys_tenant_id order by svr_port, freeze_cnt, 1);
+if ($new_freeze_cnt == 0)
+{
+  --echo freeze cnt should not be 0 after minor freeze
+}
+
+connection sys_conn;
+let $frozen_scn_ori = query_get_value(select frozen_scn from __all_zone_merge_info where tenant_id = $sys_tenant_id, frozen_scn, 1);
+let $interval_minute = 1;
+let $interval_second = query_get_value(select '$interval_minute' * 60 as value, value, 1);
+let $next_launch_time = query_get_value("select substr(date_add(current_time(), interval $interval_minute minute), 1, 5) as value;", value, 1);
+--disable_query_log
+eval alter system set major_freeze_duty_time = '$next_launch_time' tenant sys;
+--enable_query_log
+sleep $interval_second;
+# sleep another 10s to ensure daily_major_freeze_launcher launch one round of major_freeze
+sleep 10;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection sys_conn;
+--disable_query_log
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+sleep 3;
+--enable_query_log
+let $cur_frozen_scn = query_get_value(select frozen_scn from __all_zone_merge_info where tenant_id = $sys_tenant_id, frozen_scn, 1);
+if ($cur_frozen_scn == $frozen_scn_ori)
+{
+    --echo daily major freeze launch failed
+}
+
+let $new_freeze_cnt = query_get_value(select freeze_cnt from __all_virtual_tenant_memstore_info where tenant_id = $sys_tenant_id order by svr_port, freeze_cnt, 1);
+if ($new_freeze_cnt != 0)
+{
+  --echo freeze cnt should be 0 after daily merge.
+}

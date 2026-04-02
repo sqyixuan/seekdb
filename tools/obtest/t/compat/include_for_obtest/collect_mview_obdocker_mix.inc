@@ -1,0 +1,11 @@
+connection tentsql_conn;
+use collect_mview;
+insert into collect_item values(4, 100);
+insert into collect_item values(5, 200);
+insert into collect_item values(6, 300);
+insert into collect_info values(1, 4);
+insert into collect_info values(1, 7);
+insert into collect_info values(2, 5);
+insert into collect_info values(2, 9);
+insert into collect_info values(3, 6);
+select * from collect_info_mv;

@@ -1,0 +1,168 @@
+# owner: rongxuan.lc
+# description: 本case是为了建resource pool的时候指定replica_type;满足一个zone内既有L又有F的需求；
+###本case主要设计到建表位置分配的问题
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =50;
+ob1.mysql alter system set server_data_copy_out_concurrency = 50;
+ob1.mysql alter system set data_copy_concurrency = 200;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+####PART2: 检查建表的位置设置
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z3', 'z2'),replica_type = 'L';
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2', 'pool_3'), locality='F@z1,F@z2,F@z3,L@z3,L@z2', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $unit_svr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) unit_svr from __all_unit where unit_id = 1001, unit_svr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $unit_svr);
+ob_connect(tt_conn, $obi, root@tenant_1,,test,,USE_OB_CONNECTOR);
+connection tt_conn;
+source include/check_tenant_partition_placememt.inc;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $resource_pool_id_2 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_2', resource_pool_id, 1);
+let $resource_pool_id_3 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_3', resource_pool_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = $resource_pool_id_2 and zone = 'z1' and replica_type = 0, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = $resource_pool_id_2 and zone = 'z1' and replica_type = 0, svr_port, 1);
+let $mysql_port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$ip' and svr_port = $port, inner_port, 1);
+connect(tt_conn,$ip, root@tenant_1,,test,$mysql_port);
+connection tt_conn;
+
+##1. 不带TABLEGROUP；FFFLL; F宕机；
+######找到一个F unit所在的机器宕机；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_2 and zone= 'z3' and replica_type!=5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 1, 120; 
+--error 4624
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+source include/check_partition_placememt.inc;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 't', table_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1, 12, 2; 
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1 and partition_id = 0, 4, 2; 
+drop table t;
+##1. 不带TABLEGROUP；FFFLL; F2宕机；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_2 and zone= 'z2' and replica_type!=5, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi2.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 2, 120; 
+set ob_create_table_strict_mode = on;
+--error 4624
+create table t1(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t1(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+source include/check_partition_placememt.inc;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 't1', table_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1, 9, 2; 
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1 and partition_id = 0, 3, 2; 
+drop table t1;
+$obi.start;
+$obi2.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 120; 
+##1. 不带TABLEGROUP；FFFLL; L宕机；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_3 and zone= 'z3' and replica_type=5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 1, 120; 
+set ob_create_table_strict_mode = on;
+--error 4624
+create table t2(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t2(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+source include/check_partition_placememt.inc;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 't2', table_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1, 12, 2; 
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1 and partition_id = 0, 4, 2; 
+drop table t2;
+##1. 不带TABLEGROUP；FFFLL; L2宕机；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_3 and zone= 'z2' and replica_type=5, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi2.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 2, 120; 
+set ob_create_table_strict_mode = on;
+--error 4624
+create table t3(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t3(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+source include/check_partition_placememt.inc;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 't3', table_id, 1);
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1, 9, 2; 
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and data_version != -1 and partition_id = 0, 3, 2; 
+drop table t3;
+$obi.start;
+$obi2.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 120; 
+create table t4(c1 int primary key, c2 int) partition by hash(c1) partitions 3;
+source include/check_partition_placememt.inc;
+drop table t4;
+create tablegroup tg partition by hash partitions 6;
+create table sample_test(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 6;
+##2. 带tablegroup; t1:少F；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_2 and zone= 'z3' and replica_type!=5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 1, 120; 
+set ob_create_table_strict_mode = on;
+--error 4179 
+create table t(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 6;
+source include/check_partition_placememt.inc;
+source include/check_partition_group_placement.inc;
+##2. 带tablegroup; t1:少F2；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_2 and zone= 'z2' and replica_type!=5, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi2.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 2, 120; 
+set ob_create_table_strict_mode = on;
+--error 4179 
+create table t1(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 8;
+set ob_create_table_strict_mode = off;
+create table t1(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 6;
+source include/check_partition_placememt.inc;
+source include/check_partition_group_placement.inc;
+$obi.start;
+$obi2.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 120;
+##2. 带tablegroup; t1:少L；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_3 and zone= 'z3' and replica_type=5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 1, 120; 
+set ob_create_table_strict_mode = on;
+--error 4179 
+create table t2(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 3;
+set ob_create_table_strict_mode = off;
+create table t2(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 6;
+source include/check_partition_placememt.inc;
+source include/check_partition_group_placement.inc;
+##2. 带tablegroup; t1:少L2；
+let $stop_obs = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id = $resource_pool_id_3 and zone= 'z2' and replica_type=5, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $stop_obs);
+$obi2.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 2, 120; 
+set ob_create_table_strict_mode = on;
+--error 4179 
+create table t3(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 8;
+set ob_create_table_strict_mode = off;
+create table t3(c1 int primary key, c2 int) tablegroup tg partition by hash(c1) partitions 6;
+source include/check_partition_placememt.inc;
+source include/check_partition_group_placement.inc;
+#$obi.start;
+#$obi2.start;
+
+
+

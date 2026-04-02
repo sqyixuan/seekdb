@@ -1,0 +1,76 @@
+result_format: 4
+drop table if exists t1;
+create table t1 (a int, b int, c int);
+
+insert into t1 select 1 as a, 2 as b, 3 as c from table(generator(500));
+insert into t1 select 2 as a, 3 as b, 4 as c from table(generator(500));
+insert into t1 select 4 as a, 5 as b, 6 as c from table(generator(500));
+
+alter system set _rowsets_max_rows = 2;
+alter system flush plan cache global;
+explain select sum(rank_val) from (select    /*+ PQ_DISTRIBUTE_WINDOW(LIST) parallel(2)*/ rank()  over (partition by b order by c) as rank_val from t1) tmp_t;
+Query Plan
+==============================================================================
+|ID|OPERATOR                                  |NAME    |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                           |        |1       |1472        |
+|1 |└─PX COORDINATOR                          |        |2       |1472        |
+|2 |  └─EXCHANGE OUT DISTR                    |:EX10001|2       |1472        |
+|3 |    └─MERGE GROUP BY                      |        |2       |1471        |
+|4 |      └─SUBPLAN SCAN                      |tmp_t   |1500    |1457        |
+|5 |        └─WINDOW FUNCTION                 |        |1500    |1455        |
+|6 |          └─SORT                          |        |1500    |917         |
+|7 |            └─EXCHANGE IN DISTR           |        |1500    |780         |
+|8 |              └─EXCHANGE OUT DISTR (RANGE)|:EX10000|1500    |551         |
+|9 |                └─PX BLOCK ITERATOR       |        |1500    |38          |
+|10|                  └─TABLE FULL SCAN       |t1      |1500    |38          |
+==============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(tmp_t.rank_val))]), filter(nil), rowset=2
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(tmp_t.rank_val))])
+  1 - output([T_FUN_SUM(tmp_t.rank_val)]), filter(nil), rowset=2
+  2 - output([T_FUN_SUM(tmp_t.rank_val)]), filter(nil), rowset=2
+      dop=2
+  3 - output([T_FUN_SUM(tmp_t.rank_val)]), filter(nil), rowset=2
+      group(nil), agg_func([T_FUN_SUM(tmp_t.rank_val)])
+  4 - output([tmp_t.rank_val]), filter(nil), rowset=2
+      access([tmp_t.rank_val])
+  5 - output([T_WIN_FUN_RANK()]), filter(nil), rowset=2
+      win_expr(T_WIN_FUN_RANK()), partition_by([t1.b]), order_by([t1.c, ASC]), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+  6 - output([t1.b], [t1.c]), filter(nil), rowset=2
+      sort_keys([t1.b, ASC], [t1.c, ASC])
+  7 - output([t1.b], [t1.c]), filter(nil), rowset=2
+  8 - output([t1.b], [t1.c]), filter(nil), rowset=2
+      (#keys=3, [t1.b], [t1.c], [RANDOM]), dop=2
+  9 - output([t1.b], [t1.c]), filter(nil), rowset=2
+ 10 - output([t1.b], [t1.c]), filter(nil), rowset=2
+      access([t1.b], [t1.c]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select sum(rank_val) from (select    /*+ PQ_DISTRIBUTE_WINDOW(LIST) parallel(2)*/ rank()  over (partition by b order by c) as rank_val from t1) tmp_t;
++---------------+
+| sum(rank_val) |
++---------------+
+|          1500 |
++---------------+
+select plan_line_id, plan_operation, sum(output_rows), sum(STARTS) rescan  from oceanbase.gv$sql_plan_monitor where trace_id = last_trace_id() group by plan_line_id, plan_operation order by plan_line_id;
++--------------+----------------------------+------------------+--------+
+| plan_line_id | plan_operation             | sum(output_rows) | rescan |
++--------------+----------------------------+------------------+--------+
+|            0 | PHY_VEC_SCALAR_AGGREGATE   |                1 |      0 |
+|            1 | PHY_VEC_PX_FIFO_COORD      |                2 |      0 |
+|            2 | PHY_VEC_PX_REDUCE_TRANSMIT |                2 |      0 |
+|            3 | PHY_VEC_SCALAR_AGGREGATE   |                2 |      0 |
+|            4 | PHY_VEC_SUBPLAN_SCAN       |             1500 |      0 |
+|            5 | PHY_VEC_WINDOW_FUNCTION    |             1500 |      0 |
+|            6 | PHY_VEC_SORT               |             1500 |      0 |
+|            7 | PHY_VEC_PX_FIFO_RECEIVE    |             1500 |      0 |
+|            8 | PHY_VEC_PX_DIST_TRANSMIT   |             1502 |      0 |
+|            9 | PHY_VEC_GRANULE_ITERATOR   |             1500 |      0 |
+|           10 | PHY_VEC_TABLE_SCAN         |             1500 |      0 |
++--------------+----------------------------+------------------+--------+
+
+drop table t1;
+
+alter system set _rowsets_max_rows = 256;

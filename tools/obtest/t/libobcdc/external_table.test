@@ -1,0 +1,53 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description: external table
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant_with_gts.inc;
+
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all;
+
+let $OBSERVER_DIR=deploy_get_value(ob1.z1.obs0.workdir);
+let $HOST_IP=query_get_value(select host_ip() as host_ip, host_ip, 1);
+let $DATA_FOLDER_NAME = mysqltest_data_for_external_table;
+
+# create file
+--disable_query_log
+let $SCP_CMD = ssh $HOST_IP 'mkdir -p "$OBSERVER_DIR/$DATA_FOLDER_NAME"' && scp -r include/liboblog/external_table_data/* $HOST_IP:"$OBSERVER_DIR/$DATA_FOLDER_NAME";
+exec $SCP_CMD;
+--enable_query_log
+
+# set secure_file_priv
+ob1.z1.obs0.sh obclient -S $OBSERVER_DIR/run/sql.sock -uroot@oblog_tt -Dtest -A -e 'SET GLOBAL secure_file_priv=\"/\"';
+
+use test;
+
+# create external table
+CREATE EXTERNAL TABLE white1(c1 int, c2 char) LOCATION='$OBSERVER_DIR/$DATA_FOLDER_NAME' FORMAT=(TYPE='CSV' FIELD_DELIMITER=',') PATTERN='data.csv';
+
+# wait data_dict dump
+sleep 10;
+
+# start obcdc
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+
+# drop table
+drop table white1;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# delete file
+--disable_query_log
+let $RM_CMD = ssh $HOST_IP 'rm -rf "$OBSERVER_DIR/$DATA_FOLDER_NAME"';
+exec $RM_CMD;
+--enable_query_log

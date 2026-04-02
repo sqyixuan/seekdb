@@ -1,0 +1,159 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test migrate unit before ls is removed
+#    To fix this issue：
+#      
+#    We designed following cases to simulate different scenes:
+#
+#    Case 1.1:
+#      (1) 发起locality 2变3，卡在zone3日志流创建成功且汇报后
+#      (2) 发起zone3上的unit迁移，卡在任务发送给目的端前
+#      (3) 发起locality变更回滚，等待locality变更结束
+#      (4) 继续unit迁移，观察unit迁移能够完成
+#
+#    Case 1.2:
+#      (1) 发起unit迁移，卡在迁移任务发送
+#      (2) 删除租户
+#      (3) 继续迁移，观察迁移是否完成
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant tenant_for_migrate_locality
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_migrate_locality RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_migrate_locality", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+# get tenant_for_migrate_locality's unit info in z3
+let $unit_id = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z3', unit_id, 1);
+let $ip = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_port, 1);
+let $z3_cur = $ip:$port;
+
+let $z2_unit_id = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z2', unit_id, 1);
+let $z2_ip = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_ip, 1);
+let $z2_port = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id, svr_port, 1);
+let $z2_cur = $z2_ip:$z2_port;
+
+# get servers' addr in z1, z2 and z3
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_ip1 = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst_port1 = deploy_get_value(ob1.z2.obs1.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z2_dst1 = $z2_dst_ip1:$z2_dst_port1;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+
+###################################################################################
+#                   CASE  1.1        migrate unit and rollback locality
+###################################################################################
+connection sys_conn;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_FINISH_LOCALITY wait_for signal';
+
+let $ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and role = "LEADER", cnt, 1);
+eval alter tenant tenant_for_migrate_locality set locality = "F@z1, F@z2, F@z3";
+ob1.check_until_timeout select count(*) = $ls_cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and role = "LEADER" and member_list like '%,%,%', 1, 120;
+
+# [case 1.1]
+#    aim_to:  migrate unit to a server before rollback locality in the same zone
+--echo "case 1.1 start"
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_MIGRATE_UNIT wait_for signal_for_try_migrate_unit';
+eval alter tenant tenant_for_migrate_locality set locality = "F@z1, F@z2";
+ob1.check_until_timeout select count(*) = 1 from oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id and job_type = "ALTER_TENANT_LOCALITY" AND job_status = "FAILED", 1, 20;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.DBA_OB_TENANT_JOBS WHERE tenant_id = $tenant_id and job_type = "ALTER_TENANT_LOCALITY" AND job_status = "INPROGRESS", 1, 20;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_LOCALITY_ALIGNMENT wait_for try_locality_alignment';
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_for_try_migrate_unit';
+
+if ($z3_cur != $z3_dst0)
+{
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$z3_dst0";
+  --enable_query_log
+  ob1.mysql set ob_global_debug_sync = 'now signal try_locality_alignment';
+  ob1.check_until_timeout select count(*) = 0 from oceanbase.DBA_OB_TENANTS where previous_locality is not null, 1, 120;
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id AND migrate_from_svr_ip is null, 1, 120;
+  --disable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list NOT LIKE '%$z3_dst0%' AND member_list LIKE '%$z3_dst1%', 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+}
+if ($z3_cur != $z3_dst1)
+{
+  
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$z3_dst1";
+  --enable_query_log
+  ob1.mysql set ob_global_debug_sync = 'now signal try_locality_alignment';
+  ob1.check_until_timeout select count(*) = 0 from oceanbase.DBA_OB_TENANTS where previous_locality is not null, 1, 120;
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id AND migrate_from_svr_ip is null, 1, 120;
+  --disable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list NOT LIKE '%$z3_dst1%' AND member_list LIKE '%$z3_dst0%', 1, 20;
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "SUCCESS", 1, 20;
+}
+--echo "case 1.1 finish"
+
+###################################################################################
+#                   CASE  1.2        migrate unit before drop tenant
+###################################################################################
+connection sys_conn;
+
+--echo "case 1.2 start"
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_MIGRATE_REPLICA_DRTASK wait_for signal_for_send_migrate_replica';
+let $ip = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z2_unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z2_unit_id, svr_port, 1);
+let $z2_cur = $ip:$port;
+
+if ($z2_cur != $z2_dst0)
+{
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $z2_unit_id DESTINATION "$z2_dst0";
+  eval drop tenant tenant_for_migrate_locality;
+  ob1.check_until_timeout select count(*) = 0 from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_migrate_locality", 1, 120;
+  ob1.mysql set ob_global_debug_sync = 'now signal signal_for_send_migrate_replica';
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z2_unit_id AND migrate_from_svr_ip is null, 1, 120;
+  --disable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list NOT LIKE '%$z2_dst0%' AND member_list LIKE '%$z2_dst1%', 1, 20;
+  # migrate unit should fail because tenant not exist
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $z2_unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "FAILED" AND result_code like "%5157%", 1, 20;
+}
+if ($z2_cur != $z2_dst1)
+{
+  --disable_query_log
+  eval ALTER SYSTEM MIGRATE UNIT $z2_unit_id DESTINATION "$z3_dst1";
+  eval drop tenant tenant_for_migrate_locality;
+  ob1.check_until_timeout select count(*) = 0 from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_migrate_locality", 1, 120;
+  ob1.mysql set ob_global_debug_sync = 'now signal signal_for_send_migrate_replica';
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z2_unit_id AND migrate_from_svr_ip is null, 1, 120;
+  --disable_query_log
+  ob1.check_until_timeout SELECT COUNT(*) = 0 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND role = "LEADER" AND member_list NOT LIKE '%$z2_dst1%' AND member_list LIKE '%$z2_dst0%', 1, 20;
+  # migrate unit should fail because tenant not exist
+  ob1.check_until_timeout SELECT COUNT(*) = 1 FROM oceanbase.DBA_OB_UNIT_JOBS WHERE unit_id = $z2_unit_id AND job_type = "MIGRATE_UNIT" AND job_status = "FAILED" AND result_code like "%5157%", 1, 20;
+}
+
+--echo "case 1.2 finish"

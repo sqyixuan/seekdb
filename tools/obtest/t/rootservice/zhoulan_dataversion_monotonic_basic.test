@@ -1,0 +1,100 @@
+##
+# owner      : zg410411
+# owner group: rs
+# description: 测试data_version多机单调基本保证
+##
+# 创建集群，将ob1和ob2的cluster_id都设置为1
+ob1=OBI(cluster=1:1:1,oblog_version=current,proxy_num=0,asvr_num=1);
+ob1.set cid=1;
+ob2=OBI(cluster=1:1:1,oblog_version=current,proxy_num=0);
+ob2.set cid=1;
+ob3=OBI(cluster=1:1:1,oblog_version=current,proxy_num=0);
+ob3.set cid=2;
+ob1.reboot;
+ob2.reboot;
+ob3.reboot;
+
+ob1.mysql create resource unit box1 max_cpu 2,memory_size 5368709120;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant mysql resource_pool_list=('pool1'), locality='F@z1, F@z2, R@z3', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+sleep 5;
+ob_connect(conn_z1_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_z2_sys, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_z3_sys, ob3.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_z1_primary, ob1.z1.obs0, root@mysql, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_z1_sys;
+alter system set syslog_level = 'rpc.obrpc:trace';
+let $primary_mysql_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='mysql', tenant_id, 1);
+connection conn_z1_primary;
+create user rep_user IDENTIFIED BY 'rep_user';
+grant select on oceanbase.* TO rep_user;
+
+# test1: 在同一个集群中创建网络备租户应该成功
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $primary_mysql_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $primary_mysql_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $primary_mysql_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+connection conn_z1_sys;
+create resource unit box2 max_cpu 2,memory_size 5368709120;
+create resource pool pool2 unit = 'box2', unit_num = 1;
+--disable_query_log
+eval CREATE STANDBY TENANT mysql_standby LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=rep_user@mysql PASSWORD=rep_user' RESOURCE_POOL_LIST=('pool2');
+--enable_query_log
+let $standby_mysql_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='mysql_standby', tenant_id, 1);
+ob_connect(conn_z1_standby, ob1.z1.obs0, root@mysql_standby, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# test2: 在两个拥有相同cluster id的集群中创建网络备租户应该失败
+connection conn_z2_sys;
+create resource unit box1 max_cpu 2,memory_size 5368709120;
+create resource pool pool1 unit = 'box1', unit_num = 1;
+# 先创建一个普通租户，确保随后创建备租户的tenant_id不是1002，避免和主租户tenant_id相同
+create tenant mysql resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+create resource unit box2 max_cpu 2,memory_size 5368709120;
+create resource pool pool2 unit = 'box2', unit_num = 1;
+--disable_query_log
+--error 4179
+eval CREATE STANDBY TENANT mysql_standby LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=rep_user@mysql PASSWORD=rep_user' RESOURCE_POOL_LIST=('pool2');
+--enable_query_log
+
+# test3: 在两个拥有不同cluster id的集群中创建网络备租户应该成功
+connection conn_z3_sys;
+create resource unit box2 max_cpu 2,memory_size 5368709120;
+create resource pool pool2 unit = 'box2', unit_num = 1;
+--disable_query_log
+eval CREATE STANDBY TENANT mysql_standby LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=rep_user@mysql PASSWORD=rep_user' RESOURCE_POOL_LIST=('pool2');
+--enable_query_log
+ob_connect(conn_z3_standby, ob3.z1.obs0, root@mysql_standby, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# test4: 只修改z1的compatible配置项，验证其他zone的data_version能通过RPC传递；验证配置项_enable_compatible_monotonic的有效性
+connection conn_z1_sys;
+alter system set _enable_compatible_monotonic = False;
+sleep 3;
+connection conn_z1_primary;
+alter system set compatible = '99.9.9.9' zone = 'z1';
+sleep 3;
+eval select count(*) from GV\$OB_PARAMETERS where tenant_id = $primary_mysql_id and name = 'compatible' and value = '99.9.9.9';
+connection conn_z1_sys;
+alter system set _enable_compatible_monotonic = True;
+sleep 3;
+connection conn_z1_primary;
+eval select count(*) from GV\$OB_PARAMETERS where tenant_id = $primary_mysql_id and name = 'compatible' and value = '99.9.9.9';
+
+# test5: 验证同一集群内的备租户不会被主租户RPC中传递的data_version影响
+connection conn_z1_standby;
+eval select count(*) from GV\$OB_PARAMETERS where tenant_id = $standby_mysql_id and name = 'compatible' and value = '99.9.9.9';
+
+# test6: 验证不同集群的备租户不会被主租户RPC中传递的data_version影响
+connection conn_z3_standby;
+eval select count(*) from GV\$OB_PARAMETERS where tenant_id = $standby_mysql_id and name = 'compatible' and value = '99.9.9.9';
+
+# test7: 验证data_version不会回退
+connection conn_z1_primary;
+alter system set compatible = '99.9.9.8';
+sleep 3;
+eval select count(*) from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $primary_mysql_id and name = 'compatible' and value = '99.9.9.9';
+
+# test8: 通过视图查询每台机器的data_version值
+connection conn_z1_sys;
+eval select value from oceanbase.__all_virtual_tenant_parameter_info where tenant_id = $primary_mysql_id and name = 'compatible';
+eval select value from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $primary_mysql_id and name = 'compatible';
+
+

@@ -1,0 +1,171 @@
+# owner: yibo.tyf
+# owner group: SQL1
+# tags: optimizer
+
+--disable_warnings
+--result_format 4
+--explain_protocol 2
+--enable_sorted_result
+
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5;
+--disable_warnings
+--explain_protocol 0
+--echo # match date()/timestamp() with implicit cast
+create table t1(c1 date, c2 int, index i1((date(c1))), index i2((date(c2))));
+create table t2(c1 date, c2 int, index i1((timestamp(c1))), index i2((timestamp(c2))));
+create table t3(c1 date, c2 int, c3 date as (date(c1)), c4 date as (date(c2)), index i1(c3), index i2(c4));
+create table t4(c1 date, c2 int, c3 datetime as (timestamp(c1)), c4 datetime as (timestamp(c2)), index i1(c3), index i2(c4));
+create table t5(c1 date, c2 int, c3 datetime as (c1), c4 datetime as (c2), index i1(c3), index i2(c4), index i3(c1), index i4(c2));
+insert into t1(c1,c2) values('2011-1-1',20110101);
+insert into t2(c1,c2) values('2011-1-1',20110101);
+insert into t3(c1,c2) values('2011-1-1',20110101);
+insert into t4(c1,c2) values('2011-1-1',20110101);
+--explain_protocol 2
+##without cast
+select * from t1 where c1 = 20110101;
+select * from t3 where c1 = 20110101;
+select * from t2 where c1 = 20110101;
+select * from t4 where c1 = 20110101;
+select * from t5 where date(c1) = DATE'2011-1-1';
+
+## with implicit cast
+select * from t1 where c1 = TIMESTAMP'2011-1-1';
+select * from t3 where c1 = TIMESTAMP'2011-1-1';
+select * from t5 where timestamp(c1) = TIMESTAMP'2011-1-1';
+select * from t5 where date(c2) = DATE'2011-1-1';
+select * from t5 where date(c2) = TIMESTAMP'2011-1-1';
+select * from t5 where timestamp(c2) = TIMESTAMP'2011-1-1';
+
+--explain_protocol 0
+drop table t1,t2,t3,t4;
+
+--echo # match implicit cast in predicates
+create table t1(c1 int, c2 decimal(20,5) as(c1+1), index i1 (c2));
+create table t3(c1 varchar(5), c2 varchar(10) as(substr(c1,2,4)), index i1 (c2));
+
+--explain_protocol 2
+#without cast
+select * from t1 where c1+1 < 1;
+select * from t1 where c1+2 < 1;
+select * from t3 where substr(c1,2,4) = 'abc';
+select * from t3 where substr(c1,2,5) = 'abc';
+
+##the implicit cast in the predicate is lossless
+select * from t1 where c1+1 < 1.5;
+select * from t1 where c1+2 < 1.5;
+
+#the implicit cast is not lossless
+select * from t1 where c1+1 < DATE'2011-1-1';
+
+--explain_protocol 0
+
+drop table t1,t3;
+
+--echo # match prefix index for like conditions
+create table t1(c1 varchar(20), index i1(c1(5)));
+insert into t1 values ('abcdefg');
+insert into t1 values ('abccccdefg');
+insert into t1 values ('abccdefg');
+insert into t1 values ('acccdefg');
+insert into t1 values ('acccccdefg');
+insert into t1 values ('ab%cdefg');
+insert into t1 values ('ab%caaadefg');
+#test prefix_pattern
+select prefix_pattern('a_bc\%abc%aaa',3,'\\') from dual;
+select prefix_pattern('a_bc\%abc%aaa',5,'\\') from dual;
+select prefix_pattern('a_bc\%abc%aaa',6,'\\') from dual;
+select prefix_pattern('a_bc\%abc%aaa',8,'\\') from dual;
+select prefix_pattern('a_bc\%abc%aaa',9,'\\') from dual;
+select prefix_pattern('a_bc\%abc%aaa',10,'\\') from dual;   
+select prefix_pattern(NULL,10,'\\') from dual;
+select prefix_pattern('\\',10,'\\') from dual;
+select prefix_pattern('bbba',3,'a') from dual;
+select prefix_pattern('bbba',4,'a') from dual;
+select prefix_pattern('bbbab',4,'a') from dual;
+select prefix_pattern('bbbabb',4,'a') from dual;
+select prefix_pattern(x'616161',3, '\\') from dual;
+##mysql returns null if the result of convert has invalid characters
+select convert(x'E4B861' using utf8mb4);
+select prefix_pattern(convert(x'E4B861' using utf8mb4), 3, '\\') from dual;
+select prefix_pattern(convert(x'6161E4B861' using utf8mb4), 3, '\\') from dual;
+select prefix_pattern(convert(x'616161E4B861' using utf8mb4), 3, '\\') from dual;
+
+alter system flush plan cache global;
+
+explain select * from t1 where c1 like 'abcdefg';
+select * from t1 where c1 like 'abcdefg';
+select prefix_pattern('abcdefg',5,'\\') from dual;
+
+explain select * from t1 where c1 like 'a\\b\\%ca%defg';
+select * from t1 where c1 like 'a\\b\\%ca%defg';
+select prefix_pattern('a\\b\\%ca%defg',5,'\\') from dual;
+
+explain select * from t1 where c1 like 'a_c%defg';
+select * from t1 where c1 like 'a_c%defg';
+select prefix_pattern('a_c%defg',5,'\\') from dual;
+
+select QUERY_SQL,statement,hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where QUERY_SQL like 'select * from t1 where c1 like%';
+
+explain select * from t1 where c1 like 'abc%defg';
+select * from t1 where c1 like 'abc%defg';
+select prefix_pattern('abc%defg',5,'\\') from dual;
+
+explain select * from t1 where c1 like 'a\\b\\%%defg';
+select * from t1 where c1 like 'a\\b\\%%defg';
+select prefix_pattern('a\\b\\%%defg',5,'\\') from dual;
+
+explain select * from t1 where c1 like 'aabbaa%defg' escape 'a';
+select * from t1 where c1 like 'aabbaa%defg' escape 'a';
+select prefix_pattern('aabbaa%defg',5,'a') from dual;
+
+select QUERY_SQL,statement,hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where QUERY_SQL like 'select * from t1 where c1 like%';
+drop table t1;
+
+##test constraints
+alter system flush plan cache global;
+create table t1(c1 varchar(10), c2 varchar(10), index i1 (c1(5)), index i2(c2));
+explain select * from t1 where c1 like x'E6B594';
+select * from t1 where c1 like x'E6B594';
+explain select * from t1 where c1 like x'E6B594E6B594';
+select * from t1 where c1 like x'E6B594E6B594';
+select hex('%');
+explain select * from t1 where c1 like x'E6B59425';
+select * from t1 where c1 like x'E6B59425';
+explain select * from t1 where c1 like x'E4B8';
+select * from t1 where c1 like x'E4B8';
+explain select * from t1 where c1 like x'E6B594E4B8';
+select * from t1 where c1 like x'E6B594E4B8';
+explain select * from t1 where c1 like x'E6B594E4B825';
+select * from t1 where c1 like x'E6B594E4B825';
+select QUERY_SQL,statement,hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where QUERY_SQL like 'select * from t1 where c1 like%';
+
+explain select * from t1 where c1 like 'abc' escape convert(x'61' using utf8mb4);
+select * from t1 where c1 like 'abc' escape convert(x'61' using utf8mb4);
+explain select * from t1 where c1 like 'abc' escape convert(x'E4B8' using utf8mb4);
+select * from t1 where c1 like 'abc' escape x'E4B8';
+
+#escape is not valid
+explain select * from t1 where c1 like 'abc' escape x'E6B594' ;
+explain select * from t1 where c2 like 'abc' escape '中' collate utf8mb4_bin;
+
+select QUERY_SQL,statement,hit_count from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where QUERY_SQL like 'select * from t1 where c1 like \'abc\' escape %';
+
+drop table t1;
+
+#bugfix:
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+CREATE TABLE t1(f1 BLOB, index i1(f1(1)));
+INSERT INTO t1 VALUES ('ccc'), ('aa');
+--echo test invalid json text
+explain SELECT 1 FROM t1 WHERE f1 LIKE json_contains('key2' ,'key4' );
+explain SELECT /*+ index(t1 i1) */ 1 FROM t1 WHERE f1 LIKE json_contains('key2' ,'key4' );
+--error 3141
+SELECT 1 FROM t1 WHERE f1 LIKE json_contains('key2' ,'key4' );
+--echo test valid json text
+explain SELECT 1 FROM t1 WHERE f1 LIKE json_contains(cast('[{"b": 4, "a":7}, 5]' as json), cast('[5, {"a":7, "b":4}]' as json));
+SELECT 1 FROM t1 WHERE f1 LIKE json_contains(cast('[{"b": 4, "a":7}, 5]' as json), cast('[5, {"a":7, "b":4}]' as json));
+drop table t1;

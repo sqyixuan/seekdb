@@ -1,0 +1,375 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: jim.wjh
+# owner group: SQL2
+# description: Verify create temporary table T function
+# results should be the same as mysql(verified on 5.6.35)
+--disable_warnings
+drop database if exists create_temp_table_db;
+drop database if exists oc1;
+--enable_warnings
+create database create_temp_table_db;
+use create_temp_table_db;
+
+--result_format 4
+create table t1(c1 int, c2 varchar(10), c3 date);
+insert into t1 values(5236, 'scott', '2018-5-8');
+insert into t1 values(1024, '中', '2018-1-1');
+commit;
+
+show tables like 't1';
+
+## set @@session.ob_enable_transformation = 0;
+--echo #Q1 基本测试
+--echo #Q1.1 支持create table like
+create temporary table tmp_10 like t1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_10;
+
+--error 1347
+create temporary table tmp_102 like tmp_10;
+
+create temporary table tmp_11(c1 int, c2 varchar(10), c3 date);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_11;
+show tables like 'tmp_1';
+insert into tmp_11 values(1, 'x', '2018-5-12'), (11, 'x2', '2018-5-12'), (31, 'x4', '2018-5-12'),
+ (13, '44x', '2018-5-12'), (1, '5x', '2018-5-12'), (1, 'xz', '2018-5-12'), (1, 'x6', '2018-5-12'),
+ (31, 'x44', '2018-5-12');
+
+select * from tmp_11;
+select * from tmp_11 x, t1 y where x.c1 = y.c1 - 1023 and x.c2 like 'x%' order by x.c2 asc;
+
+drop table tmp_11;
+--error 1146
+select * from tmp_11;
+
+--echo #Q1.2 包含约束的临时表
+create temporary table tmp_12(c1 int not null, c2 int, c3 date unique, c4 int default 55);
+insert into tmp_12 values(10, 55, '2010-1-1', 66);
+--error 1062
+insert into tmp_12(c1,c2,c3) values(10, 111, '2010-1-1');
+--error 1048
+insert into tmp_12(c1,c2,c3) values(null, 111, '2014-1-1');
+insert into tmp_12(c1,c3,c2) values(10, '2011-1-1', 666);
+select * from tmp_12;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_12;
+
+--echo #Q2 同名时优先级的测例, 附加drop temporary table测试
+create temporary table tmp_2(c1 int);
+--error 1050
+create temporary table tmp_2(c1 int, c2 int);
+create temporary table if not exists tmp_2(c1 int, c2 int, c3 int);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_2;
+create table tmp_2(c1 int, c2 int);
+insert into tmp_2 values(5),(6);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_2;
+show tables like 'tmp_2';
+drop temporary table tmp_2;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_2;
+--error 1051
+drop temporary table tmp_2;
+select * from tmp_2;
+--error 1051
+drop temporary table tmp_2;
+drop table tmp_2;
+
+--echo #Q2.2 session间可见性的测试
+connect (con1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (con2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+--echo #conn1
+connection con1;
+--disable_warnings
+drop table if exists tmp_22,tmp_con2,tmp_con1;
+drop table if exists tmp_22,tmp_con2,tmp_con1;
+--enable_warnings
+
+set ob_enable_plan_cache = off;
+create temporary table tmp_22(d int);
+insert into tmp_22 values(5),(6);
+commit;
+
+--echo #conn2
+connection con2;
+set ob_enable_plan_cache = off;
+--error 1146
+select * from tmp_22;
+create temporary table tmp_22(c1 int, c2 int);
+insert into tmp_22 values(55,66);
+commit;
+select * from tmp_22;
+
+--echo #conn1
+connection con1;
+select * from tmp_22;
+drop table tmp_22;
+--error 1146
+select * from tmp_22 where 1=1;
+create table tmp_22(x varchar(10));
+insert into tmp_22 values('x');
+select * from tmp_22;
+drop table tmp_22;
+create temporary table tmp_con1(x int);
+
+--echo #conn2
+connection con2;
+create table tmp_22(y int, y2 int, y3 int);
+drop table tmp_22;
+create temporary table tmp_con2(x int);
+--disconnect con1
+--disconnect con2
+
+--echo #conn default
+connection default;
+
+--echo #Q2.3 临时表在断开时自动drop
+--error 1146
+select * from tmp_con1;
+--error 1146
+select * from tmp_con2;
+
+--echo #Q3 针对临时表的DDL测试
+--echo #Q3.1 alter table
+create temporary table tmp_31 (c1 int, c2 int);
+insert into tmp_31 values(10,15),(16,20);
+alter table tmp_31 add column c3 int;
+alter table tmp_31 rename to tmp_31_xxx;
+--error 1146
+show create table tmp_31;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tmp_31_xxx;
+
+--echo #Q3.2 create/drop index
+create temporary table tmp_32(x int, y int);
+insert into tmp_32 values(10, 20),(50, 100), (1, 2);
+create index idx_tmp_32 on tmp_32(x);
+select x from tmp_32 where x = 10;
+drop index idx_tmp_32 on tmp_32;
+--error 1091
+drop index idx_tmp_32 on tmp_32;
+
+--echo #Q3.3 create temporary table不引发commit
+set autocommit = off;
+create table t33(c int);
+insert into t33 values(10),(100),(200);
+commit;
+insert into t33 values(4),(44),(444);
+create temporary table tmp_33 (d1 int);
+insert into tmp_33 values(5);
+rollback;
+select * from t33;
+select * from tmp_33;
+set autocommit = on;
+
+--echo #Q3.4 flashback table, 临时表不支持进回收站
+set recyclebin=on;
+
+create table t340000(c int);
+create temporary table tmp_34000(x int);
+insert into t340000 values(5),(6),(7),(8);
+insert into tmp_34000 select * from t340000 where c <> 7 and c <> 5;
+select * from t340000 union all select x * 100 from tmp_34000;
+drop table t340000;
+drop table tmp_34000;
+connect (my_obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection my_obsys;
+select 1 from dual where exists (select 1 from oceanbase.__all_virtual_recyclebin where original_name = 't340000');
+select 1 from dual where exists (select 1 from oceanbase.__all_virtual_recyclebin where original_name = 'tmp_34000');
+connection default;
+
+--echo #Q3.5 flashback index, 临时表上索引不支持进回收站
+create table t35(x int, y int);
+create index idx_35000 on t35(x);
+drop index idx_35000 on t35;
+#普通表目前也不支持了
+connection my_obsys;
+select 1 from dual where exists (select 1 from oceanbase.__all_virtual_recyclebin where original_name like '%idx_35000');
+connection default;
+
+create temporary table tmp_35(x int, y int);
+create index idx_tmp_35000 on tmp_35(x);
+drop index idx_tmp_35000 on tmp_35;
+connection my_obsys;
+select 1 from dual where exists (select 1 from oceanbase.__all_virtual_recyclebin where original_name like '%idx_tmp_35000');
+connection default;
+
+drop table tmp_35;
+
+set recyclebin=off;
+
+--echo #Q3.6 drop table
+create table t36(x int);
+--error 1051
+drop temporary table t36;
+
+create temporary table tmp_361(c int, c2 int);
+create temporary table tmp_362(x int);
+create temporary table tmp_363(a varchar(10));
+--error 1051
+drop temporary tables tmp_361, t36, tmp_362;
+select * from t36;
+drop tables t36, tmp_363;
+
+--echo #Q3.6.2 跨库create&drop
+create database oc1;
+create table oc1.xxx as select * from t1;
+create temporary table oc1.xxx (x int,  y int, z int);
+create temporary table oc1.xxx2 (x int,  y int, z int);
+drop table oc1.xxx;
+drop temporary table oc1.xxx2;
+--error 1051
+drop temporary table oc1.xxx;
+drop table oc1.xxx;
+--echo #Q4 特殊字符 和 错误测试
+--echo #Q4.1 查询、DDL不存在的表
+--error 1146
+select * from t41;
+--error 1146
+alter table t41 add column c1 int;
+--error 1146
+create index idx_t41 on t41(c1);
+--error 1146
+drop index idx_t41 on t41;
+
+--echo #Q4.2 列名超长, 期望报错
+--error 1059
+create temporary table test_q422(
+a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789a123456789 int);
+
+create temporary table `世界表格`(c int);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table `世界表格`;
+
+create temporary table `欧神贝斯`(`列` int, `列2` varchar(10));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table `欧神贝斯`;
+drop temporary table `欧神贝斯`;
+
+--echo #Q4.3 报错超长
+--error 1059
+create temporary table xlong1long2long1long2long1long2long1long2long1long2long1long21234(x int);
+
+--echo #Q4.4 带分区选项的临时表, 期望报错
+--error 1562
+create temporary table tmp_44 (c int, c2 int) partition by hash(c2) partitions 3;
+
+--echo #Q5.2 跨库(目前未支持查询建表相关)
+create temporary table oc1.tmp_52(c int);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table oc1.tmp_52;
+drop temporary table oc1.tmp_52;
+
+create temporary table tmp_52(x int);
+insert into tmp_52 values(100),(200);
+create temporary table oc1.test1 as select * from create_temp_table_db.t1;
+create table t_52 as select * from tmp_52;
+select * from t_52;
+
+connection my_obsys;
+select table_name from oceanbase.__all_virtual_table where session_id <> 0 and database_id = (select database_id from oceanbase.__all_virtual_database where database_name = 'create_temp_table_db');
+connection default;
+
+--echo #Q6 alter system drop table的权限测试
+connection my_obsys;
+
+--disable_warnings
+--disable_query_log
+call oceanbase.drop_tenant_force('tenant_test');
+call oceanbase.create_mysql_tenant_mini('tenant_test');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+--echo connect(con1, localhost, root@tenant_test,,test);
+let $__tenant_name__ = 'tenant_test';
+--source mysql_test/include/get_tenant_server.inc
+
+connect (con1,$TE_SERVER_IP, root@tenant_test,,*NO-ONE*,$TE_SERVER_PORT);
+connection con1;
+#非sys租户执行报错
+--error 1227
+alter system drop tables in session 12345;
+
+connection my_obsys;
+
+#sys租户可以执行
+alter system drop tables in session 54321;
+
+--echo #Q7 bug16818793, 
+#同名的view和TEMPORARY TABLE，先drop TEMPORARY TABLE没问题，先drop view报错
+#16913178, 调整了上述修改方案允许mysql临时表和视图同名
+connection default;
+
+create table f71 ( x int, y int);
+create table mm(cc int);
+insert into f71 values(5,6);
+--error 1050
+create view f71 as select * from mm;
+
+CREATE VIEW t71 AS SELECT 10 AS f71;
+--error 1050
+create table t71 (x int);
+CREATE TEMPORARY TABLE t71 (f1 INT);
+insert into t71 values(100);
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t71;
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create view t71;
+select * from t71;
+drop view t71;
+drop table t71;
+
+CREATE TEMPORARY TABLE t71 (f1 INT);
+CREATE VIEW t71 AS SELECT 10 AS f71;
+insert into t71 values(0);
+select * from t71;
+drop table t71;
+drop view t71;
+
+##bug18197606,【pquery】 [阻塞pquery测试]schema meta is still not consistent after rebuilt，线程挂住
+##
+create temporary table temp_pq(c int);
+--error 1050
+create table temp_pq as select 1 as x, 2 as y from dual;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table temp_pq;
+drop table temp_pq;
+##bug19839990, mysql模式下视图和临时表解析存在的报错问题
+drop table t1;
+create table t1 (c int);
+insert into t1 values(5);
+
+create view v_t1 as select * from t1;
+
+create temporary table t1 (a int, b int);
+insert into t1 values(56, 77);
+commit;
+
+select * from v_t1;
+
+#issue 48098793
+SELECT  TABLE_NAME, TABLE_SCHEMA FROM information_schema.columns WHERE TABLE_SCHEMA = 't1';
+
+drop view v_t1;
+drop temporary table t1;
+drop table t1;
+
+
+drop database create_temp_table_db;
+drop database oc1;
+
+connection my_obsys;
+
+--disable_query_log
+call oceanbase.drop_tenant_force('tenant_test');
+--enable_query_log
+
+disconnect my_obsys;

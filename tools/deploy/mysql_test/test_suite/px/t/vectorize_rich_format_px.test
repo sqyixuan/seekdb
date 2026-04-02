@@ -1,0 +1,106 @@
+#owner: dachuan.sdc
+#owner group: sql3
+# tags: optimizer
+--result_format 4
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+#测试的量个维度：
+#A. slice calc type
+#	1. all to one
+#	2. bc2host
+#	3. broadcast
+#		3.1 走优化
+#		3.2 不走优化
+#	4. random
+#	5. range
+#	6. pkey 
+#		6.1 匹配不到分区的行drop
+#		6.2 匹配不到分区的行random
+#		6.3 匹配不到分区的行hash
+#	7. nullaware repart
+#	8. hash
+#	9. nullaware hash
+#	10. hybrid hash broadcast
+#	11. hybrid hash random
+#	12. wf hybrid
+#B. 下层算子是否为rich_format
+
+--disable_warnings
+drop database if exists db;
+create database db;
+use db;
+--enable_warnings
+set timestamp = 1600000000;
+set _enable_rich_vector_format = true;
+create table t0(c1 int, c2 int, c3 varchar(150), c4 datetime) partition by hash(c1) partitions 8;
+create table t1(c1 int);
+create table t2(c1 int, c2 int, c3 varchar(150), c4 datetime);
+
+let $cnt = 1;
+while ($cnt < 300) {
+  eval insert into t0 values($cnt, $cnt, substr(repeat($cnt, 50), 1, 150), now() + interval $cnt day);
+  inc $cnt;
+}
+let $cnt = 1;
+while ($cnt < 300) {
+  eval insert into t1 values($cnt);
+  inc $cnt;
+  inc $cnt;
+}
+insert into t2 select * from t0;
+
+## 1. all to one
+explain basic select * from t0;
+select * from t0;
+
+
+## 2. bc2host
+explain basic select /*+ parallel(3) */ * from t0 join t1 on t0.c2 = t1.c1;
+--sorted_result
+select /*+ parallel(3) */ * from t0 join t1 on t0.c2 = t1.c1;
+
+
+## 3. broadcast
+explain basic select /*+ use_nl(t0 t1) parallel(3) */ * from t0 join t1 on t0.c2 = t1.c1;
+--sorted_result
+select /*+ use_nl(t0 t1) parallel(3) */ * from t0 join t1 on t0.c2 = t1.c1;
+
+
+## 4. random
+explain basic select c1, c2, c3 from t0 union all select /*+ parallel(3) */ 1, 1, 1 from dual;
+--sorted_result
+select c1, c2, c3 from t0 union all select /*+ parallel(3) */ 1, 1, 1 from dual;
+
+create table t3 like t2;
+explain basic insert /*+ parallel(3) enable_parallel_dml */into t3 select * from t2;
+insert /*+ parallel(3) enable_parallel_dml */into t3 select * from t2;
+--sorted_result
+select * from t3;
+
+
+## 5. range
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_sys;
+alter system set _enable_px_ordered_coord = true;
+connection default;
+--sleep 1
+explain basic select /*+ parallel(3) */ * from t2 order by c1;
+--sorted_result
+select /*+ parallel(3) */ * from t2 order by c1;
+
+connection conn_sys;
+alter system set _enable_px_ordered_coord = false;
+connection default;
+
+
+## 6. pkey 
+
+
+
+## pkey random
+##create table t2 like t0;
+##explain basic insert /*+ parallel(3) enable_parallel_dml */into t2 select * from t0;
+

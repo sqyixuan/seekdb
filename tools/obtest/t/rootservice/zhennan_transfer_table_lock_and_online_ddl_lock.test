@@ -1,0 +1,196 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test the effect of table lock and online ddl lock in transfer process
+#####################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+# create mysql tenant
+source t/quick/include/create_mysql_tenant_fff.inc;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+# create table with lob and idx
+connection conn_mysql;
+--disable_query_log
+let $i = 1;
+while ($i <= 10)
+{
+  eval create table t_$i(c1 int primary key, c2 longtext) partition by range(c1) (partition p0 values less than(100), partition p1 values less than(200));
+  eval create index idx_t_$i on t_$i(c1);
+  eval insert into t_$i values (1, 1), (101, 101);
+  inc $i;
+}
+--enable_query_log
+
+--echo
+--echo ################################################
+--echo ############# 1. test offline ddl ##############
+
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_lock_begin";
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal_lock_finish";
+sleep 2;
+
+# begin transfer
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where status = 'TRANSFER', 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 1, 60;
+
+# execute ddl before transfer add table lock and online ddl
+connection conn_mysql;
+--echo
+--echo ============== 1.1 before offline ddl and transfer are executed ===================
+--echo # table locations
+select table_name, table_id, data_table_id, partition_name, subpartition_name, tablet_id, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER' order by table_id, tablet_id;
+--echo # execute offline ddl before transfer
+drop table t_1;
+truncate table t_2;
+alter table t_3 drop partition p1;
+alter table t_4 truncate partition p1;
+alter table t_5 partition by hash(c1) partitions 2;
+
+ob1.mysql set ob_global_debug_sync = "now signal signal_lock_begin";
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'INIT', 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'START', 1, 10;
+
+--echo
+--echo ============= 1.2 after transfer lock table, offline ddl execute failed =============
+ob1.mysql alter system set _ob_ddl_timeout = '3s';
+--error 1205, 4012
+truncate table t_6;
+--error 1205, 4012
+alter table t_7 partition by hash(c1) partitions 2;
+
+# offline ddl below can not be controlled by _ob_ddl_timeout, it will stay stuck
+#--error 1205, 4012
+#drop table t_8;
+#--error 1205, 4012
+#alter table t_9 drop partition p1;
+#--error 1205, 4012
+#alter table t_10 truncate partition p1;
+
+ob1.mysql alter system set _ob_ddl_timeout = '1000s';
+
+connection conn_sys;
+--echo # there have table lock on src_ls and dest_ls when transfer start
+select a.tenant_id, a.ls_id, a.lock_id, a.lock_mode from __all_virtual_obj_lock as a join __all_virtual_transfer_task as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and (a.lock_mode = 'RS' or a.lock_mode = 'X') and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls) and op_type not like "%IN_TRANS%" group by a.ls_id, a.lock_id order by a.tenant_id, a.ls_id, a.lock_id;
+connection conn_mysql;
+
+ob1.mysql set ob_global_debug_sync = "now signal signal_lock_finish";
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED', 1, 120;
+
+--echo
+--echo ============== 1.3 after offline ddl and transfer are executed ==============
+select part_list, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list from oceanbase.__all_transfer_task_history where status = 'COMPLETED';
+--echo # no lock on src_ls or dest_ls 
+ob1.check_until_timeout select count(*) = 0 from __all_virtual_obj_lock as a join __all_virtual_transfer_task as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and (a.lock_mode = 'RS' or a.lock_mode = 'X') and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls), 1, 5;
+--echo # table locations
+select table_name, table_id, data_table_id, partition_name, subpartition_name, tablet_id, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER' order by table_id, tablet_id;
+
+--echo
+--echo ################################################
+--echo ############## 2. test online ddl ##############
+
+# create new tenant
+connection conn_sys;
+set recyclebin = off;
+drop tenant mysql force;
+
+
+source t/quick/include/create_mysql_tenant_fff.inc;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+# create table with global index
+connection conn_mysql;
+let $i = 1;
+while ($i <= 2)
+{
+  eval create table t_$i(c1 int primary key, c2 int, c3 longtext) partition by hash(c1) partitions 2;
+  eval create index t_global_idx_$i ON t_$i(c2) global partition by range(c2) (partition p0 values less than(100), partition p1 values less than(200));
+  eval create index t_local_idx_$i on t_$i(c2);
+  inc $i;
+}
+# create table without lob
+eval create table t_3(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_NORMAL_TABLE wait_for signal_normal_table";
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_GLOBAL_INDEX wait_for signal_global_index";
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal_lock_finish";
+ob1.mysql set ob_global_debug_sync = "SWITCH_LEADER_BEFORE_TRANSFER_DOING_START_TRANS wait_for signal_start_transfer_doing";
+
+# begin transfer
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 1, 30;
+
+--echo
+--echo ============== 2.1 before online ddl and transfer are executed ===================
+select part_list from oceanbase.__all_transfer_task;
+--echo # table locations
+select table_name, table_id, data_table_id, partition_name, subpartition_name, tablet_id, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER' order by table_id, tablet_id;
+--echo # execute online ddl
+create index t_local_idx_new_1 on t_1(c2);
+drop index t_local_idx_1 on t_1;
+alter table t_1 add column c4 longtext;
+sleep 2;
+alter table t_1 drop column c3;
+
+ob1.mysql set ob_global_debug_sync = "now signal signal_normal_table";
+sleep 2;
+
+drop index t_global_idx_1 on t_1;
+
+ob1.mysql set ob_global_debug_sync = "now signal signal_global_index";
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'INIT', 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'START', 1, 10;
+
+--echo
+--echo ============= 2.2 after transfer add online ddl lock, online ddl execute failed ============
+ob1.mysql alter system set _ob_ddl_timeout = '3s';
+--error 4012, 1205
+create index t_local_idx_new_2 on t_2(c2);
+--error 4012, 1205
+drop index t_local_idx_2 on t_2;
+--error 4012, 1205
+alter table t_2 drop column c3;
+--error 4012, 1205
+drop index t_global_idx_2 on t_2;
+--error 4012, 1205
+alter table t_3 add column c4 longtext;
+
+ob1.mysql alter system set _ob_ddl_timeout = '1000s';
+ob1.mysql set ob_global_debug_sync = "now signal signal_lock_finish";
+
+--echo
+--echo ============= 2.3 table locks exist on both src_ls and dest_ls when transfer is doing ============
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where status = 'DOING', 1, 30;
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_obj_lock as a join __all_virtual_transfer_task as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and a.lock_mode = 'RS' and a.ls_id = b.dest_ls, 1, 5;
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_obj_lock as a join __all_virtual_transfer_task as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and a.lock_mode = 'RS' and a.ls_id = b.src_ls, 1, 5;
+connection conn_sys;
+select a.tenant_id, a.ls_id, a.lock_id, a.lock_mode from __all_virtual_obj_lock as a join __all_virtual_transfer_task as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and (a.lock_mode = 'RS' or a.lock_mode = 'X') and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls) and op_type not like "%IN_TRANS%" group by a.ls_id, a.lock_id order by a.tenant_id, a.ls_id, a.lock_id;
+connection conn_mysql;
+ob1.mysql set ob_global_debug_sync = "now signal signal_start_transfer_doing";
+
+--echo
+--echo ============== 2.4 after transfer ==============
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 60;
+select part_list, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_list from oceanbase.__all_transfer_task_history where status = 'COMPLETED';
+--echo # no table lock on src_ls or dest_ls
+ob1.check_until_timeout select count(*) = 0 from __all_virtual_obj_lock as a join __all_virtual_transfer_task_history as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and a.lock_mode = 'RS' and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls), 1, 5;
+--echo # table locations
+select table_name, table_id, data_table_id, partition_name, subpartition_name, tablet_id, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER' order by table_id, tablet_id;

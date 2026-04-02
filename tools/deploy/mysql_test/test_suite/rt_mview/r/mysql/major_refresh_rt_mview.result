@@ -1,0 +1,238 @@
+result_format: 4
+drop materialized view collect_info_mv;
+drop table if exists collect_info;
+drop table if exists collect_item;
+create table collect_info(user_id int, item_id int, primary key(user_id, item_id)) partition by hash(user_id) partitions 4;
+create table collect_item(item_id int, price int, primary key(item_id)) duplicate_scope = 'cluster' duplicate_read_consistency = 'weak';
+create materialized view collect_info_mv (primary key(user_id, item_id)) partition by hash(user_id) partitions 4 refresh fast enable query rewrite enable on query computation
+as select collect_info.user_id, collect_info.item_id, collect_item.item_id dup_item_id, collect_item.price from collect_info inner join collect_item on collect_info.item_id = collect_item.item_id;
+
+create or replace view collect_info_view
+as select /*+no_mv_rewrite*/ collect_info.user_id, collect_info.item_id, collect_item.item_id dup_item_id, collect_item.price from collect_info inner join collect_item on collect_info.item_id = collect_item.item_id;
+
+create or replace view res_com1
+as
+select res from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select collect_info_view.*, '1.normal view' view_type from collect_info_view
+        union all
+        select collect_info_mv.*, '2.mview' from collect_info_mv)
+    group by user_id, item_id
+)
+group by res
+;
+
+create or replace view res_com2
+as
+select res from 
+(   select group_concat(view_type order by view_type) res
+    from (
+        select collect_info_view.*, '1.normal view' view_type from collect_info_view where user_id = 1
+        union all
+        select collect_info_mv.*, '2.mview' from collect_info_mv where user_id = 1)
+    group by user_id, item_id
+)
+group by res
+;
+
+insert into collect_info select distinct floor(random()%1000), abs(random()%1000000) from table(generator(100000));
+insert into collect_item(item_id) select distinct item_id from collect_info;
+
+explain basic select * from collect_info_mv;
+Query Plan
+====================================================
+|ID|OPERATOR                       |NAME           |
+----------------------------------------------------
+|0 |UNION ALL                      |               |
+|1 |├─NESTED-LOOP OUTER JOIN       |               |
+|2 |│ ├─HASH OUTER JOIN            |               |
+|3 |│ │ ├─PX COORDINATOR           |               |
+|4 |│ │ │ └─EXCHANGE OUT DISTR     |:EX10000       |
+|5 |│ │ │   └─PX PARTITION ITERATOR|               |
+|6 |│ │ │     └─TABLE FULL SCAN    |collect_info_mv|
+|7 |│ │ └─SUBPLAN SCAN             |collect_item   |
+|8 |│ │   └─TABLE FULL SCAN        |collect_item   |
+|9 |│ └─SUBPLAN SCAN               |collect_info   |
+|10|│   └─DISTRIBUTED TABLE GET    |collect_info   |
+|11|└─HASH JOIN                    |               |
+|12|  ├─PX COORDINATOR             |               |
+|13|  │ └─EXCHANGE OUT DISTR       |:EX20000       |
+|14|  │   └─PX PARTITION ITERATOR  |               |
+|15|  │     └─MERGE ANTI JOIN      |               |
+|16|  │       ├─TABLE FULL SCAN    |collect_info   |
+|17|  │       └─TABLE FULL SCAN    |collect_info_mv|
+|18|  └─TABLE FULL SCAN            |collect_item   |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])]), filter(nil), rowset=256
+  1 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [CASE WHEN collect_item.OLD_NEW$$ IS NULL THEN collect_info_mv.dup_item_id ELSE collect_item.item_id 
+      END], [CASE WHEN collect_item.OLD_NEW$$ IS NULL THEN collect_info_mv.price ELSE collect_item.price END]), filter([collect_info.OLD_NEW$$ = 'N' OR collect_info.OLD_NEW$$ 
+      IS NULL]), rowset=256
+      conds(nil), nl_params_([collect_info_mv.user_id(:0)], [collect_info_mv.item_id(:1)]), use_batch=true
+  2 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_item.OLD_NEW$$], [collect_item.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price],
+       [collect_item.price]), filter([collect_item.OLD_NEW$$ = 'N' OR collect_item.OLD_NEW$$ IS NULL]), rowset=256
+      equal_conds([collect_info_mv.item_id = collect_item.item_id]), other_conds(nil)
+  3 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), filter(nil), rowset=256
+  4 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), filter(nil), rowset=256
+      dop=1
+  5 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), filter(nil), rowset=256
+      force partition granule
+  6 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), filter(nil), rowset=256
+      access([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info_mv.user_id], [collect_info_mv.item_id]), range(MIN,MIN ; MAX,MAX)always true
+  7 - output([collect_item.item_id], [collect_item.OLD_NEW$$], [collect_item.price]), filter(nil), rowset=256
+      access([collect_item.item_id], [collect_item.OLD_NEW$$], [collect_item.price])
+  8 - output([collect_item.item_id], [collect_item.price], [OLD_NEW$$]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=256
+      access([collect_item.item_id], [collect_item.price], [ORA_ROWSCN], [OLD_NEW$$]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([collect_item.item_id]), range(MIN ; MAX)always true
+  9 - output([collect_info.OLD_NEW$$]), filter(nil), rowset=256
+      access([collect_info.OLD_NEW$$])
+ 10 - output([collect_info.user_id], [collect_info.item_id], [OLD_NEW$$]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=256
+      access([GROUP_ID], [collect_info.user_id], [collect_info.item_id], [ORA_ROWSCN], [OLD_NEW$$]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([collect_info.user_id], [collect_info.item_id]), range(MIN,MIN ; MAX,MAX)always true, 
+      range_cond([collect_info.user_id = :0], [collect_info.item_id = :1])
+ 11 - output([collect_info.user_id], [collect_info.item_id], [collect_item.item_id], [collect_item.price]), filter(nil), rowset=256
+      equal_conds([collect_info.item_id = collect_item.item_id]), other_conds(nil)
+ 12 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+ 13 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+      dop=1
+ 14 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+      partition wise, force partition granule
+ 15 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+      equal_conds([collect_info.user_id = collect_info_mv.user_id], [collect_info.item_id = collect_info_mv.item_id]), other_conds(nil)
+      merge_directions([ASC], [ASC])
+ 16 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+      access([collect_info.user_id], [collect_info.item_id]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info.user_id], [collect_info.item_id]), range(MIN,MIN ; MAX,MAX)always true
+ 17 - output([collect_info_mv.user_id], [collect_info_mv.item_id]), filter(nil), rowset=256
+      access([collect_info_mv.user_id], [collect_info_mv.item_id]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info_mv.user_id], [collect_info_mv.item_id]), range(MIN,MIN ; MAX,MAX)always true
+ 18 - output([collect_item.item_id], [collect_item.price]), filter(nil), rowset=256
+      access([collect_item.item_id], [collect_item.price]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_item.item_id]), range(MIN ; MAX)always true
+select * from res_com1;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+
+explain basic select * from collect_info_mv where user_id = 1;
+Query Plan
+==================================================
+|ID|OPERATOR                     |NAME           |
+--------------------------------------------------
+|0 |UNION ALL                    |               |
+|1 |├─MERGE OUTER JOIN           |               |
+|2 |│ ├─NESTED-LOOP OUTER JOIN   |               |
+|3 |│ │ ├─TABLE RANGE SCAN       |collect_info_mv|
+|4 |│ │ └─SUBPLAN SCAN           |collect_item   |
+|5 |│ │   └─DISTRIBUTED TABLE GET|collect_item   |
+|6 |│ └─SUBPLAN SCAN             |collect_info   |
+|7 |│   └─TABLE RANGE SCAN       |collect_info   |
+|8 |└─NESTED-LOOP JOIN           |               |
+|9 |  ├─MERGE ANTI JOIN          |               |
+|10|  │ ├─TABLE RANGE SCAN       |collect_info   |
+|11|  │ └─SUBPLAN SCAN           |VIEW2          |
+|12|  │   └─TABLE RANGE SCAN     |collect_info_mv|
+|13|  └─DISTRIBUTED TABLE GET    |collect_item   |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])]), filter(nil), rowset=256
+  1 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [CASE WHEN collect_item.OLD_NEW$$ IS NULL THEN collect_info_mv.dup_item_id ELSE collect_item.item_id 
+      END], [CASE WHEN collect_item.OLD_NEW$$ IS NULL THEN collect_info_mv.price ELSE collect_item.price END]), filter([collect_info.OLD_NEW$$ = 'N' OR collect_info.OLD_NEW$$ 
+      IS NULL]), rowset=256
+      equal_conds([collect_info.item_id = collect_info_mv.item_id]), other_conds(nil)
+      merge_directions([ASC])
+  2 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_item.OLD_NEW$$], [collect_info_mv.dup_item_id], [collect_info_mv.price], [collect_item.item_id],
+       [collect_item.price]), filter([collect_item.OLD_NEW$$ = 'N' OR collect_item.OLD_NEW$$ IS NULL]), rowset=256
+      conds(nil), nl_params_([collect_info_mv.item_id(:0)]), use_batch=true
+  3 - output([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), filter(nil), rowset=256
+      access([collect_info_mv.user_id], [collect_info_mv.item_id], [collect_info_mv.dup_item_id], [collect_info_mv.price]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info_mv.user_id], [collect_info_mv.item_id]), range(1,MIN ; 1,MAX), 
+      range_cond([collect_info_mv.user_id = 1])
+  4 - output([collect_item.item_id], [collect_item.OLD_NEW$$], [collect_item.price]), filter(nil), rowset=256
+      access([collect_item.item_id], [collect_item.OLD_NEW$$], [collect_item.price])
+  5 - output([collect_item.item_id], [collect_item.price], [OLD_NEW$$]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=256
+      access([GROUP_ID], [collect_item.item_id], [collect_item.price], [ORA_ROWSCN], [OLD_NEW$$]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([collect_item.item_id]), range(MIN ; MAX)always true, 
+      range_cond([:0 = collect_item.item_id])
+  6 - output([collect_info.item_id], [collect_info.OLD_NEW$$]), filter(nil), rowset=256
+      access([collect_info.item_id], [collect_info.OLD_NEW$$])
+  7 - output([collect_info.user_id], [collect_info.item_id], [OLD_NEW$$]), filter([ORA_ROWSCN > last_refresh_scn(xxxxxx)]), rowset=256
+      access([collect_info.user_id], [collect_info.item_id], [ORA_ROWSCN], [OLD_NEW$$]), partitions(p1)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([collect_info.user_id], [collect_info.item_id]), range(1,MIN ; 1,MAX), 
+      range_cond([collect_info.user_id = 1])
+  8 - output([collect_info.user_id], [collect_info.item_id], [collect_item.item_id], [collect_item.price]), filter(nil), rowset=256
+      conds(nil), nl_params_([collect_info.item_id(:1)]), use_batch=true
+  9 - output([collect_info.item_id], [collect_info.user_id]), filter(nil), rowset=256
+      equal_conds([collect_info.item_id = VIEW2.collect_info_mv.item_id]), other_conds(nil)
+      merge_directions([ASC])
+ 10 - output([collect_info.user_id], [collect_info.item_id]), filter(nil), rowset=256
+      access([collect_info.user_id], [collect_info.item_id]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info.user_id], [collect_info.item_id]), range(1,MIN ; 1,MAX), 
+      range_cond([collect_info.user_id = 1])
+ 11 - output([VIEW2.collect_info_mv.item_id]), filter(nil), rowset=256
+      access([VIEW2.collect_info_mv.item_id])
+ 12 - output([collect_info_mv.item_id]), filter(nil), rowset=256
+      access([collect_info_mv.item_id]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_info_mv.user_id], [collect_info_mv.item_id]), range(1,MIN ; 1,MAX), 
+      range_cond([collect_info_mv.user_id = 1])
+ 13 - output([collect_item.item_id], [collect_item.price]), filter(nil), rowset=256
+      access([GROUP_ID], [collect_item.item_id], [collect_item.price]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([collect_item.item_id]), range(MIN ; MAX), 
+      range_cond([:1 = collect_item.item_id])
+select * from res_com2;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+
+alter system major freeze;
+select * from res_com1;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+select * from res_com2;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+
+wait last refresh scn refresh failed
+
+select * from res_com1;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+select * from res_com2;
++-----------------------+
+| res                   |
++-----------------------+
+| 1.normal view,2.mview |
++-----------------------+
+
+drop materialized view collect_info_mv;
+drop table if exists collect_info;
+drop table if exists collect_item;

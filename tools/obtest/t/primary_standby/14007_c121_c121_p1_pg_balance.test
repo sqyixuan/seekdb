@@ -1,0 +1,161 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试主备库环境下PG的迁移和复制，和合并交叉
+
+ob1=OBI(cluster=1:2:1,proxy_num=1);
+ob2=OBI(cluster=1:2:1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+sleep 3;
+ob2.reboot;
+
+let $cpu = 8;
+let $memory = 5073741824;
+let $min_memory = 4073741824;
+let $disk = 936870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+ob1.mysql alter system set enable_rebalance = false;
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+alter system set __balance_controller='{"ENABLE_MIGRATE_TO_UNIT":"true"}';
+alter system set merge_thread_count = 32;
+alter system set minor_merge_concurrency=32;
+alter system set sys_bkgd_net_percentage = 100;
+alter system set sys_bkgd_io_high_percentage = 100;
+alter system set default_compress ='nocompress';
+alter system set default_compress_func ='none';
+alter system set server_data_copy_out_concurrency=10;
+alter system set server_data_copy_in_concurrency=10;
+alter system set data_copy_concurrency=100;
+alter system set _migrate_block_verify_level=0;
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+set ob_query_timeout = 50000000;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z2', 'z3');
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1', 'pool_2'), primary_zone='z2' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.mysql alter system set enable_pg = true;
+
+## 在两个租户下创建PG； (副本数多、少、无, 有分区，无分区交叉)
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+set ob_query_timeout = 30000000;
+create tablegroup tpcc_group partition by hash partitions 128;
+create table t(c1 int primary key, c2 int)  tablegroup='tpcc_group' partition by hash(c1) partitions 128;
+create tablegroup tpcc_group2 partition by hash partitions 10;
+create tablegroup tpcc_group3 partition by hash partitions 12;
+create table ttt(c1 int primary key, c2 int)  tablegroup='tpcc_group3' partition by hash(c1) partitions 12;
+create tablegroup tpcc_group4;
+create tablegroup tpcc_group5;
+create table t2(c1 int primary key, c2 int)  tablegroup='tpcc_group5';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set enable_rebalance = false;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 100;
+alter system set server_data_copy_in_concurrency = 100;
+alter system set data_copy_concurrency = 600;
+alter system set __balance_controller='{"ENABLE_MIGRATE_TO_UNIT":"true","ENABLE_DELETE_REDUNDANT":"true"}';
+alter system set merge_thread_count = 32;
+alter system set minor_merge_concurrency=32;
+alter system set sys_bkgd_net_percentage = 100;
+alter system set sys_bkgd_io_high_percentage = 100;
+alter system set default_compress ='nocompress';
+alter system set default_compress_func ='none';
+alter system set server_data_copy_out_concurrency=10;
+alter system set server_data_copy_in_concurrency=10;
+alter system set data_copy_concurrency=100;
+alter system set _migrate_block_verify_level=0;
+ob1.mysql alter system set enable_rebalance = true;
+ob2.mysql alter system set enable_rebalance = true;
+##等待复制完成
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 600;
+
+###主动发起迁移
+####主库
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id and zone_list like '%z2%' , resource_pool_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) svr from __all_server where zone = 'z2' except (select concat(svr_ip, ":", svr_port) svr from __all_unit where resource_pool_id = $resource_pool_id), svr, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone = 'z2' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest';
+--enable_query_log
+###备库
+let $resource_pool_id = deploy_get_value(ob2.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $dest = deploy_get_value(ob2.select select concat(svr_ip, ":", svr_port) svr from __all_server except (select concat(svr_ip, ":", svr_port) svr from __all_unit where resource_pool_id = $resource_pool_id), svr, 1);
+let $unit_id = deploy_get_value(ob2.select select unit_id from __all_unit where zone = 'z2' and resource_pool_id = $resource_pool_id, unit_id, 1);
+ob_connect(sys2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest';
+--enable_query_log
+
+##迁移过程中加入表；创建PG
+sleep 5;
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+set ob_query_timeout = 30000000;
+create tablegroup tpcc partition by hash partitions 12;
+create tablegroup tpcc2 partition by hash partitions 12;
+create tablegroup tpcc4;
+create table test9(c1 int primary key, c2 int)  tablegroup='tpcc4';
+create table test(c1 int primary key, c2 int)  tablegroup='tpcc' partition by hash(c1) partitions 12;
+create table test3(c1 int primary key, c2 int)  tablegroup='tpcc_group' partition by hash(c1) partitions 128;
+create table test10(c1 int primary key, c2 int)  tablegroup='tpcc_group' partition by hash(c1) partitions 128;
+set recyclebin = false;
+
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+
+##等待做完
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 1200;
+
+##宕机等待复制
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob2.mysql alter system set server_permanent_offline_time = '20s';
+####主库
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id and zone_list like '%z2%', resource_pool_id, 1);
+let $svr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) svr from __all_unit where resource_pool_id = $resource_pool_id and zone = 'z2', svr, 1);
+let $obs = deploy_get_value(ob1.get_obs_by_addr $svr);
+####备库
+let $resource_pool_id = deploy_get_value(ob2.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $svr2 = deploy_get_value(ob2.select select concat(svr_ip,":",svr_port) svr from __all_unit where resource_pool_id = $resource_pool_id and zone = 'z2', svr, 1);
+let $obs2 = deploy_get_value(ob2.get_obs_by_addr $svr2);
+$obs2.force_stop;
+connection tt1_conn;
+drop table test10;
+drop table test3;
+drop tablegroup tpcc2;
+drop table test9;
+drop tablegroup tpcc4;
+$obs.force_stop;
+ob1.check_until_timeout select count(*)>0 from __all_unit where migrate_from_svr_ip != '', 1, 120;
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 5, 700;
+ob2.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 5, 700;
+###等待所有unit都从obs.force_stop上迁移走；
+ob1.check_until_timeout select count(*) from __all_unit where concat(svr_ip,":",svr_port) = '$svr', 0, 600;
+ob1.check_until_timeout select count(*) from __all_unit where concat(migrate_from_svr_ip,":",migrate_from_svr_port) = '$svr', 0, 600;
+--error 0,6002
+create tablegroup tpcc2 partition by hash partitions 12;
+create tablegroup if not exists tpcc2 partition by hash partitions 12;
+create table test10(c1 int primary key, c2 int)  tablegroup='tpcc2' partition by hash(c1) partitions 12;
+create table test11(c1 int primary key, c2 int)  tablegroup='tpcc_group' partition by hash(c1) partitions 128;
+create table test12(c1 int primary key, c2 int)  tablegroup='tpcc_group' partition by hash(c1) partitions 128;
+####等待拷贝完成；
+ob1.check_until_timeout select count(*) from __all_unit where resource_pool_id = 1  and concat(svr_ip,":",svr_port) = '$svr', 0, 300;
+ob2.check_until_timeout select count(*) from __all_unit where resource_pool_id = 1 and concat(svr_ip,":",svr_port) = '$svr2', 0, 300;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 900;
+ob2.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 900;
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 7, 700;
+ob2.check_until_timeout select value from __all_zone where zone = '' and name = 'last_merged_version', 7, 700;
+

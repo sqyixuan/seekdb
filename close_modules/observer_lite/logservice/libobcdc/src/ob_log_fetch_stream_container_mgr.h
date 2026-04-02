@@ -1,0 +1,124 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_COLLECTOR_FETCH_STREAM_CONTAINER_H__
+#define OCEANBASE_LIBOBCDC_COLLECTOR_FETCH_STREAM_CONTAINER_H__
+
+#include "lib/objectpool/ob_small_obj_pool.h"   // ObSmallObjPool
+#include "lib/hash/ob_linear_hash_map.h"        // ObLinearHashMap
+#include "logservice/common_util/ob_log_ls_define.h" // logservice::TenantLSID
+#include "ob_log_fetch_stream_container.h"      // FetchStreamContainer
+#include "ob_log_fetch_stream_pool.h"           // FetchStreamPool
+#include "ob_log_fetch_log_rpc.h"               // FetchLogARpcResultPool
+#include "ob_log_tenant.h"
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+class IObFsContainerMgr
+{
+public:
+  /// add a new fetch stream container
+  virtual int add_fsc(const FetchStreamType stype,
+      const logservice::TenantLSID &tls_id) = 0;
+
+  /// remove the fetch stream container
+  virtual int remove_fsc(const logservice::TenantLSID &tls_id) = 0;
+
+  /// get the fetch stream container
+  virtual int get_fsc(const logservice::TenantLSID &tls_id,
+      FetchStreamContainer *&fsc) = 0;
+};
+
+class IObLogRpc;
+class IObLSWorker;
+class PartProgressController;
+
+class ObFsContainerMgr : public IObFsContainerMgr
+{
+public:
+  ObFsContainerMgr();
+  virtual ~ObFsContainerMgr();
+  int init(const int64_t svr_stream_cached_count,
+      const int64_t fetch_stream_cached_count,
+      const int64_t rpc_result_cached_count,
+      IObLogRpc &rpc,
+      IObLSWorker &stream_worker,
+      PartProgressController &progress_controller);
+  void destroy();
+
+public:
+  virtual int add_fsc(const FetchStreamType stype,
+      const logservice::TenantLSID &tls_id);
+  virtual int remove_fsc(const logservice::TenantLSID &tls_id);
+  virtual int get_fsc(const logservice::TenantLSID &tls_id,
+      FetchStreamContainer *&fsc);
+  void print_stat();
+
+private:
+  //struct FscStatFunc
+  // TODO
+  struct SvrStreamStatFunc
+  {
+    bool operator() (const logservice::TenantLSID &key, FetchStreamContainer* value)
+    {
+      UNUSED(key);
+      int64_t traffic = 0;
+      if (NULL != value) {
+        value->do_stat(traffic);
+      }
+      return true;
+    }
+  };
+
+  typedef common::ObLinearHashMap<logservice::TenantLSID, FetchStreamContainer*> FscMap;
+  typedef common::ObSmallObjPool<FetchStreamContainer> FscPool;
+  typedef common::ObLinearHashMap<TenantID, int64_t> TenantFetchInfoMap; // Map of tenant_id -> fetch log traffic
+  // TODO
+  static const int64_t SVR_STREAM_POOL_BLOCK_SIZE = 1 << 22;
+
+  struct TenantStreamStatFunc
+  {
+    TenantStreamStatFunc(TenantFetchInfoMap *tenant_fetch_traffic_map) : tenant_fetch_traffic_map_(tenant_fetch_traffic_map) {}
+    bool operator() (const logservice::TenantLSID &key, FetchStreamContainer *value);
+    TenantFetchInfoMap *tenant_fetch_traffic_map_;
+  };
+
+  struct TenantStreamStatPrinter
+  {
+    bool operator() (const TenantID &tenant_id, const int64_t traffic);
+  };
+
+private:
+  bool is_inited_;
+
+  // External modules
+  IObLogRpc                     *rpc_;                      // RPC handler
+  IObLSWorker                   *stream_worker_;            // Stream master
+  PartProgressController        *progress_controller_;      // progress controller
+
+  FscMap                        fsc_map_;
+  FscPool                       fsc_pool_;                  // Supports multi-threaded alloc/release
+  FetchStreamPool               fs_pool_;                   // FetchStream object pool
+  FetchLogARpcResultPool        rpc_result_pool_;           // RPC resujt object pool
+  TenantFetchInfoMap            tenant_fetch_traffic_map_;  // Tenant fetch log traffic map
+};
+
+} // namespace libobcdc
+} // namespace oceanbase
+
+#endif

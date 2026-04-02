@@ -1,0 +1,178 @@
+##########################
+#owner :  jim.wjh
+#owner group: liboblog
+#description:
+# 测试点：
+# 1. nchar
+#    nchar支持padding
+# 2. nvarchar2
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant.inc;
+source include/liboblog/enable_oracle_archive.inc;
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+#ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -x;
+ob1.oblog.restart;
+
+# oracle
+#1.比较的类型都为Char类型时，字符串后面空格不参与比较。因此对于结尾一个或者多个空格, 底层存储直接忽略,结尾空格不存储
+#  同时对于char类型在oracle模式下会补全空格，比如char(10), 插入'a', sql-select会补全9个空格，达到长度10
+#  同步出数据目前忽略空格
+#2.比较类型有Varchar时，字符串后面空格参与比较。 结尾空格不可以忽略
+#3.Oracle目前会将CHAR和VARCHAR2类型的空串处理为NULL
+#4.VARCHAR类型目前作为VARCHAR2的同义词，但作为与ANSI标准兼容的保留, 目前空串也为NULL
+#
+# mysql
+# 字符串比较，只有一种规则，结尾空格不参与比较。即忽略结尾连续的空格, 'a' = 'a ' = 'a  ' ... ='a       '
+
+create table t_simple(c0 int, c1 nvarchar2(10), c2 nchar(10));
+ob1.oblog.next;
+
+insert into t_simple values(1, 'a ', 'a ');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=1;
+ob1.oblog.next;
+
+insert into t_simple values(2, 'a         ', 'a  ');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=2;
+ob1.oblog.next;
+
+insert into t_simple values(3, '', '');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=3;
+ob1.oblog.next;
+
+insert into t_simple values(4, '', '');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=4;
+ob1.oblog.next;
+
+insert into t_simple values(5, 'a h j r', 'a  ');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=5;
+ob1.oblog.next;
+
+insert into t_simple(c0, c1) values(6, 'a '), (7, 'a '), (8, 'a ');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0>=6;
+ob1.oblog.next;
+
+insert into t_simple values(9, 'ob oblog', 'a  ');
+select lower(UTL_RAW.cast_to_raw(c1)), lower(UTL_RAW.cast_to_raw(c2)) from t_simple where c0=9;
+ob1.oblog.next;
+
+delete from t_simple where c0 = 9;
+ob1.oblog.next;
+
+## nvarchar2作为主键
+create table t_simple_nvarchar2_pk(c1 nvarchar2(10) primary key);
+ob1.oblog.next;
+
+insert into t_simple_nvarchar2_pk values('a');
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nvarchar2_pk;
+ob1.oblog.next;
+
+insert into t_simple_nvarchar2_pk values('a ');
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nvarchar2_pk;
+ob1.oblog.next;
+
+insert into t_simple_nvarchar2_pk values('a  ');
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nvarchar2_pk;
+ob1.oblog.next;
+
+update t_simple_nvarchar2_pk set C1='a    ' where C1='a  ';
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nvarchar2_pk;
+ob1.oblog.next;
+
+## nchar作为主键
+create table t_simple_nchar_pk(c1 nchar(10) primary key, c2 int);
+ob1.oblog.next;
+
+# sys-mysql租户获取
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+sleep 1;
+let $start_tstamp = query_get_value(select time_to_usec(now()) as now, now, 1);
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+insert into t_simple_nchar_pk values('a', 1);
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nchar_pk;
+delete from t_simple_nchar_pk;
+insert into t_simple_nchar_pk values('a ', 2);
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nchar_pk;
+delete from t_simple_nchar_pk;
+insert into t_simple_nchar_pk values('a  ', 3);
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nchar_pk;
+delete from t_simple_nchar_pk;
+insert into t_simple_nchar_pk values('a   ', 4);
+select lower(UTL_RAW.cast_to_raw(c1)) from t_simple_nchar_pk;
+delete from t_simple_nchar_pk;
+
+let $CHAR_PK_DML_CNT = 8;
+while ($CHAR_PK_DML_CNT > 0)
+{
+  ob1.oblog.next;
+  dec $CHAR_PK_DML_CNT;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 回拉历史
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -x;
+ob1.oblog.restart;
+
+let $CHAR_PK_DML_CNT = 8;
+while ($CHAR_PK_DML_CNT > 0)
+{
+  ob1.oblog.next_dml;
+  dec $CHAR_PK_DML_CNT;
+}
+
+#### padding
+create table padding_nchar(c0 int primary key, c1 int, c2 nchar(11));
+ob1.oblog.next;
+
+insert into padding_nchar values(1, 1, 'a');
+ob1.oblog.next;
+update padding_nchar set c1 = 10 where c0=1;
+ob1.oblog.next;
+
+insert into padding_nchar values(2, 2, 'a ');
+ob1.oblog.next;
+delete from padding_nchar where c0=2;
+ob1.oblog.next;
+
+insert into padding_nchar values(3, 3, 'a  ');
+ob1.oblog.next;
+update padding_nchar set c2 = 'ab' where c0=3;
+ob1.oblog.next;
+
+insert into padding_nchar values(4, 4, 'ab   ');
+ob1.oblog.next;
+update padding_nchar set c2 = 'abc' where c0=4;
+ob1.oblog.next;
+
+insert into padding_nchar values(5, 5, 'abc    ');
+ob1.oblog.next;
+update padding_nchar set c2 = 'abcd' where c0=5;
+ob1.oblog.next;
+
+insert into padding_nchar values(6, 6, '');
+ob1.oblog.next;
+select * from padding_nchar where c0=6;
+insert into padding_nchar values(7, 7, ' ');
+ob1.oblog.next;
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

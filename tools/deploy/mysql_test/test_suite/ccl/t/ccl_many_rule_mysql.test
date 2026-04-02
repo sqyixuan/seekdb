@@ -1,0 +1,137 @@
+#owner: zhl413386
+#owner group: sql3
+#tag: ccl
+
+--result_format 4
+
+#Test single sql match many ccl rule
+#1. all ccl rule
+#2. ccl rule + outline
+
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop database if exists ccl_db;
+create database ccl_db;
+use ccl_db;
+
+create table ccl_t1 (c1 int, c2 varchar(32));
+
+insert into ccl_t1 values(1, "123");
+insert into ccl_t1 values(2, "456");
+insert into ccl_t1 values(3, "789");
+
+create table ccl_t2 (c1 int, c2 varchar(32));
+insert into ccl_t2 values(1, "123");
+insert into ccl_t2 values(2, "456");
+insert into ccl_t2 values(3, "789");
+
+--enable_warnings
+
+--disable_result_log
+
+#database level rule
+CREATE CONCURRENT_LIMITING_RULE IF NOT EXISTS db_ccl_rule
+ON ccl_db.*
+TO '%'@'%'
+FOR all
+WITH MAX_CONCURRENCY = 10000;
+
+CREATE CONCURRENT_LIMITING_RULE IF NOT EXISTS ccl_t1_rule
+ON ccl_db.ccl_t1
+TO '%'@'%'
+FOR select
+WITH MAX_CONCURRENCY = 10 per sql;
+
+CREATE CONCURRENT_LIMITING_RULE IF NOT EXISTS ccl_t1_key_word
+ON ccl_db.ccl_t1
+TO '%'@'%'
+FOR select
+FILTER BY KEYWORD('ccl_t1', 'c2 = "123"')
+WITH MAX_CONCURRENCY = 1 per sql;
+sleep 5;
+
+SET @@ob_trx_timeout = 10000000000;
+SET @@ob_query_timeout = 10000000000;
+
+#1. all ccl rule
+send select sleep(5), * from ccl_t1 where c2 = "123";
+
+connection conn2;
+use ccl_db;
+
+#hit ccl_t1_key_word, should get error
+--error 0,11087
+select sleep(5), * from ccl_t1 where c2 = "123";
+
+--enable_result_log
+SELECT a.ccl_rule_name as CCL_RULE_NAME, CURRENT_CONCURRENCY, a.MAX_CONCURRENCY as MAX_CONCURRENCY FROM oceanbase.DBA_OB_CCL_RULES a, oceanbase.GV$OB_SQL_CCL_STATUS b where a.ccl_rule_id = b.ccl_rule_id order by CCL_RULE_NAME;
+--disable_result_log
+
+connection conn1;
+reap;
+
+#2. ccl rule + outline
+#scenarios orthogonal to the outline
+#should be limited by outline ccl_t1_key_word
+create outline ol_1 on select/*+max_concurrent(0)*/ sleep(5), * from ccl_t1 where c2 = "123";
+--error 0, 5268
+select sleep(5), * from ccl_t1 where c2 = "123";
+drop outline ol_1;
+
+#outline limit is > ccl limit, should be limited by ccl rule
+create outline ol_1 on select/*+max_concurrent(3)*/ sleep(5), * from ccl_t1 where c2 = "123";
+
+send select sleep(5), * from ccl_t1 where c2 = "123";
+
+connection conn2;
+use ccl_db;
+
+#hit ccl_t1_key_word and outline ol_1, but limited by ccl_t1_key_word
+--error 0,11087
+select sleep(5), * from ccl_t1 where c2 = "123";
+--enable_result_log
+SELECT a.ccl_rule_name as CCL_RULE_NAME, CURRENT_CONCURRENCY, a.MAX_CONCURRENCY as MAX_CONCURRENCY FROM oceanbase.DBA_OB_CCL_RULES a, oceanbase.GV$OB_SQL_CCL_STATUS b where a.ccl_rule_id = b.ccl_rule_id order by CCL_RULE_NAME;
+--disable_result_log
+
+connection conn1;
+reap;
+
+drop outline ol_1;
+
+DROP CONCURRENT_LIMITING_RULE IF EXISTS ccl_t1_key_word;
+sleep 5;
+
+# now, ol_1 limit 1, db_ccl_rule limit 10000, ccl_t1_rule limit 10 per sql
+# sql should be limited by outline
+create outline ol_1 on select/*+max_concurrent(1)*/ sleep(5), * from ccl_t1 where c2 = "123";
+
+send select sleep(5), * from ccl_t1 where c2 = "123";
+
+connection conn2;
+use ccl_db;
+--enable_result_log
+SELECT a.ccl_rule_name as CCL_RULE_NAME, CURRENT_CONCURRENCY, a.MAX_CONCURRENCY as MAX_CONCURRENCY FROM oceanbase.DBA_OB_CCL_RULES a, oceanbase.GV$OB_SQL_CCL_STATUS b where a.ccl_rule_id = b.ccl_rule_id order by CCL_RULE_NAME;
+--disable_result_log
+
+#should be limited by ol_1
+--error 0, 5268
+select sleep(5), * from ccl_t1 where c2 = "123";
+
+connection conn1;
+--error 0, 5268
+reap;
+
+drop outline ol_1;
+
+DROP CONCURRENT_LIMITING_RULE IF EXISTS db_ccl_rule;
+DROP CONCURRENT_LIMITING_RULE IF EXISTS ccl_t1_rule;
+
+drop database ccl_db;
+
+connection conn0;
+disconnect conn1;
+disconnect conn2;

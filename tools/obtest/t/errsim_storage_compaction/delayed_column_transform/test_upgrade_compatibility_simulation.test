@@ -1,0 +1,315 @@
+# owner: zhanghuidong.zhd
+# owner group: storage
+# description: this case simulate create table from old version and test upgrade compatibility
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.reboot;
+sleep 10;
+
+let $tenant_name = "all";
+ob1.mysql create resource unit unit_2 max_cpu=2, memory_size='5G';
+ob1.mysql create resource pool oracle_pool unit = 'unit_2', unit_num = 1;
+ob1.mysql create resource pool mysql_pool unit = 'unit_2', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 3, resource_pool_list=('oracle_pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql create tenant mysql replica_num = 3, resource_pool_list=('mysql_pool') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+sleep 2;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, ,test, , USE_OB_CONNECTOR);
+ob_connect(conn_oracle, ob1.z1.obs0, sys@oracle, ,sys, , USE_OB_CONNECTOR);
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn_mysql;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='mysql', tenant_id, 1);
+let $tenant_id_oracle = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+
+#########################################################################
+# TEST_0: upgrade compatibility bugfix
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+create table single_cg_with_multi_columns (c1 int primary key, c2 int, c3 int) with column group (all columns, each column);
+create table all_cg_not_overwrite_0 (c1 int primary key) with column group (all columns);
+create table all_cg_not_overwrite_1 (c1 int primary key, c2 int, c3 int) with column group (all columns, each column);
+insert into single_cg_with_multi_columns values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into all_cg_not_overwrite_0 values (1), (2), (3);
+insert into all_cg_not_overwrite_1 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+alter table single_cg_with_multi_columns drop column group (all columns, each column);
+alter table single_cg_with_multi_columns add column group (all columns);
+alter table all_cg_not_overwrite_0 drop column group (all columns);
+alter table all_cg_not_overwrite_0 add column group (all columns);
+alter table all_cg_not_overwrite_1 drop column group (each column);
+alter table all_cg_not_overwrite_1 add column group (each column);
+alter table all_cg_not_overwrite_1 drop column group (all columns);
+alter table all_cg_not_overwrite_1 add column group (all columns);
+alter table all_cg_not_overwrite_1 drop column group (each column);
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+alter table single_cg_with_multi_columns add column group (each column) delayed;
+alter table all_cg_not_overwrite_0 add column group (each column) delayed;
+alter table all_cg_not_overwrite_1 add column group (each column) delayed;
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'single_cg_with_multi_columns');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'all_cg_not_overwrite_0');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'all_cg_not_overwrite_1');
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+select * from single_cg_with_multi_columns;
+select * from all_cg_not_overwrite_0;
+select * from all_cg_not_overwrite_1;
+
+#########################################################################
+# TEST_1: create old version column group success
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+# default row store
+create table test (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test0 (c1 int primary key, c2 int, c3 int) with column group (all columns, each column);
+insert into test values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test0 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test0');
+alter table test add column group (all columns);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test drop column c2;
+eval select column_group_id, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test drop column group (each column);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test add column group (each column);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test add column c4 int;
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test drop column c4;
+eval select column_group_id, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+alter table test drop column group (each column);
+alter table test add column group (each column);
+alter table test add column c5 int after c1; 
+# affected by add column instant feature in v435
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test');
+select c1 + c3, c5 from test;
+# default column store
+alter system set default_table_store_format = "column";
+sleep 3;
+create table test_column (c1 int primary key, c2 int, c3 int);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test_column');
+alter system set default_table_store_format = "row";
+sleep 3;
+# default compound store
+alter system set default_table_store_format = "compound";
+sleep 3;
+create table test_compound (c1 int primary key, c2 int, c3 int);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test_compound');
+alter system set default_table_store_format = "row";
+sleep 3;
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+#########################################################################
+# TEST_2: read data from old version column group
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+create table test1 (c1 int primary key, c2 int, c3 int) with column group (all columns);
+create table test2 (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test3 (c1 int primary key, c2 int, c3 int) with column group (all columns, each column);
+insert into test1 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test2 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test3 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+select * from test1;
+select * from test2;
+select * from test3;
+select c1 + c3 from test1 where c2 < 6;
+select c1 + c2 from test2 where c3 > 4;
+select c2 + c3 from test3 where c1 < 3;
+
+#########################################################################
+# TEST_3: delayed column transform from old version column group
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+create table test4 (c1 int primary key, c2 int, c3 int);
+create table test5 (c1 int primary key, c2 int, c3 int) with column group (all columns);
+insert into test4 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test5 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+alter table test4 add column group (each column) delayed;
+alter table test5 add column group (each column) delayed;
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+alter table test4 add column group (all columns);
+alter table test4 drop column group (all columns, each column);
+alter table test5 drop column group (all columns, each column);
+
+#########################################################################
+# TEST_4: partition exchange with old version column group
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+create table test6 (c1 int primary key, c2 int, c3 int) partition by range (c1) (
+  partition c1_15 values less than (15),
+  partition c1_35 values less than (35)
+) with column group (each column);
+create table test7 (c1 int primary key, c2 int, c3 int);
+create table test8 (c1 int primary key, c2 int, c3 int) partition by range (c1) (
+  partition c1_15 values less than (15),
+  partition c1_35 values less than (35)
+);
+create table test9 (c1 int primary key, c2 int, c3 int) with column group (each column);
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 0;
+alter table test7 add column group (each column) delayed;
+alter table test8 add column group (each column) delayed;
+--error 1731
+alter table test6 exchange partition c1_15 with table test7 without validation;
+--error 1731
+alter table test8 exchange partition c1_15 with table test9 without validation;
+
+#########################################################################
+# TEST_5: add column instant with old version column group
+#########################################################################
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 1;
+create table test10 (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test11 (c1 int primary key, c2 int, c3 int) with column group (each column);
+alter table test10 add column group (all columns);
+alter table test11 add column group (all columns);
+alter table test10 drop column group (each column);
+alter table test11 drop column group (each column);
+ob1.mysql alter system set_tp tp_no = 523, error_code = 4016, frequency = 0;
+insert into test10 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test11 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+alter table test11 add column c4 int after c1;
+insert into test10 values (4, 5, 6), (6, 7, 8), (8, 9, 10);
+insert into test11 values (4, 5, 6, 7), (5, 6, 7, 8), (6, 7, 8, 9);
+alter table test10 add column group (each column) delayed;
+alter table test11 add column group (each column) delayed;
+alter table test10 add column c4 int after c1;
+alter table test11 add column c5 int after c4;
+insert into test10 values (9, 10, 11, 12), (10, 11, 12, 13);
+insert into test11 values (9, 10, 11, 12, 13), (10, 11, 12, 13, 14);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test10');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test11');
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+alter table test10 modify c1 varchar(256);
+alter table test11 modify c1 varchar(256);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test10');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test11');
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id, 1, 600;
+select * from test10;
+select * from test11;
+#########################################################################
+# TEST_6: create new version column group success
+#########################################################################
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+create table test12 (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test13 (c1 int primary key, c2 int, c3 int) with column group (all columns, each column);
+create table test14 (c1 int primary key, c2 int, c3 int) with column group (all columns);
+create table test15 (c1 int primary key, c2 int, c3 int);
+create table test16 (c1 int primary key, c2 int, c3 int);
+create table test17 (c1 int primary key, c2 int, c3 int);
+alter table test15 add column group (all columns, each column);
+alter table test16 add column group (all columns);
+alter table test17 add column group (each column);
+create table test18 (c1 int primary key, c2 int, c3 int);
+create table test19 (c1 int primary key, c2 int, c3 int);
+create table test20 (c1 int primary key, c2 int, c3 int) with column group (all columns);
+alter table test18 add column group (each column) delayed;
+alter table test19 add column group (each column, all columns) delayed;
+alter table test20 add column group (each column) delayed;
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test12');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test13');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test14');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test15');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test16');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test17');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test18');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test19');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test20');
+alter table test16 add column group (each column);
+alter table test17 add column group (all columns);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test16');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test17');
+# default column store
+alter system set default_table_store_format = "column";
+sleep 3;
+create table test_column_2 (c1 int primary key, c2 int, c3 int);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test_column_2');
+alter system set default_table_store_format = "row";
+sleep 3;
+# default compound store
+alter system set default_table_store_format = "compound";
+sleep 3;
+create table test_compound_2 (c1 int primary key, c2 int, c3 int);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test_compound_2');
+alter system set default_table_store_format = "row";
+sleep 3;
+# check column store index
+create index i1 on test_column_2 (c2, c3) with column group (each column);
+create index i2 on test_compound_2 (c2, c3) with column group (all columns, each column);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select unique(table_id) from oceanbase.DBA_OB_TABLE_LOCATIONS where index_name = 'i1');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select unique(table_id) from oceanbase.DBA_OB_TABLE_LOCATIONS where index_name = 'i2');
+#########################################################################
+# TEST_7: offline ddl from old version column group
+#########################################################################
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 1;
+create table test21 (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test22 (c1 int primary key, c2 int, c3 int) with column group (each column);
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test21');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test22');
+alter table test21 add column group (all columns);
+alter table test22 modify c2 varchar(256);
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test21');
+eval select column_group_id, column_group_name, column_group_type from oceanbase.__all_column_group_history where table_id = (select table_id from oceanbase.__all_table where table_name = 'test22');
+#########################################################################
+# TEST_8: drop column instant with old version column group (oracle)
+#########################################################################
+connection conn_oracle;
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 1;
+create table test23 (c1 int primary key, c2 int, c3 int) with column group (each column);
+create table test24 (c1 int primary key, c2 int, c3 int);
+alter table test23 add column group (all columns);
+alter table test23 drop column group (each column);
+ob1.mysql alter system set_tp tp_no=523, error_code = 4016, frequency = 0;
+alter table test23 add c4 int;
+alter table test24 add c4 int;
+alter table test23 drop column c2;
+alter table test24 drop column c2;
+insert into test23 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into test24 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id_oracle, 1, 600;
+connection conn_sys;
+--disable_query_log
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test23');
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test24');
+--enable_query_log
+connection conn_oracle;
+alter table test23 add column group (each column) delayed;
+alter table test24 add column group (each column) delayed;
+alter table test23 add c5 int;
+alter table test24 add c5 int;
+alter table test23 drop column c3;
+alter table test24 drop column c3;
+insert into test23 values (4, 5, 6), (5, 6, 7), (6, 7, 8);
+insert into test24 values (4, 5, 6), (5, 6, 7), (6, 7, 8);
+ob1.mysql alter system major freeze tenant all;
+sleep 20;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where status = 'IDLE' and tenant_id = $tenant_id_oracle, 1, 600;
+connection conn_sys;
+--disable_query_log
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test23');
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test24');
+--enable_query_log
+connection conn_oracle;
+alter table test23 modify c1 number(38);
+alter table test24 modify c1 number(38);
+connection conn_sys;
+--disable_query_log
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test23');
+eval select column_group_id, column_group_type from oceanbase.__all_virtual_column_group_history where tenant_id = $tenant_id_oracle and table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'test24');
+--enable_query_log
+connection conn_oracle;
+select * from test23;
+select * from test24;

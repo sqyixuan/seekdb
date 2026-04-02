@@ -1,0 +1,1 @@
+--replace_regex /'s3:\/\/[^']*'/'#DATA_FOLDER_NAME#'/

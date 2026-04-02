@@ -1,0 +1,22 @@
+let $OSS_BUCKET = #OSS_BUCKET#;
+let $OSS_HOST = #OSS_HOST#;
+let $OSS_ACCESS_ID = #OSS_ACCESS_ID#;
+let $OSS_ACCESS_KEY = #OSS_ACCESS_KEY#;
+#
+let $S3_BUCKET = #S3_BUCKET#;
+let $S3_REGION = #S3_REGION#;
+let $S3_HOST = #S3_ENDPOINT#;
+let $S3_AK = #S3_AK#;
+let $S3_SK = #S3_SK#;
+#
+let $OBS_BUCKET = #OBS_BUCKET#;
+let $OBS_REGION = #OBS_REGION#;
+let $OBS_ENDPOINT = #OBS_ENDPOINT#;
+let $OBS_AK = #OBS_AK#;
+let $OBS_SK = #OBS_SK#;
+#
+let $COS_BUCKET = #COS_BUCKET#;
+let $COS_ENDPOINT = #COS_ENDPOINT#;
+let $COS_APPID = #COS_APPID#;
+let $COS_AK = #COS_AK#;
+let $COS_SK = #COS_SK#;

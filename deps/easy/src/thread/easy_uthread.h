@@ -3,10 +3,6 @@
 
 #include "util/easy_pool.h"
 #include <easy_list.h>
-// ucontext.h requires _XOPEN_SOURCE on macOS
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE
-#endif
 #include <ucontext.h>
 
 /**

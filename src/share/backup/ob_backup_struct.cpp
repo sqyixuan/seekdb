@@ -1056,6 +1056,13 @@ bool ObLogArchiveBackupInfo::is_valid() const
   return status_.is_valid();
 }
 
+//TODO(yaoying.yyy): S3 is alse oss?
+bool ObLogArchiveBackupInfo::is_oss() const
+{
+  ObString dest(backup_dest_);
+  return dest.prefix_match(OB_OSS_PREFIX);
+}
+
 bool ObLogArchiveBackupInfo::is_same(const ObLogArchiveBackupInfo &other) const
 {
   return 0 == strncmp(backup_dest_, other.backup_dest_, sizeof(backup_dest_))
@@ -1312,6 +1319,9 @@ int ObBackupDest::parse_backup_dest_str_(const char *backup_dest, const bool onl
   } else if (OB_FAIL(get_storage_type_from_path(bakup_dest_str, type))) {
     LOG_WARN("failed to get storage type", K(ret));
   } else {
+    // oss://backup_dir/?host=xxx.com&access_id=111&access_key=222
+    // oss://backup_dir/?host=xxx.com&role_arn=xxx&external_id=xxx
+    // oss://backup_dir/?host=xxx.com&role_arn=xxx (external_id is optional)
     // file:///root_backup_dir"
     while (backup_dest[pos] != '\0') {
       if ('?' == backup_dest[pos]) {
@@ -1491,6 +1501,7 @@ int ObBackupDest::set_without_decryption(const common::ObString &backup_dest) {
   return ret;
 }
 
+// oss://backup_dir/?host=xxx.com -> root_path=oss://backup_dir  endpoint=host=xxx.com
 // file:///root_backup_dir" -> root_path=file:///root_backup_dir
 int ObBackupDest::set_storage_path(const common::ObString &storage_path_str) 
 {
@@ -4370,7 +4381,7 @@ int ObRestoreBackupSetBriefInfo::get_restore_backup_set_brief_info_str(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
   } else {
-    str.assign_ptr(str_buf, static_cast<ObString::obstr_size_t>(STRLEN(str_buf)));
+    str.assign_ptr(str_buf, STRLEN(str_buf));
     LOG_DEBUG("get log path list str", KR(ret), K(str));
   }
   return ret;
@@ -4466,7 +4477,7 @@ int ObRestoreLogPieceBriefInfo::get_restore_log_piece_brief_info_str(
     LOG_WARN("unexpected format str", KR(ret), K(str_buf), K(str_buf_len));
   } else {
 
-    str.assign_ptr(str_buf, static_cast<ObString::obstr_size_t>(STRLEN(str_buf)));
+    str.assign_ptr(str_buf, STRLEN(str_buf));
     LOG_DEBUG("get log path list str", KR(ret), K(str));
   }
   return ret;

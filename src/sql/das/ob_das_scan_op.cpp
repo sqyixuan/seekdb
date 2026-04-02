@@ -78,8 +78,7 @@ OB_SERIALIZE_MEMBER(ObDASScanCtDef,
                     domain_tids_,
                     pre_range_graph_,
                     external_file_pattern_,
-                    external_object_ctx_,
-                    semantic_index_info_);
+                    external_object_ctx_);
 
 OB_DEF_SERIALIZE(ObDASScanRtDef)
 {
@@ -838,7 +837,7 @@ int ObDASScanOp::reuse_iter()
             lookup_iter->set_ls_id(ls_id_);
             break;
           }
-          case ITER_TREE_MATCH:
+          case ITER_TREE_MATCH: 
           case ITER_TREE_TEXT_RETRIEVAL: {
             ObDASIter *result_iter = static_cast<ObDASIter *>(result_);
             if (OB_FAIL(ObDASIterUtils::set_text_retrieval_related_ids(

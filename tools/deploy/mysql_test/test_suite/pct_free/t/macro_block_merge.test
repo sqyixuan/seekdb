@@ -1,0 +1,128 @@
+# owner: fengjingkun.fjk
+# group: storage
+# desc: test macro block merge
+
+--disable_warnings
+drop table if exists test;
+--enable_warnings
+
+create table test (c1 int primary key, c2 varchar(3048)) compression = 'none', row_format = compact,pctfree = 20;
+
+--disable_query_log
+--disable_result_log
+
+--let $sum=0
+--let $count=0
+while ($count < 15000)
+{
+  --let $stmt=INSERT INTO test VALUES($count, repeat($count,512))
+  eval $stmt;
+  inc $count;
+  inc $sum;
+}
+
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+--enable_query_log
+--enable_result_log
+
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $max_macro_logic_version = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ max(frozen_scn) as macro_logic_version 
+    from oceanbase.__all_virtual_freeze_info where tenant_id = $tenant_id, macro_logic_version, 1);
+let $__tablet_id__ = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ tablet_id from oceanbase.__all_virtual_table where table_name='test', tablet_id, 1);
+
+let $row_count_1 = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ row_count from oceanbase.__all_virtual_tablet_sstable_macro_info
+   where tablet_id = $__tablet_id__ and end_log_scn = $max_macro_logic_version order by data_seq asc, row_count, 1);
+
+let $row_count_2 = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ row_count from oceanbase.__all_virtual_tablet_sstable_macro_info
+   where tablet_id = $__tablet_id__ and end_log_scn = $max_macro_logic_version order by data_seq asc, row_count, 2);
+
+let $max_end_log_scn = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ max(frozen_scn) as macro_logic_version 
+    from oceanbase.__all_virtual_freeze_info where tenant_id = $tenant_id, macro_logic_version, 1);
+let $old_data_block_count = query_get_value(select data_block_count from oceanbase.__all_virtual_table_mgr where
+  tablet_id = $__tablet_id__ and table_type = 10 and end_log_scn = $max_end_log_scn, data_block_count, 1);
+
+--disable_query_log
+--disable_result_log
+
+disconnect obsys;
+connection default;
+
+--let $count=$row_count_1
+--let $i=100
+while ($i < $row_count_2)
+{
+  --let $stmt=DELETE from test where c1=$count
+  eval $stmt;
+  inc $count;
+  inc $i;
+  dec $sum;
+}
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+--enable_query_log
+--enable_result_log
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+
+--disable_query_log
+--disable_result_log
+
+disconnect obsys;
+connection default;
+
+--let $count=0
+--let $i=100
+while ($i < $row_count_1)
+{
+  --let $stmt=DELETE from test where c1=$count
+  eval $stmt;
+  inc $count;
+  inc $i;
+  dec $sum;
+}
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+--enable_query_log
+--enable_result_log
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+let $max_end_log_scn = query_get_value(select /*+QUERY_TIMEOUT(1000000000)*/ max(frozen_scn) as macro_logic_version 
+    from oceanbase.__all_virtual_freeze_info where tenant_id = $tenant_id, macro_logic_version, 1);
+let $new_data_block_count = query_get_value(select data_block_count from oceanbase.__all_virtual_table_mgr
+   where tablet_id = $__tablet_id__ and table_type = 10 and end_log_scn = $max_end_log_scn, data_block_count, 1);
+
+dec $old_data_block_count;
+
+if($new_data_block_count != $old_data_block_count) {
+  --echo block count error
+  --echo $old_data_block_count
+  --echo $new_data_block_count
+}
+
+disconnect obsys;
+connection default;
+
+let $row_count_sum = query_get_value(select count(*) as cnt from test, cnt, 1);
+
+if($row_count_sum != $sum) {
+  --echo "row_count_sum neq"
+  --echo $row_count_sum
+  --echo $sum
+}
+
+drop table test;

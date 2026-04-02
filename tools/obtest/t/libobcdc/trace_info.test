@@ -1,0 +1,166 @@
+# ownwer: wenyue.zxl
+# test point: test obcdc sycn ob_trace_info
+#
+
+ob1=OBI(cluster=2, init_unit_cpu=5);
+ob1.reboot;
+
+#################### create tenant ########################
+let $user_define_tenant_size=0;
+source include/liboblog/4_x/create_mysql_tenant_multi_unit.inc;
+
+#################### test ########################
+
+--disable_warnings
+drop database if exists oblog_db;
+
+create database oblog_db;
+use oblog_db;
+
+ob1.oblog.gen_conf tb_white_list=obcdc_mysql.*.* sort_trans_participants=1 enable_output_trans_order_by_sql_operation=0 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -I;
+ob1.oblog.restart;
+
+################################## single ls ############################
+create table t1(id int primary key, c1 int);
+
+set ob_trace_info='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+insert into t1 values (1, 1);
+ob1.oblog.next_dml;
+
+set ob_trace_info='`~.,:;|\\!@#$%^&*()_-++=[{}]"''<>?/';
+insert into t1 values (2 ,2);
+ob1.oblog.next_dml;
+
+set ob_trace_info='';
+insert into t1 values (3, 3);
+ob1.oblog.next_dml;
+
+set ob_trace_info='123456789012345678901234567890';
+insert into t1 values (4, 4);
+ob1.oblog.next_dml;
+
+begin;
+set ob_trace_info='single_ls_tx_1';
+insert into t1 values (5, 5);
+insert into t1 values (6, 6);
+select id, c1 from t1 where id > 4 order by id;
+commit;
+ob1.oblog.next_dml;
+
+# set trace info in the middle of trans
+begin;
+insert into t1 values (7, 7);
+set ob_trace_info='single_ls_tx_2';
+insert into t1 values (8, 7);
+select id, c1 from t1 where id > 6 order by id;
+select id, c1 from t1 where id >= 7 order by id;
+commit;
+ob1.oblog.next_dml;
+
+set ob_trace_info='update_stmt1';
+update t1 set c1=8 where id=8;
+ob1.oblog.next_dml;
+
+set ob_trace_info='row movement';
+update t1 set id=9, c1=9 where id=8;
+ob1.oblog.next_dml;
+
+set ob_trace_info='delete_stmt1';
+delete from t1 where id=9;
+ob1.oblog.next_dml;
+
+begin;
+replace into t1 values (20, 20);
+replace into t1 values (21, 21);
+delete from t1 where id=21;
+set ob_trace_info='trace_info_at_end';
+commit;
+ob1.oblog.next_dml;
+
+# expect the last trace_info is effective
+begin;
+set ob_trace_info='dml_trans_1_1';
+insert into t1 values (10, 10);
+set ob_trace_info='dml_trans_1_2';
+update t1 set c1 = 11 where id=10;
+set ob_trace_info='dml_trans_1_3';
+update t1 set id=11 where id=10;
+set ob_trace_info='dml_trans_1_4';
+delete from t1 where id=11;
+commit;
+ob1.oblog.next_dml;
+
+# whitespace
+set ob_trace_info= ' ';
+insert into t1 values (12, '12');
+ob1.oblog.next_dml;
+
+set ob_trace_info= '';
+
+############################## multi ls (maybe) ################################
+
+create table t2(id int primary key, c1 int) partition by range(id) (
+  partition p1 values less than (10),
+  partition p2 values less than (20),
+  partition p3 values less than (30),
+  partition p4 values less than (40),
+  partition p5 values less than (50),
+  partition p6 values less than (60),
+  partition p7 values less than (70),
+  partition p8 values less than (80),
+  partition p9 values less than (90),
+  partition p10 values less than (100),
+  partition p11 values less than MAXVALUE
+);
+
+set ob_trace_info='insert_stmt_multi_val';
+insert into t2 values (0, -1), (10,0), (20,1),(30,2),(40,3),(50,4),(60,7),(70,8),(80,9),(90,10),(100,11);
+ob1.oblog.next_dml;
+
+begin;
+set ob_trace_info='update_multi_row_1';
+update t2 set c1=c1+1 where id<60;
+select id, c1 from t2 order by id;
+commit;
+ob1.oblog.next;
+
+begin;
+set ob_trace_info='update_multi_row_2';
+update t2 set c1=c1-1 where id>60;
+replace into t2 values (60,6);
+select id, c1 from t2 order by id;
+commit;
+ob1.oblog.next_dml;
+
+begin;
+set ob_trace_info='delete_trans_2';
+--error 1062
+insert into t2 values (10, 2);
+delete from t2 where id >= 60;
+commit;
+ob1.oblog.next_dml;
+
+begin;
+replace into t2 values (60, 6);
+set ob_trace_info='begin_trace_info_not_at_start';
+replace into t2 values (70,7),(80,8),(90,9),(100,10);
+select id, c1 from t2 order by id;
+commit;
+ob1.oblog.next_dml;
+
+begin;
+set ob_trace_info='clean_trace_info';
+replace into t2 values (60, 66);
+delete from t2 where id=60;
+select id, c1 from t2 order by id;
+commit;
+ob1.oblog.next_dml;
+
+# clean trace info;
+set ob_trace_info='';
+insert into t2 values (60, 77);
+ob1.oblog.next_dml;
+
+
+ob1.oblog.stop;

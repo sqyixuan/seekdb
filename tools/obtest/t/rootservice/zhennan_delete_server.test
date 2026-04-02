@@ -1,0 +1,78 @@
+# CASE_OWNER:
+#    @wangzhennan.wzn
+# CASE_DESC:
+#    delete server
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+
+# reboot
+ob1.reboot;
+sleep 3;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set enable_rebalance= false;
+ob1.mysql alter system set server_permanent_offline_time = '60s';
+
+# create mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1' set ob_tcp_invited_nodes = '%';
+
+# test1: test lost replica checker
+INSERT INTO __all_ls_meta_table (tenant_id, ls_id, svr_ip, svr_port, sql_port, role, member_list, proposal_id, replica_type, replica_status, restore_status, memstore_percent, unit_id, zone, data_size, required_size, gmt_modified) VALUES (1009, 1, '127.1.1.1', 24333, 24368, 2, '', 0, 0, 'NORMAL', 0, 100, 1001, 'z1', 0, 0, now(6));
+INSERT INTO __all_ls_meta_table (tenant_id, ls_id, svr_ip, svr_port, sql_port, role, member_list, proposal_id, replica_type, replica_status, restore_status, memstore_percent, unit_id, zone, data_size, required_size, gmt_modified) VALUES (1011, 1, '127.1.1.1', 24333, 24368, 1, '127.1.1.1:1:1', 0, 0, 'NORMAL', 0, 100, 1001, 'z1', 0, 0, now(6));
+ob1.check_until_timeout select count(*) from oceanbase.__all_ls_meta_table where tenant_id = 1009, 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_ls_meta_table where tenant_id = 1011, 0, 10;
+
+# test2: not allowed to delete server when there is ls without leader
+INSERT INTO __all_ls_status (tenant_id, ls_id, init_member_list, b_init_member_list, status, ls_group_id, unit_group_id, primary_zone) VALUES (1001, 999, '', '', 'NORMAL', 1, 1, 'z1');
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+set @@session.ob_query_timeout = 10000000;
+--disable_query_log
+--error 4179
+eval alter system delete server '$z2_obs1_ip:$z2_obs1_port';
+--enable_query_log
+DELETE FROM __all_ls_status WHERE tenant_id = 1001 and ls_id = 999;
+
+# test3: normal delete server
+--disable_query_log
+eval alter system delete server '$z2_obs1_ip:$z2_obs1_port';
+--enable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = "z2", 1, 300;
+
+# test4: not allowed to delete server when there is no empty server in the same zone
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+--disable_query_log
+--error 4734
+eval alter system delete server '$z2_obs0_ip:$z2_obs0_port';
+--enable_query_log
+
+# test5: not allowed to delete server when inner sql timeout
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+set @@session.ob_query_timeout = 10500000;
+alter system set debug_sync_timeout = '10s';
+sleep 4;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_ALL_LS_HAS_LEADER wait_for continue_signal';
+--disable_query_log
+--error 4179
+eval alter system delete server '$z1_obs1_ip:$z1_obs1_port';
+--enable_query_log
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+# test6: server is down after deleting server, start_service_time will be 0
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $server_count = deploy_get_value(ob1.select select count(*) as count from __all_server, count, 1);
+let $server_count = math($server_count - 1);
+--disable_query_log
+eval alter system delete server '$z3_obs1_ip:$z3_obs1_port';
+--enable_query_log
+ob1.z3.obs1.force_stop;
+ob1.check_until_timeout(ob1.select select start_service_time from oceanbase.__all_server where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 0, 20);
+ob1.check_until_timeout select count(*) = $server_count from __all_server, 1, 120;

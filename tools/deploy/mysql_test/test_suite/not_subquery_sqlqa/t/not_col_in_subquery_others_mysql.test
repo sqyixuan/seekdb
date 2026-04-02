@@ -1,0 +1,270 @@
+#owner: yibo.tyf
+#owner group: sql1
+#description: subquery pullup supports not (column in subquery)
+#tags: optimizer
+#author:wb-zc01071363
+
+--echo #删除用户、释放空间
+--echo #Environmental cleaning
+--disable_warnings
+--error 0,1396
+drop user zhe123@'%';
+--enable_warnings
+--error 0,1008
+drop database zhe123;
+create database zhe123;
+create user zhe123 identified by 'zhe123';
+grant all on *.* to zhe123 WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,zhe123,zhe123,test,$OBMYSQL_PORT);
+connection conn;
+
+--error 0,1051
+drop table t1;
+create table t1 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date)
+partition by range (c1) (partition p0 values less than (3),partition p1 values less than (maxvalue));
+
+insert into t1 values(0,'cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t1 values(1,null,0.01,str_to_date('20210101','%Y%m%d'));
+insert into t1 values(2,'yellow cat',100,str_to_date('20211212','%Y%m%d'));
+insert into t1 values(3,'',8888.88,str_to_date('20210323','%Y%m%d'));
+
+--error 0,1051
+drop table t2;
+
+create table t2 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date);
+
+insert into t2 values(1,null,4444.44,str_to_date('20211212','%Y%m%d'));
+insert into t2 values(2,'yellow cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t2 values(3,'',2.22,str_to_date('20210303','%Y%m%d'));
+insert into t2 values(4,'white cat',100,str_to_date('20210101','%Y%m%d'));
+
+--error 0,1051
+drop table t3;
+
+create table t3 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date);
+
+insert into t3 values(1,null,4444.44,str_to_date('20211212','%Y%m%d'));
+insert into t3 values(5,'yellow cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t3 values(6,'',2.22,str_to_date('20210303','%Y%m%d'));
+insert into t3 values(7,'white cat',100,str_to_date('20210101','%Y%m%d'));
+
+
+--echo # 子查询为分区表
+--result_format 4
+--explain_protocol 2
+select * from t1 partition (p0) where not  c1 in(select c1 from t1 partition (p1) where c2 is not null) order by 1;
+select /*+ NO_REWRITE*/ * from t1 partition (p0) where not  c1 in(select c1 from t1 partition (p1) where c2 is not null) order by 1;
+select * from t1 partition (p0) where not  c1 = any(select c1 from t1 partition (p1) where c2 is not null) order by 1;
+select /*+ NO_REWRITE*/ * from t1 partition (p0) where not  c1 = any(select c1 from t1 partition (p1) where c2 is not null) order by 1;
+select a.c1 from t1 partition(p0) a where not (a.c1,a.c2,a.c3,a.c4) not in (select a.c1,a.c2,a.c3,a.c4 from t2 where c1 <> (select max(c1) from t3)  and a.c1 != any(select c3 from t1 where c3 not in (select c3 from t3)));
+select /*+ NO_REWRITE*/ a.* from t1 partition(p0) a where not (a.c1,a.c2,a.c3,a.c4) not in (select a.c1,a.c2,a.c3,a.c4 from t2 where c1 <> (select max(c1) from t3)  and a.c1 != any(select c3 from t1 where c3 not in (select c3 from t3)));
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 = any (SELECT a.c4 FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P0) a WHERE NOT a.c4 = any (SELECT a.c4 FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 < any (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P0) a WHERE NOT a.c4 < any (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 < any (SELECT a.c4 FROM t3 a LEFT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P0) a WHERE NOT a.c4 < any (SELECT a.c4 FROM t3 a LEFT  JOIN t2 b on a.c1=b.c2);
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 > any (SELECT a.c4 FROM t3 a INNER  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P0) a WHERE NOT a.c4 > any (SELECT a.c4 FROM t3 a INNER  JOIN t2 b on a.c1=b.c2);
+SELECT a.* from t1 PARTITION (P1) a  RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2 WHERE NOT a.c4 <= all (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P1) a  RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2 WHERE NOT a.c4 <= all (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 in (SELECT a.c4 FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/a.* from t1 PARTITION (P0) a WHERE NOT a.c4 not in (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 not in (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/a.* from t1 PARTITION (P0) a WHERE NOT a.c4 not in (SELECT a.c4 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c4 in (SELECT a.c4 FROM t1 PARTITION (P1) a);
+SELECT /*+ NO_REWRITE*/a.* from t1 PARTITION (P0) a WHERE NOT a.c4 in (SELECT a.c4 FROM t1 PARTITION (P1) a);
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT a.c2 > any (SELECT a.c4 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT /*+ NO_REWRITE*/a.* from t1 PARTITION (P0) a WHERE NOT a.c2 > any (SELECT a.c4 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2)in (SELECT a.c4,a.c2  FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.* from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2)in (SELECT a.c4,a.c2  FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT a.* from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a LEFT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a LEFT  JOIN t2 b on a.c1=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a INNER  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a INNER  JOIN t2 b on a.c1=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P1) a  RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2 WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/ a.c1,a.c2,a.c3 from t1 PARTITION (P1) a  RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2 WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t3 a RIGHT OUTER JOIN t2 b on a.c1=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) not in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) not in (SELECT a.c4,a.c2 FROM t3 a RIGHT  JOIN t2 b on a.c1=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c2,a.c4 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c2,a.c4 FROM t1 PARTITION (P1) a RIGHT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+SELECT /*+ NO_REWRITE*/a.c1,a.c2,a.c3 from t1 PARTITION (P1) a WHERE NOT (a.c4,a.c2) in (SELECT a.c2,a.c4 FROM t1 PARTITION (P1) a LEFT JOIN t1 PARTITION (P0)  b on a.c2=b.c2);
+
+
+set autocommit=0;
+--echo # dml操作 insert 
+insert into t3 select * from t1 where not c1 in (select c1 from t3);
+--explain_protocol 0
+select * from t1;
+rollback;
+--explain_protocol 2
+insert into t2 select * from t3 where not c1 in (select max(c1) from t2 group by c1);
+--explain_protocol 0
+select * from t1;
+rollback;
+
+--explain_protocol 2
+insert into t1 select * from t2 a where not (a.c2,a.c3) in (select c2,c3 from t1 where not (c1,c2) <>some (select c1,c2 from t2 where c2 is not null and c1 >6)) and not c1 in (0,1,2,3);
+--explain_protocol 0
+select * from t1;
+rollback;
+
+--explain_protocol 2
+insert into t1 select 101,c2,c3,c4 from t2 a where not (a.c2,a.c3) =any (select c2,c3 from t1 where not c1 <>any (SELECT a.c1 FROM t1 PARTITION (P0) a WHERE NOT (a.c4,a.c2) in (SELECT a.c4,a.c2 FROM t1 PARTITION (P1) a))) and not c1 in (0,1,2,3) limit 1;
+--explain_protocol 0
+select * from t1;
+rollback;
+
+--echo # create table as
+--error 0,1051
+drop table t4;
+create table t4 as SELECT a.c3 FROM t1 a WHERE not c2 = (select min(c2) from t2 where not c3 =(select min(c3) from t1));
+--error 0,1051
+drop table t5;
+create table t5 as select * from t1 where not (c1,c2) not in (select max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (select c1,c2 from t2 where c2 is not null)group by t1.c1);
+
+--explain_protocol 2
+insert into t5(c1,c2) select c1,c2 from t1 on duplicate key update c2=values(c2) and not t1.c1 in (1,2,3);
+--explain_protocol 0
+select * from t5;
+rollback;
+
+
+
+--echo # dml操作 update 
+--explain_protocol 2
+update t1 set c3 = (select c3 from t2 where not c1 in (select c1 from t1));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+--explain_protocol 2
+update t1 set c3 =2.22 where not c1 >= any (select count(c1) from t2 group by c1 having (c1>1));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+--explain_protocol 2
+update t1 set c3 = (select c3 from t2 where not (c1,c2,c3,c4) in  (select * from t2)) where  not c1 >= any (select count(c1) from t2 group by c1 having (c1>1));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+--explain_protocol 2
+update t1 set c4 =(select max(c4) from t2 where not (c4) =(select max(c4) from t3));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+
+
+--echo # dml操作delete
+--echo # mysql :ERROR 1093 (HY000): You can't specify target table 't1' for update in FROM clause ;ob mysql is ok
+--explain_protocol 2
+delete from  t1 where c3 = all(select c3 from t2 where not c1 in (select c1 from t1));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+--explain_protocol 2
+delete from  t1 where not c3 =any(select c3 from t1 partition (p0) where not  c1 in(select c1 from t1 partition (p1) where c2 is not null) );
+--explain_protocol 0
+select c3 from t1;
+rollback;
+--explain_protocol 2
+delete from  t1 where not c3 <>some(select c3 from t1 partition (p0) where not  c1 = any(select c1 from t1 partition (p1) where c2 is not null));
+--explain_protocol 0
+select count(*) from t1;
+select c3 from t1;
+rollback;
+--explain_protocol 2
+delete from  t1 where not c1 =any(select a.c1 from t1 partition(p0) a where not (a.c1,a.c2,a.c3,a.c4) not in (select a.c1,a.c2,a.c3,a.c4 from t2 where c1 <> (select max(c1) from t3)  and a.c1 != any(select c3 from t1 where c3 not in (select c3 from t3))));
+--explain_protocol 0
+select c3 from t1;
+rollback;
+
+
+
+--echo # insert into on 相当于oracle的merge into 
+--echo # subquery 在单表where位置
+--explain_protocol 2
+INSERT INTO t1 (c1, c2)
+  SELECT c1, c2 FROM t2 where not c2 in (select c2 from t3 where not c3 >=any(select min(c1) from t1))
+ON DUPLICATE KEY UPDATE c3 = c3+ 1000.22;
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+
+--explain_protocol 2
+INSERT INTO t1 (c1,c2)
+SELECT c1,c2 FROM
+(SELECT c1,c2 FROM t3 a where not a.c1  in (select a.c1 from t1 a where not (a.c1,a.c2) not in (select b.c1,b.c2 from t2 b) and a.c1=0))as ad
+ON DUPLICATE KEY UPDATE c2 = 'nice day',c3=c3*2 ;
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+
+--explain_protocol 2
+INSERT INTO t1 SET 
+c1=(select max(c1)+10 from t2 where not c1 in(select c1 from t3)),
+c2='pink big cat',
+c3=(select avg(a.c3) from t1 partition (p0) a where not (a.c2) not in (select a.c2 from t1 partition (p1) a right join t1 partition (p0)  b on a.c2=b.c2)) 
+ON DUPLICATE KEY UPDATE c3 =c1+c3;
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+
+--echo # subquery 在update位置
+--explain_protocol 2
+INSERT INTO t1 SET 
+c1=(select max(c1)+11 from t2 where not c1 in(select c1 from t3)),
+c2='pink small cat',
+c3=333.33 
+ON DUPLICATE KEY UPDATE c3 =(SELECT sum(a.c3) FROM t2 a WHERE NOT (a.c2) not in (SELECT a.c2  FROM t3 a ));
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+  
+--echo # subquery 在select 列位置
+--explain_protocol 2
+INSERT INTO t1(c1,c3)
+  SELECT * FROM (SELECT (SELECT floor(avg(a.c1)) FROM t2 a WHERE NOT (a.c1) not in (SELECT a.c1  FROM t3 a )), c1+c3 as e FROM t2 ) AS dt order by e desc limit 1
+  ON DUPLICATE KEY UPDATE c3 = e;  
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+
+--echo # subquery 在多表where位置
+--explain_protocol 2
+INSERT INTO t1 (c1,c2)
+SELECT c1,c2 FROM
+(SELECT c1,c2 FROM t1 where not c1 >= any (select count(c1) from t2 group by c1 having (c1>1))
+UNION
+SELECT c1,c2 FROM t3 a where not a.c1  in (select a.c1 from t1 a where not (a.c1,a.c2) not in (select b.c1,b.c2 from t2 b) and not a.c1 in (select c1 from t2)))as ad
+ON DUPLICATE KEY UPDATE c3 = c3 + c1+8000;
+--explain_protocol 0
+select c1,c2,c3 from t1 order by c1;
+rollback;
+
+set autocommit=1;
+
+
+--echo #end释放空间、断开连接、删除库、删除用户
+purge recyclebin;
+connection default;
+drop database if exists zhe123;
+drop user zhe123@'%';
+             

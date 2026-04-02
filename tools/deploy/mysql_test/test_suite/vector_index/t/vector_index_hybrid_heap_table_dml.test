@@ -1,0 +1,874 @@
+# owner: maochongxin.mcx
+# owner group: shenzhen
+# description: test complex dml of hybrid index
+
+# NOTE: You must add the corresponding model before running this test.
+
+alter system set ob_vector_memory_limit_percentage = 34;
+sleep 3;
+
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+
+--disable_query_log
+eval call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT (
+'ob_embed_endpoint', '{
+    "ai_model_name": "ob_embed",
+    "scope": "all",
+    "url": "$OB_API_HOST",
+    "access_key": "$OB_API_KEY",
+    "request_model_name": "$OB_MODEL_NAME",
+    "provider": "$OB_MODEL_PROVIDER"
+  }');
+--enable_query_log
+
+# sync
+--echo === 基础DML ===
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+--enable_warnings
+
+
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap;
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+
+create table t2 (id int PRIMARY KEY, doc varchar(100)) organization heap;
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+
+update t1 set doc = 'Updated document content' where id = 100;
+--error 1062
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+
+select distinct id from t1;
+drop table t1, t2;
+
+--echo === 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+                primary key(id),
+                VECTOR INDEX idx1(doc) WITH (distance=L2,
+                                             type=hnsw, dim=1024,
+                                             model=ob_embed,
+                                             sync_mode=immediate)) organization heap
+PARTITION BY RANGE COLUMNS(id)
+(
+  PARTITION p0 VALUES LESS THAN(100),
+  PARTITION p1 VALUES LESS THAN(200),
+  PARTITION p2 VALUES LESS THAN(300),
+  PARTITION p3 VALUES LESS THAN(10000),
+  PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+--error 4016
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+
+--error 1062
+update t1 set doc = 'Updated partition document' where id = 150;
+--error 1062
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+
+select distinct id from t1;
+drop table t1, t2;
+
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap PARTITION BY RANGE COLUMNS(id)(
+  PARTITION p0 VALUES LESS THAN(100),
+  PARTITION p1 VALUES LESS THAN(200),
+  PARTITION p2 VALUES LESS THAN(300),
+  PARTITION p3 VALUES LESS THAN(10000),
+  PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+
+let $before_fallback = query_get_value(select value from oceanbase.__all_virtual_tenant_parameter_stat where name = 'direct_load_allow_fallback', value, 1);
+alter system set direct_load_allow_fallback=TRUE;
+--error 4016
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+
+insert into t2 values(500, 'Document five hundred');
+--error 1062
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+
+create table t3 (id int primary key, doc varchar(100)) organization heap;
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+
+--error 1062
+update t1
+set doc = case
+            when id = 201 then concat(doc, ' - case 201')
+            when id = 401 then concat(doc, ' - case 401')
+            else doc
+         end
+where id < 500;
+
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+
+--echo === 事务 ===
+
+START TRANSACTION;
+delete from t1
+where t1.id in (
+    select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+
+--echo === 存储过程 ===
+DELIMITER //;
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+    DECLARE t2id INT;
+    select id into t2id
+    from t2
+    where id = inc1;
+
+    if t2id = inc2 then
+        update t1
+        set doc = concat(doc, ' - procedure')
+        where id > 10000;
+    else
+        insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+    end if;
+end;
+//
+DELIMITER ;//
+
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+
+drop table t1, t2, t3;
+
+--echo === 并发DML ===
+--echo bugfix 2025011500107001921 parallel dml
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+                vector index idx3(doc) with (distance=l2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap;
+
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, 'Document with parallel test 100') on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+
+
+--echo === 辅助表数据验证 ===
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+                vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)) organization heap;
+
+# insert 3, update 2, delete 1
+# expect log table 6, embedded table 2
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');  
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+--error 1062
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+
+
+#set ob_enable_index_direct_select = 1;
+# validate auxiliary tables for sync
+#let $table_id = `select table_id from oceanbase.__all_table where table_name = 't1';`;
+#let $aux_table = `select concat('__idx_', $table_id, '_idx3');`;
+#let $embedded_vec_table = `select concat('__idx_', $table_id, '_idx3_embedded_vec_table');`;
+#let $type_column = `select column_name from oceanbase.__all_column where table_id = $table_id and column_name like '%__type_%';`;
+
+#let $main_table_count = `select count(*) from t1;`;
+#eval select count(*) into @embedded_vec_count from $embedded_vec_table;
+#eval select count(*) into @aux_insert_count from $aux_table where $type_column = 'I';
+#eval select count(*) into @aux_delete_count from $aux_table where $type_column = 'D';
+#let $embedded_vec_count = `select @embedded_vec_count;`;
+#let $aux_insert_count = `select @aux_insert_count;`;
+#let $aux_delete_count = `select @aux_delete_count;`;
+
+#--echo main table count: $main_table_count
+#--echo embedded vec table count: $embedded_vec_count
+#--echo aux table insert count: $aux_insert_count
+#--echo aux table delete count: $aux_delete_count
+
+drop table t1;
+
+--echo === 多表 JOIN UPDATE ===
+--disable_warnings
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+--enable_warnings
+
+CREATE TABLE vector_join_t1 (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    category VARCHAR(50),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+
+CREATE TABLE vector_join_t2 (
+    id INT PRIMARY KEY,
+    name VARCHAR(100),
+    ref_id INT
+) organization heap;
+
+CREATE TABLE vector_join_t3 (
+    id INT PRIMARY KEY,
+    description TEXT,
+    ref_id INT
+) organization heap;
+
+INSERT INTO vector_join_t1 VALUES 
+    (1, 'Document one', 'tech'),
+    (2, 'Document two', 'science'),
+    (3, 'Document three', 'tech');
+
+INSERT INTO vector_join_t2 VALUES 
+    (1, 'Reference one', 1),
+    (2, 'Reference two', 2),
+    (3, 'Reference three', 3);
+
+INSERT INTO vector_join_t3 VALUES 
+    (1, 'Description for doc one', 1),
+    (2, 'Description for doc two', 2),
+    (3, 'Description for doc three', 3);
+
+--error 1062
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+--echo === 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+
+--echo === 子查询 UPDATE ===
+--error 1062
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+
+--echo ========== 视图上的 DML 操作 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+--enable_warnings
+
+CREATE TABLE vector_view_base (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    category VARCHAR(50),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+
+INSERT INTO vector_view_base VALUES 
+    (1, 'Tech document one', 'tech'),
+    (2, 'Science document', 'science'),
+    (3, 'Tech document two', 'tech');
+
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+--error 1062
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+
+SELECT * FROM vector_view_base ORDER BY id;
+SELECT * FROM vector_view ORDER BY id;
+
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+
+--echo ========== JSON 字段的 DML 操作 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_json_table;
+--enable_warnings
+
+CREATE TABLE vector_json_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    metadata JSON,
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate),
+    INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+) organization heap;
+
+INSERT INTO vector_json_table VALUES 
+    (1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+    (2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+
+--error 1062
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+
+SELECT * FROM vector_json_table ORDER BY id;
+
+DROP TABLE vector_json_table;
+
+
+--echo ========== 字符集相关的 DML ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_charset_table;
+--enable_warnings
+
+--echo === utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf8 organization heap;
+
+INSERT INTO vector_charset_table VALUES 
+    (1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+
+SELECT * FROM vector_charset_table WHERE id = 1;
+
+--echo === utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf16 organization heap;
+
+INSERT INTO vector_charset_table VALUES 
+    (1, 'abcdefg');
+
+--error 1062
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'hijklmn')
+WHERE id = 1;
+
+SELECT * FROM vector_charset_table WHERE id = 1;
+
+DROP TABLE vector_charset_table;
+
+--echo ========== 空值和边界值处理 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_null_table;
+--enable_warnings
+
+CREATE TABLE vector_null_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    content TEXT,
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+
+INSERT INTO vector_null_table VALUES 
+    (1, '', 'Empty string'),
+    (2, NULL, 'NULL value'),
+    (3, '   ', 'Whitespace only'),
+    (4, 'Normal content', 'Normal document');
+
+--error 1062
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+
+--error 1062
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+
+SELECT * FROM vector_null_table ORDER BY id;
+
+DROP TABLE vector_null_table;
+
+# async
+--echo === 基础DML ===
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+--enable_warnings
+
+
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual)) organization heap;
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+
+create table t2 (id int PRIMARY KEY, doc varchar(100)) organization heap;
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+
+--error 1062
+update t1 set doc = 'Updated document content' where id = 100;
+--error 1062
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+
+select distinct id from t1;
+drop table t1, t2;
+
+--echo === 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+                primary key(id),
+                VECTOR INDEX idx1(doc) WITH (distance=L2,
+                                             type=hnsw, dim=1024,
+                                             model=ob_embed,
+                                             sync_mode=manual)) organization heap
+PARTITION BY RANGE COLUMNS(id)
+(
+  PARTITION p0 VALUES LESS THAN(100),
+  PARTITION p1 VALUES LESS THAN(200),
+  PARTITION p2 VALUES LESS THAN(300),
+  PARTITION p3 VALUES LESS THAN(10000),
+  PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+--error 1062
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+
+--error 1062
+update t1 set doc = 'Updated partition document' where id = 150;
+--error 1062
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+
+select distinct id from t1;
+drop table t1, t2;
+
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual)) organization heap PARTITION BY RANGE COLUMNS(id)(
+  PARTITION p0 VALUES LESS THAN(100),
+  PARTITION p1 VALUES LESS THAN(200),
+  PARTITION p2 VALUES LESS THAN(300),
+  PARTITION p3 VALUES LESS THAN(10000),
+  PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+
+let $before_fallback = query_get_value(select value from oceanbase.__all_virtual_tenant_parameter_stat where name = 'direct_load_allow_fallback', value, 1);
+alter system set direct_load_allow_fallback=TRUE;
+--error 1062
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+
+insert into t2 values(500, 'Document five hundred');
+--error 1062
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+
+create table t3 (id int primary key, doc varchar(100)) organization heap;
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+
+update t1
+set doc = case
+            when id = 201 then concat(doc, ' - case 201')
+            when id = 401 then concat(doc, ' - case 401')
+            else doc
+         end
+where id < 500;
+
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+
+--echo === 事务 ===
+
+START TRANSACTION;
+delete from t1
+where t1.id in (
+    select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+
+--echo === 存储过程 ===
+DELIMITER //;
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+    DECLARE t2id INT;
+    select id into t2id
+    from t2
+    where id = inc1;
+
+    if t2id = inc2 then
+        update t1
+        set doc = concat(doc, ' - procedure')
+        where id > 10000;
+    else
+        insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+    end if;
+end;
+//
+DELIMITER ;//
+
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+
+drop table t1, t2, t3;
+
+--echo === 并发DML ===
+--echo bugfix 2025011500107001921 parallel dml
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+                vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)) organization heap;
+
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, null) on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+
+
+--echo === 辅助表数据验证 ===
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+                vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)) organization heap;
+
+# insert 3, update 2, delete 1
+# expect log table 6, embedded table 2
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');  
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+--error 1062
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+
+
+#set ob_enable_index_direct_select = 1;
+# validate auxiliary tables for sync
+#let $table_id = `select table_id from oceanbase.__all_table where table_name = 't1';`;
+#let $aux_table = `select concat('__idx_', $table_id, '_idx3');`;
+#let $embedded_vec_table = `select concat('__idx_', $table_id, '_idx3_embedded_vec_table');`;
+#let $type_column = `select column_name from oceanbase.__all_column where table_id = $table_id and column_name like '%__type_%';`;
+
+#let $main_table_count = `select count(*) from t1;`;
+#eval select count(*) into @embedded_vec_count from $embedded_vec_table;
+#eval select count(*) into @aux_insert_count from $aux_table where $type_column = 'I';
+#eval select count(*) into @aux_delete_count from $aux_table where $type_column = 'D';
+#let $embedded_vec_count = `select @embedded_vec_count;`;
+#let $aux_insert_count = `select @aux_insert_count;`;
+#let $aux_delete_count = `select @aux_delete_count;`;
+
+#--echo main table count: $main_table_count
+#--echo embedded vec table count: $embedded_vec_count
+#--echo aux table insert count: $aux_insert_count
+#--echo aux table delete count: $aux_delete_count
+
+drop table t1;
+
+--echo === 多表 JOIN UPDATE ===
+--disable_warnings
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+--enable_warnings
+
+CREATE TABLE vector_join_t1 (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    category VARCHAR(50),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+
+CREATE TABLE vector_join_t2 (
+    id INT PRIMARY KEY,
+    name VARCHAR(100),
+    ref_id INT
+) organization heap;
+
+CREATE TABLE vector_join_t3 (
+    id INT PRIMARY KEY,
+    description TEXT,
+    ref_id INT
+) organization heap;
+
+INSERT INTO vector_join_t1 VALUES 
+    (1, 'Document one', 'tech'),
+    (2, 'Document two', 'science'),
+    (3, 'Document three', 'tech');
+
+INSERT INTO vector_join_t2 VALUES 
+    (1, 'Reference one', 1),
+    (2, 'Reference two', 2),
+    (3, 'Reference three', 3);
+
+INSERT INTO vector_join_t3 VALUES 
+    (1, 'Description for doc one', 1),
+    (2, 'Description for doc two', 2),
+    (3, 'Description for doc three', 3);
+
+--error 1062
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+--echo === 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+
+--echo === 子查询 UPDATE ===
+--error 1062
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+
+SELECT * FROM vector_join_t1 ORDER BY id;
+
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+
+--echo ========== 视图上的 DML 操作 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+--enable_warnings
+
+CREATE TABLE vector_view_base (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    category VARCHAR(50),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+
+INSERT INTO vector_view_base VALUES 
+    (1, 'Tech document one', 'tech'),
+    (2, 'Science document', 'science'),
+    (3, 'Tech document two', 'tech');
+
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+--error 1062
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+
+SELECT * FROM vector_view_base ORDER BY id;
+SELECT * FROM vector_view ORDER BY id;
+
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+
+--echo ========== JSON 字段的 DML 操作 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_json_table;
+--enable_warnings
+
+CREATE TABLE vector_json_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    metadata JSON,
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual),
+    INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+) organization heap;
+
+INSERT INTO vector_json_table VALUES 
+    (1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+    (2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+
+--error 1062
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+
+SELECT * FROM vector_json_table ORDER BY id;
+
+DROP TABLE vector_json_table;
+
+
+--echo ========== 字符集相关的 DML ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_charset_table;
+--enable_warnings
+
+--echo === utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf8 organization heap;
+
+INSERT INTO vector_charset_table VALUES 
+    (1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+
+SELECT * FROM vector_charset_table WHERE id = 1;
+
+--echo === utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf16 organization heap;
+
+INSERT INTO vector_charset_table VALUES 
+    (1, 'abcdefg');
+
+--error 1062
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'hijklmn')
+WHERE id = 1;
+
+SELECT * FROM vector_charset_table WHERE id = 1;
+
+DROP TABLE vector_charset_table;
+
+--echo ========== 空值和边界值处理 ==========
+--disable_warnings
+DROP TABLE IF EXISTS vector_null_table;
+--enable_warnings
+
+CREATE TABLE vector_null_table (
+    id INT PRIMARY KEY,
+    doc VARCHAR(100),
+    content TEXT,
+    VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+
+INSERT INTO vector_null_table VALUES 
+    (1, '', 'Empty string'),
+    (2, NULL, 'NULL value'),
+    (3, '   ', 'Whitespace only'),
+    (4, 'Normal content', 'Normal document');
+
+--error 1062
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+
+--error 1062
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+
+SELECT * FROM vector_null_table ORDER BY id;
+DROP TABLE vector_null_table;
+
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');

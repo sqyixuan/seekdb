@@ -1,0 +1,71 @@
+# owner: runlin.zjf
+# ownergroup: clog
+# description: 验证缩短ilog memstore dump周期后迁移正确性
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot;
+sleep 2;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob1.mysql create resource unit ut1 max_memory '15g', max_cpu 10, max_iops 20000, max_disk_size '100g', max_session_num 100;
+ob1.mysql create resource pool rp1 unit = 'ut1', unit_num = 2, zone_list = ('z1','z2','z3');
+ob1.mysql create tenant tt1 replica_num 3, primary_zone 'z1', resource_pool_list('rp1') set ob_tcp_invited_nodes='%';
+
+ob1.mysql alter system set enable_rebalance = 'false';
+
+connect(rl1_conn, $ip, root@tt1,, test, $port);
+connection rl1_conn;
+create table t1(k int primary key, v int);
+
+insert into t1 values(1, 1);
+insert into t1 values(2, 2);
+insert into t1 values(3, 3);
+
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t1', table_id, 1);
+let $src=deploy_get_value(ob1.get_follower tt1:test:t1:0,1);
+let $src_ip=deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $src_zone = deploy_get_value($src.zone);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='$src_zone' and svr_port!='$src_port', host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+let $src_mysql_port= deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$src_ip', inner_port, 1);
+
+# 等待ilog dump到磁盘上
+sleep 10;
+# 冻结active memtable
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+
+# 等待转储操作完成
+ob1.check_until_timeout select count(table_type)=1 from  __all_virtual_table_mgr where svr_ip = '$src_ip' and svr_port = '$src_port' and table_id = '$table_id' and table_type = 0, 1, 300;
+# 验证last_replay_log_id是否更新
+ob1.check_until_timeout select last_replay_log_id != 0 from  __all_virtual_partition_info where svr_ip = '$src_ip' and svr_port = '$src_port' and table_id = '$table_id', 1, 10;
+
+# 开始迁移操作
+$src.migrate_to $dst, tt1:test:t1;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='tt1', tenant_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and table_id=$table_id and role=1 and member_list like '%$dst_ip%', 1, 120;
+
+# dst
+insert into t1 values(4, 4);
+insert into t1 values(5, 5);
+sleep 10;
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+
+ob1.check_until_timeout select count(table_type)=1 from  __all_virtual_table_mgr where svr_ip = '$dst_ip' and svr_port = '$dst_port' and table_id = '$table_id' and table_type = 0, 1, 300;
+ob1.check_until_timeout select last_replay_log_id != 0 from  __all_virtual_partition_info where svr_ip = '$dst_ip' and svr_port = '$dst_port' and table_id = '$table_id', 1, 10;
+
+$dst.migrate_to $src,tt1:test:t1;
+ob1.mysql alter system set enable_rebalance = 'false';
+sleep 20;
+ob1.check_until_timeout select last_replay_log_id != 0 from  __all_virtual_partition_info where svr_ip = '$src_ip' and svr_port = '$src_port' and table_id = '$table_id', 1, 10;

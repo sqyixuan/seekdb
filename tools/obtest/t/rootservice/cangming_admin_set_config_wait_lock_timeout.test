@@ -1,0 +1,43 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    测试修改配置项的请求尝试加锁时，如果锁一直被其他请求占用，则会放弃等锁，超时直接返回.
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_EXECUTE_ADMIN_SET_CONFIG wait_for signal1 execute 1';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+ob_connect(sys_conn, ob1.z1.obs0,root@sys, ,oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection sys_conn;
+set ob_query_timeout = 5000000;
+# first request is to aquire the lock
+--error 4012
+ALTER SYSTEM SET server_permanent_offline_time = '1h';
+# this request is blocked by debug_sync and do not end with recording event
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module like 'root_service' and event like 'admin_set_config' and value2 like '%server_permanent_offline_time%', 0, 1;
+
+# following requests will fail to aquire the lock
+--error 4012
+ALTER SYSTEM SET server_permanent_offline_time = '2h';
+--error 4012
+ALTER SYSTEM SET server_permanent_offline_time = '3h';
+--error 4012
+ALTER SYSTEM SET server_permanent_offline_time = '4h';
+# this request will record the failed event, which means the thread on RS side quit waiting for lock and move on.
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module like 'root_service' and event like 'admin_set_config' and value2 like '%server_permanent_offline_time%', 3, 1;
+
+# unblock the first request
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+# check the event is recorded
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module like 'root_service' and event like 'admin_set_config' and value2 like '%server_permanent_offline_time%', 4, 1;
+
+# request will success
+ALTER SYSTEM SET server_permanent_offline_time = '5h';
+# this request will record the successful event
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module like 'root_service' and event like 'admin_set_config' and value2 like '%server_permanent_offline_time%', 5, 1;
+
+select module, event, value1 ret, value2 arg from oceanbase.__all_rootservice_event_history where module like 'root_service' and event like 'admin_set_config' and value2 like '%server_permanent_offline_time%' order by 1;

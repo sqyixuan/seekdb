@@ -1,0 +1,79 @@
+# owner: ly435438
+# owner group: storage
+# description:this case is use for table split test 
+#
+
+--disable_query_log
+# Notice 
+# 1. `obproxy` can not be created if specify init_unit_cpu = 1;
+# 2. Tenant `mysql` and `obtest` can not be created without init_unit_cpu=num.
+ob1=OBI(cluster=1:1:1, proxy_num=1, init_unit_cpu=2);
+ob1.reboot;
+sleep 2;
+
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@global.ob_query_timeout = 1000000000000;
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '4G';
+ob1.mysql alter system set enable_async_syslog = 'false';
+
+ob_connect(conn_obtest1, ob1.proxy0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+set ob_query_timeout=10000000000000;
+
+
+CREATE TABLE t5 (c1 int primary key, c2 int, c3 int, c4 int default null, c5 int default null, index(c1, c2)) partition by range(c1)
+(partition p0 values less than (5), partition p1 values less than (10), partition p2 values less than (50));
+
+let $leader_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_core_meta_table where role = 1, host, 1);
+let $leader_obs = deploy_get_value(ob1.get_obs_by_addr $leader_host);
+
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $t5_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't5', table_id, 1);
+let $p1_tablet_id = deploy_get_value(ob1.select select tablet_id from __all_virtual_part where table_id = $t5_id and part_name = 'p1' , tablet_id, 1);
+ob_connect(conn_obtest1, ob1.proxy0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+
+$leader_obs.mysql set ob_global_debug_sync = 'PARTITION_SPLIT_PREPARE wait_for signal execute 10000';
+sleep 2;
+
+
+insert into t5(c1, c2,c3,c5) values(1, 1,1,10);
+insert into t5(c1, c2,c3,c5) values(2, 2,2,20);
+insert into t5(c1, c2,c3,c5) values(3, 3,3,30);
+insert into t5(c1, c2,c3,c5) values(4, 4,4,40);
+insert into t5(c1, c2,c3,c5) values(5, 5,5,50);
+insert into t5(c1, c2,c3,c5) values(6, 6,6,60);
+insert into t5(c1, c2,c3,c5) values(7, 7,7,70);
+insert into t5(c1, c2,c3,c5) values(8, 8,8,80);
+insert into t5(c1, c2,c3,c5) values(9, 9,9,90);
+insert into t5(c1, c2,c3,c5) values(10, 10,10,100);
+insert into t5(c1, c2,c3,c5) values(11, 11,1,110);
+insert into t5(c1, c2,c3,c5) values(12, 12,2,120);
+
+send alter table t5 reorganize partition p1 into (partition p1_0 values less than (8), partition p1_1 values less than (10));
+
+sleep 50;
+$leader_obs.force_stop; 
+sleep 60;
+
+let $leader_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from __all_virtual_core_meta_table where role = 1, host, 1);
+let $leader_obs = deploy_get_value(ob1.get_obs_by_addr $leader_host);
+$leader_obs.mysql set ob_global_debug_sync = 'PARTITION_SPLIT_PREPARE clear';
+sleep 2;
+$leader_obs.mysql set ob_global_debug_sync = 'now signal signal';
+sleep 10;
+
+
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t5;
+eval select part_name from oceanbase.__all_part where table_id = $t5_id;
+select * from t5 partition(p0);
+select * from t5 partition(p1_0);
+select * from t5 partition(p1_1);
+select * from t5 partition(p2);
+--replace_regex /object_id = [0-9]*/object_id = p1_tablet_id/g
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval select ret_code from __all_virtual_dll_error_message where object_id = $p1_tablet_id

@@ -1,0 +1,115 @@
+#owner:zhuhuashi.zhs
+#owner group: sql1
+# tags: optimizer, das
+
+--disable_abort_on_error
+--disable_warnings
+drop table if exists pdm_productday;
+drop table if exists pdm_product;
+drop procedure if exists gen_data;
+drop table if exists t1,t2,t3;
+--enable_warnings
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set _rowsets_max_rows = 2 tenant=sys;
+alter system set _rowsets_max_rows = 2 tenant=all_user;
+alter system set _rowsets_max_rows = 2 tenant=all_meta;
+alter system set_tp tp_no = 554, error_code = 1, frequency = 0;
+connection default;
+
+## 生成数据的PL
+delimiter /;
+create procedure gen_data (in row_cnt int)
+begin
+  declare num int;
+  set num = 0;
+  while num <= row_cnt do
+    insert into t1 values (num, num, num);
+    insert into t2 values (num, num, num);
+    insert into t3 values (num, num, num);
+    set num =num +1;
+  end while;
+end ;
+/
+
+delimiter ;/
+
+## 简单的非分区表
+create table t1 (c1 int primary key, c2 int, c3 int);
+create table t2 (c1 int primary key, c2 int, c3 int);
+create table t3 (c1 int primary key, c2 int, c3 int);
+call gen_data(2000);
+
+# --explain_protocol 2
+###简单的单级NLJ走batch
+select /*+ use_nl(t1,t2) */ t1.c1, t2.c2 from t1,t2 where t1.c2 = t2.c1 and t1.c1 < 100 and t1.c2 > 90;
+
+### 简单的两级NLJ走batch
+select /*+ use_nl(t1,t2) use_nl(t2,t3) */ t1.c1, t2.c2 from t1,t2,t3 where t1.c2 = t2.c1 and t2.c2 = t3.c2 and t1.c1 < 100 and t1.c2 > 90;
+
+
+###Batch NLJ结合order by 和limit
+select /*+ use_nl(t1,t2) */ t1.c1, t2.c2 from t1,t2 where t1.c2 = t2.c1 and t1.c1 < 100 and t1.c2 > 90 order by t2.c2;
+select /*+ use_nl(t1,t2) */ t1.c1, t2.c2 from t1,t2 where t1.c2 = t2.c1 and t1.c1 < 100 and t1.c2 > 90 order by t2.c2 limit 3;
+select /*+ use_nl(t1,t2) */ t1.c1, t2.c2 from t1,t2 where t1.c2 = t2.c1 and t1.c1 < 100 and t1.c2 > 90 limit 3;
+
+
+select /*+ use_nl(t1,t2) use_nl(t2,t3) */ t1.c1, t2.c2 from t1,t2,t3 where t1.c2 = t2.c1 and t2.c2 = t3.c2 and t1.c1 < 100 and t1.c2 > 90 order by t2.c2;
+select /*+ use_nl(t1,t2) use_nl(t2,t3) */ t1.c1, t2.c2 from t1,t2,t3 where t1.c2 = t2.c1 and t2.c2 = t3.c2 and t1.c1 < 100 and t1.c2 > 90 order by t2.c2 limit 3;
+select /*+ use_nl(t1,t2) use_nl(t2,t3) */ t1.c1, t2.c2 from t1,t2,t3 where t1.c2 = t2.c1 and t2.c2 = t3.c2 and t1.c1 < 100 and t1.c2 > 90 limit 3;
+
+###Batch rescan和semi join正交
+select t3.c1 from t3 where t3.c2 in (select t1.c2 from t1,t2 where t2.c1 < t3.c3 and t1.c1 = t2.c3) and (t3.c1 < 10 or t3.c2 > 1995);
+select t3.c1 from t3 where t3.c2 in (select t1.c2 from t1,t2 where t2.c1 < t3.c3 and t1.c1 = t2.c3) and (t3.c1 < 10 or t3.c2 > 1995) order by t3.c2 limit 2;
+
+###简单的SPF走batch
+select /*+ no_rewrite */ t1.c1 from t1 where exists (select t2.c2 from t2 where t2.c2 = t1.c1 and t2.c2 < 10);
+select /*+ no_rewrite */ t1.c1, t1.c3 in (select t3.c3 from t3 where t3.c2 = t1.c1 and t3.c2 < 8) from t1 where exists (select t2.c2 from t2 where t2.c2 = t1.c1 and t2.c2 < 10);
+
+
+###SPF结合短路测试
+select /*+ no_rewrite */ t1.c1 from t1 where exists (select t2.c2 from t2 where t2.c1 = t1.c1 and t2.c2 > 10 and t2.c1 < 20) and t1.c3 in (select t3.c3 from t3 where t3.c1 = t1.c1 and t3.c1 > 8);
+select /*+ no_rewrite */ t1.c1 from t1 where exists (select t2.c2 from t2 where t2.c1 = t1.c1 and t2.c2 > 10 and t2.c1 < 20) or t1.c3 in (select t3.c3 from t3 where t3.c1 = t1.c1 and t3.c1 > 1995);
+
+
+###NLJ和SPF正交测试1
+select /*+ no_rewrite */ t3.c1 from t3 where t3.c2 in (select t1.c2 from t1,t2 where t2.c1 = t1.c3 and t1.c1 = t3.c3) and (t3.c1 < 10 or t3.c2 > 1995);
+
+###SPF结合window function测试
+###Batch rescan和set算子正交
+SELECT /*+ leading(t1,T) use_nl(t1, T)*/ t1.*
+FROM t1
+ JOIN (
+    SELECT * FROM t2 where t2.c1 > 100
+    MINUS
+    SELECT * FROM t2 where t2.c1 > 150
+) T
+ON t1.c1 = T.c1;
+
+update t2 set c1 = c1 -1 where c1 < 100;
+update t3 set c1 = c1 -1 where c1 < 150;
+
+SELECT /*+ no_rewrite leading(t1,T) ure_nl(t1, T) */ t1.*
+FROM t1
+ JOIN (
+    SELECT * FROM t2
+    MINUS
+    SELECT * FROM t2
+) T
+ON t1.c1 = T.c1;
+
+drop table t1;
+drop table t2;
+drop table t3;
+
+drop procedure gen_data;
+
+connection conn_admin;
+alter system set _rowsets_max_rows = 256 tenant=sys;
+alter system set _rowsets_max_rows = 256 tenant=all_user;
+alter system set _rowsets_max_rows = 256 tenant=all_meta;
+alter system set_tp tp_no = 554, error_code = 1, frequency = 0;
+connection default;
+
+--enable_abort_on_error

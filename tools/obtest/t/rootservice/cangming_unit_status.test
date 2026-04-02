@@ -1,0 +1,61 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    测试创建unit的运维命令，在内部表修改事务较久时，observer已创建的unit的状态是否符合预期
+#    1. 0-180s内，observer端新创建unit的状态为NORMAL
+#    2. 180s后，observer端unit开始删除，直接进入DELETING状态
+#    3. DELETING状态如果remove tenant失败，且此时事务提交成功，后续依然能删除成功
+#    4. 删除成功后，由于事务提交成功，observer端会重新自动创建unit
+
+ob1=OBI(cluster=2, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MIGRATE_FINISH wait_for signal1 execute 10000';
+ob1.mysql set GLOBAL ob_query_timeout=6000000000;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+CREATE RESOURCE UNIT test_unit MAX_CPU 2, MEMORY_SIZE '4G';
+CREATE RESOURCE POOL test_pool UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z1');
+CREATE TENANT tt RESOURCE_POOL_LIST = ('test_pool');
+
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'tt', tenant_id, 1);
+let $unit_id = query_get_value(select unit_id from oceanbase.DBA_OB_UNITS where tenant_id = $tenant_id, unit_id, 1);
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.port);
+
+# start migrating, and block before commit trans
+--disable_query_log
+send alter system migrate unit $unit_id destination '$svr_ip:$svr_port';
+--enable_query_log
+
+# check unit status, expect to be NORMAL
+ob_connect(sys_conn2, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn2;
+sleep 20;
+ob1.mysql_p select tenant_id, unit_id, status from oceanbase.__all_virtual_unit where unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port order by tenant_id;
+
+# wait 180s, expect to be DELETING
+alter system set_tp tp_name = ERRSIM_REMOVE_TENANT_LOCK_ERROR, error_code = 4023, frequency = 1;
+sleep 160;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port and status = 'DELETING', 2, 10;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port and status = 'DELETING', 2, 1;
+
+# end migrating, finish commiting trans
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+# continue to delete
+alter system set_tp tp_name = ERRSIM_REMOVE_TENANT_LOCK_ERROR, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id and unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port, 0, 200;
+
+# start over to create tenant
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port, 2, 200;
+
+# check unit status
+sleep 10;
+ob1.mysql_p select tenant_id, unit_id, status from oceanbase.__all_virtual_unit where unit_id = $unit_id and svr_ip = '$svr_ip' and svr_port = $svr_port order by tenant_id;

@@ -1,0 +1,146 @@
+#owner: msy164651
+#owner group: rs
+#description: list分区分裂测试
+
+#测试分裂后，表结构是正确的，数据是一致的
+#case1 增加分区
+#case2 删除增加的分区
+#case3 增加删除的分区
+#case4 分裂增加的分区
+#case4 default分区测试
+
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connection default;
+--disable_warnings
+drop database if exists db;
+create database db;
+use db;
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+create table t1 (c1 int primary key ,c2 int ,c3 int) partition by list (c1)(partition p0 values in (1,2,3,4,5,6,7,10),partition p1 values in (11,20,30,40,50,100),partition p2 values in (102,203,8,9,1000));
+create table t2 (c1 int primary key ,c2 int ,c3 int) partition by list (c1)(partition p0 values in (1,2,3,4,5,6,7,10),partition p1 values in (11,33,44,55,66,134,351,3436),partition p2 values in (default));
+create table t3 (c1 int ,c2 int ,c3 int, primary key (c1,c2)) partition by list columns (c1,c2) (partition p0 values in ((1,2),(1,3),(2,3),(3,4)),partition p1 values in((11,13),(14,23),(12,345)),partition p2 values in ((111,111),(555,555),(324543,3435)));
+insert into t1 values (2,1,1),(7,8,8),(10,12,12),(20,16,16),(100,111,111),(203,555,111),(9,9,9);
+insert into t2 values (2,1,1),(9,8,8),(12,12,12),(16,16,16),(111,111,111),(555,555,111),(3436,3435,45464547);
+insert into t3 values (1,2,1),(3,4,8),(11,13,12),(12,345,16),(111,111,111),(555,555,111),(324543,3435,45464547);
+let $db_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'db', database_id, 1);
+let $t1_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't1' and database_id = $db_id, table_id, 1);
+let $t2_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't2' and database_id = $db_id, table_id, 1);
+let $t3_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't3' and database_id = $db_id ,table_id, 1);
+connection default;
+#case1
+--error 1495 
+alter table t1 add partition (partition p3 values in(24,34,123,4));
+--error 1517 
+alter table t1 add partition (partition p2 values in(24,34,123));
+--error 1495 
+alter table t1 add partition (partition p3 values in(24,34,123), partition p4 values in(23,2134,4));
+--error 1495
+alter table t1 add partition (partition p3 values in(24,34,123,34));
+--error 1495
+alter table t1 add partition (partition p3 values in(24,34,123), partition p4 values in(23,213,34));
+
+alter table t1 add partition (partition p3 values in(24,34,123), partition p4 values in(23,213,341));
+--echo "t1 gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t1_id;
+--enable_query_log
+
+insert into t1 values(24,25,24),(123,4535,77),(213,234,678);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+select * from t1 partition(p3);
+select * from t1 partition(p4);
+sleep 3;
+#case 1.1
+--error 1495
+alter table t3 add partition (partition p3 values in ((1,3),(1,4),(2,6)));
+alter table t3 add partition (partition p3 values in ((22,33),(66,77)));
+--echo "t3 gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id;
+--enable_query_log
+insert into t3 values (22,33,44),(66,77,55);
+select * from t1 partition(p3);
+#case2
+--error 1507
+alter table t1 drop partition (p6);
+--error 1507 
+alter table t1 drop partition (p6,p4);
+--error 1508 
+alter table t1 drop partition (p0,p1,p2,p3,p4);
+
+alter table t1 drop partition (p3,p4);
+--error 1735
+select * from t1 partition(p3);
+--error 1735
+select * from t1 partition(p4);
+
+alter table t3 drop partition (p3);
+--error 1735
+select * from t3 partition (p3);
+
+#case3
+alter table t1 add partition (partition p3 values in(24,34,123), partition p4 values in(23,213,341));
+--echo "t1 part num and gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t1_id;
+--enable_query_log
+insert into t1 values(24,25,24),(123,4535,77),(213,234,678);
+select * from t1 partition(p3);
+select * from t1 partition(p4);
+
+alter table t3 add partition (partition p3 values in ((22,33),(66,77)));
+--echo "t3 part num and gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id;
+--enable_query_log
+insert into t3 values (22,33,44),(66,77,55);
+select * from t3 partition(p3);
+
+#case4
+--error 5599
+alter table t1 reorganize partition p3 into (partition p3 values in(24));
+--error 1517
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p4 values in (34));
+--error 1495
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p5 values in (34,34));
+--error 5597
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p5 values in (34,124));
+--error 5597
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p5 values in (34,123,23));
+--error 5597
+alter table t1 reorganize partition p3 into (partition p3 values in(4),partition p45 values in (34,2));
+--error 5597
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p45 values in (34,123455));
+alter table t1 reorganize partition p3 into (partition p3 values in(24),partition p5 values in (34,123));
+select * from t1 partition(p3);
+select * from t1 partition(p5);
+--error 5597
+alter table t3 reorganize partition p3 into (partition p3 values in ((22,33)), partition p4 values in ((66,97)));
+alter table t3 reorganize partition p3 into (partition p3 values in ((22,33)), partition p4 values in ((66,77)));
+--source mysql_test/include/check_split_partition_ok.inc
+--echo "t3 gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id;
+--enable_query_log
+#case5
+alter table t1 add partition (partition p6 values in(default));
+--error 1495
+alter table t1 reorganize partition p6 into (partition p6 values in (254,3,1,2,3), partition p7 values in (default));
+--error 5598
+alter table t2 add partition (partition p3 values in(123534221,2332143534));
+alter table t2 drop partition (p2);
+alter table t2 add partition (partition p3 values in(123534221,2332143534));
+alter table t3 add partition (partition p5 values in(default));
+insert into t3 values (1235542,23,23);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1; 
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t2;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t3;
+drop table t1;
+drop table t2;
+drop table t3;

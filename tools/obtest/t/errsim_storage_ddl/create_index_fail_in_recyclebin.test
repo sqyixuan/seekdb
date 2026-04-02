@@ -1,0 +1,47 @@
+# owner: zhenjiang.xzj
+# owner group: storage
+# description: simulate build index fail and index is in recyclebin
+
+--disable_query_log
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set schema_drop_gc_delay_time='1s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+let $ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $mysql_port0 = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(conn_obtest1,$ip0,root@obtest,,test,$mysql_port0);
+connect(conn_obtest2,$ip0,root@obtest,,test,$mysql_port0);
+
+connection conn_obtest1;
+create table t1(c1 int, c2 int);
+insert into t1 values (1, 1);
+
+ob1.mysql alter system set_tp tp_no = 510, error_code = 6, frequency = 1;
+ob1.mysql alter system set_tp tp_no = 511, error_code = 4016, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'CREATE_INDEX_REPLICA_BUILD wait_for signalxxx execute 10000';
+
+sleep 2;
+send create index i1 on t1(c1) local;
+sleep 5;
+
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+let $index_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where data_table_id = $data_table_id, table_id, 1);
+
+connection conn_obtest2;
+set recyclebin=on;
+drop table t1;
+
+ob1.mysql set ob_global_debug_sync = 'CREATE_INDEX_REPLICA_BUILD clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signalxxx';
+
+sleep 5;
+connection conn_obtest1;
+--error 4016
+reap;
+
+ob1.mysql_p select table_id, is_deleted, table_name from oceanbase.__all_virtual_table_history where table_id = $index_table_id;

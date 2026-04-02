@@ -1,0 +1,80 @@
+
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#   This case tests when the operation of altering tenant and shrinking tenant unit_num happens in parallel.
+#   There are 2 cases tested:
+#   CASE 1: remove one of pool_list and grant to another tenant when in shrinking
+#   CASE 2: drop tenant and grant its resource pools to another tenant when in shrinking 
+
+ob1=OBI(cluster=2:2:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set balancer_idle_time = '10s';
+sleep 3;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql CREATE RESOURCE UNIT test_unit MAX_CPU 2, MEMORY_SIZE '4G';
+
+connection sys_conn;
+
+
+# =================================================================================================
+# remove one of tenant pool_list. and grant it to another tenant
+# =================================================================================================
+
+CREATE RESOURCE POOL pool11 UNIT = 'test_unit', UNIT_NUM = 2, ZONE_LIST = ('z1');
+CREATE RESOURCE POOL pool12 UNIT = 'test_unit', UNIT_NUM = 2, ZONE_LIST = ('z2');
+CREATE RESOURCE POOL pool2 UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z3');
+CREATE RESOURCE POOL pool3 UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z3');
+let $resource_pool_id11 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = "pool11", resource_pool_id, 1);
+let $resource_pool_id12 = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = "pool12", resource_pool_id, 1);
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool11', 'pool12'), locality='F@z1', primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for signal1';
+ALTER RESOURCE TENANT tt1 UNIT_NUM = 1;
+
+# revoke pool12 from tt1 and grant it to tt2
+ALTER TENANT tt1 SET RESOURCE_POOL_LIST = ('pool11');
+CREATE TENANT tt2 RESOURCE_POOL_LIST = ('pool12', 'pool2'), locality='F@z2,F@z3', primary_zone='z3;z2' set ob_tcp_invited_nodes='%';
+let $tenant_id1 = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt1", tenant_id, 1);
+let $tenant_id2 = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt2", tenant_id, 1);
+
+eval select count(*) c from __all_unit where resource_pool_id = $resource_pool_id12 and status = 'DELETING';
+eval select count(*) c from CDB_OB_LS where tenant_id = $tenant_id2 and status = "NORMAL";
+eval select job_status from __all_rootservice_job where tenant_id = $tenant_id1;
+
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select job_status from __all_rootservice_job where tenant_id = $tenant_id1, SUCCESS, 300;
+
+
+
+# =================================================================================================
+# revoking pools triggered by dropping tenant. all pools of dropped tenant are revoked
+# =================================================================================================
+
+ob1.check_until_timeout select count(*) c from __all_virtual_unit where tenant_id in ($tenant_id1, $tenant_id1 - 1), 2, 300;
+ALTER RESOURCE TENANT tt1 UNIT_NUM = 2;
+ob1.check_until_timeout select job_status from __all_rootservice_job where tenant_id = $tenant_id1 order by job_id desc limit 1, SUCCESS, 300;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_SHRINK_RESOURCE_POOL wait_for signal1';
+ALTER RESOURCE TENANT tt1 UNIT_NUM = 1;
+
+# adding pool list when shrinking tenant will be rejected
+--error 4179
+ALTER TENANT tt1 SET RESOURCE_POOL_LIST = ('pool11', 'pool3');
+
+# drop tenant tt1 and grant pool11 to tt2
+DROP TENANT tt1 FORCE;
+ALTER TENANT tt2 RESOURCE_POOL_LIST = ('pool11', 'pool12', 'pool2'), locality='F@z1,F@z2,F@z3', primary_zone='z3;z1,z2';
+
+eval select count(*) c from __all_unit where resource_pool_id = $resource_pool_id11 and status = 'DELETING';
+eval select job_status from __all_rootservice_job where tenant_id = $tenant_id1;
+eval select count(*) c from CDB_OB_LS where tenant_id = $tenant_id2 and status = "NORMAL";
+
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+--echo test case for granting resource pool while shrinking finished

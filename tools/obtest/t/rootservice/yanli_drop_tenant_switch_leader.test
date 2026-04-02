@@ -1,0 +1,76 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+# 测试租户过程中切主可以在新主上继续推进
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+let $extra_conf = "cpu_count=32,memory_limit='50G',system_memory='5G',__min_full_resource_pool_memory='2147483648',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql CREATE RESOURCE UNIT unit_for_test MAX_CPU 1, MEMORY_SIZE '2G', LOG_DISK_SIZE '2G';
+ob1.mysql alter resource unit sys_unit_config min_cpu 1, max_cpu 1, memory_size '2G';
+ob1.mysql alter tenant sys set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where zone = 'z2' and role = 1, 1, 100;
+sleep 10;
+ob_connect(conn_sys, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_for_test', UNIT_NUM = 1;
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ls_gc_delay_time = '0s' tenant = 'tt';
+let $tt_tenant_id = deploy_get_value(ob1.select select tenant_id from DBA_OB_TENANTS where tenant_name = 'tt', tenant_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tt_tenant_id and ls_id = 1 and role = 1 and zone = 'z1', 1, 10;
+#删除租户前卡主primary_ls_service线程不推进删除租户的流程
+ob1.mysql set ob_global_debug_sync = 'STOP_PRIMARY_LS_THREAD wait_for signal';
+send drop tenant tt;
+ob1.check_until_timeout select status from oceanbase.__all_tenant where tenant_id = $tt_tenant_id, DROPPING, 30;
+ob1.z1.obs0.force_stop;
+#在新主上继续推进删除租户的流程
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1, 1, 20;
+sleep 10;
+ob1.z2.obs0.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = $tt_tenant_id, 0, 100;
+ob1.z2.obs0.mysql drop resource pool pool_1;
+ob1.z1.obs0.start;
+ob_connect(conn_sys, ob1.z2.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_for_test', UNIT_NUM = 1 , zone_list = ('z2');
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z2' set ob_tcp_invited_nodes='%';
+alter system set ls_gc_delay_time = '0s' tenant = 'tt';
+
+let $i = 1;
+while ($i < 20)
+{
+  ob_connect(conn$i, ob1.z2.obs0, root, , test, , USE_MYSQL_CONNECTOR);
+  set ob_query_timeout = 300000000;
+  inc $i;
+}
+create table t1(c1 int);
+connection conn_sys;
+send drop tenant tt;
+ob1.z2.obs0.check_until_timeout select status from oceanbase.__all_virtual_ls_status where ls_id = 1001, TENANT_DROPPING, 30;
+ob1.mysql set ob_global_debug_sync = 'STOP_PRIMARY_LS_THREAD wait_for signal';
+sleep 20;
+ob1.z2.obs0.mysql set ob_global_debug_sync = 'now signal signal';
+let $i = 1;
+while ($i < 20)
+{
+  connection conn$i;
+  send select * from t1;
+  inc $i;
+}
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id != 1, 0, 100;
+#验证日志流创建时的删除处理
+#BEFORE_SET_LS_MEMBER_LIST
+connection conn_sys;
+drop resource pool pool_1;
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_for_test', UNIT_NUM = 1;
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SET_LS_MEMBER_LIST wait_for signal';
+ob1.mysql alter tenant tt set primary_zone = 'z1,z2';
+let $tt_tenant_id = deploy_get_value(ob1.select select tenant_id from DBA_OB_TENANTS where tenant_name = 'tt', tenant_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tt_tenant_id and status = 'CREATING', 1, 30;
+ob1.mysql drop tenant tt;
+ 

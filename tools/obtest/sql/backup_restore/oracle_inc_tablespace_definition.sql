@@ -1,0 +1,2 @@
+create tablespace backup_test_tablespace_inc;
+create table test_table_for_inc_tablespace(v1 int) tablespace backup_test_tablespace_inc;

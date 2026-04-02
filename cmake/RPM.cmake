@@ -50,7 +50,9 @@ set(CPACK_RPM_SPEC_MORE_DEFINE
 %undefine __brp_mangle_shebangs
 %global __requires_exclude ^\(/bin/bash\|/usr/bin/\.*\)$
 %define __debug_install_post ${DEBUG_INSTALL_POST}
+%if \\\"%name\\\" != \\\"seekdb-sql-parser\\\"
 %debug_package
+%endif
 ")
 
 # systemd define on rpm
@@ -82,7 +84,7 @@ install(FILES
   tools/systemd/profile/post_install.sh
   tools/systemd/profile/post_uninstall.sh
   tools/systemd/profile/pre_uninstall.sh
-  DESTINATION usr/libexec/seekdb/scripts
+  DESTINATION usr/libexec/oceanbase/scripts
   COMPONENT server)
 
 if (BUILD_CDC_ONLY)
@@ -120,7 +122,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/tools/ocp/software_package.template
 
 install(FILES
   tools/ocp/software_package
-  DESTINATION usr/share/seekdb/software_package
+  DESTINATION usr/share/oceanbase/software_package
   COMPONENT server)
 
 message(STATUS "Cpack Components:${CPACK_COMPONENTS_ALL}")

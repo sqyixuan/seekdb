@@ -1,0 +1,74 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test create tenant with R-replica in locality
+#    We designed following cases to simulate different scenes:
+#
+#    CASE 1: test create tenant with all R-replicas
+#
+#    CASE 2: test create tenant with R-replica and F-replica in locality
+#
+
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+
+#######################################################################
+#                              start  test
+#######################################################################
+
+# check all F-replica has no learner_list
+--echo STEP 1: check F replica has no learner list begin
+let $sys_tenant_id = 1;
+let $sys_replica_cnt = deploy_get_value(ob1.select select count(distinct zone) as replica_cnt from oceanbase.__all_zone where zone != '', replica_cnt, 1);
+ob1.check_until_timeout select count(*) = $sys_replica_cnt FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $sys_tenant_id AND learner_list = '', 1, 40;
+--echo STEP 1: check F replica has no learner list finish
+
+# create new tenant tenant_with_readonly_replica
+--echo STEP 2: check create tenant with all R-replicas begin
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+# test create tenant with all R-replicas
+--error 1210
+CREATE TENANT tenant_with_readonly_replica RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "R@z1, R@z2" SET ob_tcp_invited_nodes='%';
+--echo STEP 2: check create tenant with all R-replicas finish
+
+# test create tenant with R-replica and F-replica
+--echo STEP 3: check create tenant with R-replica and F-replica begin
+ob1.mysql CREATE TENANT tenant_with_readonly_replica RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, R@z2" SET ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_with_readonly_replica", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_with_readonly_replica", meta_tenant_id, 1);
+--echo STEP 3: check create tenant with R-replica and F-replica finish
+
+# test tenant_with_readonly_replica's meta info is expected
+--echo STEP 4: check meta info is expected begin
+let $ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) as ls_cnt from oceanbase.CDB_OB_LS where tenant_id = $tenant_id, ls_cnt, 1);
+ob1.check_until_timeout select count(*) = 1 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND replica_type = 'READONLY', 1, 40;
+ob1.check_until_timeout select count(*) = 1 FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $meta_tenant_id AND member_list like '%$z1_dst0%' AND role = 'LEADER' AND paxos_replica_number = 1 AND  replica_type = 'FULL' AND learner_list like '%$z2_dst0%', 1, 40;
+ob1.check_until_timeout select count(*) = $ls_cnt FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND replica_type = 'READONLY', 1, 40;
+ob1.check_until_timeout select count(*) = $ls_cnt FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND member_list like '%$z1_dst0%' AND role = 'LEADER' AND paxos_replica_number = 1 AND replica_type = 'FULL' AND learner_list like '%$z2_dst0%', 1, 40;
+--echo STEP 4: check meta info is expected finish

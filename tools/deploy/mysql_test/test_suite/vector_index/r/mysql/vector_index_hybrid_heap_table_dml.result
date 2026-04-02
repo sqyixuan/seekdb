@@ -1,0 +1,671 @@
+alter system set ob_vector_memory_limit_percentage = 34;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap;
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100)) organization heap;
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+ERROR 23000: Duplicate entry '5-I' for key 'idx1'
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+ERROR 23000: Duplicate entry '3-I' for key 'idx1'
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=immediate)) organization heap
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+ERROR HY000: Internal error
+update t1 set doc = 'Updated partition document' where id = 150;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+ERROR HY000: Internal error
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'id'
+create table t3 (id int primary key, doc varchar(100)) organization heap;
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate)) organization heap;
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, 'Document with parallel test 100') on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)) organization heap;
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+ERROR 23000: Duplicate entry '2-I' for key 'idx3'
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+) organization heap;
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+) organization heap;
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+2	Document two	science
+3	Document three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+3	Document three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+3	Document three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+) organization heap;
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf8 organization heap;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf16 organization heap;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abcdefg');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'hijklmn')
+WHERE id = 1;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcdefg
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) organization heap;
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+ERROR 23000: Duplicate entry '4-I' for key 'idx1'
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+ERROR 23000: Duplicate entry '3-I' for key 'idx1'
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+4	Normal content	Normal document
+DROP TABLE vector_null_table;
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual)) organization heap;
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100)) organization heap;
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+ERROR 23000: Duplicate entry '5-I' for key 'idx1'
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+ERROR 23000: Duplicate entry '3-I' for key 'idx1'
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=manual)) organization heap
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+update t1 set doc = 'Updated partition document' where id = 150;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual)) organization heap PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100)) organization heap;
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+ERROR 23000: Duplicate entry '3-I' for key 'idx1'
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'id'
+create table t3 (id int primary key, doc varchar(100)) organization heap;
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)) organization heap;
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, null) on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)) organization heap;
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+ERROR 23000: Duplicate entry '2-I' for key 'idx3'
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+) organization heap;
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+) organization heap;
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+2	Document two	science
+3	Document three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+3	Document three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one	tech
+3	Document three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+) organization heap;
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf8 organization heap;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf16 organization heap;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abcdefg');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'hijklmn')
+WHERE id = 1;
+ERROR 23000: Duplicate entry '1-I' for key 'idx1'
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcdefg
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) organization heap;
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+ERROR 23000: Duplicate entry '4-I' for key 'idx1'
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+ERROR 23000: Duplicate entry '3-I' for key 'idx1'
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+4	Normal content	Normal document
+DROP TABLE vector_null_table;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');

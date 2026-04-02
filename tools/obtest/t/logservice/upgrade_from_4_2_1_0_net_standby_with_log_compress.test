@@ -1,0 +1,218 @@
+##
+# owner      : nianguan.lhy
+# owner group: clog
+# description: 测试从4.2.1升级到4.2.2版本,主备库对3.5MB大日志的兼容情况
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,version=4_2_1_0);
+ob2=OBI(cluster=1:1:1,proxy_num=0,version=4_2_1_0);
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant   = backup_mysql_tenant;
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+
+#mysql租户  创建tablet
+ob_connect(sys_conn_mysql, ob1.z1.obs0, root@$backup_mysql_tenant, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn_mysql;
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.check_until_timeout  select count(1) from GV\$OB_LOG_STAT a join __all_server b on a.svr_ip=b.svr_ip where b.zone='z1' and  a.tenant_id=1 and ls_id=1 and a.role='LEADER', 1, 600;
+ob1.check_until_timeout  select count(1) as cnt from DBA_OB_TENANT_JOBS where job_status='INPROGRESS' and result_code is null,0,300;
+
+set global wait_timeout = 288000;
+
+set @@session.ob_query_timeout = 60000000;
+source include/check_schema_sync.inc;
+
+# 1.检查三副本是否同步
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,30;
+# 2.打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+sleep 10;
+# 3.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+
+# 4. upgrade z1
+ob1.z1.force_stop;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'),0,120;
+#验证替换了一个observer后可以推动sync_scn和readable_scn等
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $backup_mysql_tenant_id and role = 1 and zone = 'z1', 2, 100;
+let $read_scn =  deploy_get_value(ob1.select select READABLE_SCN from oceanbase.dba_ob_tenants where tenant_id = $backup_mysql_tenant_id, READABLE_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.dba_ob_tenants where tenant_id = $backup_mysql_tenant_id and READABLE_SCN > $read_scn, 1, 20;
+
+# 5. upgrade z2
+ob1.z2.force_stop;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $backup_mysql_tenant_id and role = 1 and zone = 'z1', 2, 100;
+let $read_scn =  deploy_get_value(ob1.select select READABLE_SCN from oceanbase.dba_ob_tenants where tenant_id = $backup_mysql_tenant_id, READABLE_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.dba_ob_tenants where tenant_id = $backup_mysql_tenant_id and READABLE_SCN > $read_scn, 1, 20;
+
+# 6. upgrade z3
+ob1.z3.force_stop;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time is null or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info != "succeed", 1, 1;
+ob1.upgrade_commond_for_server post;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info = "succeed", 1, 1;
+
+ob1.mysql alter system major freeze tenant = 'backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+alter system set log_storage_compress_all=true;
+sleep 15;
+create table t1 (c1 int primary key, c2 varchar(200));
+create table t2(c1 int primary key, c2 longtext);
+insert into t1 values (11, "abcdefg"), (12, "abcdefg"), (13, "abcdefg"), (14, "abcdefg"), (15, "abcdefg");
+insert into t2(c1, c2) values(1, repeat('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab', 19669));
+source include/prepare_for_big_log.inc;
+--enable_query_log
+
+let $max_scn= deploy_get_value(ob1.select select max_scn from oceanbase.gv\$ob_log_stat where ls_id=1001 and role='LEADER', max_scn,1);
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+ob1.mysql alter tenant backup_mysql_tenant set primary_zone='z1,z2';
+ob1.check_until_timeout select count(1) > 0 from oceanbase.__all_virtual_log_stat a join __all_server b on a.svr_ip = b.svr_ip and a.svr_port=b.svr_port  where a.tenant_id=$backup_mysql_tenant_id and a.role='LEADER' and b.zone='z2', 1, 600;
+ob1.mysql alter tenant backup_mysql_tenant set primary_zone='z1';
+ob1.check_until_timeout select count(1) > 0 from oceanbase.__all_virtual_log_stat a join __all_server b on a.svr_ip = b.svr_ip and a.svr_port=b.svr_port  where a.tenant_id=$backup_mysql_tenant_id and a.role='LEADER' and b.zone='z2',0, 600;
+
+
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+eval create user mytest identified by "test";
+eval GRANT SELECT ON oceanbase.* TO mytest;
+
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+ob2.reboot;
+# 固定sys租户规格
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+ob_connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port, USE_MYSQL_CONNECTOR);
+connection restore_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ob2.mysql alter system set _backup_idle_time = '10s';
+ob2.mysql alter system set merger_check_interval = '10s';
+ob2.mysql alter system set enable_async_syslog=false;
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+
+# 7.创建空备租户
+--disable_all_result_log
+ob2.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('large_pool_1');
+--enable_all_result_log
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+# 8.找到备库因为data_version不同而卡住的位点
+connection restore_sys_conn;
+let $standby_sync_scn=deploy_get_value(ob2.select select sync_scn from dba_ob_tenants where tenant_name = 'standby_mysql_tenant';, sync_scn, 1);
+let $count = 1;
+while($count > 0)
+{
+    sleep 30;
+    let $standby_sync_scn2=deploy_get_value(ob2.select select sync_scn from dba_ob_tenants where tenant_name = 'standby_mysql_tenant';, sync_scn, 1);
+    if ($standby_sync_scn2 == $standby_sync_scn)
+    {
+        dec $count;
+    }
+    if ($standby_sync_scn2 != $standby_sync_scn)
+    {
+        let $standby_sync_scn = $standby_sync_scn2;
+    }
+}
+
+sleep 10;
+ob2.check_until_timeout select count(*) from dba_ob_tenants where tenant_name = 'standby_mysql_tenant' and sync_scn = $standby_sync_scn, 1, 600;
+
+# source include/check_schema_sync.inc;
+let $standby_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+
+ob2.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,60;
+# 9. 打开升级配置, 升级前检查
+ob2.upgrade_check_before;
+sleep 10;
+# 10.执行升级SQL
+ob2.upgrade_commond_for_server pre;
+
+# 11. upgrade ob2.z1
+ob2.z1.force_stop;
+ob2.z1.upgrade;
+ob2.z1.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $standby_mysql_tenant_id and role = 1 and zone = 'z1', 2, 100;
+
+# 12. upgrade ob2.z2
+ob2.z2.force_stop;
+ob2.z2.upgrade;
+ob2.z2.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $standby_mysql_tenant_id and role = 1 and zone = 'z1', 2, 100;
+
+# 13. upgrade ob2.z3
+ob2.z3.force_stop;
+ob2.z3.upgrade;
+ob2.z3.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob2.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+--disable_query_log
+ob2.check_until_timeout select count(*) from oceanbase.__all_server a left join oceanbase.__all_virtual_server_schema_info b on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port where b.svr_ip is null, 0, 120;
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0, 0, 180;
+--enable_query_log
+
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info != "succeed", 1, 1;
+ob2.upgrade_commond_for_server post;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where name = "data_version_check" and info = "succeed", 1, 1;
+
+# 14. 确保备库推过了位点
+connection restore_sys_conn;
+ob2.check_until_timeout select count(*) from dba_ob_tenants where tenant_name = 'standby_mysql_tenant' and sync_scn > $standby_sync_scn, 1, 30;
+ob2.check_until_timeout select count(*) from dba_ob_tenants where tenant_name = 'standby_mysql_tenant' and readable_scn  > $max_scn, 1, 60;
+
+ob_connect(standby_mysql_conn, $restore_ip, root@standby_mysql_tenant,,oceanbase, $restore_port, USE_MYSQL_CONNECTOR);
+connection standby_mysql_conn;
+use test;
+select * from t1;
+select c1 from t2;

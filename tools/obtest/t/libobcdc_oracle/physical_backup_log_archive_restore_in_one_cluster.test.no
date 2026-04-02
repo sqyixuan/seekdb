@@ -1,0 +1,171 @@
+# owner: yaoying.yyy
+# owner group: physical_backup
+# Testing Case: log archive and restore
+
+ob1=OBI(cluster=1, proxy_num=0);
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob1.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+source sql/physical_backup/prepare_single_zone_resource.sql;
+
+ob1.mysql alter system set backup_dest='$backup_dest';
+
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%';
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+connect(backup_mysql_conn, $backup_ip,root@$backup_mysql_tenant,,oceanbase, $backup_port);
+connection backup_mysql_conn;
+
+create database backup_db;
+use backup_db;
+create table t1(a int primary key, b int) partition by hash(a) partitions 2;
+insert into t1(a, b) values(1, 1);
+create index i1 on t1(a) global;
+create index i2 on t1(b) local;
+
+create tablegroup tg1 binding true partition by hash  partitions 2;
+create table t2(a int primary key, b int) tablegroup tg1 partition by hash(a) partitions 2;
+insert into t2(a, b) values(1, 1);
+
+connection backup_sys_conn;
+
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, DOING, 60;
+
+
+sleep 10;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+connection backup_mysql_conn;
+insert into t1(a, b) values(2, 2);
+insert into t2(a, b) values(2, 2);
+
+#do backup
+connection backup_sys_conn;
+sleep 10;
+ob1.mysql alter system backup database;
+
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_set_id', 1, 10;
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_status', STOP, 120;
+ob1.check_until_timeout select result from oceanbase.__all_backup_task_history where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.mysql_p select tenant_id, incarnation, backup_set_id, status, result from oceanbase.__all_backup_task_history;
+
+connection backup_sys_conn;
+let $restore_checkpoint = `select current_timestamp(6)`;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 60;
+
+ob1.oblog.gen_conf tb_white_list=*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+sleep 10;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PHYSICAL_RESTORE_SET_MEMBER_LIST wait_for continue_signal';
+ob1.mysql alter system restore $restore_mysql_tenant from $backup_mysql_tenant at '$backup_dest' until '$restore_checkpoint' with 'backup_cluster_name=$backup_cluster_name&backup_cluster_id=$backup_cluster_id&pool_list=small_pool_1&locality=F@z1&primary_zone=z1';
+sleep 10;
+let $restore_checkpoint = `select current_timestamp(6)`;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 60;
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+
+ob1.check_until_timeout select status from CDB_OB_RESTORE_HISTORY where tenant_name = '$restore_mysql_tenant', RESTORE_SUCCESS, 90;
+ob1.check_until_timeout select status from __all_tenant where tenant_name = '$restore_mysql_tenant', TENANT_STATUS_NORMAL, 90;
+
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, DOING, 60;
+
+sleep 10;
+let $restore_checkpoint = `select current_timestamp(6)`;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 60;
+
+connect(restore_mysql_conn, $restore_ip,root@$restore_mysql_tenant,,oceanbase, $restore_port);
+use backup_db;
+select * from t1;
+select * from t2;
+
+# backup again
+ob1.mysql alter system backup database;
+
+connection backup_sys_conn;
+let $restore_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_set_id', 2, 10;
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_status', STOP, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_backup_task_history where tenant_id = $backup_mysql_tenant_id and result = 0, 2, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_backup_task_history where tenant_id = $restore_mysql_tenant_id, 0, 10;
+ob1.mysql_p select tenant_id, incarnation, backup_set_id, status, result from oceanbase.__all_backup_task_history;
+
+# major freeze and backup again
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+connect(restore_mysql_conn, $restore_ip,root@$restore_mysql_tenant,,oceanbase, $restore_port);
+use backup_db;
+
+insert into t1(a, b) values(3, 3);
+ob1.oblog.next_dml;
+
+ob1.mysql alter system backup database;
+let $restore_checkpoint = `select current_timestamp(6)`;
+
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_set_id', 3, 10;
+ob1.check_until_timeout select value from oceanbase.__all_tenant_backup_info where name = 'backup_status', STOP, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_backup_task_history where tenant_id = $backup_mysql_tenant_id and result = 0, 3, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_backup_task_history where tenant_id = $restore_mysql_tenant_id and result = 0, 1, 10;
+ob1.mysql_p select tenant_id, incarnation, backup_set_id, status, result from oceanbase.__all_backup_task_history;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 60;
+
+# restore again
+sleep 10;
+disconnect restore_mysql_conn;
+
+let $restore_mysql_tenant2 = restore_mysql_tenant2;
+ob1.mysql alter system restore $restore_mysql_tenant2 from $restore_mysql_tenant at '$backup_dest' until '$restore_checkpoint' with 'backup_cluster_name=$backup_cluster_name&backup_cluster_id=$backup_cluster_id&pool_list=small_pool_2&locality=F@z1&primary_zone=z1';
+ob1.check_until_timeout select status from CDB_OB_RESTORE_HISTORY where tenant_name = '$restore_mysql_tenant2', RESTORE_SUCCESS, 90;
+ob1.check_until_timeout select status from __all_tenant where tenant_name = '$restore_mysql_tenant2', TENANT_STATUS_NORMAL, 90;
+connect(restore_mysql_conn, $restore_ip,root@$restore_mysql_tenant2,,oceanbase, $restore_port);
+use backup_db;
+select * from t1;
+select * from t2;
+sleep 10;
+let $restore_checkpoint = `select current_timestamp(6)`;
+ob1.check_until_timeout select max_next_time > timestamp'$restore_checkpoint' from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, 1, 60;
+
+insert into t1 values (6, 6);
+ob1.oblog.next_dml;
+# test stop log archive and restart
+ob1.mysql alter system noarchivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, STOP, 60;
+
+insert into t2 values (6, 6);
+ob1.oblog.next_dml;
+
+sleep 5;
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_BACKUP_ARCHIVELOG, DOING, 60;
+
+insert into t1 values (9, 9);
+ob1.oblog.next_dml;
+select * from t1;
+select * from t2;
+
+create table tt(a int primary key);
+ob1.oblog.next;
+insert into tt values(1);
+ob1.oblog.next;
+ob1.oblog.stop;

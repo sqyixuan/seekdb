@@ -1,0 +1,89 @@
+# owner: yanyuan.cxf cxf262476@antgroup.com
+# owner group: transaction
+# description: restore poing宕机重启相关逻辑测试
+--disable_query_log
+ob1=OBI(cluster=1,init_unit_cpu=0);
+ob1.z1.obs0.set extra_config=devname=eth0;
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_OB_CONNECTOR);
+connection sys_conn;
+
+eval  CREATE RESOURCE UNIT unit MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool UNIT = 'unit', UNIT_NUM = 1, ZONE_LIST = ('z1');
+eval  CREATE TENANT tenant RESOURCE_POOL_LIST = ('pool'), primary_zone='z1', locality = 'F@z1' set ob_tcp_invited_nodes='%';
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant, , test, , USE_OB_CONNECTOR);
+# **************************** mysql ************************************
+connection conn_mysql;
+
+# 1. create restore point
+create table t(id int primary key, k int);
+insert into t values(1,1);
+sleep 1;
+create restore point p1;
+create restore point p2;
+update t set k=2 where id=1;
+select name from oceanbase.v$restore_point;
+# p1
+# p2
+
+# 2. search with restore point
+select * from t;
+# 1  2
+
+let $snapshot = deploy_get_value(ob1.select select snapshot from  oceanbase.v\$restore_point where name= 'p1', snapshot, 1);
+eval select * from t as of snapshot $snapshot;
+# 1 1
+
+# 3. delete restore point
+drop restore point p2;
+select name from oceanbase.v$restore_point;
+# p1
+
+# 4. minor freeze and restart recovery 
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+sleep 30;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='tenant', tenant_id, 1);
+let $schema_version = deploy_get_value(ob1.select select refreshed_schema_version from __all_virtual_server_schema_info where tenant_id=$tenant_id, refreshed_schema_version, 1);
+ob1.z1.obs0.restart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z1', active, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1' and start_service_time > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id=$tenant_id and refreshed_schema_version=$schema_version, 1, 60;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant, , test, , USE_OB_CONNECTOR);
+connection conn_mysql;
+select name from oceanbase.v$restore_point;
+# p1
+let $snapshot = deploy_get_value(ob1.select select snapshot from  oceanbase.v\$restore_point where name= 'p1', snapshot, 1);
+eval select * from t as of snapshot $snapshot;
+# 1 1
+
+# 5. major freeze and restart recovery 
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='tenant', tenant_id, 1);
+let $schema_version = deploy_get_value(ob1.select select refreshed_schema_version from __all_virtual_server_schema_info where tenant_id=$tenant_id, refreshed_schema_version, 1);
+ob1.z1.obs0.restart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z1', active, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1' and start_service_time > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id=$tenant_id and refreshed_schema_version=$schema_version, 1, 60;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant, , test, , USE_OB_CONNECTOR);
+connection conn_mysql;
+select name from oceanbase.v$restore_point;
+# p1
+let $snapshot = deploy_get_value(ob1.select select snapshot from  oceanbase.v\$restore_point where name= 'p1', snapshot, 1);
+eval select * from t as of snapshot $snapshot;
+# 1 1

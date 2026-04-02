@@ -1,0 +1,203 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: yibo.tyf
+#owner group: sql1
+# tags: optimizer, global_index
+--explain_protocol 0
+--disable_warnings
+drop database if exists tlutest;
+create database tlutest;
+use tlutest;
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+create table t1(c1 int, c2 int, c3 int)
+partition by range(c1)
+subpartition by hash(c2) (
+  partition p0 values less than(0)
+  (subpartition sp00,
+   subpartition sp01),
+  partition p1 values less than(4)
+  (subpartition sp10,
+   subpartition sp11),
+  partition p2 values less than(maxvalue)
+  (subpartition sp20,
+   subpartition sp21));
+create index idx on t1(c1) global;
+create table t2(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create index idx1 on t2(c1) global;
+create index idx2 on t2(c2) global partition by hash(c2) partitions 4;
+create table t3(c1 int, c2 int, c3 int) partition by hash(c1 + c2 + 1) partitions 4;
+create index idx on t3(c1) global;
+create index idx2 on t3(c1, c2) global partition by hash(c1) partitions 5;
+--disable_query_log
+--let $cnt = -10
+while ($cnt <= 10)
+{
+  let $insert1 = insert into t1(c1, c2, c3) values ($cnt, $cnt + 1, $cnt + 2);
+  let $insert2 = insert into t2(c1, c2, c3) values ($cnt - 1, $cnt, $cnt * 2);
+  let $insert3 = insert into t3(c1, c2, c3) values ($cnt + 1, $cnt - 1, $cnt + 1);
+  eval $insert1;
+  eval $insert2;
+  eval $insert3;
+  inc $cnt;
+}
+--enable_query_log
+--result_format 4
+call dbms_stats.gather_table_stats('TLUTEST', 'T1');
+call dbms_stats.gather_table_stats('TLUTEST', 'T2');
+call dbms_stats.gather_table_stats('TLUTEST', 'T3');
+--sorted_result
+select owner, table_name, partition_name, num_rows, avg_row_len from oceanbase.dba_tab_statistics where owner = 'TLUTEST' and table_name in ('T1', 'T2', 'T3');
+
+--let $is_rowsets_flag=0
+# execute the sqls below with vectorized or not
+while ($is_rowsets_flag < 2)
+{
+  if ($is_rowsets_flag == 0)
+  {
+    alter system set _rowsets_enabled = false;
+    sleep 5;
+  }
+  if ($is_rowsets_flag == 1)
+  {
+    alter system set _rowsets_enabled = true;
+    sleep 5;
+  }
+  inc $is_rowsets_flag;
+
+  --explain_protocol 2
+  ## non-primary key table
+  select * from t1;
+  select /*+index (t1 idx)*/ * from t1;
+
+  select /*+no_index(t1 idx)*/* from t1 where c1 > 0;
+  select /*+index (t1 idx)*/ * from t1 where c1 > 0;
+
+  select /*+no_index(t1 idx)*/ * from t1 where c3 > 0;
+  select /*+index (t1 idx)*/ * from t1 where c3 > 0;
+  select /*+index (t1 idx) parallel(3)*/ * from t1 where c3 > 0 order by c1;
+  select /*+index (t1 idx) parallel(3)*/ c3 from t1 where c3 > 0 order by c1;
+
+  select /*+no_index(t1 idx)*/ * from t1 where c3 > 0 order by c1 limit 10;
+  select /*+index (t1 idx) parallel(3)*/ * from t1 where c3 > 0 order by c1 limit 10;
+  select /*+index (t1 idx) parallel(3)*/ * from t1 where c1 + c3 > 0 order by c1 limit 10;
+  select /*+index (tt idx) parallel(3)*/ * from t1 partition (p0, p1, p2) tt where c3 > 0 order by c1 limit 10;
+
+  ## primary key table [with global partition index]
+  select * from t2;
+  select /*+index (t2 idx1)*/ * from t2;
+  select /*+index (t2 idx2)*/ * from t2;
+
+  select /*+no_index (t2 idx1)*/ * from t2 where c1 > 0;
+  select /*+index (t2 idx1)*/ * from t2 where c1 > 0;
+  select /*+index (t2 idx2)*/ * from t2 where c1 > 0;
+  select /*+index (tt idx2)*/ * from t2 partition (p0, p1) tt where c1 > 0;
+
+  select * from t2 where c3 > 0;
+  select /*+index (t2 idx1)*/ * from t2 where c3 > 0;
+  select /*+index (t2 idx2)*/ * from t2 where c3 > 0;
+  select /*+index (t2 idx2) parallel(3)*/ * from t2 where c3 > 0 order by c1, c2;
+
+  select /*+index (t2 idx1)*/ * from t2 where c3 > 0 order by c1 limit 5;
+  select /*+index (t2 idx2) parallel(3)*/ * from t2 where c3 > 0 order by c1 limit 5;
+
+  ## partition key consists of multi-columns
+  select /*+no_index (t3 idx)*/ * from t3 where c1 > 0;
+  select /*+index (t3 idx)*/ * from t3 where c1 > 0;
+
+  select /*+no_index (t3 idx)*/ * from t3 where c1 + c3 > 0;
+  select /*+index (t3 idx)*/ * from t3 where c1 + c3 > 0;
+  select /*+index (t3 idx2)*/ * from t3 where c1 + c3 > 0;
+  select /*+index (t3 idx) parallel(3)*/ * from t3 where c1 + c3 > 0 order by c1;
+
+  ## joined
+  select /*+no_index (t1 idx) no_index (t2 idx1)*/ * from t1, t2 where t1.c1 > 0 and t2.c3 > 0 order by t1.c1, t2.c1;
+  select /*+index (t1 idx)*/* from t1, t2 where t1.c1 > 0 and t2.c3 > 0 order by t1.c1, t2.c1;
+  select /*+index (t1 idx) index (t2 idx1)*/* from t1, t2 where t1.c1 > 0 and t2.c3 > 0 order by t1.c1, t2.c1;
+  select /*+index (t1 idx) index (t2 idx2)*/* from t1, t2 where t1.c1 > 0 and t2.c3 > 0 order by t1.c1, t2.c1;
+  select /*+index (t1 idx) index (t2 idx2) parallel(3)*/* from t1, t2 where t1.c1 > 0 and t2.c3 > 0 order by t1.c1, t2.c1;
+
+  ## force parallel
+  set _force_parallel_query_dop = 3;
+  select /*+index (t1 idx)*/* from t1 where c1 > 0 order by c2 limit 5;
+  select /*+index (t2 idx1)*/* from t2 where c1 > 0 order by c2 limit 5;
+  select /*+index (t3 idx)*/* from t3 where c1 > 0 order by c2 limit 5;
+  select /*+index (t3 idx)*/* from t1, t2, t3 where t1.c1 > 0 and t3.c1 > 0 order by t1.c1, t2.c2, t3.c2 limit 5;
+  select /*+index (t3 idx2)*/* from t1, t2, t3 where t1.c1 > 0 and t3.c1 > 0 order by t1.c1, t2.c2, t3.c2 limit 5;
+  select /*+index (t1 idx) index (t2 idx1) index (t3 idx)*/* from t1, t2, t3 where t1.c1 > 0 and t3.c1 > 0 order by 1, 2, 3, 4, 5, 6, 7 limit 5;
+  set _force_parallel_query_dop = 1;
+
+  # --disable_parsing
+  ## dml
+  set autocommit=0;
+  --explain_protocol 0
+  select * from t1;
+  --explain_protocol 2
+  update /*+index (t1 idx)*/ t1 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t1;
+  rollback;
+
+  select * from t2;
+  --explain_protocol 2
+  update /*+index (t2 idx1)*/ t2 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t2;
+  rollback;
+
+  select * from t3;
+  --explain_protocol 2
+  update /*+index (t3 idx2)*/ t3 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t3;
+  rollback;
+
+  select * from t1;
+  --explain_protocol 2
+  delete /*+index (t1 idx)*/ from t1 where c3 > 0;
+  --explain_protocol 0
+  select * from t1;
+  rollback;
+
+  set _force_parallel_dml_dop = 3;
+  --explain_protocol 0
+  select * from t1;
+  --explain_protocol 2
+  update /*+index (t1 idx)*/ t1 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t1;
+  rollback;
+
+  select * from t2;
+  --explain_protocol 2
+  update /*+index (t2 idx1)*/ t2 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t2;
+  rollback;
+
+  select * from t1;
+  --explain_protocol 2
+  delete /*+index (t1 idx)*/ from t1 where c3 > 0;
+  --explain_protocol 0
+  select * from t1;
+  rollback;
+
+  select * from t3;
+  --explain_protocol 2
+  update /*+index (t3 idx2)*/ t3 set c3 = 0 where c3 > 0;
+  --explain_protocol 0
+  select * from t3;
+  rollback;
+  set _force_parallel_dml_dop = 1;
+  # --enable_parsing
+
+  set autocommit=1;
+}
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+drop database if exists tlutest;
+purge recyclebin;
+--enable_warnings

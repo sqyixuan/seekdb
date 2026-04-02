@@ -1,0 +1,272 @@
+#owner: wuyuming.wym
+#owner group: sql1
+# tags: optimizer
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+
+create table t1(id int, c0 int, c1 datetime, c2 date, c3 varchar(20), c4 timestamp, c5 time);
+create table t2(id int, c1 varchar(10), c2 int);
+insert into t1 
+select n, n % 100,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second
+from (select row_number() over () as n, abs(random(1)) % 3600 as m from table(generator(50000)));
+
+insert into t2 select n, lpad(n % 10000, 4, '0'), n % 101 from (select row_number() over () as n from table(generator(50000)));
+
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats(null, 't1');
+call dbms_stats.gather_table_stats(null, 't2');
+set optimizer_dynamic_sampling = 0;
+set _enable_storage_cardinality_estimation = 0;
+set cardinality_estimation_model = 'independent';
+--enable_query_log
+
+--result_format 4
+--explain_protocol 2
+
+# test mod ndv
+select count(*) from (select distinct c0 % 3 from t1) v;
+select count(*) from (select distinct c0 % 3.5 from t1) v;
+select count(*) from (select distinct c0 % 2, c0 % 3 from t1) v;
+select count(*) from (select distinct c0 % 3, c0 % 3 as tmp from t1) v;
+select count(*) from (select distinct (c0 % 3) + (c0 % 3) from t1) v;
+select count(*) from (select distinct c0 % 200 from t1) v;
+# bad case
+select count(*) from (select distinct c0 % 99, c0 % 98 from t1) v;
+select count(*) from (select distinct c0, c0 % 3 from t1) v;
+select count(*) from (select distinct c0 % (-3) from t1) v;
+select count(*) from (select distinct c0 % 30 + 100 from t1) v;
+select count(*) from (select distinct row_number() over () % 30 from t1) v;
+select count(*) from (select distinct (row_number() over () + c0) % 29 from t1) v;
+
+# test substr ndv
+select count(*) from (select distinct substr(c1, 2) from t2) v;
+select count(*) from (select distinct substr(c1, -1) from t2) v;
+select count(*) from (select distinct substr(c1, -2) from t2) v;
+select count(*) from (select distinct substr(c1, 2, 4) from t2) v;
+select count(*) from (select distinct substr(c1, 1, 5) from t2) v;
+
+# test combined special ndv
+select count(*) from (select distinct (t1.c0 + t2.c2) % 7 from t1, t2 where t1.id = t2.id) v;
+select count(*) from (select distinct t1.c0, t2.c2 % 7 from t1, t2 where t1.id = t2.id) v;
+select count(*) from (select distinct t1.c0, t2.c2 % 7, t2.c2 from t1, t2 where t1.id = t2.id) v;
+select count(*) from (select distinct t1.c0 % 3, t2.c2 % 7 from t1, t2 where t1.id = t2.id) v;
+select count(*) from (select distinct t1.c0 % 7, row_number() over(partition by t1.c0) from t1, t2 where t1.id = t2.id) v;
+select count(*) from (select distinct (t1.c0 + t2.c2) % 7, t1.c0, t2.c2 from t1, t2 where t1.id = t2.id) v;
+
+# test time expr ndv
+select count(*) from (select distinct date(c1) from t1) v;
+select count(*) from (select distinct year(c1) from t1) v;
+select count(*) from (select distinct month(c1) from t1) v;
+select count(*) from (select distinct week(c1) from t1) v;
+select count(*) from (select distinct weekofyear(c1) from t1) v;
+select count(*) from (select distinct yearweek(c1) from t1) v;
+select count(*) from (select distinct weekofyear(c1) from t1) v;
+select count(*) from (select distinct dayofyear(c1) from t1) v;
+select count(*) from (select distinct dayofmonth(c1) from t1) v;
+select count(*) from (select distinct day(c1) from t1) v;
+select count(*) from (select distinct weekday(c1) from t1) v;
+select count(*) from (select distinct dayofweek(c1) from t1) v;
+select count(*) from (select distinct quarter(c1) from t1) v;
+select count(*) from (select distinct hour(c1) from t1) v;
+select count(*) from (select distinct minute(c1) from t1) v;
+select count(*) from (select distinct second(c1) from t1) v;
+select count(*) from (select distinct dayname(c1) from t1) v;
+select count(*) from (select distinct monthname(c1) from t1) v;
+select count(*) from (select distinct extract(year from c1) from t1) v;
+select count(*) from (select distinct extract(year_month from c1) from t1) v;
+select count(*) from (select distinct extract(month from c1) from t1) v;
+select count(*) from (select distinct extract(week from c1) from t1) v;
+select count(*) from (select distinct extract(day from c1) from t1) v;
+select count(*) from (select distinct extract(quarter from c1) from t1) v;
+select count(*) from (select distinct extract(minute from c1) from t1) v;
+select count(*) from (select distinct extract(second from c1) from t1) v;
+select count(*) from (select distinct extract(hour from c1) from t1) v;
+
+select count(*) from (select distinct date(c2) from t1) v;
+select count(*) from (select distinct year(c2) from t1) v;
+select count(*) from (select distinct month(c2) from t1) v;
+select count(*) from (select distinct week(c2) from t1) v;
+select count(*) from (select distinct weekofyear(c2) from t1) v;
+select count(*) from (select distinct yearweek(c2) from t1) v;
+select count(*) from (select distinct weekofyear(c2) from t1) v;
+select count(*) from (select distinct dayofyear(c2) from t1) v;
+select count(*) from (select distinct dayofmonth(c2) from t1) v;
+select count(*) from (select distinct day(c2) from t1) v;
+select count(*) from (select distinct weekday(c2) from t1) v;
+select count(*) from (select distinct dayofweek(c2) from t1) v;
+select count(*) from (select distinct quarter(c2) from t1) v;
+# bad cases
+select count(*) from (select distinct hour(c2) from t1) v;
+select count(*) from (select distinct minute(c2) from t1) v;
+select count(*) from (select distinct second(c2) from t1) v;
+select count(*) from (select distinct dayname(c2) from t1) v;
+select count(*) from (select distinct monthname(c2) from t1) v;
+select count(*) from (select distinct extract(year from c2) from t1) v;
+select count(*) from (select distinct extract(year_month from c2) from t1) v;
+select count(*) from (select distinct extract(month from c2) from t1) v;
+select count(*) from (select distinct extract(week from c2) from t1) v;
+select count(*) from (select distinct extract(day from c2) from t1) v;
+select count(*) from (select distinct extract(quarter from c2) from t1) v;
+select count(*) from (select distinct extract(minute from c2) from t1) v;
+select count(*) from (select distinct extract(second from c2) from t1) v;
+select count(*) from (select distinct extract(hour from c2) from t1) v;
+
+# bad case, char -> date is not monotonic
+select count(*) from (select distinct date(c3) from t1) v;
+select count(*) from (select distinct year(c3) from t1) v;
+select count(*) from (select distinct month(c3) from t1) v;
+select count(*) from (select distinct week(c3) from t1) v;
+select count(*) from (select distinct weekofyear(c3) from t1) v;
+select count(*) from (select distinct yearweek(c3) from t1) v;
+select count(*) from (select distinct weekofyear(c3) from t1) v;
+select count(*) from (select distinct dayofyear(c3) from t1) v;
+select count(*) from (select distinct dayofmonth(c3) from t1) v;
+select count(*) from (select distinct day(c3) from t1) v;
+select count(*) from (select distinct weekday(c3) from t1) v;
+select count(*) from (select distinct dayofweek(c3) from t1) v;
+select count(*) from (select distinct quarter(c3) from t1) v;
+select count(*) from (select distinct hour(c3) from t1) v;
+select count(*) from (select distinct minute(c3) from t1) v;
+select count(*) from (select distinct second(c3) from t1) v;
+select count(*) from (select distinct dayname(c3) from t1) v;
+select count(*) from (select distinct monthname(c3) from t1) v;
+select count(*) from (select distinct extract(year from c3) from t1) v;
+select count(*) from (select distinct extract(year_month from c3) from t1) v;
+select count(*) from (select distinct extract(month from c3) from t1) v;
+select count(*) from (select distinct extract(week from c3) from t1) v;
+select count(*) from (select distinct extract(day from c3) from t1) v;
+select count(*) from (select distinct extract(quarter from c3) from t1) v;
+select count(*) from (select distinct extract(minute from c3) from t1) v;
+select count(*) from (select distinct extract(second from c3) from t1) v;
+select count(*) from (select distinct extract(hour from c3) from t1) v;
+
+select count(*) from (select distinct date(c4) from t1) v;
+select count(*) from (select distinct year(c4) from t1) v;
+select count(*) from (select distinct month(c4) from t1) v;
+select count(*) from (select distinct week(c4) from t1) v;
+select count(*) from (select distinct weekofyear(c4) from t1) v;
+select count(*) from (select distinct yearweek(c4) from t1) v;
+select count(*) from (select distinct weekofyear(c4) from t1) v;
+select count(*) from (select distinct dayofyear(c4) from t1) v;
+select count(*) from (select distinct dayofmonth(c4) from t1) v;
+select count(*) from (select distinct day(c4) from t1) v;
+select count(*) from (select distinct weekday(c4) from t1) v;
+select count(*) from (select distinct dayofweek(c4) from t1) v;
+select count(*) from (select distinct quarter(c4) from t1) v;
+select count(*) from (select distinct hour(c4) from t1) v;
+select count(*) from (select distinct minute(c4) from t1) v;
+select count(*) from (select distinct second(c4) from t1) v;
+select count(*) from (select distinct dayname(c4) from t1) v;
+select count(*) from (select distinct monthname(c4) from t1) v;
+select count(*) from (select distinct extract(year from c4) from t1) v;
+select count(*) from (select distinct extract(year_month from c4) from t1) v;
+select count(*) from (select distinct extract(month from c4) from t1) v;
+select count(*) from (select distinct extract(week from c4) from t1) v;
+select count(*) from (select distinct extract(day from c4) from t1) v;
+select count(*) from (select distinct extract(quarter from c4) from t1) v;
+select count(*) from (select distinct extract(minute from c4) from t1) v;
+select count(*) from (select distinct extract(second from c4) from t1) v;
+select count(*) from (select distinct extract(hour from c4) from t1) v;
+
+select count(*) from (select distinct date(c5) from t1) v;
+select count(*) from (select distinct year(c5) from t1) v;
+select count(*) from (select distinct month(c5) from t1) v;
+select count(*) from (select distinct week(c5) from t1) v;
+select count(*) from (select distinct weekofyear(c5) from t1) v;
+select count(*) from (select distinct yearweek(c5) from t1) v;
+select count(*) from (select distinct weekofyear(c5) from t1) v;
+select count(*) from (select distinct dayofyear(c5) from t1) v;
+select count(*) from (select distinct dayofmonth(c5) from t1) v;
+select count(*) from (select distinct day(c5) from t1) v;
+select count(*) from (select distinct weekday(c5) from t1) v;
+select count(*) from (select distinct dayofweek(c5) from t1) v;
+select count(*) from (select distinct quarter(c5) from t1) v;
+select count(*) from (select distinct hour(c5) from t1) v;
+select count(*) from (select distinct minute(c5) from t1) v;
+select count(*) from (select distinct second(c5) from t1) v;
+select count(*) from (select distinct dayname(c5) from t1) v;
+select count(*) from (select distinct monthname(c5) from t1) v;
+## bug to be fixed: 
+select count(*) from (select distinct extract(year from c5) from t1) v;
+select count(*) from (select distinct extract(year_month from c5) from t1) v;
+select count(*) from (select distinct extract(month from c5) from t1) v;
+select count(*) from (select distinct extract(week from c5) from t1) v;
+select count(*) from (select distinct extract(day from c5) from t1) v;
+select count(*) from (select distinct extract(quarter from c5) from t1) v;
+select count(*) from (select distinct extract(minute from c5) from t1) v;
+select count(*) from (select distinct extract(second from c5) from t1) v;
+select count(*) from (select distinct extract(hour from c5) from t1) v;
+
+# test time expr range selectivity
+select count(*) from t1 where date(c1) between date'2002-01-02' and date'2002-02-03';
+select count(*) from t1 where date(c1) between date'2001-01-01' and timestamp'2002-02-02';
+select count(*) from t1 where date(c1) not between date'2001-01-01' and timestamp'2002-02-02';
+select count(*) from t1 where year(c1) < 2002;
+select count(*) from t1 where year(c1) <= 2002;
+select count(*) from t1 where year(c1) <= 2002 and year(c1) > 1996;
+select count(*) from t1 where month(c1) < 5;
+select count(*) from t1 where month(c1) in (1, 2, 3);
+select count(*) from t1 where week(c1) > 30;
+select count(*) from t1 where weekofyear(c1) > 30;
+select count(*) from t1 where yearweek(c1) > 200202;
+select count(*) from t1 where dayofyear(c1) > 200;
+select count(*) from t1 where dayofmonth(c1) >= 10;
+select count(*) from t1 where day(c1) < 13;
+select count(*) from t1 where weekday(c1) < 3;
+select count(*) from t1 where dayofweek(c1) < 3;
+select count(*) from t1 where quarter(c1) < 4;
+select count(*) from t1 where hour(c1) < 4;
+select count(*) from t1 where minute(c1) < 40;
+select count(*) from t1 where second(c1) < 40;
+select count(*) from t1 where extract(year from c1) <= 2001;
+select count(*) from t1 where extract(year_month from c1) <= 200112;
+select count(*) from t1 where extract(month from c1) > 13;
+select count(*) from t1 where extract(week from c1) > 13;
+select count(*) from t1 where extract(day from c1) > 13;
+select count(*) from t1 where extract(quarter from c1) > 2.5;
+select count(*) from t1 where year(c1) = 2000 and dayofyear(c1) between 100 and 200;
+
+select count(*) from t1 v1, t1 v2 where date(v1.c1)=date(v2.c1);
+select count(*) from t1 v1, t1 v2 where v1.id % 10000 = v2.id % 5000;
+select count(*) from t1 v1, t1 v2 where v1.id % 10000 = v2.id % 5000 and v1.id % 10000 = v1.c0;
+select count(*) from t1 v1, t1 v2 where v1.id % 10000 = v2.id % 5000 and v1.id % 10000 = v1.c0 % 2;
+select count(*) from (select distinct id % 50 from t1 where id % 50 = id % 60);
+
+--explain_protocol 0
+--disable_query_log
+insert into t1 
+select n, n % 100,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second,
+       '2000-01-01' + interval n hour + interval m second
+from (select row_number() over () + 50000 as n, abs(random(1)) % 3600 as m from table(generator(10000)));
+
+--source mysql_test/include/minorfreeze.inc
+--source mysql_test/include/wait_minor_merge.inc
+call dbms_stats.FLUSH_DATABASE_MONITORING_INFO();
+--enable_query_log
+--explain_protocol 2
+
+select count(*) from t1 where date(c1) between date'2001-08-02' and date'2002-01-01';
+select count(*) from t1 where date(c1) between date'2005-08-02' and date'2006-01-01';
+select count(*) from t1 where date(c1) between date'1999-08-02' and date'2000-01-01';
+select count(*) from t1 where date(c1) between date'2005-10-02' and date'2006-01-01';
+select count(*) from t1 where date(c1) > '2002-09-01';
+select count(*) from t1 where date(c1) > '2005-09-01';
+select count(*) from t1 where date(c1) >= '2006-02-01';
+select count(*) from t1 where date(c1) < '2001-09-01';
+select count(*) from t1 where date(c1) < '1999-09-01';
+
+drop table t1,t2;

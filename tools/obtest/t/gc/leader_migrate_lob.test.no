@@ -1,0 +1,82 @@
+# owner:hanhui
+# owner group: storage
+# description:this case is use for test migrate replica src to dst
+#
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+let $ip=deploy_get_value(ob1.z1.obs1.ip);
+let $port=deploy_get_value(ob1.z1.obs1.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+
+connection conn1;
+set global max_allowed_packet=50000000;
+set global ob_query_timeout=100000000;
+set global ob_trx_timeout=100000000;
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+connection conn1;
+sleep 3;
+
+# prepare data
+use test;
+create table test01 (pk1 int, pk2 int, pk3 int, f1 text, f2 mediumtext, f3 longblob,  primary key(pk1,pk2,pk3));
+let $cnt =1;
+while ($cnt < 11)
+{
+  eval insert into test01 values($cnt, $cnt, $cnt, repeat('a', 32000), repeat('b', 10000000), repeat('c', 20000000));
+  inc $cnt;
+}
+eval select pk1, pk2, pk3, md5(f1), md5(f2), substr(f2, 1000000, 10), md5(f3), substr(f3, 1000000, 10) from test01;
+
+# major freeze
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+eval select pk1, pk2, pk3, md5(f1), md5(f2), substr(f2, 1000000, 10), md5(f3), substr(f3, 1000000, 10) from test01;
+
+# after freeze add data
+while ($cnt < 6)
+{
+  eval insert into test01 values($cnt, $cnt, $cnt, repeat('a', 32000), repeat('b', 10000000), repeat('c', 20000000));
+  inc $cnt;
+}
+
+sleep 5;
+# minor freeze
+ob1.mysql alter system minor freeze tenant obtest;
+sleep 3;
+ob1.check_until_timeout select count(1) from __all_virtual_memstore_info where is_active=0, 0, 300;
+eval select pk1, pk2, pk3, md5(f1), md5(f2), substr(f2, 1000000, 10), md5(f3), substr(f3, 1000000, 10) from test01;
+
+# prepare base params
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $src = deploy_get_value(ob1.get_leader obtest:test:test01:0);
+let $dst = deploy_get_value(ob1.get_another_obs_in_same_zone $src);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+
+# src lob基本信息检查
+connection conn2;
+eval select zone, macro_block_type, macro_data_version, count(1) as lob_block_info from (select a.zone, b.macro_block_type, b.macro_data_version from __all_server a, __all_virtual_partition_sstable_macro_info b where b.table_id = $table_id and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port) x group by 1,2,3 order by 1,2,3;
+connection conn1;
+
+# 迁移
+let $pkey = deploy_get_value(ob1.select select concat(tenant_id, ':', table_id, ':0') as pkey from oceanbase.__all_virtual_table where table_name='test01', pkey, 1);
+$src.migrate_to $dst,obtest:test:test01;
+ob1.wait_migrate_success $src,$dst,$pkey,60;
+ob1.check_no_migrate_unit 240;
+sleep 30;
+
+eval select pk1, pk2, pk3, md5(f1), md5(f2), substr(f2, 1000000, 10), md5(f3), substr(f3, 1000000, 10) from test01;
+
+# dst lob基本信息检查
+connection conn2;
+eval select zone, macro_block_type, macro_data_version, count(1) as lob_block_info from (select a.zone, b.macro_block_type, b.macro_data_version from __all_server a, __all_virtual_partition_sstable_macro_info b where b.table_id = $table_id and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port) x group by 1,2,3 order by 1,2,3;

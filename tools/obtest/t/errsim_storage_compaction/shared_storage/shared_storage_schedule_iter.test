@@ -1,0 +1,96 @@
+# owner:lixia.yq
+# owner group:storage
+# test compaction iter
+# 1) macro reuse
+# 2) alter compressor_name
+# 3) add column
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set minor_compact_trigger = 3 tenant obtest;
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression = 'none';
+create index idx1 on test01(c2);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_id = (select table_id from oceanbase.__all_virtual_table where table_name='test01'), tablet_id, 1);
+let $index_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where data_table_id = (select table_id from oceanbase.__all_virtual_table where table_name='test01'), tablet_id, 1);
+--disable_query_log
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+#########################################################################
+# TEST_1: make get tablet for user data tablet failed
+#########################################################################
+# EN_COMPACTION_GET_SCHEDULE_TABLET = 4016
+ob1.mysql alter system set_tp tp_no = 723, error_code = 4016, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+# all user data tablet is not schedule major
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and tablet_id>200000 and compaction_scn >= $major_scn, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and tablet_id<200000 and compaction_scn < $major_scn, 0, 300;
+
+ob1.mysql alter system set_tp tp_no = 723, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+#########################################################################
+# TEST_2: make get ls for user data ls failed
+#########################################################################
+# EN_COMPACTION_ITER_LS_NOT_EXIST = 4023
+ob1.mysql alter system set_tp tp_no = 724, error_code = 4023, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+# all user data tablet is not schedule major
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and ls_id=1 and compaction_scn < $major_scn, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and ls_id>1 and compaction_scn >= $major_scn, 0, 300;
+
+ob1.mysql alter system set_tp tp_no = 724, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+#########################################################################
+# TEST 4: make schedule batch cnt = tablet_ids cnt on ls
+#########################################################################
+# EN_COMPACTION_ITER_SET_BATCH_CNT
+# make schedule batch cnt = tablet_ids cnt on ls
+
+ob1.mysql alter system set_tp tp_no=748, error_code=1, frequency=1;
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN , 1, 2400;
+
+#########################################################################
+# TEST 5: make schedule batch cnt = 100
+#########################################################################
+# EN_COMPACTION_ITER_SET_BATCH_CNT
+# make schedule batch cnt = 500
+ob1.mysql alter system set_tp tp_no=748, error_code=1, frequency=0;
+ob1.mysql alter system set_tp tp_no=748, error_code=500, frequency=1;
+
+ob1.mysql alter system major freeze tenant='sys';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = 1 and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = 1 and LAST_SCN = GLOBAL_BROADCAST_SCN , 1, 4800;

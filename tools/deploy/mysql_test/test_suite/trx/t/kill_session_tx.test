@@ -1,0 +1,68 @@
+######################################################
+# owner: yunxing.cyx
+# owner group: Transaction
+# description: kill session when transaction is active
+# expectation: txn will rollback immediately
+######################################################
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--error 0,1396
+drop user kill_user;
+create user 'kill_user' identified by 'kill_user';
+GRANT ALL ON *.* TO 'kill_user';
+
+## the sys tenant
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+--echo kill session from normal tenant(the same tenant)
+--echo a new connection named by conn1
+connect (conn1,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection conn1;
+let $sess_1=query_get_value(select connection_id() as id,id,1);
+--echo start a transaction
+--disable_warnings
+drop table if exists test_kill_session;
+--enable_warnings
+create table test_kill_session(id int);
+begin;
+insert into test_kill_session values(1);
+--echo verify txn is started
+connection sys_conn;
+--disable_query_log
+let $tenant_id=query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = "sys", tenant_id, 1);
+eval select count(1) as txn_cnt_by_session_expect_1 from oceanbase.__all_virtual_processlist where id = $sess_1 and trans_id != 0 and tenant = "sys";
+let $trans_id=query_get_value(select trans_id from oceanbase.__all_virtual_processlist where id = $sess_1 and tenant = "sys", trans_id,1);
+eval select count(1) as txn_cnt_by_trans_id_expect_1 from oceanbase.__all_virtual_trans_stat where trans_id = $trans_id and tenant_id = $tenant_id;
+connection conn1;
+--echo kill session 1 in the same normal tenant
+--disable_result_log
+--error 2013
+eval kill $sess_1;
+--enable_result_log
+--echo verify txn is rollback: expect 0
+connection sys_conn;
+sleep 1;
+eval select count(1) tenant_txn_cnt_by_trans_id_expect_0 from oceanbase.__all_virtual_trans_stat where trans_id = $trans_id and tenant_id = $tenant_id;
+
+--echo test kill session from sys_tenant
+--echo a new connection named by conn2
+connect (conn2,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection conn2;
+let $sess_2=query_get_value(select connection_id() as id,id,1);
+--echo start a transaction
+begin;
+insert into test_kill_session values(2);
+--echo verify txn is started
+connection sys_conn;
+--disable_query_log
+eval select count(1) as txn_cnt_by_session_expect_1 from oceanbase.__all_virtual_processlist where id = $sess_2 and trans_id != 0 and tenant = "sys";
+let $trans_id=query_get_value(select trans_id from oceanbase.__all_virtual_processlist where id = $sess_2 and tenant = "sys", trans_id,1);
+eval select count(1) as txn_cnt_by_trans_id_expect_1 from oceanbase.__all_virtual_trans_stat where trans_id = $trans_id and tenant_id = $tenant_id;
+--echo kill session 2 in sys_tenant
+eval kill $sess_2;
+
+--echo verify txn is rollback: expect 0
+sleep 1;
+eval select count(1) tenant_txn_cnt_by_trans_id_expect_0 from oceanbase.__all_virtual_trans_stat where trans_id = $trans_id and tenant_id = $tenant_id;

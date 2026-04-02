@@ -1,0 +1,41 @@
+# owner: saitong.zst
+# owner group:storage
+# encoding estimate size overflow, retry with flat format in next task
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+
+drop table if exists test_encoding;
+create table test_encoding(c1 int, c2 int, c3 varchar(4096), primary key(c1));
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = (select table_id from oceanbase.__all_virtual_table where table_name='test_encoding'), tablet_id, 1);
+
+sleep 10;
+
+--disable_query_log
+let $cnt=1;
+while($cnt < 128)
+{
+  eval insert into test_encoding values($cnt, $cnt, repeat('ab', 1024));
+  inc $cnt;
+}
+--enable_query_log
+
+ob1.mysql alter system set_tp tp_no = 712, error_code = 4397, frequency = 1;
+
+ob1.mysql alter system major freeze tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+ob1.mysql_p select distinct row_store_type from oceanbase.__all_virtual_tablet_sstable_macro_info where tablet_id = $tablet_id and macro_logic_version = (select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id);
+eval select c1, c2 from test_encoding where c1 = 127;
+
+drop table if exists test_encoding;

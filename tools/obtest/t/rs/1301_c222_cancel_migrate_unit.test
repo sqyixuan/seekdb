@@ -1,0 +1,52 @@
+##############################
+# owner: zhuweng.yzf
+# owner group: rs
+# 功能点：取消UNIT迁移 project/81079/issue/12928495
+# 实现为允许未完成迁移的UNIT迁移回其原来的server
+
+ob1=OBI(cluster=2:2:2);
+ob1.reboot;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+ob1.mysql alter system set enable_rebalance = 'false'
+alter system set balancer_idle_time = '1h';
+create resource pool upool1 unit 'sys_unit_config', unit_num = 1;
+create tenant tt1 resource_pool_list=('upool1') set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt1', tenant_id, 1);
+let $unit_id=deploy_get_value(ob1.select select unit_id from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$tenant_id, unit_id, 1);
+
+# tenant tt1
+# create a table
+ob_connect(tt1_conn, ob1, root@tt1,,test,,USE_OB_CONNECTOR);
+connection tt1_conn;
+use test;
+create table t1 (c1 int primary key, c2 int);
+insert into t1 values (1, 2), (3, 4);
+select * from t1;
+
+# migrate unit 1001
+connection sys_conn;
+let $u1001_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_unit inner join __all_resource_pool using (resource_pool_id) where zone='z1' and tenant_id=$tenant_id, ipport, 1);
+let $another_server=deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as ipport from __all_server where zone='z1' and concat(svr_ip, ':', svr_port) != '$u1001_server', ipport, 1);
+
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$another_server';
+--enable_query_log
+select count(*) from __all_unit where migrate_from_svr_ip != '';
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="MIGRATE_UNIT" and job_status="INPROGRESS",job_id,1);
+
+# migrate back
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$u1001_server';
+--enable_query_log
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="FAILED" ,1,60;
+
+# verify
+--disable_query_log
+eval select count(*) from __all_virtual_meta_table where tenant_id=$tenant_id and concat(svr_ip, ':', svr_port) != '$u1001_server';
+eval select manual_migrate from __all_unit where unit_id=$unit_id and concat(svr_ip, ':', svr_port) = '$u1001_server' and concat(migrate_from_svr_ip, ':', migrate_from_svr_port) = '$another_server';
+--enable_query_log

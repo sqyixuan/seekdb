@@ -418,6 +418,12 @@ bool ObIOFlag::is_need_close_dev_and_fd() const
   return need_close_dev_and_fd_;
 }
 
+
+bool oceanbase::common::is_atomic_write_callback(const ObIOCallbackType type)
+{
+  return (ObIOCallbackType::ATOMIC_WRITE_CALLBACK == type);
+}
+
 /******************             IOCallback              **********************/
 ObIOCallback::ObIOCallback(const ObIOCallbackType type)
   : type_(type), compat_mode_(static_cast<lib::Worker::CompatMode>(lib::get_compat_mode()))
@@ -1309,7 +1315,7 @@ const char *ObIORequest::get_io_data_buf()
 
 int64_t ObIORequest::get_align_size() const
 {
-  return std::max(static_cast<int64_t>(1), align_size_);
+  return std::max(1L, align_size_);
 }
 
 int64_t ObIORequest::get_align_offset() const
@@ -1540,7 +1546,7 @@ int ObIORequest::try_alloc_buf_until_timeout(char *&io_buf)
     } else if (OB_FAIL(alloc_io_buf(io_buf))) {
       if (OB_ALLOCATE_MEMORY_FAILED == ret) {
         const int64_t remain_time = timeout_ts() - current_ts;
-        const int64_t sleep_time = min(remain_time, static_cast<int64_t>(1000L));
+        const int64_t sleep_time = min(remain_time, 1000L);
         if (TC_REACH_TIME_INTERVAL(1000L * 1000L)) {
           LOG_INFO("alloc memory failed, retry later", K(ret), K(remain_time), K(sleep_time), K(retry_alloc_count));
         }
@@ -2259,9 +2265,10 @@ int ObTenantIOConfig::get_group_config(const uint64_t index, int64_t &min, int64
 
 int64_t ObTenantIOConfig::get_callback_thread_count() const
 {
-  const int64_t DEFAULT_CALLBACK_THREAD_COUNT = 16;
-  int64_t callback_thread_num = 0 == param_config_.callback_thread_count_? DEFAULT_CALLBACK_THREAD_COUNT : param_config_.callback_thread_count_;
-  LOG_INFO("get callback thread success", K(callback_thread_num));
+  int64_t memory_benchmark = 4L * 1024L * 1024L * 1024L; //4G memory
+  //Based on 4G memory, one thread will be added for each additional 4G of memory, and the maximum number of callback_thread_count is 16
+  int64_t callback_thread_num = 0 == param_config_.callback_thread_count_? min(16, (param_config_.memory_limit_ / memory_benchmark) + 1) : param_config_.callback_thread_count_;
+  LOG_INFO("get callback thread by memory success", K(param_config_.memory_limit_), K(callback_thread_num));
   return callback_thread_num;
 }
 

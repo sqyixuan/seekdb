@@ -1,0 +1,64 @@
+#
+# test branch level savepoint
+#
+# owner: yunxing.cyx
+# owner group: transaction
+# 2023-09-29
+#
+# description:
+# branch level savepoint used in DML:
+# 1. insert ... select ... on duplicated key ..., when plan is partition wise
+# 2. replace ... select ..., when plan is partition wise
+# 3. select ... for update (TODO)
+
+connect (c_sys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, oceanbase, $OBMYSQL_PORT);
+connect (c_mysql, $OBMYSQL_MS0, root, "", test, $OBMYSQL_PORT);
+
+--disable_warnings
+drop table if exists branch_sp_tbl_src;
+drop table if exists branch_sp_tbl_dest;
+drop table if exists branch_sp_tbl_tmp;
+--enable_warnings
+create table branch_sp_tbl_src(id int primary key, v int) partition by key(id) partitions 4;
+create table branch_sp_tbl_tmp like branch_sp_tbl_src;
+create table branch_sp_tbl_dest like branch_sp_tbl_src;
+
+--echo insert 65536 rows into src table
+insert into branch_sp_tbl_src values(1,1);
+let $i = 0;
+while($i != -1) {
+--echo $i
+  insert/*+enable_parallel_dml parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_src
+      select (select count(1) from branch_sp_tbl_src) + id, v from branch_sp_tbl_src;
+  inc $i;
+  if ($i == 14) {
+    let $i = -1;
+  }
+}
+select count(1) as 'rows in src table:' from branch_sp_tbl_src;
+--echo insert src table rows into dest table
+insert/*+enable_parallel_dml parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_dest
+      select id, v from branch_sp_tbl_src;
+select count(1) as 'rows in dest table:' from branch_sp_tbl_dest;
+--echo delete some rows from dest table
+delete from branch_sp_tbl_dest where id % 7 = 0;
+--echo run insert on duplicate
+explain basic insert/*+enable_parallel_dml parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_dest
+      select id, v from branch_sp_tbl_src on duplicate key update v = v + 1;
+insert/*+parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_dest
+      select id, v from branch_sp_tbl_src on duplicate key update v = v + 1;
+select count(1) as 'rows in dest table after insert-on-duplicate:' from branch_sp_tbl_dest;
+--echo delete some rows from dest table
+delete from branch_sp_tbl_dest where id % 19 = 0;
+delete from branch_sp_tbl_dest where id % 23 = 0;
+delete from branch_sp_tbl_dest where id % 71 = 0;
+delete from branch_sp_tbl_dest where id % 113 = 0;
+--echo run replace into
+explain basic replace/*+parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_dest
+      select id, v from branch_sp_tbl_src;
+replace/*+parallel(100) query_timeout(1000000000)*/ into branch_sp_tbl_dest
+      select id, v from branch_sp_tbl_src;
+select count(1) as 'rows in dest table after replace:' from branch_sp_tbl_dest;
+--disable_query_log
+disconnect c_sys;
+disconnect c_mysql;

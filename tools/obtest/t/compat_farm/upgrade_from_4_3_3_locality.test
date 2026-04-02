@@ -1,0 +1,51 @@
+ob1=OBI(cluster=1:1:1:1,proxy_num=0,init_unit_cpu=0,version=4_3_3_0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant mysql_tenant
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+
+
+# 升级z1 z1为新的binary
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+ob1.upgrade_check_before;
+ob1.upgrade_commond_for_server pre;
+
+alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader', 0, 20;
+ob1.z1.force_stop;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+
+--disable_query_log
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+ALTER SYSTEM SET enable_ddl = true;
+ALTER SYSTEM SET enable_rereplication = 'true';
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+
+ob1.check_until_timeout select previous_locality = '' from __all_tenant where tenant_id = 1002, 1, 120;

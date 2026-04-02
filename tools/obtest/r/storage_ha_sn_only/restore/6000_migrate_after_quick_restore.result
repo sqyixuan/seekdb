@@ -1,0 +1,76 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.create_tenant CREATE TENANT backup_mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+create tenant finished
+===============================================================
+==================     create table ===========================
+===============================================================
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+create table t1(a int, b int, c int, PRIMARY KEY (a)) partition by hash(a) partitions 5;
+===============================================================
+==================     start archive   ========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+ob1.mysql set ob_global_debug_sync = 'AFTER_REMOTE_WRITE_DDL_PREPARE_LOG wait_for signal1 execute 10000';
+create /*+ parallel(10) */ index t1ib on t1(b) with column group(each column);
+ob1.z1.obs0.check_log_until_success -c "start wait.*name=signal1, signal_cnt=0";
+===============================================================
+==================     start backup data   ====================
+===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.mysql set ob_global_debug_sync = 'AFTER_REMOTE_WRITE_DDL_PREPARE_LOG clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select STATUS from cdb_indexes where con_id=$backup_mysql_tenant_id and index_name like 't1ib', VALID, 300;
+create table t2(a int, b int, c int, PRIMARY KEY (a));
+use oceanbase;
+===============================================================
+===============  CALC RESTORE POINT  ==========================
+===============================================================
+ob1.check_until_timeout select checkpoint_scn > $now from CDB_OB_ARCHIVELOG where tenant_id = $backup_mysql_tenant_id, 1, 600;
+===================================================================================
+===============  MIGRATE WITH HALF REMOTE SSTABLE  ================================
+===================================================================================
+use oceanbase;
+ob1.restore alter system restore $restore_mysql_tenant_new from '$restore_path' until scn=$now with 'pool_list=small_pool_1&locality=F@z1,F@z2&primary_zone=z1&method=quick';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+use oceanbase;
+ob1.check_until_timeout select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1004 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%')), 0, 600;
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=14 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1006 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+count(*)
+0
+select count(*) FROM __all_virtual_table_mgr where tenant_id=1004 and table_type=10 and tablet_id in (select tablet_id from __all_virtual_tablet_to_table_history where tenant_id=1006 and table_id in (select table_id from __all_virtual_table where table_name like '%t1ib%'));
+count(*)
+0
+ob1.check_until_timeout select count(*)>0 from __all_virtual_table_mgr where tenant_id = 1004 and table_flag = 2, 1, 600;
+ob1.mysql alter tenant $restore_mysql_tenant_new locality = "F@z1, F@z2, F@z3";
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and member_list like "%,%,%", 9, 600;
+ob1.check_until_timeout select count(*) from dba_ob_tenant_jobs where tenant_id = 1004 and job_type = 'ALTER_TENANT_LOCALITY' and job_status = 'SUCCESS', 1, 600;
+ob1.check_until_timeout select count(*) > $half_remote_count_before FROM oceanbase.__all_virtual_table_mgr where tenant_id=1004 and table_flag = 2, 1, 100;
+ob1.check_until_timeout select count(*) > $pure_remote_count_before FROM oceanbase.__all_virtual_table_mgr where tenant_id=1004 and table_flag = 3, 1, 100;

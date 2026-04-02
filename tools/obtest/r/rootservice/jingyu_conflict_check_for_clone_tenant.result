@@ -1,0 +1,91 @@
+ob1=OBI(cluster=2:3:3,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+=================================================================================
+create mysql tenant
+=================================================================================
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+=================================================================================
+enable archivelog for mysql tenant
+=================================================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+=================================================================================
+minor freeze for mysql tenant before clone
+=================================================================================
+ALTER SYSTEM MINOR FREEZE TENANT mysql;
+ob1.z1.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+===========================================================================================
+create snapshot when replica drtask exists, expect 9110(OB_ERR_CLONE_TENANT)
+===========================================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLEAN_TASK_FROM_DRTASK_TABLE_ERROR, error_code = 4002, frequency = 1;
+ALTER TENANT mysql LOCALITY = 'F@z1, F@z3';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and task_status = "INPROGRESS", 1, 20;
+create tenant clone_tenant from mysql with resource_pool='test_pool', unit = '2c2g';
+ERROR HY000: Tenant (1002) is in MODIFY_REPLICA procedure, create snapshot or clone tenant not allowed now
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLEAN_TASK_FROM_DRTASK_TABLE_ERROR, error_code = 4002, frequency = 0;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id, 0, 120;
+===========================================================================================
+create snapshot when unit is migrating, expect 9110(OB_ERR_CLONE_TENANT)
+===========================================================================================
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_MIGRATE_REPLICA_DRTASK wait_for signal_exec';
+create tenant clone_tenant from mysql with resource_pool='test_pool', unit = '2c2g';
+ERROR HY000: Tenant (1002) is in MODIFY_UNIT procedure, create snapshot or clone tenant not allowed now
+ob1.mysql set ob_global_debug_sync = 'now signal signal_exec';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where (tenant_id = $tenant_id or tenant_id = $meta_tenant_id), 0, 120;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_UNITS where migrate_from_svr_ip is not NULL, 0, 30;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql" and previous_locality is null, 1, 120;
+=================================================================================
+create tenant snapshot and hold the lock on snapshot_id = 0
+=================================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLONE_WAIT_CREATE_TENANT_ERROR, error_code = 4002, frequency = 1;
+create tenant clone_tenant from mysql with resource_pool='test_pool', unit = '2c2g';
+=========================================================================================
+migrate unit when snapshot is creating, expect 4770(OB_CONFLICT_WITH_CLONE)
+=========================================================================================
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_CLONE_PROGRESS where clone_tenant_name = "clone_tenant" and status = "CLONE_SYS_WAIT_TENANT_RESTORE_FINISH", 1, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "clone_tenant", 1, 10;
+ERROR HY000: Tenant (1002) is in create snapshot or clone tenant procedure, MODIFY_UNIT not allowed now
+========================================================================================
+expand unit number when snapshot is creating, expect 4770(OB_CONFLICT_WITH_CLONE)
+========================================================================================
+alter resource tenant mysql unit_num = 2;
+ERROR HY000: Tenant (1002) is in create snapshot or clone tenant procedure, MODIFY_RESOURCE_POOL not allowed now
+========================================================================================
+alter ls when snapshot is creating, expect 4770(OB_CONFLICT_WITH_CLONE)
+========================================================================================
+create table t1(c1 int) duplicate_scope = 'cluster';
+ERROR HY000: Tenant (1002) is in create snapshot or clone tenant procedure, MODIFY_LS not allowed now
+=========================================================================================
+do ls replica dr-task when snapshot is creating, expect 4770(OB_CONFLICT_WITH_CLONE)
+=========================================================================================
+ALTER TENANT mysql LOCALITY = 'F@z1, F@z2, F@z3';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = $tenant_id and previous_locality like "%FULL{1}@z1, FULL{1}@z3%" and locality like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%", 1, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 1, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = $tenant_id and previous_locality like "%FULL{1}@z1, FULL{1}@z3%" and locality like "%FULL{1}@z1, FULL{1}@z2, FULL{1}@z3%", 1, 30;
+ALTER TENANT mysql LOCALITY = 'F@z1, F@z3';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = $tenant_id and previous_locality is null and locality like "%FULL{1}@z1, FULL{1}@z3%", 1, 30;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id or tenant_id = $meta_tenant_id, 0, 120;
+=========================================================================================
+drop source tenant when snapshot is creating, expect 4770(OB_CONFLICT_WITH_CLONE)
+=========================================================================================
+set recyclebin = off;
+drop tenant mysql;
+ERROR HY000: Tenant (1002) is in create snapshot or clone tenant procedure, DELAY_DROP_TENANT not allowed now
+=================================================================================
+let creating snapshot finished
+=================================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_CLONE_WAIT_CREATE_TENANT_ERROR, error_code = 4002, frequency = 0;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "CLONE_TENANT" and status = "NORMAL" and tenant_role = "STANDBY", 1, 30;

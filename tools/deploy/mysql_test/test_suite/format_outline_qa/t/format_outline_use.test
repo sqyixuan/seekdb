@@ -1,0 +1,285 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lly378788
+#owner group: 
+#description: 
+#tags: format outline, optimizer
+
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection default;
+START TRANSACTION;
+--disable_warnings
+drop database if exists fol_db;
+create database fol_db;
+
+use fol_db;
+connection conn_admin;
+alter system flush plan cache global;
+
+connection default;
+create table t1(c1 int primary key, c2 int, c3 int);
+create index idx_t1 on t1(c2);
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+
+create format outline fol_s1 on select /*+BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "fol_db"."t1"@"SEL$1" "idx_t1") END_OUTLINE_DATA*/ c2,c1 from t1 where c2 in (2);
+
+##scene 1:test correction when schema version changes
+
+alter table t1 add column c4 int;
+select  c2,c1 from t1 where c2 in (2);
+select  c2,c1 from t1 where c2 in (3);
+select hit_count,outline_id != -1,outline_data from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT as a where a.statement = "select  c2,c1 from t1 where c2 in (?)";
+
+drop format outline fol_s1;
+sleep 2;
+
+
+##scene 2:check create format outline on view
+create view v1 as select c1,c2, c3 from t1;
+create format outline fol_s2 on select /*+index(t1 idx_t1) yyyy*/ c2,c1 from v1 where c2 in (2) order by 1;
+sleep 2;
+select c2,c1 from v1 where c2 in (2) order by 1;
+select c2,c1 from v1 where c2 in (2) order by 1;
+select hit_count,outline_id != -1, outline_data from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = "select c2,c1 from v1 where c2 in (?) order by 1";
+drop format outline fol_s2;
+
+
+##bug:
+alter system flush sql audit;
+drop table t1;
+create table t1(c1 int key);
+select min(t2 . c1 ) from t1 t2 where t2.c1 in (select c1 from t1);
+select sql_id, format_sql_id from oceanbase.v$ob_sql_audit where query_sql like 'select min(t2 . c1 ) from t1 t2 where t2.c1 in (select c1 from t1)';
+create format outline fol_s3 on select min(t2 . c1 ) from t1 t2 where t2.c1 in (select c1 from t1);
+drop format outline fol_s3;
+drop table t1;
+
+## 
+alter system flush sql audit;
+create table test_format_otl(c1 int, c2 char, c3 varchar(4000), c4 timestamp,
+                            index test_format_otl_idx1(c1));
+insert into test_format_otl(c1,c2,c3,c4) values(0,'0','00000',now(6));      
+insert into test_format_otl(c1,c2,c3,c4) values(1,'0','00000',now(6));
+insert into test_format_otl(c1,c2,c3,c4) values(2,'0','00000',now(6));
+insert into test_format_otl(c1,c2,c3,c4) values(3,'0','00000',now(6)); 
+select c1,c2,c3 from test_format_otl where c1 in (0,1,2,3);
+select sql_id, format_sql_id from oceanbase.gv$ob_sql_audit where query_sql like 'select c1,c2,c3 from test_format_otl where c1 in (0,1,2,3)';
+create or replace format outline test_fotl_1x on 'D832758C4FC8F4021EFA557E9809678B' using hint /*+no_index(test_format_otl test_format_otl_idx1)*/;
+select outline_name,visible_signature,format_sql_text,outline_content from oceanbase.dba_ob_format_outlines where outline_name = 'test_fotl_1x';
+drop table test_format_otl;
+drop format outline test_fotl_1x;
+
+## 
+alter system flush plan cache global;
+create table t1(c1 bigint primary key, c2 bigint, c3 varchar(2048),
+    index idx1(c2),
+    index idx2(c1,c2),
+    index idx3(c1,c3));
+
+## 
+create or replace outline otl_1 on select /*+index(t1 idx2)*/* from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+create or replace format outline fotl_1 on select /*+index(t1 idx1)*/* from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+select * from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+select a.outline_id != -1, a.outline_data from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_outlines b where a.statement = 'select * from t1 where c1 in (?,?,?) and c2 in (?,?,?)' and a.outline_id=b.outline_id and b.outline_name='otl_1';
+drop outline otl_1;
+select * from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+select a.outline_id != -1, a.outline_data from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select * from t1 where c1 in (?,?,?) and c2 in (?,?,?)' and a.outline_id=b.outline_id and b.outline_name='fotl_1';
+drop format outline fotl_1;
+select * from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+select outline_id from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from t1 where c1 in (?,?,?) and c2 in (?,?,?)';
+
+
+##scene : conflict format outline and its error message
+#
+create format outline fotl_1 on select /*+index(t1 idx1)*/* from t1 where c1 in (1,2,3) and c2 in (2,3,4);
+--error 5264
+create format outline fotl_1 on select /*+index(t1 idx1)*/* from t1 where c1 in (1) and c2 in (2);
+--error 5264
+create format outline fotl_2 on select * from t1 where c1 in (1) and c2 in (2);
+drop format outline fotl_1;
+
+## scene: sql_audit format_sql_id should update
+#
+alter system flush sql audit;
+CREATE TABLE `table1000_key_pk_parts_2_int_not_null` (
+  `col_double` double DEFAULT NULL,
+  `col_bigint` bigint(20) DEFAULT NULL,
+  `col_timestamp` timestamp NULL DEFAULT NULL,
+  `col_decimal_20_0` decimal(20,0) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `in_expr_idx21` (`col_varchar_20`) BLOCK_SIZE 16384 LOCAL
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 3 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by key(pk)
+(partition `p0`,
+partition `p1`);
+
+SELECT * FROM table1000_key_pk_parts_2_int_not_null WHERE (col_varchar_20 LIKE 'ibnzamrs' OR NOT EXISTS (SELECT * FROM table1000_key_pk_parts_2_int_not_null WHERE PK = floor(-1254752256 * -1662124032))) OR '2007-12-07 15:47:32' IN ('2023-03-08 00:00:00','2023-07-11 08:59:53.056738') AND (col_double,col_bigint,floor(PK /2 - 5)) IN ((1,1,1),(1,1,1)) AND (col_decimal_20_0,col_bigint) IN ((1,1),(1,1)) order by 1,2,3,4,5;
+select 1 from dual;
+select sql_id,format_sql_id from oceanbase.gv$ob_sql_audit where query_sql like "SELECT * FROM table1000_key_pk_parts_2_int_not_null WHERE (col_varchar_20 LIKE 'ibnzamrs' OR NOT EXISTS (SELECT * FROM table1000_key_pk_parts_2_int_not_null WHERE PK = floor(-1254752256 * -1662124032))) OR '2007-12-07 15:47:32' IN ('2023-03-08 00:00:00','2023-07-11 08:59:53.056738') AND (col_double,col_bigint,floor(PK /2 - 5)) IN ((1,1,1),(1,1,1)) AND (col_decimal_20_0,col_bigint) IN ((1,1),(1,1)) order by 1,2,3,4,5";
+select sql_id,format_sql_id from oceanbase.gv$ob_sql_audit where query_sql like "select 1 from dual";
+
+
+##scene :test format outline with drop table and then create table with same name
+create table t_6(c1 int, c2 varchar(16), c3 decimal, key(c2), key(c3,c2));
+insert into t_6 values (1, '2', 9.0), (2, '4', 8.0), (3, '6', 7.0);
+create format outline fotl_3 on select /*+log_level("trace")*/c1,c2 from t_6 where (c1,c2) in ((1,'2'));
+# format sql id: 879FF24C1AC51BEF12330288E8611C6B = select c1,c2 from t_6 where (c1,c2) in ((1,'2'));
+create format outline fotl_4 on '879FF24C1AC51BEF12330288E8611C6B' using hint /*+max_concurrent(0)*/;
+select c1,c2 from t_6 where (c1,c2) in ((1,'2'));
+#scene: format outline created by format sql text is premier
+select a.outline_id != -1, a.outline_data from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select c1,c2 from t_6 where (c1,c2) in ((?,?))' and a.outline_id=b.outline_id and b.outline_name='fotl_3';
+
+sleep 2;
+drop table t_6;
+create table t_6(c1 int, c2 varchar(16), c3 decimal, key(c2), key(c3,c2));
+insert into t_6 values (1, '2', 9.0), (2, '4', 8.0), (3, '6', 7.0);
+select c1,c2 from t_6 where (c1,c2) in ((1,'2'));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select c1,c2 from t_6 where (c1,c2) in ((?,?))' and a.outline_id=b.outline_id and b.outline_name='fotl_3';
+
+drop format outline fotl_4;
+select c1,c2 from t_6 where (c1,c2) in ((1,'2'));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select c1,c2 from t_6 where (c1,c2) in ((?,?))' and a.outline_id=b.outline_id and b.outline_name='fotl_3';
+
+drop format outline fotl_3;
+drop table t_6;
+
+
+##scene 7:test format outline with recycled table
+create table t_recycle(c1 int, c2 varchar(16), c3 decimal, key(c2), key(c3,c2));
+insert into t_recycle values (1, '2', 9.0), (2, '4', 8.0), (3, '6', 7.0);
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0));
+# format sql id: A532C2C383364297F3C4BEC94BF9862C = select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0));
+create format outline fotl_5 on 'A532C2C383364297F3C4BEC94BF9862C' using hint /*+max_concurrent(0) log_level('trace')*/;
+--error 5268
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0), (2, '4',  8.0));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select * from t_recycle where (c1,c2,c3) in ((?,?,?), (?, ?,  ?))' and a.outline_id=b.outline_id and b.outline_name='fotl_5';
+
+set recyclebin = 'ON';
+sleep 2;
+drop table t_recycle;
+sleep 2;
+--error 1146
+select c1, c2 from t_recycle;
+select database_name,outline_name,format_sql_id,outline_content from oceanbase.DBA_OB_FORMAT_OUTLINES where outline_name = 'fotl_5';
+
+--disable_query_log
+FLASHBACK TABLE t_recycle TO BEFORE DROP;
+--enable_query_log
+sleep 2;
+--error 5268
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0), (2, '4',  8.0));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select * from t_recycle where (c1,c2,c3) in ((?,?,?), (?, ?,  ?))' and a.outline_id=b.outline_id and b.outline_name='fotl_5';
+select database_name,outline_name,format_sql_id,outline_content from oceanbase.DBA_OB_FORMAT_OUTLINES where outline_name = 'fotl_5';
+
+
+
+##scene 8:test format outline with recycled database
+set recyclebin = 'ON';
+sleep 2;
+drop database fol_db;
+sleep 2;
+select database_name,outline_name,visible_signature,format_sql_text,format_sql_id,outline_content from oceanbase.DBA_OB_FORMAT_OUTLINES where outline_name = 'fotl_5';
+--error 1046
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0), (2, '4',  8.0));
+let $object_name = query_get_value(select object_name from oceanbase.DBA_RECYCLEBIN where original_name='fol_db' and type = 'database', object_name, 1);
+--disable_query_log
+eval FLASHBACK DATABASE $object_name TO BEFORE DROP;
+--enable_query_log
+sleep 2;
+use fol_db;
+select database_name,outline_name,visible_signature,format_sql_text,format_sql_id,outline_content from oceanbase.DBA_OB_FORMAT_OUTLINES where outline_name = 'fotl_5';
+--error 5268
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0), (2, '4',  8.0));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select * from t_recycle where (c1,c2,c3) in ((?,?,?), (?, ?,  ?))' and a.outline_id=b.outline_id and b.outline_name='fotl_5';
+
+
+##scene 9:test format outline with truncate table
+
+truncate table t_recycle;
+sleep 2;
+select c1,c2,c3 from t_recycle;
+insert into t_recycle value(1, 'c', 3), (2, 'b', 2), (3, 'a', 1);
+--error 5268
+select * from t_recycle where (c1,c2,c3) in ((1,'2',9.0), (2, '4',  8.0));
+select a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select * from t_recycle where (c1,c2,c3) in ((?,?,?), (?, ?,  ?))' and a.outline_id=b.outline_id and b.outline_name='fotl_5';
+
+
+##just for  coverity  accept 函数
+--disable_result_log
+select operator, name from oceanbase.V$OB_PLAN_CACHE_PLAN_EXPLAIN where tenant_id = 1 and plan_id = 1;
+--enable_result_log
+
+## test for bug : project/81079/issue/11664228##
+CREATE TABLE `CC` (
+  `pk` int(11) NOT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `col_datetime` datetime DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_datetime_key` datetime DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_date_key` date DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_date` date DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx5` (`col_varchar_20_key`) BLOCK_SIZE 16384,
+  KEY `idx9` (`col_datetime_key`) BLOCK_SIZE 16384,
+  KEY `idx1` (`col_int_key`) BLOCK_SIZE 16384,
+  KEY `idx7` (`col_date_key`) BLOCK_SIZE 16384,
+  KEY `idx3` (`col_varchar_10_key`) BLOCK_SIZE 16384
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10 ;
+
+CREATE TABLE `B` (
+  `col_date` date DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_datetime` datetime DEFAULT NULL,
+  `col_datetime_key` datetime DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_date_key` date DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx5` (`col_varchar_20_key`) BLOCK_SIZE 16384,
+  KEY `idx9` (`col_datetime_key`) BLOCK_SIZE 16384,
+  KEY `idx3` (`col_varchar_10_key`) BLOCK_SIZE 16384,
+  KEY `idx1` (`col_int_key`) BLOCK_SIZE 16384,
+  KEY `idx7` (`col_date_key`) BLOCK_SIZE 16384
+) DEFAULT CHARSET = utf8mb4 COMPRESSION = 'lz4_1.0' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 10;
+
+SELECT  COUNT(DISTINCT OUTR . `col_datetime` ) AS X FROM B AS OUTR2 LEFT JOIN B AS OUTR ON ( OUTR2 . `col_int_key` < OUTR . `col_int_key` ) WHERE OUTR . `col_int_key` IN ( SELECT  INNR . `col_int` AS Y FROM CC AS INNR2 LEFT JOIN CC AS INNR ON ( INNR2 . `col_varchar_10` <> INNR . `col_varchar_20_key` ) WHERE INNR . `col_datetime` < '2003-11-09' AND NOT INNR . `col_datetime_key` > INNR . `col_date_key`  ) AND ( OUTR . `col_int_key` = 8 AND OUTR . `col_int` >= 3 )  ORDER BY OUTR . `col_varchar_10_key` , OUTR . `pk`;
+
+
+# 
+# use capitalized IN to create format outline and execute query
+drop table t1;
+CREATE TABLE t1(
+    c1 INT primary key,
+    c2 INT
+);
+CREATE INDEX c2_asc on t1(c2 asc);
+
+CREATE OR REPLACE FORMAT OUTLINE in_xxx ON SELECT /*+ INDEX(t1 c2_asc) */ c2 FROM t1 WHERE c2 IN (6,7,8);
+SELECT c2 FROM t1 WHERE c2 IN (6,7);
+SELECT c2 FROM t1 WHERE c2 IN (6,7);
+
+select hit_count,a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'SELECT c2 FROM t1 WHERE c2 IN (?,?)' and a.outline_id=b.outline_id and b.outline_name='in_xxx';
+select c2 from t1 where c2 in (6,7);
+select c2 from t1 where c2 in (6,7);
+select hit_count,a.outline_id != -1, a.outline_data from oceanbase.v$OB_PLAN_CACHE_PLAN_STAT a, oceanbase.dba_ob_format_outlines b where a.statement = 'select c2 from t1 where c2 in (?,?)' and a.outline_id=b.outline_id and b.outline_name='in_xxx';
+
+alter system flush plan cache;
+drop database fol_db;
+COMMIT;

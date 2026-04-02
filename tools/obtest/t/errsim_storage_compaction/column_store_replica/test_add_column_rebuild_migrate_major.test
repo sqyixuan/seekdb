@@ -1,0 +1,95 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: test add column and rebuild migrate major
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_addr = $z2_obs0_ip:$z2_obs0_port;
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2');
+ob1.mysql create TENANT tenant1 resource_pool_list=('cs_replica_pool'), replica_num=2, zone_list = ('z1', 'z2'), locality = "F@z1, C@z2" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant1", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+alter system set_tp tp_name = "EN_COMPACTION_SKIP_CS_REPLICA_TO_REBUILD", error_code = 4016, frequency = 1;
+
+--echo ===============================================================
+--echo ==== Step 2: create table and do major freeze  ================
+--echo ===============================================================
+ob_connect(z1_obs0, ob1.z1.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(z2_obs0, ob1.z2.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+
+connection z1_obs0;
+create table t1 (c1 int, c2 int, c3 int);
+insert into t1 values (1, 2, 3), (2, 3, 4), (3, 4, 5);
+select * from t1 order by c1 asc;
+
+alter table t1 add column c4 int;
+insert into t1 value (4, 5, 6, 7), (5, 6, 7, 8);
+alter system minor freeze;
+sleep 5;
+
+connection sys_conn;
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't1', tablet_id, 1);
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tablet_id = $tablet_id, ls_id, 1);
+
+connection z1_obs0;
+alter system major freeze;
+sleep 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn != 1 and tenant_id = $tenant_id and tablet_id = $tablet_id, 1, 600;
+
+--echo ===============================================================
+--echo ==== Step 3: trigger rebuild ================
+--echo ===============================================================
+ob1.mysql alter system set errsim_rebuild_ls_id = $ls_id;
+ob1.mysql alter system set errsim_rebuild_addr = "$z2_addr";
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHOOSE_SOURCE wait_for signal2 execute 10000';
+
+ob1.mysql alter system set_tp tp_name = EN_MANUAL_REBUILD , error_code = 4016, frequency = 1;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where event = "mannual_rebuild", 1, 300;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module = 'storage_ha' and event = 'ls_ha_start' and value1 = '$tenant_id' and value2 = '1001' and extra_info = 'REBUILD_LS_OP', 1, 600;
+ob1.mysql alter system set_tp tp_name = EN_MANUAL_REBUILD , error_code = 4016, frequency = 0;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHOOSE_SOURCE clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal2';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module = 'storage_ha' and event = 'ls_ha_finish' and value1 = '$tenant_id' and value2 = '1001' and extra_info = 'REBUILD_LS_OP', 1, 600;
+ob1.check_until_timeout select count(*) from GV\$OB_SSTABLES where tablet_id = $tablet_id and svr_port = $z2_obs0_port and table_type = 'MAJOR', 1, 600;
+connection sys_conn;
+
+alter system set_tp tp_name = "EN_COMPACTION_SKIP_CS_REPLICA_TO_REBUILD", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'IDLE', 1, 600;
+ob1.check_until_timeout select count(*) from GV\$OB_SSTABLES where tablet_id = $tablet_id and svr_port = $z2_obs0_port and table_type = 'CO_MAJOR', 2, 600;
+
+connection z1_obs0;
+insert into t1 values (6, 7, 8, 9), (7, 8, 9, 10);
+alter system major freeze;
+sleep 10;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'IDLE', 1, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_meta_table where tenant_id = $tenant_id and tablet_id = $tablet_id and status = 0, 2, 100;

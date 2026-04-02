@@ -18,12 +18,10 @@
 #define OB_TABLE_CREATOR_H
 
 #include "rootserver/ob_tablet_creator.h"
-#include "rootserver/fork_table/ob_fork_table_info_builder.h"
 #include "share/tablet/ob_tablet_info.h" // ObTabletTablePair
 
 #include "share/tablet/ob_tablet_to_ls_operator.h"
 #include "storage/column_store/ob_column_store_replica_util.h"
-#include "share/ob_ddl_common.h" // ObForkTabletInfo
 
 namespace oceanbase
 {
@@ -44,17 +42,10 @@ public:
                   tablet_creator_(tenant_id, frozen_scn, trans),
                   trans_(trans),
                   ls_id_array_(),
-                  inited_(false),
-                  fork_table_info_builder_(tenant_id) {}
+                  inited_(false) {}
 
   virtual ~ObTableCreator();
   int init(const bool need_tablet_cnt_check);
-  // for fork table creation
-  int init_with_fork_table_info(
-      const share::ObForkTableInfo &main_fork_table_info,
-      const common::ObIArray<uint64_t> &dest_table_ids,
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const bool need_tablet_cnt_check);
   int execute();
 
   // create tablets in some tables, one of which is data table, others are its local indexes
@@ -65,8 +56,7 @@ public:
       const common::ObIArray<share::ObLSID> &ls_id_array,
       const uint64_t tenant_data_version,
       const common::ObIArray<bool> &need_create_empty_majors,
-      const bool ignore_cs_replica = false,
-      share::schema::ObSchemaGetterGuard *schema_guard = nullptr);
+      const bool ignore_cs_replica = false);
 
   // create tablets for local aux tables(include local_index/aux_lob_table), which are belong to a data table.
   //
@@ -94,8 +84,7 @@ public:
       const share::schema::ObTableSchema &table_schema,
       const common::ObIArray<share::ObLSID> &ls_id_array,
       const uint64_t tenant_data_version,
-      const bool need_create_empty_major_sstable,
-      share::schema::ObSchemaGetterGuard *schema_guard = nullptr);
+      const bool need_create_empty_major_sstable);
 private:
   int add_create_tablets_of_tables_arg_(
       const common::ObIArray<const share::schema::ObTableSchema*> &schemas,
@@ -103,8 +92,7 @@ private:
       const common::ObIArray<share::ObLSID> &ls_id_array,
       const uint64_t tenant_data_version,
       const common::ObIArray<bool> &need_create_empty_majors,
-      const bool ignore_cs_replica = false,
-      share::schema::ObSchemaGetterGuard *schema_guard = nullptr);
+      const bool ignore_cs_replica = false);
   int generate_create_tablet_arg_(
       const common::ObIArray<const share::schema::ObTableSchema*> &schemas,
       const ObTableSchema &data_table_schema,
@@ -116,12 +104,10 @@ private:
       const bool is_create_bind_hidden_tablets,
       const uint64_t tenant_data_version,
       const common::ObIArray<bool> &need_create_empty_majors,
-      const ObGlobalCSReplicaMgr &cs_replica_mgr,
-      ObSchemaGetterGuard *schema_guard = nullptr);
+      const ObGlobalCSReplicaMgr &cs_replica_mgr);
   int get_tablet_list_str_(
       const share::schema::ObTableSchema &table_schema,
       ObSqlString &tablet_list);
-
 private:
   const uint64_t tenant_id_;
   ObTabletCreator tablet_creator_;
@@ -129,7 +115,6 @@ private:
   common::ObArray<share::ObLSID> ls_id_array_;
   common::ObArray<share::ObTabletToLSInfo> tablet_infos_;
   bool inited_;
-  ObForkTableInfoBuilder fork_table_info_builder_;
 };
 }
 }

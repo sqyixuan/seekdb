@@ -1,0 +1,6 @@
+--echo
+###--disable_query_log
+let $SCP_CMD = ssh $HOST_IP 'rm -f "$OBSERVER_DIR/$DATA_FOLDER_NAME/$FILE_NAME"';
+exec $SCP_CMD;
+###--enable_query_log
+--echo

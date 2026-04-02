@@ -1,0 +1,139 @@
+# owner: rongxuan.lc
+#F/L @ZONE以后；
+###本case主要设计到locality检查；同时增加case，进行unit的缩容；
+
+ob1=OBI(cluster=3:3:3,  proxy_num=1, ct_num = 0);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =50;
+ob1.mysql alter system set server_data_copy_out_concurrency = 50;
+ob1.mysql alter system set data_copy_concurrency = 200;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+###检查locality的问题；
+#1.CREATE TENANT 一个zone上两个F; ==>parse的时候会过滤掉一个，所以没有问题；
+#2.CREATE TENANT 一个zone上一个F一个L，不存在L_REPLICA set ob_tcp_invited_nodes='%';
+#3. create tenant 成功， 一个F一个L；
+#3. alter tenant 一个zone上两个F;
+#4.  alter tenant 一个zone上一个F一个L，不存在L_REPLICA;
+#5. alter tenant 成功，一个F 一个L;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3'),replica_type = 'L';
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2', 'pool_3'), locality='F@z1,F@z2,F@z3,L@z1', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,F@z3,L@z1,L@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,F@z3,L@z1,L@z2%' and job_status = 'SUCCESS', 1, 240;
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,F@z3,L@z1,L@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job, 2, 3;
+####开始检查建表的locality
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+--error 1210 
+create table t(c1 int) locality='F@z1,F@z2,F@z3,L@z1';
+--error 1210 
+create table t(c1 int) locality='F@z1,F@z2,F@z3';
+create table t5(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z2';
+sleep 2;
+alter table t5 locality='F@z1,F@z2,F@z3,L@z1,L@z2,R@z1';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter table t5 locality%F@z1,F@z2,F@z3,L@z1,L@z2,R@z1%' and job_status = 'SUCCESS', 1, 240;
+--error 1210 
+alter table t5 set locality='F@z1,F@z2,L@z1,L@z2,R@z1';
+--error 1210
+create table t6(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z1';
+create table t2(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z2,F@z3';
+#ob1.check_until_timeout select count(*) from __all_rootservice_job, 2, 3;
+
+create table t3(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z2,R@z3';
+create table t4(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z2,R@z3,r@z2';
+--error 4179
+create table t14(c1 int) locality='F@z1,F@z2,F@z3,L@z1,L@z2,R@z3,r{2}@z2';
+
+ob1.mysql drop tenant tenant_1 force;
+ob1.mysql drop resource pool pool_2;
+ob1.mysql drop resource pool pool_3;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM =2, ZONE_LIST = ('z1', 'z2','z3');
+--error 1210 
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,F@z2,F@z3,L@z1', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,F@z2,F@z3,F@z1', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+--error 1210 
+alter tenant tenant_1 locality='F@z1,F@z2,F@z3,L@z1';
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table t(c1 int);
+sleep 2;
+--error 1210 
+alter table t set locality='F@z1,F@z2,F@z3,L@z2';
+ob1.mysql drop tenant tenant_1 force;
+ob1.mysql drop resource pool pool_2;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+CREATE RESOURCE UNIT testunit2 max_cpu 10, max_memory 40318382080, max_iops 100000, max_disk_size 36870912000, max_session_num 1280, MIN_CPU=1, MIN_MEMORY=12008382080;
+create resource pool testpoolcif unit='testunit2',unit_num=2,zone_list=('z1','z2','z3');
+create resource pool testpoolcif_L unit='testunit2',unit_num=1,zone_list=('z1','z2','z3'), REPLICA_TYPE = "LOGONLY";
+create tenant obcif resource_pool_list=('testpoolcif','testpoolcif_L'),locality="F{1},L{1}@z1,F{1},L{1}@z2,F{1},R{1}@z3" set ob_tcp_invited_nodes='%';
+
+###加logonly pool之前，对应的zone上不能有L task;
+let $case_index = 11;
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM =2, ZONE_LIST = ('z1', 'z2','z3');
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,L@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_11,user=root,passwd=,database=test;
+create table t(c1 int primary key) partition by hash(c1) partitions 5;
+##logonly unit num need to be 1
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+--error 1235 
+eval CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM =2, ZONE_LIST = ('z1', 'z2','z3'), replica_type = 'l';
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM =1, ZONE_LIST = ('z1', 'z2','z3'), replica_type = 'l';
+--error 1235
+eval alter tenant tenant_11 set resource_pool_list=('pool_2', 'pool_3');
+ob1.mysql drop tenant tenant_11 force;
+ob1.mysql drop resource pool pool_2;
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM =2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL pool_4 UNIT = 'unit_1', UNIT_NUM =1, ZONE_LIST = ('z1', 'z2'), replica_type = 'l';
+eval alter tenant tenant_11  set resource_pool_list=('pool_2', 'pool_4');
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+alter tenant tenant_11 locality='F@z1,L@z2,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_11 locality=%' and job_status = 'SUCCESS', 1, 240;
+source include/check_partition_placememt.inc;
+alter tenant tenant_11 locality='F@z1,F@z2,F@z3,L@z2, L@z1';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_11 locality=%' and job_status = 'SUCCESS', 2, 240;
+source include/check_partition_placememt.inc;
+ob1.create_client tenant=tenant_11,user=root,passwd=,database=test;
+create tablegroup tg;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+
+ob1.mysql ALTER RESOURCE POOL pool_2 UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_type like '%SHRINK_RESOURCE_POOL_UNIT_NUM%' and job_status = 'SUCCESS', 1, 240;
+source include/check_partition_placememt.inc;
+##新建一个其他租户，一起合并；
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+let $case_index = 12;
+ob1.mysql CREATE RESOURCE POOL pool_12 UNIT = 'unit_1', UNIT_NUM =3, ZONE_LIST = ('z1', 'z2','z3');
+eval CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_12'), locality='F@z1,F@z2,L@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_12,user=root,passwd=,database=test;
+create table t(c1 int primary key) partition by hash(c1) partitions 5;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+source include/check_partition_placememt.inc;
+
+

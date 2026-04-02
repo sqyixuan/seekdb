@@ -1,0 +1,79 @@
+# owner: jim.wjh
+# owner group: sql2
+# description:
+#
+# 验证drc用户(__oceanbase_inner_restore_user, __oceanbase_inner_drc_user)
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+drop tenant if exists jx_tenant force;
+drop resource pool if exists jx_pool;
+drop resource unit if exists jx_unit;
+--enable_warnings
+
+CREATE RESOURCE UNIT jx_unit max_cpu 1, memory_size '2G';
+CREATE RESOURCE POOL jx_pool unit='jx_unit', unit_num=1, zone_list=('zone1');
+CREATE TENANT jx_tenant charset='utf8mb4', replica_num=1, zone_list=('zone1'), primary_zone='zone1', resource_pool_list=('jx_pool');
+alter tenant jx_tenant set variables ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+
+# 租户资源在哪个observer，哪个observer才知道租户信息，如果连接到一台没有租户资源的信息，就会报租户不存在的信息，如果在proxy存在就不会有这种问题
+connect (conn_jx_tenant,$OBMYSQL_MS0,root@jx_tenant,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_jx_tenant;
+
+--disable_warnings
+create user if not exists __oceanbase_inner_drc_user;
+--enable_warnings
+grant all privileges on *.* to __oceanbase_inner_drc_user;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_drc,$OBMYSQL_MS0,__oceanbase_inner_drc_user@jx_tenant,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_drc;
+
+--disable_warnings
+drop database if exists jx_db;
+--enable_warnings
+create database jx_db;
+use jx_db;
+create table t1(c1 int, c2 varchar(50));
+insert into t1 values(1, 'ant_fin');
+drop table t1;
+
+# 1. 这里从系统租户内部表__all_recyclebin内获取到回收站中对象名
+# 2. 然后切换到drc连接，进入用户租户的__recyclebin中
+# 3. 在回收站内进行insert/replace操作
+# 4. 查询原表，期望报表不存在
+# 5. flashback table
+# 6. 切换到jx_db库，select table 得到期望的数据
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connection conn_sys;
+--disable_query_log
+let $recycle_object_name = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin order by gmt_create desc limit 1, object_name, 1);
+connection conn_drc;
+use __recyclebin;
+eval insert into $recycle_object_name values(2, 'my_ob');
+eval replace into $recycle_object_name values(3, 'ob_147');
+--enable_query_log
+
+--error ER_NO_SUCH_TABLE
+select * from t1;
+
+--disable_query_log
+eval flashback table $recycle_object_name to before drop;
+--enable_query_log
+use jx_db;
+select * from t1;
+
+insert into t1 values(4, 'hello');
+replace into t1 values(5, 'Have_a_nice_day');
+select * from t1;
+
+drop database jx_db;
+drop user __oceanbase_inner_drc_user;
+
+connection conn_sys;
+drop tenant jx_tenant force;
+drop resource pool jx_pool;
+drop resource unit jx_unit;

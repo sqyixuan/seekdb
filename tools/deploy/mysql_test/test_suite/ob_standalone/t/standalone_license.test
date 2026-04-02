@@ -1,0 +1,242 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--source mysql_test/test_suite/ob_standalone/include/copy_license_for_test.inc
+
+connect (conn_sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connect (conn_sys_test,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+# ====== #
+# set up #
+# ====== #
+connection conn_sys;
+alter system set_tp tp_name = "LOAD_LICENSE_CHECK_OPTIONS", error_code = 0, frequency = 1;
+# change current time to 2022-05-11 00:00:00
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 1746892800, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_TIME_SECOND", error_code = 1746892800, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_FORCE_UPDATE_TIME", error_code = 1, frequency = 1;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-debug.txt";
+--disable_warnings
+create resource unit if not exists license_uc max_cpu 2, memory_size '4g', log_disk_size '8g';
+create resource pool if not exists  license_rp unit 'license_uc', unit_num 1, zone_list ('zone1');
+drop tenant if exists license_tenant purge;
+create resource unit if not exists license_standby_uc max_cpu 2, memory_size '4g', log_disk_size '8g';
+create resource pool if not exists license_standby_rp unit 'license_standby_uc', unit_num 1, zone_list ('zone1');
+drop tenant if exists license_standby_tenant purge;
+--enable_warnings
+
+connection conn1;
+--disable_warnings
+drop table if exists id_table;
+drop table if exists im_a_table;
+--enable_warnings
+create table id_table(id int);
+insert into id_table values(1), (2), (3);
+
+connection conn_sys_test;
+--disable_warnings
+drop table if exists id_table;
+drop table if exists im_a_table;
+--enable_warnings
+create table id_table(id int);
+insert into id_table values(1), (2), (3);
+
+connection conn_sys;
+# test if errism work correctly
+select LTS_TIME from __all_license;
+
+# ================= #
+# test load license #
+# ================= #
+connection conn_sys;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-trial.txt";
+select END_USER, LICENSE_ID, LICENSE_CODE, LICENSE_TYPE, PRODUCT_TYPE, ISSUANCE_DATE, EXPIRED_TIME, OPTIONS, NODE_NUM from DBA_OB_LICENSE;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-all.txt";
+select END_USER, LICENSE_ID, LICENSE_CODE, LICENSE_TYPE, PRODUCT_TYPE, ISSUANCE_DATE, EXPIRED_TIME, OPTIONS, NODE_NUM from DBA_OB_LICENSE;
+--error 4407
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-basic.txt";
+--error 4405
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-expired.txt";
+--error 1017
+eval alter system load license "im/a/invalid/path";
+
+# ========================== #
+# test modify license table  #
+# ========================== #
+connection conn_sys;
+--error 4179
+update __all_license set END_USER='standalone_test';
+select END_USER from __all_license;
+--error 4179
+delete from __all_license;
+select count(*) from __all_license;
+--error 4179
+insert into __all_license(END_USER, LICENSE_ID, LICENSE_CODE, LICENSE_TYPE, PRODUCT_TYPE, ISSUANCE_DATE, ACTIVATION_TIME, EXPIRED_TIME, OPTIONS, CORE_NUM, NODE_NUM, LTS_TIME) VALUES ('', '', '', '', '', '2022-05-11 00:00:00', '2022-05-11 00:00:00', '2022-05-11 00:00:00', '', 1, 1, '2022-05-11 00:00:00');
+select count(*) from __all_license;
+
+# ===================================== #
+# test license restriction: Multitenant #
+# ===================================== #
+connection conn_sys;
+alter system set_tp tp_name = "LOAD_LICENSE_CHECK_OPTIONS", error_code = 1, frequency = 1;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-basic.txt";
+--error 4407
+create tenant license_tenant resource_pool_list=('license_rp');
+
+# ==================================== #
+# test license restriction: add server #
+# ==================================== #
+connection conn_sys;
+--error 4407
+alter system add server "127.0.0.1:12345";
+
+# ========================================= #
+# test license restriction: Primary-Standby #
+# ========================================= #
+connection conn1;
+--disable_warnings
+create user if not exists 'license_standby_user'@'%' identified by '12345678';
+--enable_warnings
+grant all privileges on *.* to 'license_standby_user'@'%' with grant option;
+
+connection conn_sys;
+--error 4407
+eval CREATE STANDBY TENANT IF NOT EXISTS license_standby_tenant LOG_RESTORE_SOURCE = "SERVICE=127.0.0.1:$OBMYSQL_PORT USER=license_standby_user PASSWORD=12345678" resource_pool_list=('license_standby_rp');
+
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-all.txt";
+eval CREATE STANDBY TENANT IF NOT EXISTS license_standby_tenant LOG_RESTORE_SOURCE = "SERVICE=127.0.0.1:$OBMYSQL_PORT USER=license_standby_user PASSWORD=12345678" resource_pool_list=('license_standby_rp');
+eval ALTER SYSTEM SET LOG_RESTORE_SOURCE="SERVICE=127.0.0.1:$OBMYSQL_PORT USER=license_standby_user PASSWORD=12345678" TENANT = license_standby_tenant;
+ALTER SYSTEM RECOVER STANDBY TENANT license_standby_tenant UNTIL UNLIMITED;
+
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-mt.txt";
+--error 4407
+ALTER SYSTEM RECOVER STANDBY TENANT license_standby_tenant UNTIL UNLIMITED;
+--error 4407
+eval ALTER SYSTEM SET LOG_RESTORE_SOURCE="SERVICE=127.0.0.1:$OBMYSQL_PORT USER=license_standby_user PASSWORD=12345678" TENANT = license_standby_tenant;
+--error 4407
+ALTER SYSTEM RECOVER STANDBY TENANT license_standby_tenant UNTIL UNLIMITED;
+eval ALTER SYSTEM SET DATA_BACKUP_DEST = "file:///$OBSERVER_DIR/backup/data" TENANT = mysql;
+
+connection conn_sys;
+alter system set_tp tp_name = "LOAD_LICENSE_CHECK_OPTIONS", error_code = 0, frequency = 1;
+--error 4407
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-mt.txt";
+alter system set_tp tp_name = "LOAD_LICENSE_CHECK_OPTIONS", error_code = 1, frequency = 1;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-commercial-mt.txt";
+
+# ============================== #
+# test license restriction: OLAP #
+# ============================== #
+connection conn_sys_test;
+--disable_warnings
+drop table if exists test_olap_table;
+--enable_warnings
+SET session parallel_degree_policy = MANUAL;
+
+create table test_olap_table(id int);
+insert /*+parallel(3)*/ into test_olap_table values(1), (2), (3);
+
+select count(*) from test_olap_table;
+select /*+parallel(3)*/ count(*) from test_olap_table;
+select /*+PARALLEL(AUTO)*/ count(*) from test_olap_table;
+SET session parallel_degree_policy = AUTO;
+SET session parallel_degree_policy = AUTO;
+
+SET session parallel_degree_policy = AUTO;
+select count(*) from test_olap_table;
+
+SET session parallel_degree_policy = MANUAL;
+drop table test_olap_table;
+
+# ==================== #
+# test license expired #
+# ==================== #
+connection conn_sys;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-trial.txt";
+# change current time to 2030-1-1 00:00:00
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 1893427200, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_TIME_SECOND", error_code = 1893427200, frequency = 1;
+
+connection conn_sys_test;
+
+create table im_a_table(id int);
+insert into im_a_table values(1), (2), (3);
+delete from im_a_table where id = 2;
+update im_a_table set id = 4 where id = 3;
+select * from im_a_table;
+drop table im_a_table;
+
+connection conn1;
+--error 4406
+insert into id_table values(1);
+--error 4406
+delete from id_table where id = 2;
+--error 4406
+update id_table set id = 4 where id = 3;
+--error 4406
+select * from id_table;
+--error 4406
+explain select * from id_table;
+
+ALTER SYSTEM SET _enable_parallel_table_creation = false;
+--error 4406
+create table im_a_table(id int);
+
+ALTER SYSTEM SET _enable_parallel_table_creation = true;
+--error 4406
+create table im_a_table(id int);
+
+connection conn_sys;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 1746892800, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_TIME_SECOND", error_code = 1746892800, frequency = 1;
+select LTS_TIME from __all_license;
+
+# ====================== #
+# test timestamp service #
+# ====================== #
+
+# change system time to 1999-01-01 00:00:00
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 915120000, frequency = 1;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-trial.txt";
+select DATE_FORMAT(LTS_TIME, '%Y-%m-%d') from __all_license;
+
+# change system time to 2030-1-1 00:00:00
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 1893427200, frequency = 1;
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-trial.txt";
+select DATE_FORMAT(LTS_TIME, '%Y-%m-%d') from __all_license;
+
+# ======== #
+# clean up #
+# ======== #
+connection conn_sys;
+
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_SYS_TIME_SECOND", error_code = 0, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_CURRENT_TIME_SECOND", error_code = 0, frequency = 1;
+alter system set_tp tp_name = "LICENSE_TIMESTAMP_SERVICE_FORCE_UPDATE_TIME", error_code = 0, frequency = 1;
+
+--disable_warnings
+drop tenant if exists license_standby_tenant purge;
+drop resource pool if exists license_rp;
+drop resource unit if exists license_uc;
+drop resource pool if exists license_standby_rp;
+drop resource unit if exists license_standby_uc;
+--enable_warnings
+
+eval alter system load license "$OBSERVER_DIR/$LICENSE_FOLDER_NAME/license-debug.txt";
+
+connection conn1;
+--disable_warnings
+drop user if exists 'license_standby_user'@'%';
+drop table if exists id_table;
+--enable_warnings
+
+connection conn_sys_test;
+--disable_warnings
+drop table if exists id_table;
+--enable_warnings
+
+disconnect conn_sys;
+disconnect conn1;
+disconnect conn_sys_test;

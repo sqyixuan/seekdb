@@ -1,0 +1,164 @@
+# owner: wangxiaohui.wxh
+# owner group: physical_backup
+# Testing Case: migrate column store during restore.
+
+ob1=OBI(cluster=1:1:1,proxy_num=1);
+ 
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ 
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ 
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+ 
+ob1.mysql ALTER SYSTEM SET _backup_idle_time = '10s';
+ob1.mysql ALTER SYSTEM SET enable_async_syslog=false;
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+ 
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+ob1.create_tenant CREATE TENANT backup_oracle_tenant resource_pool_list = ('small_pool'), locality = "F@z1,F@z2,F@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+
+# enable col store for ss
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+ 
+--echo ================================================================================================
+--echo ==================     create normal tables and column store stables    ========================
+--echo ================================================================================================
+ob_connect(sys_conn_oracle, ob1.proxy0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+ob_connect(backup_oracle_conn, ob1.proxy0,TEST@$backup_oracle_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+ 
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A"));
+insert into t1(a, b) values(1, 1);
+insert into t1(a, b) values(2, 2);
+ 
+create table t2(a int, b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A"));
+insert into t2(a, b) values(1, 1);
+insert into t2(a, b) values(2, 2);
+
+# cs_t1只存在co
+create table cs_t1(a varchar(200) PRIMARY KEY, b int, c int, d int) with column group (all columns, each column);
+insert into cs_t1(a, b, c, d) values('dhska', 1, 1, 1);
+insert into cs_t1(a, b, c, d) values('dhdssdfsdska', 2, 2, 2);
+insert into cs_t1(a, b, c, d) values('dhsksdfsdfasa', 3, 3, 3);
+insert into cs_t1(a, b, c, d) values('sfsdska', 4, 4, 4);
+
+# cs_t2既存在co，也存在cg
+create table cs_t2(c1 int, c2 int, c3 int, b varchar(32767)) nocompress with column group (each column);
+--disable_query_log
+--disable_result_log
+eval insert into cs_t2 values(1, 2, 3, rpad('a', 2048, 'a'));
+let $cnt=0;
+while($cnt < 20)
+{
+  eval insert into cs_t2 select * from cs_t2 fetch next 1000 rows only;
+  inc $cnt;
+}
+--enable_query_log
+--enable_result_log
+ 
+--echo ===============================================================
+--echo ==================    set backup dest    ======================
+--echo ===============================================================
+ 
+--disable_all_result_log
+eval ALTER SYSTEM SET data_backup_dest='$data_backup_dest';
+eval ALTER SYSTEM SET log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+
+--echo ===============================================================
+--echo ==================     start archive   ========================
+--echo ===============================================================
+
+ob1.mysql ALTER SYSTEM ARCHIVELOG;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ 
+--echo ===============================================================
+--echo ==================     major freeze    ========================
+--echo ===============================================================
+ob1.mysql ALTER SYSTEM SET merger_check_interval = '10s' tenant all_user;
+ob1.mysql ALTER SYSTEM SET ob_compaction_schedule_interval='10s' tenant all_user;
+sleep 3;
+ob1.mysql ALTER SYSTEM major freeze tenant = '$backup_oracle_tenant';
+sleep 3;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 600;
+ 
+
+--echo ===============================================================
+--echo ================     backup database    =======================
+--echo ===============================================================
+ob1.mysql ALTER SYSTEM BACKUP DATABASE;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+
+
+--echo ===============================================================
+--echo =================     calc restore point    ===================
+--echo ===============================================================
+sleep 3;
+connection backup_sys_conn;
+let $now = `select timestamp_to_scn(current_timestamp(6))`;
+ob1.check_until_timeout select checkpoint_scn > $now from CDB_OB_ARCHIVELOG where tenant_id = $backup_oracle_tenant_id, 1, 600;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+
+
+--echo ===============================================================
+--echo =================     full restore     ========================
+--echo ===============================================================
+ob1.z1.obs0.mysql ALTER SYSTEM SET debug_sync_timeout = '0';
+ob1.z1.obs0.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+let $obs0 = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as addr from oceanbase.__all_server where zone='z1', addr, 1); 
+ob1.z1.obs0.mysql ALTER SYSTEM SET debug_sync_timeout = '10000s' SERVER='$obs0';
+sleep 3;
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'BEFORE_RESTORE_MAJOR wait_for signal1 execute 10000';
+ob1.restore ALTER SYSTEM RESTORE $restore_oracle_tenant FROM '$restore_path' UNTIL scn=$now WITH 'pool_list=small_pool_1&locality=F@z1&primary_zone=z1';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1005, NORMAL, 600;
+
+# 等待1001日志流快速恢复完成后发起迁移列存sstable
+ob1.z1.obs0.check_log_until_success -c "start wait.*name=signal1, signal_cnt=0";
+let $z2_obs0 = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as addr from oceanbase.__all_server where zone='z2', addr, 1); 
+ob1.z1.obs0.mysql ALTER SYSTEM ADD REPLICA LS=1001 SERVER='$z2_obs0' REPLICA_TYPE='FULL' PAXOS_REPLICA_NUM=2 TENANT='$restore_oracle_tenant';
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE tenant_id=1006 and ls_id=1001 and task_type = 'ADD REPLICA', 1, 200;
+ob1.mysql_p select tenant_id, ls_id, task_type, task_status, SUBSTRING(execute_result, 1, LOCATE(';', execute_result)) as execute_result from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where tenant_id=1006 and ls_id=1001 and task_type='ADD REPLICA';
+
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'BEFORE_RESTORE_MAJOR clear';
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'now broadcast signal1';
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1006 and restore_status = 0, 3, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1006, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+# 对恢复租户发起major，校验数据
+connection backup_sys_conn;
+set ob_query_timeout  = 10000000;
+eval ALTER SYSTEM ACTIVATE STANDBY TENANT $restore_oracle_tenant;
+ob1.mysql ALTER SYSTEM SET merger_check_interval = '10s' tenant='$restore_oracle_tenant';
+ob1.mysql ALTER SYSTEM SET ob_compaction_schedule_interval='10s' tenant='$restore_oracle_tenant';
+sleep 3;
+ob1.mysql ALTER SYSTEM major freeze tenant = '$restore_oracle_tenant';
+sleep 3;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=1006, 0, 600;
+ 

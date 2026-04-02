@@ -1,0 +1,222 @@
+#owner: xiaoyi.xy
+#owner group: SQL1
+#description: 该case是为了验证outline的使用
+##tags: outline
+
+START TRANSACTION;
+--disable_warnings
+drop database if exists ol_db;
+create database ol_db;
+--disable_warnings
+
+use ol_db;
+##test create outline with to clause
+create table t1(c1 int, c2 int, c3 int, key(c2), key(c3));
+create table t2(c1 int, c2 int, c3 int, key(c2), key(c3));
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+
+let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+##test basic syntax
+##当有to子句的时候，on 子句只是决定outline或者限流的内容，to字句后的内容才是真正的signature
+create outline ol_1 on select /*+no_rewrite*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select  * from t1 where c1 = 4 and c2 = 6 order by 2;
+create outline ol_2 on select /*+no_rewrite*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select /*+trace_log*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+create outline ol_3 on select /*+no_rewrite*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select /*+index(t1 c3)*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+create outline ol_4 on insert /*+no_rewrite*/ into t1 values(1,2,3),(2,3,4) to insert /*+trace_log*/ into t1 values(1,2,5),(2,3,6);
+create outline ol_5 on update /*+no_rewrite*/ t1 set c1 = 10 where c1 >10 to update /*+trace_log*/ t1 set c1 = 10 where c1 >10;
+create outline ol_6 on delete /*+no_rewrite*/ from t1 where c1 >10 to delete /*+no_rewrite*/ from t1 where c1 >20;
+create outline ol_8 on select /*+no_rewrite*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select /*+max_concurrent(7) trace_log*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+create outline ol_9 on select /*+max_concurrent(0)*/ * from t1 where c1 = 4  to select  * from t1 where c1 = 4;
+
+create outline ol_10 on select /*+no_rewrite trace_log*/ * from t1 where c1 > any(select /*+ no rewrite*/ c1 from t2) to select /*+no_rewrite trace_log*/ * from t1 where c1 > any(select /*+ no rewrite*/ c1 from t2);
+create outline ol_11 on select /*+no_rewrite trace_log*/ * from t1 where c1 > any(select /*+ no rewrite*/ c1 from t2) to select  * from t1 where c1 > any(select /*+ no rewrite*/ c1 from t2);
+##
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(a.signature) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+
+##bad case:name already exist
+--error 5264
+create outline ol_1 on select /*+index(t1 c3)*/ * from t1 where c1 = 4 to select  * from t1 where c1 = 4 ;
+
+##bad case:signature already exist
+--error 5264
+create outline ol_error on select /*+index(t1 c3)*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select  * from t1 where c1 = 4 and c2 = 6 order by 2;
+--error 5264
+create outline ol_error on select /*+no_rewrite*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select /*just comment here*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+
+##bad case:尽管两个子语句中抽出的signature一样。但是常量值不一样，且该outline不是限流，sql语句中不应该有？
+--error 5267
+create outline ol_error on select c2 from t1 where c1 =1 to select c2 from t1 where c1 =?;
+
+##bad case:尽管两个子语句中抽出的signature一样。但是限流语句的fixed_param不一致
+--error 5267
+create outline ol_error on select /*+max_concurrent(1)*/ c2 from t1 where c1 =1 to select /*+index(t1 c1)*/ c2 from t1 where c1 =2;
+--error 5267
+create outline ol_error on select /*+max_concurrent(1)*/ c2 from t1 where c1 =1 and c2 =? to select /*+index(t1 c1)*/ c2 from t1 where c1 =2 and c2 =?;
+--error 5267
+create outline ol_error on select /*+max_concurrent(1)*/ c2 from t1 where c1 =1 to select  c2 from t1 where c1 =2;
+--error 5267
+create outline ol_error on select /*+max_concurrent(1)*/ c2 from t1 where c1 =? to select  c2 from t1 where c1 =2;
+--error 5267
+create outline ol_error on select /*+max_concurrent(1) trace_log*/ c2 from t1 where c1 =? to select  c2 from t1 where c1 =2;
+
+
+##test create or replace
+create or replace outline ol_1 on select /*+trace_log*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+create or replace outline ol_3 on select /*+trace_log*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select /*+index(t1 c3)*/ * from t1 where c1 = 4 and c2 = 6 order by 2;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(a.signature) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+
+##bad case:create or replace 语句的name一样，但是signature不一样
+--error 5267
+create or replace outline ol_3 on select /*+index(t1 c3)*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select  * from t1 where c1 = 4 and c2 = 6 order by 2;
+--error 5264
+##bad case:create or replace 语句的name不一样，但是持有相同signature的outline已存在
+create or replace outline ol_error on select /*+index(t1 c3)*/ * from t1 where c1 = 4 and c2 = 6 order by 2 to select  * from t1 where c1 = 4 and c2 = 6 order by 2;
+
+create or replace outline ol_r1 on select/*+trace_log*/ c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2 to select c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2;
+create or replace outline ol_r2 on select /*+trace_log*/ c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2 to select /*+index(t1 c1)*/ c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2;
+create or replace outline ol_r3 on select /*+trace_log*/ c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2 to select /*commnent here*/ c1, c2 from t1 where c1 = 4 and c2 = 6 order by 2;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(a.signature) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+sleep 2;
+
+##check whether outline is used when handle query
+#result before create outline on these query
+select  * from t1 where c2 = 2;
+select /*+index(t1 c1)*/ * from t1 where c2 = 6;
+select  c2 from t1 where c1 = 4;
+select /*just comment here*/ c1 from t1 where c1 = 4;
+select /*+index(t1 c1)*/ * from t1 where c1 = 4;
+select /*+index(t1 c1)*/ * from t1 where c1 = 4 and c2 = 3;
+
+create outline ol_101 on select /*+index(t1 c3)*/ * from t1 where c2 = 6 to select  * from t1 where c2 = 6;
+create outline ol_102 on select /*+index(t1 c3)*/ * from t1 where c2 = 6 to select /*+index(t1 c1)*/ * from t1 where c2 = 6;
+create outline ol_103 on select /*+max_concurrent(0)*/ c2 from t1 where c1 = 4  to select  c2 from t1 where c1 = 4;
+create outline ol_104 on select /*+max_concurrent(0)*/ c1 from t1 where c1 = 4  to select /*just comment here*/ c1 from t1 where c1 = 4;
+create outline ol_105 on select /*+max_concurrent(0)*/ * from t1 where c1 = 4  to select /*+index(t1 c1)*/ * from t1 where c1 = 4;
+create outline ol_106 on select /*+max_concurrent(1)*/ * from t1 where c1 = 4 and c2 = 5  to select /*+index(t1 c1)*/ * from t1 where c1 = 4 and c2 = 5;
+sleep 2;
+
+#result after create outline on these query
+select  * from t1 where c2 = 2;
+select /*+index(t1 c1)*/ * from t1 where c2 = 6;
+--error 5268
+select  c2 from t1 where c1 = 4;
+--error 5268
+select /*just comment here*/ c1 from t1 where c1 = 4;
+--error 5268
+select /*+index(t1 c1)*/ * from t1 where c1 = 4;
+select /*+index(t1 c1)*/ * from t1 where c1 = 4 and c2 = 5;
+
+--error 5272
+alter outline ol_101 add select /*+index(t1 c3)*/ * from t1 where c2 = 6;
+alter outline ol_101 add select /*+max_concurrent(0)*/ * from t1 where c2 = 6;
+sleep 2;
+select  * from t1 where c2 = 2;
+--error 5268
+select  * from t1 where c2 = 6;
+alter outline ol_101 add select /*+max_concurrent(0)*/ * from t1 where c2 = 2;
+sleep 2;
+--error 5268
+select  * from t1 where c2 = 2;
+--error 5268
+select  * from t1 where c2 = 6;
+
+##insert_stmt
+create outline ol_insert on insert /*+trace_log*/into t1 value (1,2,3) to insert /*+index(t1 c3)*/into t1 value (1,2,3);
+alter outline ol_insert add insert /*+max_concurrent(0)*/into t1 value (1,?,?) to insert /*+index(t1 c3)*/into t1 value (1,?,?);
+alter outline ol_insert add insert /*+max_concurrent(0)*/into t1 value (2,2,3) to insert /*+index(t1 c3)*/into t1 value (2,2,3);
+alter outline ol_insert add insert /*+max_concurrent(0)*/into t1 value (null,2,?) to insert /*+index(t1 c3)*/into t1 value (null,2,?);
+alter outline ol_insert add insert /*+max_concurrent(1)*/into t1 value (4,2,?) to insert /*+index(t1 c3)*/into t1 value (4,2,?);
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+sleep 2;
+insert /*+index(t1 c3)*/into t1 value (2,2,2);
+insert into t1 value (1,2,2);
+--error 5268
+insert /*+index(t1 c3)*/into t1 value (1,2,2);
+--error 5268
+insert /*+index(t1 c3)*/into t1 value (2,2,3);
+insert /*+index(t1 c3)*/into t1 value (2.0,2,3);
+insert /*+index(t1 c3)*/into t1 value ('2',2,3);
+insert /*+index(t1 c3)*/into t1 value ('2',2,3);
+--error 5268
+insert /*+index(t1 c3)*/into t1 value (null,2,2);
+insert /*+index(t1 c3)*/into t1 value (4,2,3);
+drop outline ol_insert;
+
+##update_stmt
+create outline ol_update on update /*+max_concurrent(0)*/t1 set c1 = 2 where c3 =1 to update t1 set c1 = 2 where c3 =1;
+alter outline ol_update add update /*+max_concurrent(0)*/t1 set c1 = 3 where c3 =? to update t1 set c1 = 3 where c3 =?;
+alter outline ol_update add update /*+max_concurrent(0)*/t1 set c1 = NULL where c3 =? to update t1 set c1 = NULL where c3 =?;
+alter outline ol_update add update /*+max_concurrent(1)*/t1 set c1 = 4 where c3 =? to update t1 set c1 = 4 where c3 =?;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+sleep 2;
+update t1 set c1 = 1 where c3 =2;
+update t1 set c1 = 3.0 where c3 =2;
+--error 5268
+update t1 set c1 = 3 where c3 =2;
+--error 5268
+update t1 set c1 = 3 where c3 =3;
+--error 5268
+update t1 set c1 = null where c3 =3;
+update t1 set c1 = 4 where c3 =3;
+drop outline ol_update;
+
+##delete_stmt
+create outline ol_delete on delete /*+max_concurrent(0)*/ from t1 where c1 =1 and c2 =? to delete /*+trace_log*/ from t1 where c1 =1 and c2 =? ;
+alter outline ol_delete add delete /*+max_concurrent(0)*/ from t1 where c1 =null and c2 =? to delete /*+trace_log*/ from t1 where c1 =null and c2 =?;
+alter outline ol_delete add delete /*+max_concurrent(0)*/ from t1 where c1 =2 and c2 =? to delete /*+trace_log*/ from t1 where c1 =2 and c2 =?;
+alter outline ol_delete add delete /*+max_concurrent(1)*/ from t1 where c1 =3 and c2 =? to delete /*+trace_log*/ from t1 where c1 =3 and c2 =?;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_db';
+--enable_query_log
+disconnect obsys;
+connection default;
+sleep 2;
+delete /*+trace_log*/ from t1 where c1 =3 and c2 =3;
+delete /*+trace_log*/ from t1 where c1 =4 and c2 =3;
+--error 5268
+delete /*+trace_log*/ from t1 where c1 =1 and c2 =3;
+--error 5268
+delete /*+trace_log*/ from t1 where c1 =1 and c2 =2;
+--error 5268
+delete /*+trace_log*/ from t1 where c1 =2 and c2 =2;
+--error 5268
+delete /*+trace_log*/ from t1 where c1 =null and c2 =2;
+--error 5268
+delete /*+trace_log*/ from t1 where c1 =null and c2 =null;
+drop outline ol_delete;
+
+--echo ## clear test data ##
+drop database ol_db;
+commit;

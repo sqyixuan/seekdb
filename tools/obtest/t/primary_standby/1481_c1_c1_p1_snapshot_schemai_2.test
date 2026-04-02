@@ -1,0 +1,118 @@
+# owner: rongxuan.lc
+# description: 本case是为了启动主备集群，测试备库快找点接入的功能
+# ##版本号大于4以后，直接走快照接入，会回放出所有用户和租户；
+
+
+ob1=OBI(cluster=1:1,proxy_num=0);
+ob2=OBI(cluster=1:1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob_connect(sys1_conn, ob1.z1.obs0, root, , test, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+create user obtest1 IDENTIFIED BY 'obtest';
+create user obtest2 IDENTIFIED BY 'obtest';
+create table oceanbase.test (c1 int primary key);
+create user 'u1' identified by 'pass1', 'u2' identified by 'pass2', 'u3' identified by 'pass3', 'u4' identified by 'pass4';
+grant select on *.* to u1 with grant option;
+create user 'u5'@'h1' identified by 'pass1';
+create database tt;
+create database tt_nouse;
+use tt;
+grant all on tt to obtest1; 
+grant select on oceanbase.* to obtest1; 
+grant select on oceanbase.* to obtest2; 
+grant insert on oceanbase.__all_cluster to obtest2;
+###table priv
+create table test_tt(c1 int primary key, c2 int);
+grant all on tt.test_tt to u1;
+grant all on tt.test_tt to obtest1;
+create table test_tt2(c1 int primary key, c2 int);
+grant all on tt.test_tt2 to u5;
+grant all on tt.test_tt2 to obtest2;
+sleep 3;
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+let $tablenum=2;
+source sql/init_table.sql;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+create user obtest11 IDENTIFIED BY 'obtest';
+create user obtest21 IDENTIFIED BY 'obtest';
+create user obtest31 IDENTIFIED BY 'obtest';
+sleep 1;
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+ob1.mysql alter system major freeze;
+let $baseline_schema_version = deploy_get_value(ob1.select select column_value from __all_core_table where table_name = '__all_global_stat' and column_name = 'baseline_schema_version', column_value, 1);
+
+ob1.check_until_timeout select value from __all_zone where zone='' and name='last_merged_version', 4, 500;
+##快照接入；
+ob2.reboot;
+sleep 3;
+ob_connect(sys2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set merger_check_interval = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set enable_auto_leader_switch = false;
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 360;
+eval show create table __all_tenant_meta_table;
+eval select count(*) from __all_user;
+eval select count(*) from __all_tenant;
+ob2.check_until_timeout select value from __all_zone where zone='' and name='last_merged_version', 4, 500;
+ob2.force_stop;
+sleep 20;
+ob2.nstart;
+ob2.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1,1,240;
+ob_connect(sys2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+sleep 3;
+##接入后可以做系统租户的变更
+alter system set enable_sys_table_ddl = true;
+connection sys1_conn;
+alter system set enable_sys_table_ddl = true;
+let $column_id = query_get_value(select (max_used_column_id + 1) as column_id from oceanbase.__all_virtual_table where table_name = '__all_tenant_meta_table', column_id, 1);
+eval alter table __all_tenant_meta_table add column test3 int id $column_id;
+create user obtest4 IDENTIFIED BY 'obtest';
+let $user_count = deploy_get_value(ob1.select select count(*) c from __all_user, c, 1);
+ob2.check_until_timeout select count(*) c from __all_user, $user_count, 120;
+
+##测试各种权限
+ob_connect(sys2_conn, ob2.z1.obs0, obtest1, obtest, oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+--error 1049
+use tt_nouse;
+select count(*) from __all_cluster;
+--error 1142
+insert into __all_cluster(cluster_idx,cluster_id,cluster_name, rs_list, cluster_status) values(3,4,'ob1.rongxuan.lc','', 0);
+select table_id from __all_table_v2 order by table_id limit 1;
+ob_connect(sys2_conn, ob2.z1.obs0, obtest2,  obtest, oceanbase, ,USE_MYSQL_CONNECTOR);
+connection sys2_conn;
+--error 1049
+use tt_nouse;
+select table_id from __all_table_v2 order by table_id limit 1;
+select count(*) from __all_cluster;
+insert into __all_cluster(cluster_idx,cluster_id,cluster_name, rs_list, cluster_status) values(3,4,'ob1.rongxuan.lc','', 0);
+ob1.check_until_timeout select count(*) from __all_core_table where table_name like '%glob%' and column_name = 'standby_snapshot_frozen_version' and column_value !="-1", 1, 3; 
+ob2.check_until_timeout select count(*) from __all_core_table where table_name like '%glob%' and column_name = 'standby_snapshot_frozen_version' and column_value !="-1", 1, 3; 
+
+

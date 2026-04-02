@@ -1,0 +1,219 @@
+drop database if exists austin;
+create database austin;
+use austin;
+###  在执行阶段出错，测试中断机制是否生效。
+drop table if exists t1;
+Warnings:
+Note	1051	Unknown table 'austin.t1'
+drop table if exists t2;
+Warnings:
+Note	1051	Unknown table 'austin.t2'
+create table t1(c1 int,c2 longtext) compression = 'none' partition by hash(c1) partitions 3;
+create table t2(c1 int) partition by hash(c1) partitions 3;
+insert into t1 values(0,null);
+insert into t2 values(3);
+explain basic select pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN   |        |
+|1 |├─PX COORDINATOR             |        |
+|2 |│ └─EXCHANGE OUT DISTR       |:EX10000|
+|3 |│   └─PX PARTITION ITERATOR  |        |
+|4 |│     └─TABLE FULL SCAN      |t1      |
+|5 |└─MATERIAL                   |        |
+|6 |  └─PX COORDINATOR           |        |
+|7 |    └─EXCHANGE OUT DISTR     |:EX20000|
+|8 |      └─PX PARTITION ITERATOR|        |
+|9 |        └─TABLE FULL SCAN    |t2      |
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([pow(cast(t2.c1, DOUBLE(-1, -1)), cast(cast(1, DECIMAL_INT(31, 27)) / cast(t1.c1, DECIMAL_INT(15, 3)) + cast(0.001, DECIMAL_INT(15, 3)), DOUBLE(-1,
+       -1)))]), filter(nil), rowset=256
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([t1.c1]), filter(nil), rowset=256
+  2 - output([t1.c1]), filter(nil), rowset=256
+      dop=1
+  3 - output([t1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([t1.c1]), filter(nil), rowset=256
+      access([t1.c1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t2.c1]), filter(nil), rowset=256
+  6 - output([t2.c1]), filter(nil), rowset=256
+  7 - output([t2.c1]), filter(nil), rowset=256
+      dop=1
+  8 - output([t2.c1]), filter(nil), rowset=256
+      force partition granule
+  9 - output([t2.c1]), filter(nil), rowset=256
+      access([t2.c1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select t2.c1,t1.c1,pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+ERROR 22003: value is out of range
+select /*+ parallel(10) */ pow(t2.c1,1/(t1.c1+0.001)) from t1,t2;
+ERROR 22003: value is out of range
+drop table t1;
+drop table t2;
+create table t1(i int, j int, primary key (i)) partition by hash(i) partitions 3;
+insert into t1 values(1, 1);
+insert into t1 values(2, 2);
+insert into t1 values(3, 3);
+insert into t1 values(4, 4);
+insert into t1 values(5, 5);
+insert into t1 values(6, 6);
+insert into t1 values(1<<30, 1<<30);
+select * from t1;
+i	j
+3	3
+6	6
+1	1
+4	4
+1073741824	1073741824
+2	2
+5	5
+explain select i*j*i*j from t1;
+Query Plan
+=============================================================
+|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |PX COORDINATOR           |        |7       |14          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|7       |12          |
+|2 |  └─PX PARTITION ITERATOR|        |7       |7           |
+|3 |    └─TABLE FULL SCAN    |t1      |7       |7           |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.i * t1.j * t1.i * t1.j)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.i * t1.j * t1.i * t1.j)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t1.i], [t1.j]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t1.i], [t1.j]), filter(nil), rowset=16
+      access([t1.i], [t1.j]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.i]), range(MIN ; MAX)always true
+select i*j*i*j from t1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+select /*+ parallel(4)*/ i*j*i*j from t1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+select /*+ parallel(8)*/ i*j*i*j from t1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+select /*+ parallel(16)*/ i*j*i*j from t1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+select /*+ parallel(32)*/ i*j*i*j from t1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+create table t22 (c1 int, c2 int, c3 int);
+explain select /*+no_rewrite() parallel(8) leading(t3 t22) */ * from t22, (select i*j*i*j abc from t1) t3 where t3.abc = t22.c1;
+Query Plan
+========================================================================
+|ID|OPERATOR                            |NAME    |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------------------
+|0 |PX COORDINATOR                      |        |1       |3           |
+|1 |└─EXCHANGE OUT DISTR                |:EX10001|1       |2           |
+|2 |  └─SHARED HASH JOIN                |        |1       |2           |
+|3 |    ├─EXCHANGE IN DISTR             |        |7       |2           |
+|4 |    │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10000|7       |2           |
+|5 |    │   └─SUBPLAN SCAN              |t3      |7       |1           |
+|6 |    │     └─PX BLOCK ITERATOR       |        |7       |1           |
+|7 |    │       └─TABLE FULL SCAN       |t1      |7       |1           |
+|8 |    └─PX BLOCK ITERATOR             |        |1       |1           |
+|9 |      └─TABLE FULL SCAN             |t22     |1       |1           |
+========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t22.c1, t22.c2, t22.c3, t3.abc)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t22.c1, t22.c2, t22.c3, t3.abc)]), filter(nil), rowset=16
+      dop=8
+  2 - output([t3.abc], [t22.c1], [t22.c2], [t22.c3]), filter(nil), rowset=16
+      equal_conds([t3.abc = t22.c1]), other_conds(nil)
+  3 - output([t3.abc]), filter(nil), rowset=16
+  4 - output([t3.abc]), filter(nil), rowset=16
+      dop=8
+  5 - output([t3.abc]), filter(nil), rowset=16
+      access([t3.abc])
+  6 - output([t1.i * t1.j * t1.i * t1.j]), filter(nil), rowset=16
+  7 - output([t1.i * t1.j * t1.i * t1.j]), filter(nil), rowset=16
+      access([t1.i], [t1.j]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.i]), range(MIN ; MAX)always true
+  8 - output([t22.c1], [t22.c2], [t22.c3]), filter(nil), rowset=16
+  9 - output([t22.c1], [t22.c2], [t22.c3]), filter(nil), rowset=16
+      access([t22.c1], [t22.c2], [t22.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t22.__pk_increment]), range(MIN ; MAX)always true
+select /*+no_rewrite() parallel(8) leading(t3 t22) */ * from t22, (select i*j*i*j abc from t1) t3 where t3.abc = t22.c1;
+ERROR 22003: BIGINT value is out of range in ''(1152921504606846976 * 1073741824)''
+create table t2(v int) partition by hash(v) partitions 4;
+insert into t2 values(3);
+insert into t2 values(4);
+insert into t2 values(5);
+insert into t2 values(6);
+insert into t2 values(7);
+explain select * from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+Query Plan
+===========================================================================
+|ID|OPERATOR                               |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |PX COORDINATOR                         |        |1       |16          |
+|1 |└─EXCHANGE OUT DISTR                   |:EX10002|1       |16          |
+|2 |  └─NESTED-LOOP JOIN                   |        |1       |15          |
+|3 |    ├─EXCHANGE IN DISTR                |        |1       |12          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)      |:EX10001|1       |12          |
+|5 |    │   └─SUBPLAN SCAN                 |app     |1       |12          |
+|6 |    │     └─SUBPLAN FILTER             |        |1       |12          |
+|7 |    │       ├─EXPRESSION               |        |1       |1           |
+|8 |    │       └─EXCHANGE IN DISTR        |        |5       |12          |
+|9 |    │         └─EXCHANGE OUT DISTR     |:EX10000|5       |11          |
+|10|    │           └─PX PARTITION ITERATOR|        |5       |9           |
+|11|    │             └─TABLE FULL SCAN    |t2      |5       |9           |
+|12|    └─PX PARTITION ITERATOR            |        |5       |9           |
+|13|      └─TABLE FULL SCAN                |t2      |5       |9           |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(app.a, t2.v)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(app.a, t2.v)]), filter(nil), rowset=16
+      dop=1
+  2 - output([app.a], [t2.v]), filter(nil), rowset=16
+      conds([app.a = t2.v]), nl_params_(nil), use_batch=false
+  3 - output([app.a], [PARTITION_ID]), filter(nil), rowset=16
+  4 - output([app.a], [PARTITION_ID]), filter(nil), rowset=16
+      (#keys=1, [app.a]), is_single, dop=1
+  5 - output([app.a]), filter(nil), rowset=16
+      access([app.a])
+  6 - output([:0]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  7 - output([1]), filter(nil)
+      values({1})
+  8 - output([t2.v]), filter(nil), rowset=16
+  9 - output([t2.v]), filter(nil), rowset=16
+      dop=1
+ 10 - output([t2.v]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.v]), filter(nil), rowset=16
+      access([t2.v]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t2.v]), filter(nil), rowset=16
+      affinitize, force partition granule
+ 13 - output([t2.v]), filter(nil), rowset=16
+      access([t2.v]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ parallel(4)*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+ERROR 21000: Subquery returns more than 1 row
+select /*+ parallel(8)*/* from (select (select * from t2) as a from dual) as app,t2 where app.a=t2.v;
+ERROR 21000: Subquery returns more than 1 row
+###  另一个session中断掉当前执行的session，测试中断机制是否生效。
+drop database if exists test_interrupt;
+create database test_interrupt;
+use test_interrupt;
+create table t1(v int primary key) partition by hash(v) partitions 50;
+insert into t1 values (3), (4), (5), (6), (7);
+select /*+ use_px parallel(4) */sleep(v) from t1;;
+kill session
+Got one of the listed errors

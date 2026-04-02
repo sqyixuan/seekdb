@@ -1,0 +1,154 @@
+# owner: shouju.zyp
+# owner groups: rs
+# description: 测试add server命令中同时添加多台不同zone的server。
+#              测试add server时如果server非empty，不会推高
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0,ct_num=0);
+ob1.z1.obs1.set status=disable;
+ob1.z2.obs1.set status=disable;
+ob1.z3.obs1.set status=disable;
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+connection sys_conn;
+
+ob1.z1.obs1.set status=enable;
+ob1.z2.obs1.set status=enable;
+ob1.z3.obs1.set status=enable;
+let $z1s1addr = deploy_get_value(ob1.z1.obs1.get_addr);
+let $z2s1addr = deploy_get_value(ob1.z2.obs1.get_addr);
+let $z3s1addr = deploy_get_value(ob1.z3.obs1.get_addr);
+ob1.z1.obs1.start;
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+
+# wait servers to init
+sleep 5;
+
+# z1s1添加成功，z2s1添加失败
+disable_query_log;
+--error 4631
+eval alter system add server '$z1s1addr','$z2s1addr' zone 'z1';
+enable_query_log;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1', 2, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2', 1, 10;
+
+ob1.z1.obs1.delete;
+ob1.z1.obs1.force_stop;
+ob1.z1.obs1.rmdir;
+ob1.z1.obs1.mkdir;
+ob1.z1.obs1.rsync;
+ob1.z1.obs1.start;
+ob1.z2.obs1.force_stop;
+ob1.z2.obs1.rmdir;
+ob1.z2.obs1.mkdir;
+ob1.z2.obs1.rsync;
+ob1.z2.obs1.start;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1', 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2', 1, 10;
+
+sleep 5;
+
+# z1s1添加失败，z2s1添加失败
+disable_query_log;
+--error 4631
+eval alter system add server '$z1s1addr','$z2s1addr' zone 'z2';
+enable_query_log;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1', 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2', 1, 10;
+
+ob1.z1.obs1.force_stop;
+ob1.z1.obs1.rmdir;
+ob1.z1.obs1.mkdir;
+ob1.z1.obs1.rsync;
+ob1.z1.obs1.start;
+ob1.z2.obs1.force_stop;
+ob1.z2.obs1.rmdir;
+ob1.z2.obs1.mkdir;
+ob1.z2.obs1.rsync;
+ob1.z2.obs1.start;
+
+sleep 5;
+
+# 两台均添加成功
+disable_query_log;
+eval alter system add server '$z1s1addr','$z2s1addr';
+enable_query_log;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z1', 2, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2', 2, 60;
+
+let $max_server_id = query_get_value(select * from oceanbase.__all_sys_stat where name='ob_max_used_server_id', value, 1);
+
+alter system set_tp tp_name=EN_ADD_SERVER_RPC_FAIL, error_code=4179, frequency=1;
+disable_result_log;
+disable_query_log;
+# 测试改写err_code
+--error 4784
+eval alter system add server '$z3s1addr';
+enable_query_log;
+enable_result_log;
+
+alter system set_tp tp_name=EN_ADD_SERVER_RPC_FAIL, error_code=4179, frequency=0;
+
+let $current_max_server_id = query_get_value(select value-1 as a from oceanbase.__all_sys_stat where name='ob_max_used_server_id', a, 1);
+
+if ($max_server_id != $current_max_server_id)
+{
+  echo error, ob_max_used_server_id should increase before the second RPC;
+  --exit
+}
+
+ob1.z3.obs1.force_stop;
+ob1.z3.obs1.rmdir;
+ob1.z3.obs1.mkdir;
+ob1.z3.obs1.rsync;
+
+let $max_server_id = query_get_value(select value as a from oceanbase.__all_sys_stat where name='ob_max_used_server_id', a, 1);
+
+disable_result_log;
+disable_query_log;
+# server没启动，RPC失败，上层会重试到超时，但是这里不能推高max_server_id
+--error 4012
+eval alter system add server '$z3s1addr';
+enable_query_log;
+enable_result_log;
+
+let $current_max_server_id = query_get_value(select value as a from oceanbase.__all_sys_stat where name='ob_max_used_server_id', a, 1);
+
+if ($max_server_id != $current_max_server_id)
+{
+  echo error, ob_max_used_server_id should not increase when timeout at the first RPC
+  --exit
+}
+
+ob1.z3.obs1.start;
+ob1.z3.obs1.add;
+
+let $current_max_server_id = query_get_value(select value-1 as a from oceanbase.__all_sys_stat where name='ob_max_used_server_id', a, 1);
+
+if ($max_server_id != $current_max_server_id)
+{
+  echo error, ob_max_used_server_id should increase after adding server;
+  --exit
+}
+
+disable_result_log;
+disable_query_log;
+# 添加一台not empty的server
+--error 4179
+eval alter system add server '$z3s1addr';
+enable_query_log;
+enable_result_log;
+
+let $current_max_server_id = query_get_value(select value-1 as a from oceanbase.__all_sys_stat where name='ob_max_used_server_id', a, 1);
+
+if ($max_server_id != $current_max_server_id)
+{
+  echo error, ob_max_used_server_id should not increase when server is not empty;
+  --exit
+}

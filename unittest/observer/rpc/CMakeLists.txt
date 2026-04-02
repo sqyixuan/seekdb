@@ -9,12 +9,13 @@ function(rpc_server_test case)
 
   target_link_libraries(${case}
     PRIVATE
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group>
+    -Wl,--start-group
     oceanbase_static
     ob_sql_static
     ob_storage_static
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc -static-libstdc++>)
+    -Wl,--end-group
+    -static-libgcc
+    -static-libstdc++)
 endfunction()
 
 rpc_server_test(easy_server_basic)

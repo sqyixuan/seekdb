@@ -1,0 +1,348 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner:yibo.tyf
+#owner group: sql1
+# tags: optimizer
+
+--disable_warnings
+drop database if exists opt_repart;
+--enable_warnings
+create database opt_repart;
+use opt_repart;
+set global ob_plan_cache_percentage = 50;
+--sleep 5
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush plan cache global;
+connection default;
+set @ratio_backup = @@_groupby_nopushdown_cut_ratio;
+
+--result_format 4
+
+##
+## 1. 模板化二级分区
+##
+create table t_hash_range1 (c1 int, c2 int, c3 int, primary key (c1,c2)) 
+partition by hash(c1) 
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (200),
+  subpartition rp2 values less than (300)
+) partitions 10;
+create table t_hash_range2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by range (c2) 
+subpartition template
+(
+  subpartition rp0 values less than (100),
+  subpartition rp1 values less than (150),
+  subpartition rp2 values less than (200),
+  subpartition rp3 values less than (300)
+) partitions 10;
+create table t_hash_list1 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (11,12,13,14,15)
+) partitions 10;
+create table t_hash_list2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by hash(c1)
+subpartition by list (c2)
+subpartition template
+(
+  subpartition lp0 values in (6,7,8,9,10),
+  subpartition lp1 values in (1,2,3,4,5),
+  subpartition lp2 values in (11,12,13,14,15)
+) partitions 10;
+create table t_range_list1 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by range(c1)
+subpartition by list(c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (6,7,8,9,10),
+  subpartition lp2 values in (11,12,13,14,15)
+)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+create table t_range_list2 (c1 int, c2 int, c3 int, primary key (c1,c2))
+partition by range(c1)
+subpartition by list(c2)
+subpartition template
+(
+  subpartition lp0 values in (1,2,3,4,5),
+  subpartition lp1 values in (11,12,13,14,15),
+  subpartition lp2 values in (6,7,8,9,10)
+)
+(
+  partition p0 values less than (100),
+  partition p1 values less than (150),
+  partition p2 values less than (200),
+  partition p3 values less than (300)
+);
+--disable_result_log
+insert into t_hash_range1 values (1,1,1),(5,5,5),(51,51,51),(55,55,55),
+                                 (101,101,101),(105,105,105),(151,151,151),(155,155,155),
+                                 (201,201,201),(205,205,205),(251,251,251),(255,255,255);
+insert into t_hash_range2 values (2,2,2),(5,5,5),(52,52,52),(55,55,55),
+                                 (102,102,102),(105,105,105),(152,152,152),(155,155,155),
+                                 (202,202,202),(205,205,205),(252,252,252),(255,255,255);
+insert into t_hash_list1 values (1,1,1),(5,5,5),(6,6,6),(10,10,10),(11,11,11),(15,15,15);
+insert into t_hash_list2 values (2,2,2),(5,5,5),(7,7,7),(10,10,10),(12,12,12),(15,15,15);
+insert into t_range_list1 values (1,1,1),(5,5,5),(51,6,6),(55,10,10),
+                                 (101,1,1),(105,5,5),(151,6,6),(155,10,10),
+                                 (201,1,1),(205,5,5),(251,6,6),(255,10,10);
+--let $count = 1
+while($count < 300)
+{
+  --let $stmt=insert into t_range_list2 values ($count, ($count%15)+1, $count)
+  eval $stmt;
+  inc $count;
+}
+
+select count(*) from t_hash_range1;
+select count(*) from t_hash_range2;
+select count(*) from t_hash_list1;
+select count(*) from t_hash_list2;
+select count(*) from t_range_list1;
+select count(*) from t_range_list2;
+--enable_result_log
+
+##
+## 1.1 分区裁剪后只有一个一级分区
+##
+
+##
+## 1.1.1 join
+##
+EXPLAIN select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c2 = t2.c2 and t1.c1 = 1;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c2 = t2.c2 and t1.c1 = 1;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c2 = t2.c2 and t1.c1 = 5;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c2 = t2.c2 and t1.c1 = 100;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c2 = t2.c2 and t1.c1 = ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 100;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 100;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 80;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 50;
+# can not hit plan
+--sorted_result
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < 150;
+## hit_count should be 2, 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 < ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 200;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 200;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 220;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > 240;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 > ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 100 and 199;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 120 and 199;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between 140 and 180;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 between ? and ?';
+
+
+##
+## 1.1.2 group by 下推
+##
+EXPLAIN select sum(c3) from t_range_list2 where c1 < 100 group by c2;
+select sum(c3) from t_range_list2 where c1 < 100 group by c2;
+select sum(c3) from t_range_list2 where c1 < 80 group by c2;
+select sum(c3) from t_range_list2 where c1 < 60 group by c2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(c3) from t_range_list2 where c1 < ? group by c2';
+
+
+EXPLAIN select sum(distinct c3) from t_range_list2 where c1 > 200 group by c2;
+select sum(distinct c3) from t_range_list2 where c1 > 200 group by c2;
+select sum(distinct c3) from t_range_list2 where c1 > 230 group by c2;
+select sum(distinct c3) from t_range_list2 where c1 > 260 group by c2;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(distinct c3) from t_range_list2 where c1 > ? group by c2';
+
+
+EXPLAIN select sum(distinct c2) from t_range_list2 where c1 between 150 and 199;
+select sum(distinct c2) from t_range_list2 where c1 between 150 and 199;
+select sum(distinct c2) from t_range_list2 where c1 between 160 and 199;
+select sum(distinct c2) from t_range_list2 where c1 between 160 and 190;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(distinct c2) from t_range_list2 where c1 between ? and ?';
+
+
+##
+## 1.1.3 window function 下推
+##
+EXPLAIN select c1, sum(c3) over (partition by c2) from t_range_list2 where c1 < 100 and c1 > 10;
+select c1, sum(c3) over (partition by c2) from t_range_list2 where c1 < 100 and c1 > 10;
+select c1, sum(c3) over (partition by c2) from t_range_list2 where c1 < 100 and c1 > 30;
+select c1, sum(c3) over (partition by c2) from t_range_list2 where c1 < 100 and c1 > 50;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select c1, sum(c3) over (partition by c2) from t_range_list2 where c1 < ? and c1 > ?';
+
+##
+## 1.1.4 distinct 下推
+##
+EXPLAIN select distinct c2 from t_range_list2 where c1 < 100;
+select distinct c2 from t_range_list2 where c1 < 100;
+select distinct c2 from t_range_list2 where c1 < 60;
+select distinct c2 from t_range_list2 where c1 < 30;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select distinct c2 from t_range_list2 where c1 < ?';
+
+##
+## 1.2 分区裁剪后只有一个二级分区
+##
+
+##
+## 1.2.1 join
+##
+EXPLAIN select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < 100;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < 100;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < 80;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < 60;
+# can not hit plan
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < 150;
+## hit_count should be 2, 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 < ?';
+
+EXPLAIN select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > 200;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > 200;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > 220;
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > 240;
+# can not hit plan
+select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > 150;
+## hit_count should be 2, 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_hash_range1 t1, t_hash_range2 t2 where t1.c1 = t2.c1 and t1.c2 > ?';
+
+EXPLAIN select * from t_range_list1 t1, t_hash_list1 t2 where t1.c1 = t2.c1 and t1.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 1;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 5;
+select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = 55;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select * from t_range_list1 t1, t_hash_list1 t2 where t1.c2 = t2.c2 and t1.c1 = ?';
+
+
+##
+## 1.2.2 group by 下推
+##
+EXPLAIN select sum(c3) from t_range_list2 where c2 in (1,2,3,4) group by c1;
+select sum(c3) from t_range_list2 where c2 in (1,2,3,4) group by c1;
+select sum(c3) from t_range_list2 where c2 in (6,7,8,9) group by c1;
+select sum(c3) from t_range_list2 where c2 in (11,12,13,14) group by c1;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(c3) from t_range_list2 where c2 in (?,?,?,?) group by c1';
+
+
+EXPLAIN select sum(distinct c3) from t_range_list2 where c2 in (1,2,3,4) group by c1;
+select sum(distinct c3) from t_range_list2 where c2 in (1,2,3,4) group by c1;
+select sum(distinct c3) from t_range_list2 where c2 in (6,7,8,9) group by c1;
+select sum(distinct c3) from t_range_list2 where c2 in (11,12,13,14) group by c1;
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(distinct c3) from t_range_list2 where c2 in (?,?,?,?) group by c1';
+
+
+EXPLAIN select sum(distinct c1) from t_range_list2 where c2 in (2,3,4,5);
+select sum(distinct c1) from t_range_list2 where c2 in (2,3,4,5);
+select sum(distinct c1) from t_range_list2 where c2 in (7,8,9,10);
+select sum(distinct c1) from t_range_list2 where c2 in (12,13,14,15);
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(distinct c1) from t_range_list2 where c2 in (?,?,?,?)';
+
+##
+## 1.2.3 window function 下推
+##
+EXPLAIN select sum(c3) over(partition by c1) from t_range_list2 where c2 in (1,2,3,4);
+select sum(c3) over(partition by c1) from t_range_list2 where c2 in (1,2,3,4);
+select sum(c3) over(partition by c1) from t_range_list2 where c2 in (6,7,8,9);
+select sum(c3) over(partition by c1) from t_range_list2 where c2 in (11,13,14,15);
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select sum(c3) over(partition by c1) from t_range_list2 where c2 in (?,?,?,?)';
+
+##
+## 1.2.4 distinct 下推
+##
+EXPLAIN select distinct c1 from t_range_list2 where c2 in (2,3,4,5);
+select distinct c1 from t_range_list2 where c2 in (2,3,4,5);
+select distinct c1 from t_range_list2 where c2 in (7,8,9,10);
+select distinct c1 from t_range_list2 where c2 in (12,13,14,15);
+## hit_count should be 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT 
+where statement = 'select distinct c1 from t_range_list2 where c2 in (?,?,?,?)';
+
+##
+## 1. 非模板化二级分区
+##
+
+##
+## 2.1 分区裁剪后只有一个一级分区
+##
+
+##
+## 2.1.1 join
+##
+
+##
+## 2.1.2 group by 下推
+##
+
+##
+## 2.1.3 window function 下推
+##
+
+##
+## 2.1.4 distinct 下推
+##
+
+##
+## 2.2 分区裁剪后只有一个二级分区
+##
+
+##
+## 2.2.1 join
+##
+
+##
+## 2.2.2 group by 下推
+##
+
+##
+## 2.2.3 window function 下推
+##
+
+##
+## 2.2.4 distinct 下推
+##
+
+set _groupby_nopushdown_cut_ratio = @ratio_backup;
+drop database opt_repart;

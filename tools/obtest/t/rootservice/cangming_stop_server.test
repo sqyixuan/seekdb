@@ -1,0 +1,150 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    test stop, isolate and start server in various situations
+#    1. stop two servers in z3
+#    2. stop server in z2 failed, due to OB_STOP_SERVER_IN_MULTIPLE_ZONES
+#    3. start servers stopped in 1 and stop zone z3
+#    4. stop server in another zone (z2) failed, due to OB_STOP_SERVER_IN_MULTIPLE_ZONES
+#    5. isolate server in z2 successfully
+#    6. start servers/zones which are stopped/isolated above, now all zones' and servers' stop_time is 0
+#    7. create test_tenant, locality FF, stop z1.obs0 failed due to not enough paxos member, but isolate z1.obs0 successfully
+#    8. modify test_tenant, locality FFF, primary zone z1, isolate z2.obs0 successfully, isolate z1.obs0 failed due to primary region is z1
+#    9. start z2.obs0, stop zone z3, isolate z1.obs0 successfully
+#    10. all zones and servers become active, add a new empty zone z4, stop z4 successfully and then stop z2.obs0 failed due to OB_STOP_SERVER_IN_MULTIPLE_ZONES
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,locality=HZ:HZ:SH);
+ob1.reboot;
+
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# ****************************************************************************************************
+# ****************************** 0. start server is not allowed due to disk error ********************
+# ****************************************************************************************************
+ob1.check_until_timeout select count(*) from __all_server where start_service_time > 0,4,60;
+ob1.mysql alter system set_tp tp_name = ERRSIM_CHECK_SERVER_MACHINE_ERROR, error_code = 4016, frequency = 1;
+ob1.mysql alter system stop server '$z1_obs0_ip:$z1_obs0_port';
+--disable_all_result_log
+--error 4179
+eval alter system start server '$z1_obs0_ip:$z1_obs0_port';
+--enable_all_result_log
+ob1.mysql alter system set_tp tp_name = ERRSIM_CHECK_SERVER_MACHINE_ERROR, error_code = 4016, frequency = 0;
+ob1.mysql alter system start server '$z1_obs0_ip:$z1_obs0_port';
+select count(*) from __all_server where stop_time = 0;
+# ****************************************************************************************************
+# ****************************** 1. stop z3.obs0 and z3.obs1 successfully ****************************
+# ****************************************************************************************************
+ob1.mysql alter system stop server '$z3_obs0_ip:$z3_obs0_port', '$z3_obs1_ip:$z3_obs1_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_obs0_ip' and svr_port=$z3_obs0_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_obs1_ip' and svr_port=$z3_obs1_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+# ****************************************************************************************************
+# ****************************** 2. stop z2.obs0 failed, return OB_STOP_SERVER_IN_MULTIPLE_ZONES
+# ****************************************************************************************************
+--disable_query_log
+--error 4660
+eval alter system stop server '$z2_obs0_ip:$z2_obs0_port';
+--enable_query_log
+# ****************************************************************************************************
+# ****************************** 3. start z3.obs0 and z3.obs1 and stop zone z3 ***********************
+# ****************************************************************************************************
+ob1.mysql alter system start server '$z3_obs0_ip:$z3_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_obs0_ip' and svr_port=$z3_obs0_port and stop_time = 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+ob1.mysql alter system start server '$z3_obs1_ip:$z3_obs1_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z3_obs1_ip' and svr_port=$z3_obs1_port and stop_time = 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+ob1.mysql alter system stop zone z3;
+ob1.check_until_timeout select count(*) from __all_zone where zone = 'z3' and name = 'status' and info = 'INACTIVE', 1, 30;
+# ****************************************************************************************************
+# ****************************** 4. stop z2.obs0 failed, return OB_STOP_SERVER_IN_MULTIPLE_ZONES *****
+# ****************************************************************************************************
+--disable_query_log
+--error 4660
+eval alter system stop server '$z2_obs0_ip:$z2_obs0_port';
+--enable_query_log
+# ****************************************************************************************************
+# ****************************** 5. isolate z2.obs0 successfully *************************************
+# ****************************************************************************************************
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_obs0_ip' and svr_port=$z2_obs0_port and stop_time = 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+ob1.mysql alter system isolate server '$z2_obs0_ip:$z2_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_obs0_ip' and svr_port=$z2_obs0_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+# ****************************************************************************************************
+# ****************************** 6. all zones are active and all servers' stop_time = 0 **************
+# ****************************************************************************************************
+ob1.mysql alter system start zone z3;
+ob1.check_until_timeout select count(*) from __all_zone where name = 'status' and info = 'ACTIVE', 3, 30;
+ob1.mysql alter system start server '$z2_obs0_ip:$z2_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where stop_time = 0 and start_service_time > 0 and last_offline_time = 0,4,30;
+# ****************************************************************************************************
+# ****************************** 7. create test_tenant, locality FF, stop z1.obs0 failed *************
+# ********************************* return OB_OP_NOT_ALLOW, not enough paxos member ******************
+# ********************************* isolate z1.obs0 successfully, start z1.obs0 **********************
+# ****************************************************************************************************
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1', 'z2');
+ob1.mysql CREATE TENANT IF NOT EXISTS test_tenant ZONE_LIST=('z1', 'z2'), RESOURCE_POOL_LIST=('pool1');
+ob1.mysql alter tenant sys PRIMARY_ZONE='z2';
+sleep 10;
+ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and svr_ip='$z2_obs0_ip' and svr_port=$z2_obs0_port,1,60;
+--disable_query_log
+--error 4179
+eval alter system stop server '$z1_obs0_ip:$z1_obs0_port';
+--enable_query_log
+ob1.mysql alter system isolate server '$z1_obs0_ip:$z1_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z1_obs0_ip' and svr_port=$z1_obs0_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+ob1.mysql alter system start server '$z1_obs0_ip:$z1_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where stop_time = 0 and start_service_time > 0 and last_offline_time = 0,4,30;
+# ****************************************************************************************************
+# ****************************** 8. modify test_tenant, locality FFF, primary zone z1 ****************
+# ********************************* isolate z2.obs0 successfully, isolate z1.obs0 failed *************
+# ********************************* return OB_OP_NOT_ALLOW, stop all servers in primary region *******
+# ****************************************************************************************************
+ob1.mysql alter resource pool pool1 zone_list = ('z1','z2','z3');
+ob1.mysql alter tenant test_tenant PRIMARY_ZONE='z1';
+ob1.mysql alter tenant test_tenant locality="F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_name='test_tenant' and locality='FULL{1}@z1, FULL{1}@z2, FULL{1}@z3' and primary_zone='z1;z2',1,30;
+ob1.mysql alter tenant sys PRIMARY_ZONE='z1';
+sleep 10;
+ob1.check_until_timeout select count(*) from __all_server where with_rootserver=1 and svr_ip='$z1_obs0_ip' and svr_port=$z1_obs0_port,1,60;
+ob1.mysql alter system isolate server '$z2_obs0_ip:$z2_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z2_obs0_ip' and svr_port=$z2_obs0_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+--disable_query_log
+--error 4179
+eval alter system isolate server '$z1_obs0_ip:$z1_obs0_port';
+--enable_query_log
+# ****************************************************************************************************
+# ****************************** 9.start z2.obs0, stop zone z3, isolate z1.obs0 successfully *********
+# ****************************************************************************************************
+ob1.mysql alter system start server '$z2_obs0_ip:$z2_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where stop_time = 0 and start_service_time > 0 and last_offline_time = 0,4,30;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where tenant_name='test_tenant' and previous_locality is NULL,1,120;
+ob1.mysql alter system stop zone z3;
+ob1.check_until_timeout select count(*) from __all_zone where zone = 'z3' and name = 'status' and info = 'INACTIVE', 1, 30;
+ob1.mysql alter system isolate server '$z1_obs0_ip:$z1_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$z1_obs0_ip' and svr_port=$z1_obs0_port and stop_time > 0 and start_service_time > 0 and last_offline_time = 0,1,30;
+# ****************************************************************************************************
+# ****************************** 10.all zones and servers become active, add a new empty zone z4 *****
+# ********************************* stop z4, then stop z2.obs0 failed ********************************
+# ********************************* due to OB_STOP_SERVER_IN_MULTIPLE_ZONES **************************
+# ****************************************************************************************************
+ob1.mysql alter system start zone z3;
+ob1.check_until_timeout select count(*) from __all_zone where name = 'status' and info = 'ACTIVE', 3, 30;
+ob1.mysql alter system start server '$z1_obs0_ip:$z1_obs0_port';
+ob1.check_until_timeout select count(*) from __all_server where stop_time = 0 and start_service_time > 0 and last_offline_time = 0,4,30;
+ob1.mysql alter system add zone z4;
+ob1.check_until_timeout select count(*) from __all_zone where name = 'status' and info = 'INACTIVE' and zone = 'z4', 1, 30;
+--disable_query_log
+--error 4660
+eval alter system stop server '$z2_obs0_ip:$z2_obs0_port';
+--enable_query_log
+ob1.mysql alter system delete zone z4;
+ob1.check_until_timeout select count(*) from __all_zone where zone = 'z4', 0, 60;

@@ -1,0 +1,104 @@
+# owner: yunshan.tys
+# owner group: storage
+# description: readonly to full replica with fast recover test
+
+ob1=OBI(cluster=4, proxy_num=0, ct_num =0, locality=SH);
+
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=$mini_ob_config;
+ob1.z1.obs1.set extra_config=$mini_ob_config;
+ob1.z1.obs2.set extra_config=$mini_ob_config;
+ob1.z1.obs3.set extra_config=$mini_ob_config;
+
+ob1.reboot;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+
+ob1.mysql alter system set resource_hard_limit = 3200;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set merge_thread_count = 64;
+ob1.mysql alter system set minor_merge_concurrency = 64;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 1000;
+ob1.mysql alter system set server_data_copy_out_concurrency = 1000;
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set data_copy_concurrency = 1000;
+ob1.mysql alter system set migrate_concurrency = 64;
+ob1.mysql alter system set minor_merge_concurrency = 64;
+ob1.mysql alter system set _mini_merge_concurrency = 64;
+ob1.mysql alter system set location_fetch_concurrency = 64;
+ob1.mysql alter system set partition_table_check_interval = '1m';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set balancer_idle_time = '1m';
+
+let $ip = deploy_get_value(ob1.z1.obs3.ip);
+let $port = deploy_get_value(ob1.z1.obs3.mysql_port);
+
+connect(sys_conn, $ip, root@sys,,test, $port);
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+
+ob1.mysql create resource unit box1 max_cpu 2, max_memory = '2G' , max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='768M', MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 2;
+ob1.mysql create tenant tt1 replica_num = 2, resource_pool_list=('pool1'), primary_zone="z1", locality = "F,R@z1" set ob_tcp_invited_nodes='%';
+
+sleep 2;
+
+let $ip1 = deploy_get_value(ob1.z1.obs2.ip);
+let $port1 = deploy_get_value(ob1.z1.obs2.mysql_port);
+
+connect(tt1_conn, $ip1, root@tt1,,test, $port1);
+connection tt1_conn;
+
+use test;
+create table t_1(c1 int primary key, f1 varchar(1024), f2 varchar(4096)) partition by hash(c1) partitions 10;
+
+let $cnt = 1;
+
+while ($cnt <= 100) 
+{
+  eval insert into test.t_1 values($cnt, 'OceanBase', 'Storage Test');
+  inc $cnt;
+}
+
+connection sys_conn;
+
+ob1.mysql alter system major freeze;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_meta_table where data_version != 2, 0, 480;
+
+ob1.check_version 2;
+
+ob1.mysql set ob_global_debug_sync = 'FAST_RECOVER_MID_PROCESS4 wait_for signal_1 execute 10000000';
+
+ob1.mysql set ob_global_debug_sync = 'MIGRATE_AFTER_CREATE_TASK_FILE wait_for signal_2 execute 10000000';
+
+sleep 5;
+
+let $crash_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $crash_port = deploy_get_value(ob1.z1.obs1.port);
+
+ob1.z1.obs1.force_stop;
+
+sleep 5;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$crash_ip:$crash_port%' and event = 'switch state', 1, 480;
+
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_partition_migration_status where migrate_type = 'CHANGE_REPLICA_OP', 1, 480;
+
+ob1.mysql set ob_global_debug_sync = 'MIGRATE_AFTER_CREATE_TASK_FILE clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_2';
+
+sleep 60;
+
+ob1.mysql set ob_global_debug_sync = 'FAST_RECOVER_MID_PROCESS4 clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal_1';
+
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where svr_ip = '%$crash_ip' and svr_port = '$crash_port%' and replica_type != '16', 0, 480;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_1') and role = 'LEADER' and status = 'ACTIVE', 10, 480;
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$crash_ip:$crash_port%' and event = 'finish_recovery', 1, 480;

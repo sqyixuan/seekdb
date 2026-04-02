@@ -1,0 +1,84 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：
+# 验证log id和timestamp生成失败的场景下，事务的状态机能否正常推进
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+#在zone1上建立连接
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+connect (conn2,$l_ip1,root@obtest,,test,$l_port1);
+
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z2', svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z2', svr_port, 1);
+let $host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $observer = deploy_get_value(ob1.get_obs_by_addr $host);
+
+connection conn1;
+alter system set enable_auto_leader_switch = false;
+alter system set cpu_quota_concurrency = 4 tenant = sys;
+alter system set cpu_quota_concurrency = 4 tenant = all_user;
+alter system set cpu_quota_concurrency = 4 tenant = all_meta;
+connection conn2;
+use test;
+create table t1(id1 int primary key, id2 int) partition by hash(id1 % 2) partitions 2;
+
+#准备数据
+connection conn1;
+ob1.z1.obs0.switch_partition obtest:test:t1:0;
+ob1.z1.obs0.switch_partition obtest:test:t1:1;
+sleep 10;
+
+#############################
+#case1 : 单partition事务，参与者获取不到logid和timestamp
+#对于4016错误码，该事务会回滚
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4016, frequency = 1;
+connection conn2;
+begin;
+insert into t1 values(1, 1);
+--error 6002 
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4016, frequency = 0;
+connection conn2;
+select * from t1;
+
+#对于4023错误码，事务层有重试
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 1;
+connection conn2;
+begin;
+insert into t1 values(2, 2);
+send commit;
+
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 0;
+
+connection conn2;
+select * from t1;
+
+#case2 : 单机多partition事务，参与者获取不到logid和timestamp
+#单机多分区事务，如果logid和timestamp失败，预期事务回滚，后续会优化
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4016, frequency = 1;
+connection conn2;
+begin;
+insert into t1 values(3, 3);
+insert into t1 values(4, 4);
+--error 6002
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4916, frequency = 0;
+
+#校验数据
+alter system major freeze;
+ob1.check_version 2;
+
+connection conn2;
+drop table if exists t1;

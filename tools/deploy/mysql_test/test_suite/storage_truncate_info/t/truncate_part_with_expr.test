@@ -1,0 +1,177 @@
+# owner: lixia.yq
+# owner group: storage
+# description: 本case是为了测试主表分区键为表达式的truncate行为
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists t_list_virtual_gen_col;
+drop table if exists t_range_datetime;
+drop table if exists t_range_expr;
+--enable_warnings
+
+--echo ###############################
+--echo # create table t_list_virtual_gen_col
+--echo ###############################
+alter system set _ob_enable_truncate_partition_preserve_global_index = true;
+create table t_list_virtual_gen_col(c1 int, c2 varchar(64), c3 varchar(4) GENERATED ALWAYS AS (substr(`c2`, 1, 2)) VIRTUAL, primary key(c1, c2)) partition by list columns(c3)
+  (partition p0 values in ('00'),
+   partition p1 values in ('01'),
+   partition p2 values in ('02'),
+   partition p3 values in ('03'),
+   partition p4 values in (DEFAULT));
+create index idx1 on t_list_virtual_gen_col(c2) global;
+create unique index idx2 on t_list_virtual_gen_col(c1) global partition by hash(c1) partitions 3;
+
+connection conn0;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't_list_virtual_gen_col', table_id, 1);
+let $__index_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+
+connection conn1;
+insert into t_list_virtual_gen_col(c1, c2) values(0, "00xxx"), (1, "01xxx"), (2, "02xxx"), (3, "03xxx"), (4, "04xxx");
+
+connection conn1;
+# only remain (0, "00xxx"), (3, "03xxx")
+alter table t_list_virtual_gen_col truncate partition p1, p2, p4;
+--echo ###print part info after truncate t_list_virtual_gen_col###
+
+connection conn1;
+select * from t_list_virtual_gen_col order by c1,c2 asc;
+
+connection conn1;
+alter table t_list_virtual_gen_col truncate partition p0,p1,p2,p3,p4;
+
+connection conn1;
+select * from t_list_virtual_gen_col order by c1,c2 asc;
+
+connection conn0;
+let $__index_id_after__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+
+if ($__index_id__ == $__index_id_after__)
+{
+--echo ERROR!!! should rebuild index for t_list_virtual_gen_col, $__index_id__, $__index_id_after__
+}
+
+--echo ###############################
+--echo # create table t_range_datetime
+--echo ###############################
+connection conn1;
+CREATE TABLE t_range_datetime (
+    c1 INT,
+    c2 INT,
+    c3 DATETIME,
+    PRIMARY KEY (c1, c3)
+)
+PARTITION BY RANGE (YEAR(c3)) (
+    PARTITION p0 VALUES LESS THAN (2022),
+    PARTITION p1 VALUES LESS THAN (2023),
+    PARTITION p2 VALUES LESS THAN (2024),
+    PARTITION p3 VALUES LESS THAN (2025)
+);
+create index idx1 on t_range_datetime(c2) global partition by hash(c2) partitions 2;
+create unique index idx2 on t_range_datetime(c1) global partition by hash(c1) partitions 3;
+
+connection conn0;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't_range_datetime', table_id, 1);
+let $__index_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+
+connection conn1;
+INSERT INTO t_range_datetime (c1, c2, c3) VALUES (1, 100, '2021-06-15 10:30:00'), (2, 200, '2022-05-20 15:45:00'), (3, 300, '2023-01-10 08:00:00'), (4, 400, '2024-03-30 12:00:00');
+connection conn1;
+# only remain (4, 400, '2024-03-30 12:00:00')
+alter table t_range_datetime truncate partition p1, p2, p0;
+--echo ###print part info after truncate t_range_datetime###
+
+connection conn1;
+select * from t_range_datetime order by c1,c2 asc;
+
+connection conn0;
+let $__index_id_after__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+
+if ($__index_id__ == $__index_id_after__)
+{
+--echo ERROR!!! should rebuild index for t_range_datetime, $__index_id__, $__index_id_after__
+}
+
+connection conn1;
+select * from t_range_datetime order by c1,c2 asc;
+
+--echo ###############################
+--echo # create table t_range_expr
+--echo ###############################
+create table t_range_expr(c1 int, c2 int, c3 int GENERATED ALWAYS AS (c1+c2) STORED, c4 int, primary key(c1, c2))
+partition by range(c1)
+subpartition by range columns(c3)
+(
+  partition p0 values less than (10)
+  (
+    subpartition p0sp0 values less than (100),
+    subpartition p0sp1 values less than (200),
+    subpartition p0sp2 values less than (MAXVALUE)
+  ),
+  partition p1 values less than (20)
+  (
+    subpartition p1sp0 values less than (100),
+    subpartition p1sp1 values less than (200),
+    subpartition p1sp2 values less than (MAXVALUE)
+  ),
+  partition p2 values less than (MAXVALUE)
+  (
+    subpartition p2sp0 values less than (100),
+    subpartition p2sp1 values less than (200),
+    subpartition p2sp2 values less than (MAXVALUE)
+  )
+);
+create index idx1 on t_range_expr(c3) global;
+create unique index idx2 on t_range_expr(c2) global;
+connection conn0;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't_range_expr', table_id, 1);
+let $__index_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx2%", table_id, 1);
+
+connection conn1;
+insert into t_range_expr(c1, c2, c4) values(1, 1, 1), (10, 100, 100), (20, 200, 200), (40, 400, 400);
+
+connection conn1;
+# only remain (1, 1)
+alter table t_range_expr truncate subpartition p1sp0, p2sp2;
+--echo ###print part info after truncate t_range_expr###
+
+connection conn1;
+select * from t_range_expr order by c1,c2,c3,c4 asc;
+
+connection conn0;
+let $__index_id_after__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx2%", table_id, 1);
+
+if ($__index_id__ == $__index_id_after__)
+{
+--echo ERROR!!! should rebuild index for t_range_expr idx2, $__index_id__, $__index_id_after__
+}
+--echo ###############################
+--echo # major merge
+--echo ###############################
+connection conn1;
+let $__table_name__ = 't_range_expr';
+let $__tenant_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tenant_id from oceanbase.__all_virtual_table where table_name= $__table_name__, tenant_id, 1);
+
+alter system major freeze;
+
+--source mysql_test/include/wait_daily_merge.inc
+--source mysql_test/include/compaction/check_major_history_after_truncate.inc
+
+# idx of t_range_expr should write truncate info
+let $__table_name__ = 't_range_expr';
+--source mysql_test/include/compaction/check_major_history_after_truncate.inc
+
+connection conn1;
+select * from t_list_virtual_gen_col order by c1,c2 asc;
+
+connection conn1;
+drop table t_list_virtual_gen_col;
+drop table t_range_datetime;
+drop table t_range_expr;

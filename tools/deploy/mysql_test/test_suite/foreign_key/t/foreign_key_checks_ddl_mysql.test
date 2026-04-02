@@ -1,0 +1,317 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#### owner: dachuan.sdc
+#### owner group: sql2
+#### description: foreign key checks for ddl
+#### ./deploy.py obn.obs0.mysqltest disable-reboot testset=foreign_key.foreign_key_checks_ddl_mysql
+--result_format 4
+--disable_warnings
+drop database if exists xf_foreign_key_checks_test_db;
+drop database if exists xf_foreign_key_checks_test_db_2;
+--enable_warnings
+create database xf_foreign_key_checks_test_db;
+create database xf_foreign_key_checks_test_db_2;
+use xf_foreign_key_checks_test_db;
+
+## 测试当 foreign_key_checks 被设置成 off 时，MySQL 模式下外键的行为
+set foreign_key_checks = off;
+
+### 1. mock 父表生命周期的起始点
+
+#### 1-1 在删子表之前先删父表，此时会创建这张 mock 父表 tp1
+create table tp1(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tc0(c1 int, c2 int, constraint fk_tp1_tc0 foreign key(c1, c2) references tp1(c1, c2));
+create table tc1(c1 int, c2 int, constraint fk_tp1_tc1 foreign key(c1, c2) references tp1(c3, c4));
+create table tc1_5(c1 int, c2 int, constraint fk_tp1_tc1_5 foreign key(c1, c2) references tp1(c3, c4));
+drop table tp1;
+##### 如果父表被删除之后把 foreign_key_checks 设置成 on，子表会因为外键而不能进行 insert 和 update
+set foreign_key_checks = on;
+--error 1452
+insert into tc0 values(1, 2);
+--error 1452
+update tc0 set c1 = 123 where c2 = 2;
+delete from tc0;
+##### 如果父表被删除之后把 foreign_key_checks 设置成 off，子表不受外键影响可以执行 dml
+set foreign_key_checks = off;
+insert into tc0 values(1, 2);
+update tc0 set c1 = 123 where c2 = 2;
+delete from tc0;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc0;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc1;
+
+
+#### 1-2 在创建外键时引用了一张不存在的父表
+##### 1-2-1 通过 create table 创建这种特殊外键
+###### 引用一张不存在的 mock 父表 tp2，此时会创建这张 mock 父表 tp2
+create table tc2(c1 int, c2 int, constraint fk_tp2_tc2 foreign key(c1, c2) references tp2(c1, c2));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc2;
+###### 引用一张已经存在的 mock 父表 tp1，此时会在这张 mock 父表 tp1 上加新列 c3
+create table tc3(c1 int, c2 int, c3 int, c4 int, constraint fk_tp1_tc3 foreign key(c1, c2) references tp1(c1, c3));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+###### 引用一张已经存在的 mock 父表 tp1，此时仅推高 mock 父表 tp1 的 schema version 版本
+create table tc4(c1 int, c2 int, c3 int, c4 int, constraint fk_tp1_tc4 foreign key(c1, c2) references tp1(c1, c3));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc4;
+
+##### 1-2-2 通过 alter table 创建这种特殊外键
+###### 引用一张不存在的 mock 父表 tp3，此时会创建这张 mock 父表 tp3
+alter table tc3 add constraint fk_tp3_tc3_1 foreign key(c1, c2) references tp3(c1, c2);
+alter table tc3 add constraint fk_tp3_tc3_2 foreign key(c2, c3) references tp3(c2, c3);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+###### 引用一张已经存在的 mock 父表 tp2，此时会在这张 mock 父表 tp2 上加新列 c3
+alter table tc3 add constraint fk_tp2_tc3 foreign key(c1, c2) references tp2(c2, c3);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+###### 引用一张已经存在的 mock 父表 tp2，此时会在这张 mock 父表 tp2 推高 schema version 版本
+alter table tc4 add constraint fk_tp2_tc4 foreign key(c1, c2) references tp2(c2, c3);
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc4;
+
+
+### 2. mock 父表生命周期的终止点
+
+#### 2-1 删除外键
+
+##### 2-1-1 通过 alter table 删除外键
+###### 2-1-1-1 当一张 mock 父表上的外键全部被删完之后，mock 父表会被清理
+alter table tc3 drop constraint fk_tp3_tc3_1, drop constraint fk_tp3_tc3_2;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp3';
+###### 2-1-1-2 当一张 mock 父表上的外键被部分删除，mock 父表不会被清理，只会删除部分外键列，直到所有外键被删除完后再被清理
+alter table tc3 add constraint fk_tp3_tc3_1 foreign key(c1, c2) references tp3(c1, c2);
+alter table tc3 add constraint fk_tp3_tc3_2 foreign key(c2, c3) references tp3(c2, c3);
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp3';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+alter table tc3 drop constraint fk_tp3_tc3_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp3';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+alter table tc3 drop constraint fk_tp3_tc3_2;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp3';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc3;
+
+##### 2-1-2 通过 drop table 子表删除外键
+###### 2-1-2-1 drop table 子表不进回收站
+set recyclebin = off;
+drop table tc4;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp2';
+--error 1235
+drop table tc3, tc2;
+drop table tc3;
+drop table tc2;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp2';
+###### 2-1-2-2 drop table 子表进回收站
+set recyclebin = on;
+drop table tc0;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp1';
+--error 1235
+drop table tc1, tc1_5;
+drop table tc1;
+drop table tc1_5;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp1';
+
+
+#### 2-2 出现和 mock 父表同名的 real 父表
+
+##### 2-2-1 create table (as select)
+create table tp11(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tc11(c1 int, c2 int, constraint fk_tp11_tc11 foreign key(c1, c2) references tp11(c1, c2));
+create table tc12(c1 int, c2 int, constraint fk_tp11_tc12 foreign key(c1, c2) references tp11(c3, c4));
+drop table tp11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc12;
+###### 异常情况：mock 父表的列在 real 父表上不存在
+--error 1215
+create table tp11(c1 int, c2 int, c5 int, c6 int);
+###### 异常情况：mock 父表和 real 父表列类型不匹配
+--error 1215
+create table tp11(c1 varchar(10), c2 int, c3 varchar(10), c4 int, primary key(c1, c2), unique key(c3, c4));
+###### 异常情况：mock 父表上外键的外键列在 real 父表里不在主键或唯一索引上
+--error 1215
+create table tp11(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+--error 1215
+create table tp11(c1 int, c2 int, c3 int, c4 int, unique key(c3, c4));
+--error 1215
+create table tp11(c1 int, c2 int, c3 int, c4 int, primary key(c1, c3), unique key(c2, c4));
+###### 正常情况
+create table tp11(c4 int, c3 int, c2 int, c1 int, c5 int, primary key(c1, c2), unique key(c3, c4));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tp11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc12;
+
+##### 2-2-2 create table like
+create table tp11_tmp like tp11;
+create table tp11_tmp1(c1 varchar(10), c2 int, c3 varchar(10), c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tp11_tmp2(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+create table tp11_tmp3(c1 int, c2 int, c3 int, c4 int, unique key(c3, c4));
+create table tp11_tmp4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c3), unique key(c2, c4));
+drop table tp11;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp11';
+--error 1146
+show create table tp11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc12;
+###### 异常情况：mock 父表和 real 父表列类型不匹配
+--error 1215
+create table tp11 like tp11_tmp1;
+###### 异常情况：mock 父表上外键的外键列在 real 父表里不在主键或唯一索引上
+--error 1215
+create table tp11 like tp11_tmp2;
+--error 1215
+create table tp11 like tp11_tmp3;
+--error 1215
+create table tp11 like tp11_tmp4;
+###### 正常情况
+create table tp11 like tp11_tmp;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp11';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tp11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc11;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc12;
+
+##### 2-2-3 rename table
+create table tp_rename_1(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tc_rename_1(c1 int, c2 int, constraint fk_tp_rename_1_tc_rename_1 foreign key(c1, c2) references tp_rename_1(c1, c2));
+create table tc_rename_2(c1 int, c2 int, constraint fk_tp_rename_1_tc_rename_2 foreign key(c1, c2) references tp_rename_1(c3, c4));
+drop table tp_rename_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_rename_2;
+###### 异常情况：mock 父表和 real 父表列类型不匹配
+create table tp_rename_1_tmp_1(c1 varchar(10), c2 int, c3 varchar(10), c4 int, primary key(c1, c2), unique key(c3, c4));
+--error 1215
+rename table tp_rename_1_tmp_1 to tp_rename_1;
+###### 异常情况：mock 父表上外键的外键列在 real 父表里不在主键或唯一索引上
+create table tp_rename_1_tmp_2(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+--error 1215
+rename table tp_rename_1_tmp_2 to tp_rename_1;
+create table tp_rename_1_tmp_3(c1 int, c2 int, c3 int, c4 int, unique key(c3, c4));
+--error 1215
+rename table tp_rename_1_tmp_3 to tp_rename_1;
+create table tp_rename_1_tmp_4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c3), unique key(c2, c4));
+--error 1215
+rename table tp_rename_1_tmp_4 to tp_rename_1;
+###### 正常情况
+create table tp_rename_1_tmp_5(c4 int, c3 int, c2 int, c1 int, c5 int, primary key(c1, c2), unique key(c3, c4));
+rename table tp_rename_1_tmp_5 to tp_rename_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_rename_2;
+
+##### 2-2-4 alter table rename to
+create table tp_alter_table_rename_1(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tc_alter_table_rename_1(c1 int, c2 int, constraint fk_tp_at_rename_1_tc_at_rename_1 foreign key(c1, c2) references tp_alter_table_rename_1(c1, c2));
+create table tc_alter_table_rename_2(c1 int, c2 int, constraint fk_tp_at_rename_1_tc_at_rename_2 foreign key(c1, c2) references tp_alter_table_rename_1(c3, c4));
+drop table tp_alter_table_rename_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_alter_table_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_alter_table_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_alter_table_rename_2;
+###### 异常情况：mock 父表和 real 父表列类型不匹配
+create table tp_alter_table_rename_1_tmp_1(c1 varchar(10), c2 int, c3 varchar(10), c4 int, primary key(c1, c2), unique key(c3, c4));
+--error 1215
+alter table tp_alter_table_rename_1_tmp_1 rename to tp_alter_table_rename_1;
+###### 异常情况：mock 父表上外键的外键列在 real 父表里不在主键或唯一索引上
+create table tp_alter_table_rename_1_tmp_2(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+--error 1215
+alter table tp_alter_table_rename_1_tmp_2 rename to tp_alter_table_rename_1;
+create table tp_alter_table_rename_1_tmp_3(c1 int, c2 int, c3 int, c4 int, unique key(c3, c4));
+--error 1215
+alter table tp_alter_table_rename_1_tmp_3 rename to tp_alter_table_rename_1;
+create table tp_alter_table_rename_1_tmp_4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c3), unique key(c2, c4));
+--error 1215
+alter table tp_alter_table_rename_1_tmp_4 rename to tp_alter_table_rename_1;
+###### 限制 alter table rename 出现和 mock 父表的同名 real 父表时，alter table 中不允许有其他 actions
+create table tp_alter_table_rename_1_tmp_5(c4 int, c3 int, c2 int, c1 int, c5 int, primary key(c1, c2), unique key(c3, c4));
+--error 1235
+alter table tp_alter_table_rename_1_tmp_5 rename to tp_alter_table_rename_1, add column c6 int;
+###### 正常情况
+alter table tp_alter_table_rename_1_tmp_5 rename to tp_alter_table_rename_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_alter_table_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_alter_table_rename_2;
+
+##### 2-2-5 flashback table to before drop
+set recyclebin = on;
+set foreign_key_checks = off;
+create table tp_flashback_rename_1_tmp_1(c1 varchar(10), c2 int, c3 varchar(10), c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tp_flashback_rename_1_tmp_2(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+create table tp_flashback_rename_1_tmp_3(c1 int, c2 int, c3 int, c4 int, unique key(c3, c4));
+create table tp_flashback_rename_1_tmp_4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c3), unique key(c2, c4));
+create table tp_flashback_rename_1(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2), unique key(c3, c4));
+create table tc_flashback_rename_1(c1 int, c2 int, constraint fk_tp_flashback_rename_1_tc_flashback_rename_1 foreign key(c1, c2) references tp_flashback_rename_1(c1, c2));
+create table tc_flashback_rename_2(c1 int, c2 int, constraint fk_tp_flashback_rename_1_tc_flashback_rename_2 foreign key(c1, c2) references tp_flashback_rename_1(c3, c4));
+drop table tp_flashback_rename_1_tmp_1;
+drop table tp_flashback_rename_1_tmp_2;
+drop table tp_flashback_rename_1_tmp_3;
+drop table tp_flashback_rename_1_tmp_4;
+drop table tp_flashback_rename_1;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_flashback_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_flashback_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_flashback_rename_2;
+###### 异常情况：mock 父表和 real 父表列类型不匹配
+--error 1215
+flashback table tp_flashback_rename_1_tmp_1 to before drop rename to tp_flashback_rename_1;
+###### 异常情况：mock 父表上外键的外键列在 real 父表里不在主键或唯一索引上
+--error 1215
+flashback table tp_flashback_rename_1_tmp_2 to before drop rename to tp_flashback_rename_1;
+--error 1215
+flashback table tp_flashback_rename_1_tmp_3 to before drop rename to tp_flashback_rename_1;
+--error 1215
+flashback table tp_flashback_rename_1_tmp_4 to before drop rename to tp_flashback_rename_1;
+###### 正常情况
+flashback table tp_flashback_rename_1 to before drop;
+select count(1) from oceanbase.__all_mock_fk_parent_table where mock_fk_parent_table_name = 'tp_flashback_rename_1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_flashback_rename_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tc_flashback_rename_2;
+
+
+### 限制的测试
+#### 1. 限制 mock fk parent table 和子表不能跨库。
+use xf_foreign_key_checks_test_db_2;
+set foreign_key_checks = off;
+--error 1235
+create table tc_flashback_rename_1(c1 int, c2 int, constraint fk_tp_flashback_rename_1_tc_flashback_rename_1 foreign key(c1, c2) references xf_foreign_key_checks_test_db.xxxxxxxxx(c1, c2));
+create table tc_flashback_rename_1(c1 int, c2 int);
+--error 1235
+alter table tc_flashback_rename_1 add constraint fk_tp_flashback_rename_1_tc_flashback_rename_1 foreign key(c1, c2) references xf_foreign_key_checks_test_db.xxxxxxxxx(c1, c2);
+#### 2. 限制 alter table rename 出现和 mock 父表的同名 real 父表时，alter table 中不允许有其他 actions，详见 2-2-4 alter table rename to 测试部分。
+
+
+### 字典视图的测试
+select * from INFORMATION_SCHEMA.TABLE_CONSTRAINTS where CONSTRAINT_SCHEMA = 'xf_foreign_key_checks_test_db' order by CONSTRAINT_NAME, TABLE_NAME;
+select * from INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS where CONSTRAINT_SCHEMA = 'xf_foreign_key_checks_test_db' order by CONSTRAINT_NAME, TABLE_NAME;
+select * from INFORMATION_SCHEMA.KEY_COLUMN_USAGE where CONSTRAINT_SCHEMA = 'xf_foreign_key_checks_test_db' order by TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME;
+
+
+## clean up
+drop database xf_foreign_key_checks_test_db;
+drop database xf_foreign_key_checks_test_db_2;
+set foreign_key_checks = on;

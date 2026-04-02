@@ -1,0 +1,163 @@
+ob1=OBI(cluster=1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+alter system set _auto_drop_recovering_auxiliary_tenant = 'False';
+CREATE RESOURCE UNIT small_unit MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2');
+CREATE RESOURCE POOL small_pool_0 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), locality = "F@z1", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+set global wait_timeout = 288000;
+set global wait_timeout = 288000;
+create user TEST IDENTIFIED BY "TEST";
+grant all on *.* to TEST WITH GRANT OPTION;
+grant dba to TEST;
+===============================================================
+====================     create table   =======================
+===============================================================
+create tablegroup src_tg;
+create tablegroup dst_tg;
+create tablespace src_ts;
+create tablespace dst_ts;
+create table T0 (c0 number primary key);
+
+table with default constraint name.
+create table T1 (c1 number primary key,
+c2 char(100) not null,
+c3 varchar2(50) unique,
+c4 number check(c4>20),
+c5 number,
+c6 blob,
+CONSTRAINT t1_fk FOREIGN KEY(c1) REFERENCES T0 (c0)) tablegroup src_tg, tablespace src_ts;
+insert into T0 values (1);
+insert into T0 values (2);
+insert into T0 values (3);
+insert into T0 values (4);
+insert into T1 values (1, 'allen', '1234567890123', 30,1, 'abcde');
+insert into T1 values (2, 'sam ', '2234567890123', 30,2, 'abcde');
+insert into T1 values (3, 'billy ', '3234567890123', 30,3, '12345');
+insert into T1 values (4, 'carl', '4234567890123', 30,4, null);
+
+table with specified constraint name.
+create table T2 (c1 number,
+c2 number,
+c3 number,
+c4 number,
+c5 number,
+CONSTRAINT t2_cst_pk PRIMARY KEY (c1),
+constraint t2_cst_chk_1 check(c1=c2),
+constraint t2_cst_chk_2 check(c1=c2),
+constraint t2_cst_unique_1 unique(c3),
+constraint t2_cst_unique_2 unique(c4),
+constraint t2_OBCHECK_123456 check(c2=c3),
+constraint t2_OBUNIQUE_123456 unique(c5)) partition by hash(c1) partitions 3;
+insert into T2 values(1, 1, 1, 1, 1);
+insert into T2 values(2, 2, 2, 2, 2);
+insert into T2 values(3, 3, 3, 3, 3);
+insert into T2 values(4, 4, 4, 4, 4);
+insert into T2 values(5, 5, 5, 5, 5);
+create table T3(c1 int, c2 int, c3 int, c4 int);
+alter table T3 drop column c2;
+===============================================================
+==============   check constraint and index   =================
+===============================================================
+use oceanbase;
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 'T1' or table_name = 'T2');
+table_name	index_type	index_status
+__idx_DATA_TABLE_ID_T1_OBUNIQUE_TIMESTAMP	8	2
+__AUX_LOB_META_500015_	0	1
+__AUX_LOB_PIECE_500016_	0	1
+__idx_DATA_TABLE_ID_T2_CST_UNIQUE_1	4	2
+__idx_DATA_TABLE_ID_T2_CST_UNIQUE_2	4	2
+__idx_DATA_TABLE_ID_T2_OBUNIQUE_TIMESTAMP	4	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 'T1' or table_name = 'T2');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+T1_OBPK_TIMESTAMP	1		0	1	1
+T1_OBNOTNULL_TIMESTAMP	4	"C2" IS NOT NULL	0	1	1
+T1_OBCHECK_TIMESTAMP	3	("C4" > 20)	0	1	1
+T2_CST_PK	1		0	1	1
+T2_CST_CHK_1	3	("C1" = "C2")	0	1	1
+T2_CST_CHK_2	3	("C1" = "C2")	0	1	1
+T2_OBCHECK_TIMESTAMP	3	("C2" = "C3")	0	1	1
+===============================================================
+==============   backup and archive   =========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) from cdb_ob_backup_jobs, 0, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+===============================================================
+====================   recover table   ========================
+===============================================================
+create user RECOVER_TEST IDENTIFIED BY "RECOVER_TEST";
+grant all on *.* to TEST WITH GRANT OPTION;
+grant dba to RECOVER_TEST;
+create table TEST_DUP_BASE (c1 number not null,
+c2 number,
+c3 number,
+constraint t2_cst_pk primary key(c1),
+constraint t2_cst_chk_2 check (c1 > 1),
+constraint t2_cst_unique_1 unique (c2));
+use oceanbase;
+ob1.mysql alter system recover table TEST.T1,TEST.T2,TEST.T3 to tenant backup_oracle_tenant from '$restore_path' with 'pool_list=small_pool_0&primary_zone=z2&locality=F@z2' remap table TEST.T1:RECOVER_TEST.RECOVER_RESTORE_NORMAL_TABLE_T1,TEST.T2:RECOVER_TEST.RECOVER_RESTORE_NORMAL_TABLE_T2,TEST.T3:RECOVER_TEST.RECOVER_RESTORE_NORMAL_TABLE_T3;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = 1004, SUCCESS, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 300;
+ob1.check_until_timeout select count(*) from __all_virtual_import_table_task_history, 3, 100;
+use oceanbase;
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%RECOVER_RESTORE_NORMAL_TABLE%');
+table_name	index_type	index_status
+__AUX_LOB_META_500040_	0	1
+__AUX_LOB_PIECE_500041_	0	1
+__idx_DATA_TABLE_ID_RECOVER_RESTORE_NORMAL_TABLE_T1_OBUNIQUE_TIMESTAMP	8	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%RECOVER_RESTORE_NORMAL_TABLE%');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+RECOVER_RESTORE_NORMAL_TABLE_T1_OBPK_TIMESTAMP	1		0	1	1
+RECOVER_RESTORE_NORMAL_TABLE_T1_OBNOTNULL_TIMESTAMP	4	"C2" IS NOT NULL	0	1	1
+RECOVER_RESTORE_NORMAL_TABLE_T1_OBCHECK_TIMESTAMP	3	("C4" > 20)	0	1	1
+SELECT DDL_STMT_STR FROM OCEANBASE.__ALL_VIRTUAL_DDL_OPERATION WHERE tenant_id = 1002 and (ddl_stmt_str != '' and ddl_stmt_str not like '%GRANT%' and ddl_stmt_str not like '%USER%' and ddl_stmt_str not like '%ROLE%') order by gmt_create;
+DDL_STMT_STR
+set global wait_timeout = 288000
+create tablegroup src_tg
+create tablegroup dst_tg
+create tablespace src_ts
+create tablespace dst_ts
+create table T0 (c0 number primary key)
+create table T1 (c1 number primary key,
+c2 char(100) not null,
+c3 varchar2(50) unique,
+c4 number check(c4>20),
+c5 number,
+c6 blob,
+CONSTRAINT t1_fk FOREIGN KEY(c1) REFERENCES T0 (c0)) tablegroup src_tg, tablespace src_ts
+create table T2 (c1 number,
+c2 number,
+c3 number,
+c4 number,
+c5 number,
+CONSTRAINT t2_cst_pk PRIMARY KEY (c1),
+constraint t2_cst_chk_1 check(c1=c2),
+constraint t2_cst_chk_2 check(c1=c2),
+constraint t2_cst_unique_1 unique(c3),
+constraint t2_cst_unique_2 unique(c4),
+constraint t2_OBCHECK_123456 check(c2=c3),
+constraint t2_OBUNIQUE_123456 unique(c5)) partition by hash(c1) partitions 3
+create table T3(c1 int, c2 int, c3 int, c4 int)
+alter table T3 drop column c2
+create table TEST_DUP_BASE (c1 number not null,
+c2 number,
+c3 number,
+constraint t2_cst_pk primary key(c1),
+constraint t2_cst_chk_2 check (c1 > 1),
+constraint t2_cst_unique_1 unique (c2))

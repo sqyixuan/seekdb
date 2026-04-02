@@ -1,0 +1,332 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: test the behavior of replacing mlogs
+#
+
+# 0. prepare
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (backup,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 2;
+set ob_global_debug_sync = 'reset';
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_replace_mlogs;
+--enable_warnings
+create database test_replace_mlogs;
+use test_replace_mlogs;
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test_replace_mlogs,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test_replace_mlogs,$OBMYSQL_PORT);
+
+# 1. basic test
+connection default;
+create table t1(c1 int primary key, c2 int, c3 int);
+create materialized view log on t1 with primary key (c2);
+insert into t1 values(1, 1, 1);
+insert into t1 values(2, 2, 2);
+select * from t1;
+select * from mlog$_t1;
+--error 9756
+create materialized view log on t1 with primary key (c2, c3);
+create or replace materialized view log on t1 with primary key (c2, c3);
+select * from mlog$_t1;
+insert into t1 values(3, 3, 3);
+select * from t1;
+select * from mlog$_t1;
+select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str like '%materialized view log%' order by gmt_create desc limit 1;
+drop materialized view log on t1;
+
+# 2. with fast refresh mv
+create table t2(c1 int primary key, c2 int, c3 int);
+create materialized view log on t2 with primary key (c2);
+insert into t2 values(1, 1, 1);
+insert into t2 values(2, 2, 2);
+create materialized view mv2(c2, cnt, primary key(c2)) refresh fast as select c2, count(*) cnt from t2 group by c2;
+select * from t2;
+select * from mlog$_t2;
+select * from mv2 order by c2;
+call dbms_mview.purge_log('t2');
+select * from mlog$_t2;
+create or replace materialized view log on t2 with primary key (c2, c3);
+insert into t2 values(3, 3, 3);
+select * from mlog$_t2;
+call dbms_mview.refresh('mv2', 'f');
+select * from mv2 order by c2;
+select * from mlog$_t2;
+create or replace materialized view log on t2 with primary key (c3);
+insert into t2 values(4, 4, 4);
+select * from mlog$_t2;
+--error 9760
+call dbms_mview.refresh('mv2', 'f');
+--error 9760
+create or replace materialized view log on t2 with primary key (c2, c3);
+drop materialized view log on t2;
+create or replace materialized view log on t2 with primary key (c2, c3);
+--error 9759
+call dbms_mview.refresh('mv2', 'f');
+call dbms_mview.refresh('mv2', 'c');
+select * from mv2 order by c2;
+
+# 3. the old mlog can still work when the replacement is in process
+create table t3(c1 int primary key, c2 int, c3 int);
+create materialized view log on t3 with primary key (c2);
+insert into t3 values(1, 1, 1);
+insert into t3 values(2, 2, 2);
+create materialized view mv3(c1, cnt, primary key(c1)) refresh fast enable query rewrite enable on query computation as select c1, count(*) cnt from t3 group by c1;
+select * from mv3 order by c1;
+insert into t3 values(3, 3, 3);
+select * from mv3 order by c1;
+connection sys;
+set ob_global_debug_sync = 'REBUILD_INDEX_WAIT_PURGE_OLD_MLOG wait_for mv_continue_signal';
+sleep 2;
+connection default;
+send create or replace materialized view log on t3 with primary key (c2, c3);
+connection conn1;
+sleep 2;
+insert into t3 values(4, 4, 4);
+select * from mlog$_t3;
+select * from tmlog$_t3;
+select * from mv3 order by c1;
+connection sys;
+set ob_global_debug_sync = 'now signal mv_continue_signal';
+set ob_global_debug_sync = 'reset';
+connection default;
+reap;
+insert into t3 values(5, 5, 5);
+select * from mlog$_t3;
+select * from mv3 order by c1;
+
+# 4. parallel replacement
+create table t4(c1 int primary key, c2 int, c3 int);
+create materialized view log on t4 with primary key;
+insert into t4 values(1, 1, 1);
+insert into t4 values(2, 2, 2);
+create materialized view mv4(c1, cnt, primary key(c1)) refresh fast enable query rewrite enable on query computation as select c1, count(*) cnt from t4 group by c1;
+connection sys;
+set ob_global_debug_sync = 'REBUILD_INDEX_WAIT_PURGE_OLD_MLOG wait_for mv_continue_signal';
+sleep 2;
+connection conn1;
+send create or replace materialized view log on t4 with primary key (c2);
+connection default;
+sleep 2;
+--error 1050
+create or replace materialized view log on t4 with primary key (c3);
+connection sys;
+set ob_global_debug_sync = 'now signal mv_continue_signal';
+set ob_global_debug_sync = 'reset';
+connection conn1;
+reap;
+
+# 5. failures in replacement
+create table t5(c1 int primary key, c2 int, c3 int);
+create materialized view log on t5 with primary key;
+insert into t5 values(1, 1, 1);
+insert into t5 values(2, 2, 2);
+create materialized view mv5(c1, cnt, primary key(c1)) refresh fast enable query rewrite enable on query computation as select c1, count(*) cnt from t5 group by c1;
+let $t5_id = query_get_value(select table_id from oceanbase.__all_table a inner join oceanbase.__all_database b on a.database_id = b.database_id where a.table_name = 't5' and b.database_name = 'test_replace_mlogs', table_id, 1);
+
+--echo 5.1 failure in building new mlog
+# if the REBUILD_SCHEMA phase fails, the old mlog remains and there should be no tmp mlog left
+connection sys;
+alter system set_tp tp_name = ERRSIM_REBUILD_MLOG_IMPL_ERROR, error_code = 4016, frequency = 1;
+sleep 2;
+connection default;
+--error 4016
+create or replace materialized view log on t5 with primary key (c2);
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+insert into t5 values(3, 3, 3);
+select * from mlog$_t5;
+select * from mv5 order by c1;
+connection sys;
+alter system set_tp tp_name = ERRSIM_REBUILD_MLOG_IMPL_ERROR, error_code = 4016, frequency = 0;
+sleep 2;
+
+--echo 5.2 failure in purging old mlog
+# if the PURGE_OLD_MLOG phase fails, the old mlog remains and there should be no tmp mlog left
+connection sys;
+alter system set_tp tp_name = ERRSIM_PURGE_OLD_MLOG_ERROR, error_code = 4016, frequency = 1;
+sleep 2;
+connection default;
+--error 4016
+create or replace materialized view log on t5 with primary key (c2);
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+insert into t5 values(4, 4, 4);
+select * from mlog$_t5;
+select * from mv5 order by c1;
+connection sys;
+alter system set_tp tp_name = ERRSIM_PURGE_OLD_MLOG_ERROR, error_code = 4016, frequency = 0;
+sleep 2;
+
+--echo 5.3 failure in switching names
+connection sys;
+alter system set_tp tp_name = ERRSIM_SWITCH_INDEX_NAME_ERROR, error_code = 4016, frequency = 1;
+sleep 2;
+connection default;
+--error 4016
+create or replace materialized view log on t5 with primary key (c2);
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+insert into t5 values(5, 5, 5);
+select * from mlog$_t5;
+select * from mv5 order by c1;
+connection sys;
+alter system set_tp tp_name = ERRSIM_SWITCH_INDEX_NAME_ERROR, error_code = 4016, frequency = 0;
+sleep 2;
+
+--echo 5.4 failure in dropping old mlog
+# the rebuild task needs to ensure there will be only one mlog left after the DDL operation. 
+# if the names are already swapped, at last, the old mlog will be dropped and the new mlog 
+# will start to work
+connection sys;
+alter system set_tp tp_name = ERRSIM_DROP_INDEX_IMPL_ERROR, error_code = 4016, frequency = 1;
+sleep 2;
+connection conn1;
+send create or replace materialized view log on t5 with primary key (c2);
+sleep 2;
+connection default;
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+connection sys;
+alter system set_tp tp_name = ERRSIM_DROP_INDEX_IMPL_ERROR, error_code = 4016, frequency = 0;
+sleep 2;
+connection conn1;
+reap;
+connection default;
+sleep 2;
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+insert into t5 values(6, 6, 6);
+select * from mlog$_t5;
+select * from mv5 order by c1;
+
+--echo 5.5 failure in dropping new mlog
+# the rebuild task needs to ensure there will be only one mlog left after the DDL operation.
+# if the names are not swapped, at last, the new mlog will be dropped and the old mlog will still 
+# be functional
+connection sys;
+alter system set_tp tp_name = ERRSIM_PURGE_OLD_MLOG_ERROR, error_code = 4016, frequency = 1;
+alter system set_tp tp_name = ERRSIM_DROP_INDEX_IMPL_ERROR, error_code = 4016, frequency = 1;
+sleep 2;
+connection conn1;
+send create or replace materialized view log on t5 with primary key (c3);
+sleep 2;
+connection default;
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+connection sys;
+alter system set_tp tp_name = ERRSIM_DROP_INDEX_IMPL_ERROR, error_code = 4016, frequency = 0;
+alter system set_tp tp_name = ERRSIM_PURGE_OLD_MLOG_ERROR, error_code = 4016, frequency = 0;
+sleep 2;
+connection conn1;
+--error 4016
+reap;
+connection default;
+sleep 2;
+--disable_query_log
+eval select table_name, table_type from oceanbase.__all_table where data_table_id = $t5_id;
+eval select status, ret_code from oceanbase.__all_ddl_task_status where object_id = $t5_id and ddl_type = 25;
+--enable_query_log
+insert into t5 values(7, 7, 7);
+select * from mlog$_t5;
+select * from mv5 order by c1;
+
+# 6. replace mlog concurrently with creating mv
+create table t6(c1 int primary key, c2 int, c3 int);
+create materialized view log on t6 with primary key (c2);
+insert into t6 values(1, 1, 1);
+insert into t6 values(2, 2, 2);
+connection sys;
+set ob_global_debug_sync = 'BEFORE_MV_FINISH_COMPLETE_REFRESH wait_for mv_continue_signal';
+sleep 2;
+connection default;
+send create materialized view mv6 as select * from t6;
+connection conn1;
+sleep 2;
+insert into t6 values(3, 3, 3);
+select * from mlog$_t6;
+connection sys;
+set ob_global_debug_sync = 'now signal mv_continue_signal';
+set ob_global_debug_sync = 'reset';
+connection default;
+reap;
+select * from mv6 order by c1;
+
+# 7. replace mlog of mv
+create table t7(c1 int primary key, c2 int, c3 int);
+create materialized view log on t7 with primary key (c2);
+create materialized view mv7 refresh fast as select c1, count(*) cnt from t7 group by c1;
+create materialized view log on mv7 with (c1);
+create materialized view mv7_2 refresh fast as select c1, count(*) cnt from mv7 group by c1;
+create materialized view log on mv7_2 with (c1);
+insert into t7 values(1, 1, 1);
+call dbms_mview.refresh('mv7', 'f');
+select * from mlog$_mv7;
+select * from mv7;
+create or replace materialized view log on mv7 with (c1, cnt);
+create or replace materialized view log on mv7_2 with (c1, cnt);
+select * from mlog$_mv7;
+select * from mv7_2;
+insert into t7 values(2, 2, 2);
+call dbms_mview.refresh('mv7', 'f');
+select * from mlog$_mv7;
+call dbms_mview.refresh('mv7_2', 'f');
+select * from mlog$_mv7_2;
+select * from mv7_2;
+
+# 8. replace mlog concurrently with dropping mlog
+create table t8(c1 int primary key, c2 int, c3 int);
+create materialized view log on t8 with primary key (c2);
+insert into t8 values(1, 1, 1);
+insert into t8 values(2, 2, 2);
+connection sys;
+set ob_global_debug_sync = 'REBUILD_INDEX_WAIT_PURGE_OLD_MLOG wait_for mv_continue_signal';
+sleep 2;
+connection default;
+send create or replace materialized view log on t8 with primary key (c2, c3);
+connection conn1;
+sleep 2;
+--error 1235
+drop materialized view log on t8;
+connection sys;
+set ob_global_debug_sync = 'now signal mv_continue_signal';
+set ob_global_debug_sync = 'reset';
+connection default;
+reap;
+desc mlog$_t8;
+
+# 9. with force refresh mview
+create table t9(c1 int primary key, c2 int, c3 int);
+create materialized view log on t9 with primary key (c2);
+insert into t9 values(1, 1, 1);
+insert into t9 values(2, 2, 2);
+create materialized view mv9 refresh force as select c3 from t9;
+select * from t9;
+select * from mlog$_t9;
+select * from mv9 order by 1;
+insert into t9 values(3, 3, 3);
+create or replace materialized view log on t9 with primary key (c2, c3);
+select * from t9;
+select * from mlog$_t9;
+select * from mv9 order by 1;
+
+# clean up
+drop database test_replace_mlogs;

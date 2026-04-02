@@ -20,12 +20,10 @@
 #include "lib/worker.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "lib/resource/ob_affinity_ctrl.h"
-#include "lib/utility/ob_platform_utils.h"
 using namespace oceanbase;
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
 
-// Use 512KB stack size, OB has SMART_CALL mechanism to extend stack when needed
 int64_t global_thread_stack_size = (1L << 19) - SIG_STACK_SIZE - ACHUNK_PRESERVE_SIZE;
 thread_local uint64_t ThreadPool::thread_idx_ = 0;
 // Get the thread-local tenant context, for use when checking at thread pool startup

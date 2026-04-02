@@ -1,0 +1,83 @@
+# owner:feizhi.cfz
+# owner group:storage
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+# test1: major sstable + minor sstable + memtable
+# test2: major sstable + minor sstable
+# test3: major sstable                 + memtable
+# test4: major sstable
+# test5:                 minor sstable + memtable
+# test6:                 minor sstable +
+# test7:                                 memtable
+# test8:
+#
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connection conn1;
+
+# 1. generate data
+use test;
+create table test1 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+create table test2 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+create table test3 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+create table test4 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+
+let $cnt =0;
+while ($cnt < 2)
+{
+    eval insert into test1 values($cnt, $cnt, $cnt, 'abc', '1');
+    eval insert into test2 values($cnt, $cnt, $cnt, 'abc', '2');
+    eval insert into test3 values($cnt, $cnt, $cnt, 'abc', '3');
+    eval insert into test4 values($cnt, $cnt, $cnt, 'abc', '4');
+    inc $cnt;
+}
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+create table test5 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+create table test6 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+while ($cnt < 4)
+{
+    eval insert into test1 values($cnt, $cnt, $cnt, 'abc', '1');
+    eval insert into test2 values($cnt, $cnt, $cnt, 'abc', '2');
+    eval insert into test5 values($cnt, $cnt, $cnt, 'abc', '5');
+    eval insert into test6 values($cnt, $cnt, $cnt, 'abc', '6');
+    inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant obtest;
+sleep 10
+
+create table test7 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+while ($cnt < 6)
+{
+    eval insert into test1 values($cnt, $cnt, $cnt, 'abc', '1');
+    eval insert into test3 values($cnt, $cnt, $cnt, 'abc', '3');
+    eval insert into test5 values($cnt, $cnt, $cnt, 'abc', '5');
+    eval insert into test7 values($cnt, $cnt, $cnt, 'abc', '7');
+    inc $cnt;
+}
+create table test8 (pk1 int, pk2 int, pk3 varchar(64), f1 varchar(124), f2 varchar(4096), primary key(pk1,pk2,pk3), index i1(f1));
+
+# 2. migrate
+--enable_query_log
+let $table_idx = 1;
+while ($table_idx < 9)
+{
+    let $src = deploy_get_value(ob1.get_leader obtest:test:test$table_idx:0);
+    let $dst = deploy_get_value(ob1.get_another_obs_in_same_zone $src);
+    let $pkey = deploy_get_value(ob1.select select concat(tenant_id, ':', table_id, ':0') as pkey from oceanbase.__all_virtual_table where table_name='test$table_idx', pkey, 1);
+    $src.migrate_to $dst,obtest:test:test$table_idx;
+    ob1.wait_migrate_success $src,$dst,$pkey,30;
+    eval select * from test$table_idx;
+    inc $table_idx;
+}

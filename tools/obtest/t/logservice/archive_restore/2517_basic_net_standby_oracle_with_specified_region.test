@@ -1,0 +1,283 @@
+# owner: qianxi
+# owner group: LOG
+# Testing Case: Basic Net Standby(Oralce TENANT)- set standby_db_preferred_upstream_log_region
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, locality=BEIJING:BEIJING:SHENZHNE);
+ob2=OBI(cluster=1, proxy_num=0);
+
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $restore_ip         = deploy_get_value(ob2.z1.obs0.ip);
+let $restore_port       = deploy_get_value(ob2.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $restore_oracle_tenant = restore_oracle_tenant;
+let $standby_tenant = standby_oracle_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+let $standby_archive_dest = deploy_get_value(ob1.get_log_backup_dest $restore_oracle_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2', 'z3');
+
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+
+#oracle租户  创建tablet
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+ob1.set_piece_switch_interval 1002 0 2m;
+--enable_all_result_log
+
+# Set piece_switch_interval to 2min manually.
+connection backup_sys_conn;
+alter system change tenant tenant_id = 1001;
+update __all_log_archive_dest_parameter set value='2m' where dest_no=0 and name='piece_switch_interval';
+
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+# grant all on *.* to test WITH GRANT OPTION;
+# grant dba to test;
+grant connect to test;
+grant SELECT on SYS.DBA_OB_TENANTS to test;
+grant SELECT on SYS.GV$OB_PARAMETERS to test;
+grant SELECT on SYS.DBA_OB_ACCESS_POINT to test;
+grant SELECT on SYS.GV$OB_LOG_STAT to test;
+grant SELECT on SYS.GV$OB_UNITS to test;
+
+ob_connect(backup_oracle_conn, ob1.z1.obs0,SYS@$backup_oracle_tenant, ,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+
+#mysql租户  开启日志备份
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+
+ob1.mysql alter system major freeze tenant = '$backup_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 600;
+
+#oracle租户  开启数据备份
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+let $ls_id1 = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id != 1, ls_id, 1);
+ob1.mysql alter tenant $backup_oracle_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=1 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_oracle_tenant_id, 1, 100;
+let $ls_id2 = deploy_get_value(ob1.select select max(ls_id) as ls_id from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id, ls_id, 1);
+let $create_scn1 = deploy_get_value(ob1.select select create_scn from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id = $ls_id1, create_scn, 1);
+let $create_scn2 = deploy_get_value(ob1.select select create_scn from oceanbase.__all_virtual_ls where tenant_id = $backup_oracle_tenant_id and ls_id =  $ls_id2, create_scn, 1);
+sleep 2;
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_oracle_tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = $restore_checkpoint2;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+ob2.reboot;
+# 固定sys租户规格
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+connect(restore_sys_conn, $restore_ip, root@sys,,oceanbase, $restore_port);
+connection restore_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ob2.mysql alter system set _backup_idle_time = '10s';
+ob2.mysql alter system set merger_check_interval = '10s';
+ob2.mysql alter system set enable_async_syslog=false;
+
+CREATE RESOURCE UNIT large_unit MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+#mysql租户  开启数据恢复
+--disable_all_result_log
+ob2.mysql alter system restore $restore_oracle_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=large_pool_1&primary_zone=z1';
+--enable_all_result_log
+ob2.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1001, NORMAL, 200;
+ob2.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1002 and restore_status = 0, 2, 1200;
+ob2.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1002, NORMAL, 200;
+ob2.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+let $restore_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$restore_oracle_tenant', tenant_id, 1);
+
+ob2.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+alter system set open_cursors=100 tenant=sys;
+alter system set open_cursors=100 tenant=all_user;
+alter system set open_cursors=100 tenant=all_meta;
+
+## set standby_db_preferred_upstream_log_region = SHENZHNE
+ob_connect(restore_conn_oracle, ob2.z1.obs0, SYS@$restore_oracle_tenant, ,TEST, , USE_OB_CONNECTOR);
+connection restore_conn_oracle;
+alter system set standby_db_preferred_upstream_log_region='SHENZHNE';
+
+# create log restore source user
+connection backup_oracle_conn;
+create user mytest identified by test;
+grant connect to mytest;
+grant SELECT on SYS.DBA_OB_TENANTS to mytest;
+grant SELECT on SYS.GV$OB_PARAMETERS to mytest;
+grant SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+grant SELECT on SYS.GV$OB_LOG_STAT to mytest;
+grant SELECT on SYS.GV$OB_UNITS to mytest;
+grant SELECT on SYS.DBA_OB_LS to mytest;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = $backup_oracle_tenant_id order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = $backup_oracle_tenant_id and concat(svr_ip,':',sql_port) not like "%$server_ip_port_1%" limit 1, host, 1);
+connection restore_sys_conn;
+# set log_restore_source for standby
+--disable_all_result_log
+# invalid log restore source type
+--error 1210
+eval alter system set log_restore_source = '$server_ip_port_1;$server_ip_port_2; USER=mytest@$backup_oracle_tenant PASSWORD=test' tenant = '$restore_oracle_tenant';
+# connect to primary tenant fail
+--error 1210
+eval alter system set log_restore_source = 'service=127.0.0.1:111111111; USER=mytest@$backup_oracle_tenant PASSWORD=test' tenant = '$restore_oracle_tenant';
+
+# invalid user or tenant
+--error 1210
+eval alter system set log_restore_source = 'service=$server_ip_port_1;$server_ip_port_2; USER=mytest1@$backup_oracle_tenant PASSWORD=test' tenant = '$restore_oracle_tenant';
+
+eval alter system set log_restore_source = 'service=$server_ip_port_1;$server_ip_port_2; USER=mytest@$backup_oracle_tenant PASSWORD=test' tenant = '$restore_oracle_tenant';
+--enable_all_result_log
+ob2.check_until_timeout select count(*)>=1 from CDB_OB_LOG_RESTORE_SOURCE where tenant_id = $restore_oracle_tenant_id and TYPE = 'SERVICE', 1, 600;
+
+# check standby sync status normal
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+
+# switch log restore source to archive
+--disable_all_result_log
+eval alter system set log_restore_source = 'location=$log_backup_dest' tenant = '$restore_oracle_tenant';
+--enable_all_result_log
+ob2.check_until_timeout select count(*)>=1 from CDB_OB_LOG_RESTORE_SOURCE where tenant_id = $restore_oracle_tenant_id and TYPE = 'LOCATION', 1, 600;
+# check standby sync status normal
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+
+# test recover cancel and recover unlimited
+eval alter system recover standby tenant $restore_oracle_tenant cancel;
+sleep 3;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, RESTORE SUSPEND, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, 0, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, RESTORE SUSPEND, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, 0, 600;
+
+eval alter system recover standby tenant $restore_oracle_tenant until unlimited;
+sleep 3;
+# check standby sync status normal
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, NORMAL, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, 0, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, NORMAL, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, 0, 600;
+
+# switch log restore source back to service type
+--disable_all_result_log
+eval alter system set log_restore_source = 'service=$server_ip_port_1;$server_ip_port_2; USER=mytest@$backup_oracle_tenant PASSWORD=test' tenant = '$restore_oracle_tenant';
+--enable_all_result_log
+# check standby sync status normal
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+
+# test recover cancel and recover unlimited
+eval alter system recover standby tenant $restore_oracle_tenant cancel;
+sleep 3;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, RESTORE SUSPEND, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, 0, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, RESTORE SUSPEND, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, 0, 600;
+
+eval alter system recover standby tenant $restore_oracle_tenant until unlimited;
+sleep 3;
+# check standby sync status normal
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, NORMAL, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1, 0, 600;
+ob2.check_until_timeout select SYNC_STATUS from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, NORMAL, 600;
+ob2.check_until_timeout select ERR_CODE from V\$OB_LS_LOG_RESTORE_STATUS where tenant_id = $restore_oracle_tenant_id and ls_id = 1001, 0, 600;
+
+# get standby tenant access point
+let $server_ip_port_4=deploy_get_value(ob2.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = $restore_oracle_tenant_id order by svr_ip, sql_port limit 1;, host, 1);
+sleep 5;
+# set log_restore_source for primary
+--disable_all_result_log
+ob1.mysql alter system set log_restore_source = 'service=$server_ip_port_4; USER=mytest@$restore_oracle_tenant PASSWORD=test' tenant = '$backup_oracle_tenant';
+--enable_all_result_log
+ob1.check_until_timeout select count(*)>=1 from CDB_OB_LOG_RESTORE_SOURCE where tenant_id = $backup_oracle_tenant_id and TYPE = 'SERVICE', 1, 600;
+
+# check standby sync status
+connection restore_sys_conn;
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+
+# switchover -> ob1 to standby and ob2 to primary
+ob1.mysql alter system switchover to standby tenant $backup_oracle_tenant;
+# check ob1 archive done
+ob1.check_until_timeout select SYNCHRONIZED from V\$OB_ARCHIVE_DEST_STATUS where tenant_id = $backup_oracle_tenant_id, YES, 120;
+# ob2 switchover to primary
+ob2.mysql alter system switchover to primary tenant $restore_oracle_tenant;
+
+connection restore_sys_conn;
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $backup_oracle_tenant_id, 1, 600;
+
+## set standby_db_preferred_upstream_log_region = BEIJING
+ob_connect(restore_conn_oracle, ob2.z1.obs0, SYS@$restore_oracle_tenant, ,TEST, , USE_OB_CONNECTOR);
+connection restore_conn_oracle;
+alter system set standby_db_preferred_upstream_log_region='BEIJING';
+
+# switchover to primary before the original primary switchover to standby
+connection backup_sys_conn;
+--error 9088
+eval alter system switchover to primary tenant $backup_oracle_tenant;
+# switchover -> ob2 to standby and ob1 to primary
+ob2.mysql alter system switchover to standby tenant $restore_oracle_tenant;
+ob1.mysql alter system switchover to primary tenant $backup_oracle_tenant;
+
+connection restore_sys_conn;
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob2.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $restore_oracle_tenant_id, 1, 600;
+
+
+# drop primary tenant and standby tenant drop with log sync
+ob1.mysql drop tenant $backup_oracle_tenant;
+sleep 5;
+ob2.check_until_timeout select count(*) from DBA_OB_TENANTS, 3, 600;

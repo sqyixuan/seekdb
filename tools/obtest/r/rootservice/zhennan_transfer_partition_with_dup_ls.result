@@ -1,0 +1,160 @@
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+# create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2, F@z3" set ob_tcp_invited_nodes='%';
+##################################################
+# 0. prepare data
+# trun off the actual duplicate_scope conversion
+ob1.mysql alter system set enable_rebalance = false tenant all_user;
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant all_user;
+# create table
+create table normal_part_zero_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+create table normal_part_one_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 2;
+create table normal_part_two_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+create table dup_part_zero_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+create table dup_part_one_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by hash(c1) partitions 2;
+create table dup_part_two_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+create table normal_part_zero_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+create table normal_part_one_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 2;
+create table normal_part_two_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+create table dup_part_zero_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster';
+create table dup_part_one_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by hash(c1) partitions 2;
+create table dup_part_two_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) duplicate_scope = 'cluster' partition by range(c1) subpartition by hash(c1) subpartitions 2 (partition p1 values less than (100), partition p2 values less than MAXVALUE);
+# all normal tables are on normal LS
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_%" and ls_id = $dup_ls_id, 0, 3;
+# all dup tables are on dup LS
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%dup_part_%" and ls_id != $dup_ls_id, 0, 3;
+##################################################
+# 1. transfer partition to unmatched LS is not allowed
+##
+# 1.1 transfer partition of normal table to dup ls is not allowed
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1003 tenant mysql;
+ERROR HY000: Transfer partition of non-duplicate table to LS with DUPLICATE flag is not allowed
+##
+# 1.2 transfer partition of dup table to normal ls is not allowed
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500049, OBJECT_ID 500049 TO LS 1001 tenant mysql;
+ERROR HY000: Transfer partition of duplicate table to LS without DUPLICATE flag is not allowed
+##################################################
+# 2. transfer partition of duplicate table from normal ls to dup ls
+alter table normal_part_zero_1 duplicate_scope = 'cluster';
+alter table normal_part_one_1 duplicate_scope = 'cluster';
+alter table normal_part_two_1 duplicate_scope = 'cluster';
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1003;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500007, OBJECT_ID 500012 TO LS 1003;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500020, OBJECT_ID 500027 TO LS 1003;
+alter table normal_part_zero_2 duplicate_scope = 'cluster';
+alter table normal_part_one_2 duplicate_scope = 'cluster';
+alter table normal_part_two_2 duplicate_scope = 'cluster';
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500096, OBJECT_ID 500096 TO LS 1003;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500101, OBJECT_ID 500106 TO LS 1003;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500114, OBJECT_ID 500121 TO LS 1003;
+# verify partitions have been transferred to dup_ls
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_zero_%" and ls_id != $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_one_%" and partition_name = 'p0' and ls_id != $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_two_%" and subpartition_name = 'p1sp0' and ls_id != $dup_ls_id, 0, 420;
+##################################################
+# 3. transfer partition of normal table from dup ls to normal ls
+alter table dup_part_zero_1 duplicate_scope = 'none';
+alter table dup_part_one_1 duplicate_scope = 'none';
+alter table dup_part_two_1 duplicate_scope = 'none';
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500049, OBJECT_ID 500049 TO LS 1001;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500054, OBJECT_ID 500059 TO LS 1001;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500067, OBJECT_ID 500074 TO LS 1001;
+alter table dup_part_zero_2 duplicate_scope = 'none';
+alter table dup_part_one_2 duplicate_scope = 'none';
+alter table dup_part_two_2 duplicate_scope = 'none';
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500143, OBJECT_ID 500143 TO LS 1001;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500148, OBJECT_ID 500153 TO LS 1001;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500161, OBJECT_ID 500168 TO LS 1001;
+# verify partitions have been transferred out of dup ls
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%dup_part_zero_%" and ls_id = $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%dup_part_one_%" and partition_name = 'p0' and ls_id = $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%dup_part_two_%" and subpartition_name = 'p1sp0' and ls_id = $dup_ls_id, 0, 420;
+##################################################
+# 4. transfer partition of duplicate table between dup ls
+##
+# 4.1. create redundant dup ls manually
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL' and ls_group_id = 0, 1, 30;
+alter system change tenant mysql;
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%DUPLICATE%" and status = 'NORMAL', 2, 60;
+##
+# 4.2. transfer partition between dup ls with 0 ls_group_id
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1999;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_id = $table_id and ls_id != $redundant_dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_PARTITION_TASKS where tenant_id = $mysql_tenant_id and table_id = $table_id, 0, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 60;
+task_type	src_ls	dest_ls	finished_part_count	ls_group_id
+LS_ALTER	1003	-1	0	1001
+LS_ALTER	1999	-1	0	1001
+LS_TRANSFER	1003	1999	1	1001
+LS_ALTER	1003	-1	0	0
+LS_ALTER	1999	-1	0	0
+##
+# 4.3. transfer partition from dup_ls with valid_ls_group_id to dup ls with ls_group_id = 0
+alter system change tenant mysql;
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $redundant_dup_ls_id and ls_group_id != $valid_ls_group_id, 0, 30;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1003;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_id = $table_id and ls_id != $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_PARTITION_TASKS where tenant_id = $mysql_tenant_id and table_id = $table_id, 0, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 60;
+task_type	src_ls	dest_ls	finished_part_count	ls_group_id
+LS_ALTER	1003	-1	0	1001
+LS_TRANSFER	1999	1003	1	1001
+LS_ALTER	1003	-1	0	0
+##
+# 4.4. transfer partition from dup ls with ls_group_id = 0 to dup_ls with valid_ls_group_id
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1999;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_id = $table_id and ls_id != $redundant_dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_PARTITION_TASKS where tenant_id = $mysql_tenant_id and table_id = $table_id, 0, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 60;
+task_type	src_ls	dest_ls	finished_part_count	ls_group_id
+LS_ALTER	1003	-1	0	1001
+LS_TRANSFER	1003	1999	1	1001
+LS_ALTER	1003	-1	0	0
+##
+# 4.5. transfer partition between dup_ls with valid_ls_group_id
+alter system change tenant mysql;
+alter system change tenant sys;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $dup_ls_id and ls_group_id != $valid_ls_group_id, 0, 30;
+ALTER SYSTEM TRANSFER PARTITION TABLE_ID 500002, OBJECT_ID 500002 TO LS 1003;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_id = $table_id and ls_id != $dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_PARTITION_TASKS where tenant_id = $mysql_tenant_id and table_id = $table_id, 0, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 60;
+task_type	src_ls	dest_ls	finished_part_count	ls_group_id
+LS_TRANSFER	1999	1003	1	1001
+# clear manual redundant dup ls
+alter system change tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_LS where tenant_id = $mysql_tenant_id and ls_id = $redundant_dup_ls_id, 0, 120;
+##
+# 4.6. make 2 dup ls exist in the same time by turn off enable_rebalance
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DROPPING_LS_IN_BALANCE_MERGE_TASK wait_for signal_merge execute 1000';
+# turn on balance
+ob1.mysql alter system set enable_rebalance = true tenant mysql;
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_LS where tenant_id = $mysql_tenant_id and flag like "%duplicate%" and status = 'NORMAL', 2, 420;
+# turn off balance
+ob1.mysql alter system set enable_rebalance = false tenant mysql;
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant mysql;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DROPPING_LS_IN_BALANCE_MERGE_TASK clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_merge';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 240;
+##
+# 4.7. transfer partition between dup ls
+# verify partitions are on original dup_ls_id
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_zero_%" and ls_id != $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_one_%" and partition_name = 'p0' and ls_id != $dup_ls_id, 0, 3;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_zero_%" and subpartition_name = 'p1sp0' and ls_id != $dup_ls_id, 0, 3;
+# verify partitions are on original redundant_dup_ls_id
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id and job_type = 'TRANSFER_PARTITION', 1, 30;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_zero_%" and ls_id != $redundant_dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_one_%" and partition_name = 'p0' and ls_id != $redundant_dup_ls_id, 0, 420;
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name like "%normal_part_zero_%" and subpartition_name = 'p1sp0' and ls_id != $redundant_dup_ls_id, 0, 420;

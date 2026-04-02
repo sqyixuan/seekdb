@@ -1,0 +1,258 @@
+# owner:bohou.ws
+# owner group:liboblog
+# description:
+# 测试点: liboblog 对xa事务对支持
+# 测试场景：
+# 1. 常规xa事务，启动xa事务，向t1写入数据
+# 2. join/resume 场景
+#    （1）使用connection1写入数据，xa_end
+#    （2）新建并使用connection2，使用同样的xid,xa_start(join),写入数据，xa_end(suspend)
+#    （3）使用connection1写入数据，xa_start(resume),写入数据，xa_end,xa_prepare,xa_end;
+#   预期输出：仅在第三个操作后才能输出完整的事务数据（即上面三次写入的所有数据）
+# 3. xa一阶段提交
+# 4. xa事务回滚
+# 5. xid使用特殊字符
+# 6. xa事务部分参与者没有实际修改数据，此时这部分参与者会生成空redo信息，验证能否正确处理这类xa事务
+# 7. 回拉上述事务，模拟misslog两次
+
+ob1=OBI(cluster=1:1:1);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant_multiple_zone.inc;
+source include/liboblog/enable_oracle_archive.inc;
+
+ob1.mysql alter tenant oracle set variables autocommit='off';
+# set serveroutput on; # set 这个参数后，理论上下面PL中dbms_output.put_line(ret)会有值输出
+# 32x分支事务接口升级，xa暂不支持，需要使用老接口
+
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table test_xa (c1 int primary key, c2 int , c3 timestamp default '2020-11-11 00:00:00', c4 as (c1+4) ) enable row movement partition by hash (c4) partitions 19;
+ob1.oblog.next;
+create table t1(c1 int primary key);
+ob1.oblog.next;
+
+# ======== start tests cases =========;
+# --------- start normal case -------------
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('chiefs'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); dbms_output.put_line(ret); insert into t1 values(100); insert into t1 values(200); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); ret := dbms_xa.xa_prepare(xid); dbms_output.put_line(ret); ret := dbms_xa.xa_commit(xid, false); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('chiefs');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#dbms_output.put_line(ret);
+#insert into t1 values(100);
+#insert into t1 values(200);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_prepare(xid);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_commit(xid, false);
+#dbms_output.put_line(ret);
+#end;
+
+ob1.oblog.next;
+
+# --------- end normal case --------------
+
+# --------- start join/resume case -------------
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('seahawks'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); dbms_output.put_line(ret); insert into t1 values(300); insert into t1 values(400); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('seahawks');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#dbms_output.put_line(ret);
+#insert into t1 values(300);
+#insert into t1 values(400);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#end;
+
+select * from t1;
+# ---
+ob_connect(conn_oracle_oblogdb1,ob1.proxy0,OBLOG_DB@oracle,passwd,oblog_db,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+connection conn_oracle_oblogdb1;
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('seahawks'); ret := dbms_xa.xa_start(xid, dbms_xa.tmjoin); dbms_output.put_line(ret); insert into t1 values(500); insert into t1 values(600); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuspend); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('seahawks');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmjoin);
+#dbms_output.put_line(ret);
+#insert into t1 values(500);
+#insert into t1 values(600);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuspend);
+#dbms_output.put_line(ret);
+#end;
+
+select * from t1;
+disconnect conn_oracle_oblogdb1;
+# ---
+connection conn_oracle_obtest;
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('seahawks'); ret := dbms_xa.xa_start(xid, dbms_xa.tmresume); dbms_output.put_line(ret); insert into t1 values(700); insert into t1 values(800); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); ret := dbms_xa.xa_prepare(xid); dbms_output.put_line(ret); ret := dbms_xa.xa_commit(xid, false); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('seahawks');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmresume);
+#dbms_output.put_line(ret);
+#insert into t1 values(700);
+#insert into t1 values(800);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_prepare(xid);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_commit(xid, false);
+#dbms_output.put_line(ret);
+#end;
+
+ob1.oblog.next;
+select * from t1;
+
+# --------- end join/resume case --------------
+
+# --------- start onephase case -------------
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('patriots'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); dbms_output.put_line(ret); insert into t1 values(900); insert into t1 values(1000); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); ret := dbms_xa.xa_commit(xid, true); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('patriots');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#dbms_output.put_line(ret);
+#insert into t1 values(900);
+#insert into t1 values(1000);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_commit(xid, true);
+#dbms_output.put_line(ret);
+#end;
+
+ob1.oblog.next;
+# ---
+truncate table t1;
+ob1.oblog.next;
+# --------- end onephase case --------------
+
+# --------- start rollback case -------------
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('rams'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); dbms_output.put_line(ret); insert into t1 values(300); insert into t1 values(400); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); ret := dbms_xa.xa_prepare(xid); dbms_output.put_line(ret); ret := dbms_xa.xa_rollback(xid); dbms_output.put_line(ret); end;
+
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('rams');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#dbms_output.put_line(ret);
+#insert into t1 values(300);
+#insert into t1 values(400);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_prepare(xid);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_rollback(xid);
+#dbms_output.put_line(ret);
+#end;
+
+#理论上不输出或输出EOF
+#ob1.oblog.next;
+select * from t1;
+# --------- end rollback case --------------
+
+# --------- start special character case -----
+set autocommit = 'OFF';
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('奥星贝斯@∂∑πœ¡™£º–ƒ¶≠≤µœ¬'); xid.bqual := UTL_RAW.cast_to_raw('阿里巴巴ø¬∫ßå∂œ'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); dbms_output.put_line(ret); insert into t1 values(300); insert into t1 values(500); ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); dbms_output.put_line(ret); ret := dbms_xa.xa_prepare(xid); dbms_output.put_line(ret); ret := dbms_xa.xa_commit(xid, false); dbms_output.put_line(ret); end;
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin
+#xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('奥星贝斯@∂∑πœ¡™£º–ƒ¶≠≤µœ¬');
+#xid.bqual := UTL_RAW.cast_to_raw('阿里巴巴ø¬∫ßå∂œ');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#dbms_output.put_line(ret);
+#insert into t1 values(300);
+#insert into t1 values(500);
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_prepare(xid);
+#dbms_output.put_line(ret);
+#ret := dbms_xa.xa_commit(xid, false);
+#dbms_output.put_line(ret);
+#end;
+
+ob1.oblog.next;
+# --------- end special character case ---------
+
+# ----------start empty redo case----------
+connection conn_sys;
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+# 理论上autocommit已经是OFF了，这里重复设置确认下
+set autocommit = 'OFF';
+# show variables like 'autocommit';
+
+declare xid dbms_xa_xid; ret pls_integer; begin xid := dbms_xa_xid(0, '', ''); xid.formatid := 2; xid.gtrid := UTL_RAW.cast_to_raw('NFL'); xid.bqual := UTL_RAW.cast_to_raw('chiefs'); ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags); insert into test_xa(c1, c2) values(1, 1); delete from test_xa; ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess); ret := dbms_xa.xa_prepare(xid); ret := dbms_xa.xa_commit(xid, false); end;
+#declare
+#xid dbms_xa_xid;
+#ret pls_integer;
+#begin xid.formatid := 2;
+#xid.gtrid := UTL_RAW.cast_to_raw('NFL');
+#xid.bqual := UTL_RAW.cast_to_raw('chiefs');
+#ret := dbms_xa.xa_start(xid, dbms_xa.tmnoflags);
+#insert into test_xa(c1, c2) values(1, 1);
+#delete from test_xa;
+#ret := dbms_xa.xa_end(xid, dbms_xa.tmsuccess);
+#ret := dbms_xa.xa_prepare(xid);
+#ret := dbms_xa.xa_commit(xid, false);
+#end;
+
+ob1.oblog.next;
+
+#--- restart with miss log
+ob1.oblog.gen_conf tb_white_list=oracle.*.* sort_trans_participants=1 log_level=DEBUG test_mode_on=1 test_mode_ignore_redo_count=2 test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next;
+
+# ----------end empty redo case------------
+
+drop table test_xa;
+ob1.oblog.next;
+
+drop table t1;
+ob1.oblog.next;
+
+ob1.oblog.stop;

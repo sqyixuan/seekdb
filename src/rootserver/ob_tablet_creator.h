@@ -23,7 +23,6 @@
 #include "common/ob_tablet_id.h"//ObTabletID
 #include "share/ob_rpc_struct.h"//ObBatchCreateTabletArg
 #include "share/ob_ls_id.h"//share::ObLSID
-#include "share/ob_ddl_common.h" // ObForkTabletInfo
 
 namespace oceanbase
 {
@@ -45,21 +44,9 @@ public:
      is_create_bind_hidden_tablets_(false),
      tenant_data_version_(0),
      need_create_empty_majors_(),
-     has_cs_replica_(false),
-     fork_tablet_infos_() {}
+     has_cs_replica_(false) {}
   virtual ~ObTabletCreatorArg() {}
   bool is_valid() const;
-  int init(const ObIArray<common::ObTabletID> &tablet_ids,
-           const share::ObLSID &ls_key,
-           const common::ObTabletID data_tablet_id,
-           const ObIArray<const share::schema::ObTableSchema*> &table_schemas,
-           const lib::Worker::CompatMode &mode,
-           const bool is_create_bind_hidden_tablets,
-           const uint64_t tenant_data_version,
-           const ObIArray<bool> &need_create_empty_majors,
-           const ObIArray<int64_t> &create_commit_versions,
-           const bool has_cs_replica,
-           const ObIArray<share::ObForkTabletInfo> &fork_tablet_infos);
   int init(const ObIArray<common::ObTabletID> &tablet_ids,
            const share::ObLSID &ls_key,
            const common::ObTabletID data_tablet_id,
@@ -82,7 +69,6 @@ public:
   common::ObArray<bool> need_create_empty_majors_;
   common::ObArray<int64_t> create_commit_versions_;
   bool has_cs_replica_;
-  common::ObArray<share::ObForkTabletInfo> fork_tablet_infos_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTabletCreatorArg);
 };

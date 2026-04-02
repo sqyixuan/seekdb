@@ -328,10 +328,6 @@ public:
     TASK_TYPE_DIRECT_LOAD_COMPACT_SSTABLE_CLEAR = 168,
     TASK_TYPE_DIRECT_LOAD_UPDATE_SS_INC_MAJOR = 169,
     TASK_TYPE_SS_INC_MAJOR_TRANSFER_BACKFILL_TX = 170,
-    TASK_TYPE_DDL_FORK_PREPARE = 171,
-    TASK_TYPE_DDL_FORK_REUSE = 172,
-    TASK_TYPE_DDL_FORK_REWRITE = 173,
-    TASK_TYPE_DDL_FORK_MERGE = 174,
     TASK_TYPE_MAX,
   };
 
@@ -586,16 +582,7 @@ public:
   virtual bool ignore_warning() { return false; }
   virtual bool check_need_stop_dag(const int error_code) { return false; }
   virtual int decide_retry_strategy(const int error_code, ObDagRetryStrategy &retry_status) { retry_status = DAG_CAN_RETRY; return OB_SUCCESS; } 
-  // inline to avoid link dependency in unittest binaries
-  virtual bool inner_check_can_retry()
-  {
-    bool bret = false;
-    if (running_times_ < max_retry_times_) {
-      running_times_++;
-      bret = true;
-    }
-    return bret;
-  }
+  virtual bool inner_check_can_retry();
   bool check_can_retry();
   void set_max_retry_times(const uint32_t max_retry_times)
   {
@@ -641,7 +628,7 @@ public:
   bool check_finished_and_set_stop();
   // independent dag process() exit loop when dag is final status
   bool is_final_status() const { return is_dag_failed()
-                                     || is_finish_status(dag_status_)
+                                     || is_finish_status(dag_status_) 
                                      || is_stop_; }
   virtual int report_result()
   {

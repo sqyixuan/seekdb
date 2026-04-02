@@ -1,0 +1,184 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  测试bit列
+#
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+--disable_warnings
+drop tenant if exists oblog_tt;
+--disable_warnings
+drop resource pool if exists oblog_pool;
+--disable_warnings
+drop resource unit if exists oblog_box;
+--disable_warnings
+drop database if exists oblog_db1;
+
+# create tenant, 创建oblog_tt租户
+create resource unit oblog_box max_cpu=2, memory_size='20G';
+create resource pool oblog_pool unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+# TODO test
+#create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool') set ob_tcp_invited_nodes='%';
+
+sleep 2;
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+# 创建database 1
+create database oblog_db1;
+create database obcdc_db1;;
+
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant sys;
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_user;
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all_meta;
+
+use oblog_db1;
+CREATE TABLE t (b BIT(8));
+CREATE TABLE t2 (b BIT(12));
+# wait to generate data_dict
+sleep 10;
+let $restart_ts1_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $ddl_before_dml = 0;
+CREATE TABLE t3 (b BIT(64));
+inc $ddl_before_dml;
+CREATE TABLE t4 (c1 int, c2 int, c3 int, a int, c4 varchar(1024), c5 datetime, c6 numeric, primary key(a, c6));
+inc $ddl_before_dml;
+create unique index index_c1 on t4 (c1);
+inc $ddl_before_dml;
+create unique index index_c2 on t4 (c1, c2);
+inc $ddl_before_dml;
+create unique index index_c3 on t4 (c1, c2, c3);
+inc $ddl_before_dml;
+
+# wait to generate data_dict
+sleep 10;
+let $restart_ts2_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+let $dml_cnt = 0;
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts1_usec;
+ob1.oblog.restart;
+
+# output the ddls before dml.
+let $idx = 0;
+while ($idx < $ddl_before_dml)
+{
+  ob1.oblog.next;
+  inc $idx;
+}
+
+INSERT INTO t SET b = b'11111111';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t SET b = b'1010';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t SET b = b'1111';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'0';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'10';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'01';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'001';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'11111111';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'001100000000';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t2 SET b = b'111111111111';
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t3 SET b = 0xFFFFFFFFFFFFFFFF;
+ob1.oblog.next;
+inc $dml_cnt;
+
+INSERT INTO t4 values(1, 2, 3, 4, 'OceanBase', '2022-12-31', 5), (2, 3, 4, 5, 'CDC', '1995-01-28', 6);
+ob1.oblog.next;
+inc $dml_cnt;
+
+RENAME table oblog_db1.t4 to obcdc_db1.tnew;
+ob1.oblog.next;
+
+INSERT INTO obcdc_db1.tnew values(3, 4, 5, 6, 'OceanBase', '2022-12-31', 7), (4, 5, 6, 7, 'CDC', '1995-01-28', 8);
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=DEBUG meta_data_refresh_mode=data_dict enable_formatter_print_log=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts1_usec;
+ob1.oblog.restart;
+# output the ddls before dml.
+let $idx = 0;
+while ($idx < $ddl_before_dml)
+{
+  ob1.oblog.next;
+  inc $idx;
+}
+
+let $idx = 0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+# output rename ddl and dml.
+ob1.oblog.next;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=DEBUG meta_data_refresh_mode=data_dict enable_formatter_print_log=1 check_switch_server_interval_sec=10;
+ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+# output rename ddl and dml.
+ob1.oblog.next;
+ob1.oblog.next;
+sleep 10;
+
+ob1.oblog.stop;
+ob1.oblog.check_log "need_switch_server";

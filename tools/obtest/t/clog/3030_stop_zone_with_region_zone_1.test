@@ -1,0 +1,70 @@
+# owner:debin.jdb
+# owner group:transaction
+# description:
+# 测试点：测试primary region中仅有一个zone时执行stop zone能不能成功切主
+#         election已经修改选主优先级，不再比较locality信息
+
+ob1=OBI(cluster=1:1:1,locality=HZ:HZ:HZ,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120);
+ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.reboot;
+sleep 5;
+# 启动之后首先检查配置项文件正常
+# 运行环境不同，文件路径检查不一定能够通过，此处先注释
+#ob1.z1.obs0.sh cd ~/ob1.z1.obs0; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+#ob1.z2.obs0.sh cd ~/ob1.z2.obs0; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+#ob1.z3.obs0.sh cd ~/ob1.z3.obs0; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+# 修改配置项
+ob1.z1.obs0.mysql alter system set balancer_idle_time='10s';
+# proxy同步集群状态的时间间隔
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_proxy,$ip,root@obproxy,,test,$port);
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+alter proxyconfig set server_state_refresh_interval='1s';
+
+
+# 1.数据准备
+connection conn_obtest;
+
+create database db1 primary_zone='z1';
+use db1;
+create table t1(pk int primary key,c1 varchar(20),c2 varchar(10) default 'way', c3 timestamp default now(), c4 timestamp, index i1(c2));
+insert into t1 values(1,'a1','b','2015-11-11 11:11:11', '2015-12-12 12:12:12');
+insert into t1 values(2,'a2','b','2015-11-11 21:21:21', '2015-12-12 22:22:22');
+insert into t1(pk,c1,c4) values(3,'b3','2015-12-12 22:22:22');
+select pk,c1,c2,c4 from t1;
+create index i2 on t1(c4);
+
+# 设置obtest租户的primary zone
+ob1.mysql alter tenant obtest set primary_zone='z1';
+# 第1次合并
+ob1.mysql alter system major freeze;
+#合并快慢跟当时机器负载有关系，此处调整为1h
+ob1.check_until_timeout select value from __all_zone where zone='' and name='last_merged_version', 2,3600;
+
+connection conn_sys;
+let $tid=`select table_id from __all_virtual_table where tenant_id=1002 and table_name='t1'`;
+let $idx=_i2;
+echo __idx_$tid$idx;
+ob1.check_idx_status obtest:__idx_$tid$idx;
+
+
+# 集群状态
+select zone,name,value,info from __all_zone where name in ('frozen_version','global_broadcast_version','is_merge_error','broadcast_version','last_merged_version','merge_status','status');
+
+
+# stop zone
+connection conn_sys;
+set @saved_ob_query_timeout = @@session.ob_query_timeout;
+set @@session.ob_query_timeout = 1000000000;
+ob1.check_until_timeout select leader_count > 0 from __all_virtual_server_stat where zone = 'z1',1,20;
+
+alter system stop zone 'z1';
+set @@session.ob_query_timeout = @saved_ob_query_timeout;
+ob1.check_until_timeout select info from __all_zone where zone='z1' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z1',0,20;
+sleep 2;
+

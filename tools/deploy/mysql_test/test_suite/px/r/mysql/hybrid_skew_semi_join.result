@@ -1,0 +1,199 @@
+drop table t1;
+drop table t2;
+alter system set _px_join_skew_handling  = 1;
+alter system set _px_join_skew_minfreq = 30;
+set global parallel_servers_target = 30;
+set ob_query_timeout = 100000000;
+set ob_trx_timeout = 100000000;
+create table t1 (c1 int) partition by hash(c1) partitions 2;
+create table t2 (c1 int) partition by hash(c1) partitions 3;
+insert into t1 values (1),(2),(3),(3),(3),(3),(3),(4),(5),(6),(null);
+insert into t2 values (1),(1),(2);
+insert into t1 values (null), (null), (null), (null), (null), (null), (null), (null), (null), (null), (null), (null);
+call dbms_stats.gather_table_stats(NULL,'T1',method_opt=>'for all columns size 100');
+explain basic select * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |PX COORDINATOR                   |        |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|
+|2 |  └─HASH RIGHT SEMI JOIN         |        |
+|3 |    ├─EXCHANGE IN DISTR          |        |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|5 |    │   └─PX PARTITION ITERATOR  |        |
+|6 |    │     └─TABLE FULL SCAN      |t2      |
+|7 |    └─PX PARTITION ITERATOR      |        |
+|8 |      └─TABLE FULL SCAN          |t1      |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(t1.c1)]), filter(nil), rowset=256
+      dop=1
+  2 - output([t1.c1]), filter(nil), rowset=256
+      equal_conds([t1.c1 <=> t2.c1]), other_conds(nil)
+  3 - output([t2.c1]), filter(nil), rowset=256
+  4 - output([t2.c1]), filter(nil), rowset=256
+      (#keys=1, [t2.c1]), dop=1
+  5 - output([t2.c1]), filter(nil), rowset=256
+      force partition granule
+  6 - output([t2.c1]), filter(nil), rowset=256
+      access([t2.c1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.c1]), filter(nil), rowset=256
+      affinitize, force partition granule
+  8 - output([t1.c1]), filter(nil), rowset=256
+      access([t1.c1]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+Query Plan
+======================================================
+|ID|OPERATOR                                |NAME    |
+------------------------------------------------------
+|0 |PX COORDINATOR                          |        |
+|1 |└─EXCHANGE OUT DISTR                    |:EX10002|
+|2 |  └─HASH RIGHT SEMI JOIN                |        |
+|3 |    ├─EXCHANGE IN DISTR                 |        |
+|4 |    │ └─EXCHANGE OUT DISTR (HASH HYBRID)|:EX10000|
+|5 |    │   └─PX BLOCK ITERATOR             |        |
+|6 |    │     └─TABLE FULL SCAN             |t2      |
+|7 |    └─EXCHANGE IN DISTR                 |        |
+|8 |      └─EXCHANGE OUT DISTR (HASH HYBRID)|:EX10001|
+|9 |        └─PX BLOCK ITERATOR             |        |
+|10|          └─TABLE FULL SCAN             |t1      |
+======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(t1.c1)]), filter(nil), rowset=256
+      dop=4
+  2 - output([t1.c1]), filter(nil), rowset=256
+      equal_conds([t1.c1 <=> t2.c1]), other_conds(nil)
+  3 - output([t2.c1]), filter(nil), rowset=256
+  4 - output([t2.c1]), filter(nil), rowset=256
+      dop=4
+  5 - output([t2.c1]), filter(nil), rowset=256
+  6 - output([t2.c1]), filter(nil), rowset=256
+      access([t2.c1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.c1]), filter(nil), rowset=256
+  8 - output([t1.c1]), filter(nil), rowset=256
+      dop=4
+  9 - output([t1.c1]), filter(nil), rowset=256
+ 10 - output([t1.c1]), filter(nil), rowset=256
+      access([t1.c1]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+c1
+1
+2
+select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+c1
+1
+2
+insert into t2 values (null);
+select * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+c1
+1
+2
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1  where exists (select * from t2 where t1.c1 <=> t2.c1);
+c1
+1
+2
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+drop table t1,t2;
+create table t1 (c1 int, c2 char(100)) partition by hash(c1) partitions 2;
+create table t2 (c1 int, c2 text, c3 char(100)) partition by hash(c1) partitions 3;
+insert into t1 values (1,'qqwe'),(2,'qweasd'),(3,'aweqr'),(3,'vxcvr'),(3,'iojoi'),(3,'qwrijvo'),(3,'oppqokwe'),(4,'oincoxzc'),(5,'oiowqe'),(6,'lkpok'),(null,null);
+insert into t2 values (1, 'qqwe','qqwe'),(1,'qweasd','aweqr'),(2,'vxcvr','iojoi');
+insert into t1 (c1) values (null), (null), (null), (null), (null), (null), (null), (null), (null), (null), (null), (null);
+call dbms_stats.gather_table_stats(NULL,'T1',method_opt=>'for all columns size 100');
+call dbms_stats.gather_table_stats(NULL,'T2',method_opt=>'for all columns size 100');
+alter system set _px_join_skew_minfreq = 10;
+explain basic select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1 where exists (select * from t2 where t1.c2 <=> t2.c2);
+Query Plan
+======================================================
+|ID|OPERATOR                                |NAME    |
+------------------------------------------------------
+|0 |PX COORDINATOR                          |        |
+|1 |└─EXCHANGE OUT DISTR                    |:EX10002|
+|2 |  └─HASH RIGHT SEMI JOIN                |        |
+|3 |    ├─EXCHANGE IN DISTR                 |        |
+|4 |    │ └─EXCHANGE OUT DISTR (HASH HYBRID)|:EX10000|
+|5 |    │   └─PX BLOCK ITERATOR             |        |
+|6 |    │     └─TABLE FULL SCAN             |t2      |
+|7 |    └─EXCHANGE IN DISTR                 |        |
+|8 |      └─EXCHANGE OUT DISTR (HASH HYBRID)|:EX10001|
+|9 |        └─PX BLOCK ITERATOR             |        |
+|10|          └─TABLE FULL SCAN             |t1      |
+======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2)]), filter(nil), rowset=256
+      dop=4
+  2 - output([t1.c2], [t1.c1]), filter(nil), rowset=256
+      equal_conds([t1.c2 <=> t2.c2]), other_conds(nil)
+  3 - output([t2.c2]), filter(nil), rowset=256
+  4 - output([t2.c2]), filter(nil), rowset=256
+      dop=4
+  5 - output([t2.c2]), filter(nil), rowset=256
+  6 - output([t2.c2]), filter(nil), rowset=256
+      access([t2.c2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.c2], [t1.c1]), filter(nil), rowset=256
+  8 - output([t1.c2], [t1.c1]), filter(nil), rowset=256
+      dop=4
+  9 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+ 10 - output([t1.c1], [t1.c2]), filter(nil), rowset=256
+      access([t1.c1], [t1.c2]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1 where exists (select * from t2 where t1.c2 <=> t2.c2) order by c1;
+c1	c2
+1	qqwe
+2	qweasd
+3	vxcvr
+drop table t1,t2;
+create table t1 (c1 int, c2 tinytext) partition by hash(c1) partitions 2;
+create table t2 (c1 int, c2 mediumtext) partition by hash(c1) partitions 3;
+insert into t1 values (1, '1'),(2, '2'),(3,'3'),(3,'3'),(3,'3'),(3,'3'),(3,'3'),(4,'4'),(5,'5'),(5, '6'),(null,null);
+insert into t2 values (1,'1'),(1,'1'),(2,'2');
+insert into t1 values (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null), (null,null);
+call dbms_stats.gather_table_stats(NULL,'T1',method_opt=>'for all columns size 100');
+select /*+ parallel(4) leading(t2 t1) use_hash(t1) no_swap_join_inputs(t1) pq_distribute(t1 hash hash) */ * from t1  where exists (select * from t2 where t1.c2 <=> t2.c2);
+c1	c2
+1	1
+2	2
+drop table t1,t2;

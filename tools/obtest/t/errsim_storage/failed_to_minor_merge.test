@@ -1,0 +1,47 @@
+# owner: yongle.xh
+# owner group: storage
+# description: this case is use for failed_to_write_checkpoint 
+#
+
+--disable_query_log
+ob1=OBI(cluster=1,proxy_num=0,init_unit_cpu=2, init_unit_num=1);
+ob1.reboot;
+
+#设置灰度切主的时间为0, 关闭自动切主，关闭自动balance
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+ob1.create_client tenant=obtest,user=root,passwd=,database=test;
+create table test(a int primary key);
+insert into test(a) values(1);
+
+ob1.z1.obs0.mysql alter system set_tp tp_no = 13, error_code = 4012, frequency = 1;
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.z1.obs0.check_log_until_success -c "Fail to minor merge sstable";
+sleep 30;
+ob1.z1.obs0.mysql alter system set_tp tp_no = 13, error_code = 4012, frequency = 0;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+ob1.mysql alter system major freeze;
+ob1.check_version 4;
+ob1.mysql alter system major freeze;
+ob1.check_version 5;
+sleep 10;
+
+let $ss_store_count4 = deploy_get_value(ob1.select select ss_store_count from oceanbase.__all_virtual_partition_sstable_image_info where major_version=4, ss_store_count, 1);
+let $ss_store_count5 = deploy_get_value(ob1.select select ss_store_count from oceanbase.__all_virtual_partition_sstable_image_info where major_version=5, ss_store_count, 1);
+let $ss_store_obj_count = deploy_get_value(ob1.select select count from oceanbase.__all_virtual_concurrency_object_pool where free_list_name like '%ssstore%', count, 1);
+let $sum_count = math($ss_store_count4 + $ss_store_count5);
+if ($sum_count != $ss_store_obj_count)
+{
+  echo "not match";
+  echo "ss_store_obj_count maybe leak, sum_count=$sum_count ss_store_count4=$ss_store_count4 ss_store_count5=$ss_store_count5 ss_store_obj_count=$ss_store_obj_count";
+}

@@ -1,0 +1,114 @@
+# owner : dachuan.sdc
+# owner group : SQL2
+# description : test purge table with origin table name
+# tags: ddl
+
+--result_format 4
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+set @@recyclebin = off;
+drop database if exists xiaofeng_db1;
+drop database if exists xiaofeng_db2;
+--enable_warnings
+
+--echo set the session variable
+set @@recyclebin = on;
+show session variables like 'recyclebin';
+
+create database xiaofeng_db1;
+create database xiaofeng_db2;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default;
+--sleep 2
+
+
+
+## (1) 测试回收站新功能，支持使用 origin table name 对回收站中的对象进行 purge 操作 (依然支持使用 object name 进行 purge，功能和以前一样)
+## 如果使用 origin table name 进行 purge，且回收站中有重复的原表名，则清理最早被删除到回收站的一张表
+use xiaofeng_db1;
+create table t1(c1 int);
+create index idx on t1(c1);
+drop table t1;
+create table t1(c2 char);
+create index idx on t1(c2);
+drop table t1;
+
+### 对比 purge t1 表前后回收站里 origin name 叫 t1 的最早被删除到回收站的表的 object name，如果不同，则说明 purge 时清理的是最早被删除到回收站的一张表
+### purge 回收站里 origin name 叫 t1/idx 的最早被删除到回收站的表/索引之前
+connection obsys;
+--sleep 2
+let $te_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $db_id = query_get_value(select database_id from oceanbase.__all_virtual_database where tenant_id = $te_id and database_name = 'xiaofeng_db1', database_id, 1);
+let $oldest_index_obj_name_1 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 2 order by gmt_create asc, object_name, 1);
+let $oldest_table_obj_name_1 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 1 order by gmt_create asc, object_name, 1);
+
+### purge 回收站里 origin name 叫 idx 的索引
+connection default;
+--sleep 2
+use xiaofeng_db1;
+purge index idx;
+
+### purge 回收站里 origin name 叫 idx 的最早被删除到回收站的索引之后
+connection obsys;
+--sleep 2
+let $oldest_index_obj_name_2 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 2 order by gmt_create asc, object_name, 1);
+
+### 对比 purge index idx 前后回收站里 origin name 叫 idx 的最早被删除到回收站的索引的 object name，如果不同，则说明 purge 时清理的是最早被删除到回收站的一张索引
+--disable_query_log
+eval select 1 from dual where '$oldest_index_obj_name_1' = '$oldest_index_obj_name_2';
+--enable_query_log
+
+### purge 回收站里 origin name 叫 t1 的表
+connection default;
+--sleep 2
+use xiaofeng_db1;
+purge table t1;
+
+### purge 回收站里 origin name 叫 t1 的最早被删除到回收站的表之后
+connection obsys;
+--sleep 2
+--disable_query_log
+let $oldest_table_obj_name_2 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 1 order by gmt_create asc, object_name, 1);
+--enable_query_log
+
+### 对比 purge t1 表前后回收站里 origin name 叫 t1 的最早被删除到回收站的表的 object name，如果不同，则说明 purge 时清理的是最早被删除到回收站的一张表
+--disable_query_log
+eval select 1 from dual where '$oldest_table_obj_name_1' = '$oldest_table_obj_name_2';
+--enable_query_log
+
+
+
+## (2) 进行 purge 时如果不指定库名，默认 purge 从当前 database 下删除的表；指定库名时暂时仅支持指定的库名为当前 database（权限问题）
+connection default;
+--sleep 2
+use xiaofeng_db2;
+create table t1(c1 int);
+create index idx on t1(c1);
+drop table t1;
+create table t1(c2 char);
+create index idx on t1(c2);
+drop table t1;
+
+### 指定库名时暂时仅支持指定的库名为当前 database（权限问题）
+--error 1235
+purge index xiaofeng_db1.idx;
+--error 1235
+purge table xiaofeng_db1.t1;
+purge index xiaofeng_db2.idx;
+purge table xiaofeng_db2.t1;
+purge table t1;
+
+### 进行 purge 时如果不指定库名，默认 purge 从当前 database 下删除的表
+connection obsys;
+--sleep 2
+let $oldest_table_obj_name_3 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 1 order by gmt_create asc, object_name, 1);
+let $oldest_index_obj_name_3 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where tenant_id = $te_id and database_id = $db_id and type = 2 order by gmt_create asc, object_name, 1);
+### 对比 purge t1 表前后回收站里 origin name 叫 t1 的最早被删除到回收站的表的 object name，如果相同，则说明在 xiaofeng_db2 下 purge 时清理的都是从 xiaofeng_db2 里被删除到回收站的表
+--disable_query_log
+eval select 1 from dual where '$oldest_table_obj_name_3' = '$oldest_table_obj_name_2';
+eval select 1 from dual where '$oldest_index_obj_name_3' = '$oldest_index_obj_name_2';
+--enable_query_log

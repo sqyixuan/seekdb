@@ -1,0 +1,68 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: jianlin.cjl
+# owner group: Storage
+# description: direct load hidden pk case
+
+connect (conn_query,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection default;
+use test;
+
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_false.inc
+
+--disable_warnings
+--disable_query_log
+drop materialized view if exists mv;
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+--enable_query_log
+
+create table t1 (c1 int, c2 int);
+create table t2 (c1 int, c2 int);
+create table t3 (c1 int, c2 int);
+set @@ob_query_timeout = 1000000*60*60*10, @@ob_trx_timeout=1000000*60*60*10;
+
+insert into t1 values (1,1),(2,2);
+
+# ================ test insert overwrite =========
+# hidden_pk推高到5000001
+insert /*+ enable_parallel_dml parallel(2) direct(true,0,'full') */ into t2 select * from t1;
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from t2 order by __pk_increment;
+
+# hidden_pk推高到15000001
+insert /*+ enable_parallel_dml parallel(2) direct(true,0,'full') */ into t2 select * from t1;
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from t2 order by __pk_increment;
+
+# overwrite模式不复用旧的tablet自增隐藏主键，hidden_pk维持不变，还是15000001
+insert overwrite t2 select * from t1;
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from t2 order by __pk_increment;
+
+# hidden_pk在原来的基础上15000001分配 推高到15000003
+insert into t2 values (1,1),(2,2);
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from t2 order by __pk_increment;
+
+# hidden_pk在原来的基础上15000003分配 推高到25000003
+insert /*+ enable_parallel_dml parallel(2) direct(true,0,'full') */ into t2 select * from t1;
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from t2 order by __pk_increment;
+
+
+# ================ test mview complete refresh =========
+# hidden_pk推高到5000001
+create materialized view mv refresh complete on demand as select * from t1;
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from mv order by __pk_increment;
+
+insert into t1 values (1,1),(2,2);
+
+# overwrite模式不复用旧的tablet自增隐藏主键，hidden_pk推高到5000002
+call dbms_mview.refresh('mv', 'c', refresh_parallel=>2);
+select /*+ opt_param('hidden_column_visible', 'true') */ __pk_increment from mv order by __pk_increment;
+
+
+drop materialized view mv;
+drop table t1;
+drop table t2;
+drop table t3;
+
+--source mysql_test/test_suite/direct_load_data/include/set_direct_load_allow_fallback_true.inc

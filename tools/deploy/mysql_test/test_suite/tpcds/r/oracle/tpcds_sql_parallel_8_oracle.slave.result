@@ -1,0 +1,1313 @@
+result_format: 4
+explain_protocol: 2
+set global ob_sql_work_area_percentage=100;
+
+
+set ob_query_timeout = 1000000000;
+set ob_trx_timeout=1000000000;
+********************** TPC_DS Q70
+
+with v1 as(
+select i_category, i_brand,
+cc_name,
+d_year, d_moy,
+sum(cs_sales_price) sum_sales,
+avg(sum(cs_sales_price)) over
+(partition by i_category, i_brand,
+cc_name, d_year)
+avg_monthly_sales,
+rank() over
+(partition by i_category, i_brand,
+cc_name
+order by d_year, d_moy) rn
+from item, catalog_sales, date_dim, call_center
+where cs_item_sk = i_item_sk
+and cs_sold_date_sk = d_date_sk
+and cc_call_center_sk= cs_call_center_sk
+and (
+d_year = 2000 or
+( d_year = 2000-1 and d_moy =12) or
+( d_year = 2000+1 and d_moy =1)
+)
+group by i_category, i_brand,
+cc_name , d_year, d_moy),
+v2 as(
+select v1.i_brand
+,v1.d_year, v1.d_moy
+,v1.avg_monthly_sales
+,v1.sum_sales, v1_lag.sum_sales psum, v1_lead.sum_sales nsum
+from v1, v1 v1_lag, v1 v1_lead
+where v1.i_category = v1_lag.i_category
+and v1.i_category = v1_lead.i_category
+and v1.i_brand = v1_lag.i_brand
+and v1.i_brand = v1_lead.i_brand
+and v1. cc_name = v1_lag. cc_name
+and v1. cc_name = v1_lead. cc_name
+and v1.rn = v1_lag.rn + 1
+and v1.rn = v1_lead.rn - 1)
+select /*+parallel(2) TPC-DS Q70*/ * from ( select  *
+from v2
+where  d_year = 2000
+and avg_monthly_sales > 0
+and case when avg_monthly_sales > 0 then abs(sum_sales - avg_monthly_sales) / avg_monthly_sales else null end > 0.1 order by sum_sales - avg_monthly_sales, 3  ) where rownum <= 100;
++---------+--------+-------+-------------------+-----------+------+------+
+| I_BRAND | D_YEAR | D_MOY | AVG_MONTHLY_SALES | SUM_SALES | PSUM | NSUM |
++---------+--------+-------+-------------------+-----------+------+------+
++---------+--------+-------+-------------------+-----------+------+------+
+
+
+********************** TPC_DS Q71
+EXPLAIN select /*+parallel(2) TPC-DS Q71*/* from (select   s_store_name,
+i_item_desc,
+sc.revenue,
+i_current_price,
+i_wholesale_cost,
+i_brand
+from store, item,
+(select ss_store_sk, avg(revenue) as ave
+from       (select  ss_store_sk, ss_item_sk,
+sum(ss_sales_price) as revenue
+from store_sales, date_dim
+where ss_sold_date_sk = d_date_sk and d_month_seq between 1177 and 1177+11      group by ss_store_sk, ss_item_sk) sa
+group by ss_store_sk) sb,
+(select  ss_store_sk, ss_item_sk, sum(ss_sales_price) as revenue
+from store_sales, date_dim
+where ss_sold_date_sk = d_date_sk and d_month_seq between 1177 and 1177+11   group by ss_store_sk, ss_item_sk) sc
+where sb.ss_store_sk = sc.ss_store_sk
+and sc.revenue <= 0.1 * sb.ave
+and s_store_sk = sc.ss_store_sk
+and i_item_sk = sc.ss_item_sk
+order by s_store_name, i_item_desc
+) where rownum <= 100;
+Query Plan
+===============================================================================================================
+|ID|OPERATOR                                                                |NAME       |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------------------------
+|0 |LIMIT                                                                   |           |0       |167         |
+|1 |└─PX COORDINATOR MERGE SORT                                             |           |0       |167         |
+|2 |  └─EXCHANGE OUT DISTR                                                  |:EX10005   |0       |167         |
+|3 |    └─TOP-N SORT                                                        |           |0       |167         |
+|4 |      └─HASH JOIN                                                       |           |0       |167         |
+|5 |        ├─JOIN FILTER CREATE                                            |:BF0001    |0       |162         |
+|6 |        │ └─EXCHANGE IN DISTR                                           |           |0       |162         |
+|7 |        │   └─EXCHANGE OUT DISTR (HASH)                                 |:EX10003   |0       |162         |
+|8 |        │     └─SUBPLAN SCAN                                            |SB         |0       |162         |
+|9 |        │       └─WINDOW FUNCTION                                       |           |0       |162         |
+|10|        │         └─SORT                                                |           |0       |162         |
+|11|        │           └─EXCHANGE IN DISTR                                 |           |0       |162         |
+|12|        │             └─EXCHANGE OUT DISTR (HASH)                       |:EX10002   |0       |162         |
+|13|        │               └─NESTED-LOOP JOIN                              |           |0       |162         |
+|14|        │                 ├─SUBPLAN SCAN                                |VIEW4      |0       |146         |
+|15|        │                 │ └─HASH GROUP BY                             |           |0       |146         |
+|16|        │                 │   └─EXCHANGE IN DISTR                       |           |2       |146         |
+|17|        │                 │     └─EXCHANGE OUT DISTR (HASH)             |:EX10001   |2       |146         |
+|18|        │                 │       └─HASH GROUP BY                       |           |2       |144         |
+|19|        │                 │         └─SHARED HASH JOIN                  |           |0       |144         |
+|20|        │                 │           ├─JOIN FILTER CREATE              |:BF0000    |0       |18          |
+|21|        │                 │           │ └─EXCHANGE IN DISTR             |           |0       |18          |
+|22|        │                 │           │   └─EXCHANGE OUT DISTR (BC2HOST)|:EX10000   |0       |18          |
+|23|        │                 │           │     └─PX BLOCK ITERATOR         |           |0       |18          |
+|24|        │                 │           │       └─TABLE FULL SCAN         |DATE_DIM   |0       |18          |
+|25|        │                 │           └─JOIN FILTER USE                 |:BF0000    |14      |126         |
+|26|        │                 │             └─PX BLOCK ITERATOR             |           |14      |126         |
+|27|        │                 │               └─TABLE FULL SCAN             |STORE_SALES|14      |126         |
+|28|        │                 └─DISTRIBUTED TABLE GET                       |STORE      |1       |16          |
+|29|        └─EXCHANGE IN DISTR                                             |           |1       |6           |
+|30|          └─EXCHANGE OUT DISTR (HASH)                                   |:EX10004   |1       |6           |
+|31|            └─JOIN FILTER USE                                           |:BF0001    |1       |4           |
+|32|              └─PX BLOCK ITERATOR                                       |           |1       |4           |
+|33|                └─TABLE FULL SCAN                                       |ITEM       |1       |4           |
+===============================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([SB.STORE.S_STORE_NAME], [ITEM.I_ITEM_DESC], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST],
+       [ITEM.I_BRAND]), filter(nil), rowset=256
+      limit(cast(FLOOR(100), BIGINT(-1, 0))), offset(nil)
+  1 - output([SB.STORE.S_STORE_NAME], [ITEM.I_ITEM_DESC], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST],
+       [ITEM.I_BRAND]), filter(nil), rowset=256
+      sort_keys([SB.STORE.S_STORE_NAME, ASC], [ITEM.I_ITEM_DESC, ASC])
+  2 - output([SB.STORE.S_STORE_NAME], [ITEM.I_ITEM_DESC], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST],
+       [ITEM.I_BRAND]), filter(nil), rowset=256
+      dop=2
+  3 - output([SB.STORE.S_STORE_NAME], [ITEM.I_ITEM_DESC], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST],
+       [ITEM.I_BRAND]), filter(nil), rowset=256
+      sort_keys([SB.STORE.S_STORE_NAME, ASC], [ITEM.I_ITEM_DESC, ASC]), topn(cast(FLOOR(100), BIGINT(-1, 0)))
+  4 - output([SB.STORE.S_STORE_NAME], [ITEM.I_ITEM_DESC], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST],
+       [ITEM.I_BRAND]), filter(nil), rowset=256
+      equal_conds([ITEM.I_ITEM_SK = SB.VIEW3.STORE_SALES.SS_ITEM_SK]), other_conds(nil)
+  5 - output([SB.STORE.S_STORE_NAME], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [SB.VIEW3.STORE_SALES.SS_ITEM_SK]), filter(nil), rowset=256
+  6 - output([SB.STORE.S_STORE_NAME], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [SB.VIEW3.STORE_SALES.SS_ITEM_SK]), filter(nil), rowset=256
+  7 - output([SB.STORE.S_STORE_NAME], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [SB.VIEW3.STORE_SALES.SS_ITEM_SK]), filter(nil), rowset=256
+      (#keys=1, [SB.VIEW3.STORE_SALES.SS_ITEM_SK]), dop=2
+  8 - output([SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [SB.VIEW3.STORE_SALES.SS_ITEM_SK], [SB.STORE.S_STORE_NAME]), filter([SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE) 
+      <= .1 * SB.AVE]), rowset=256
+      access([SB.AVE], [SB.VIEW3.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [SB.VIEW3.STORE_SALES.SS_ITEM_SK], [SB.STORE.S_STORE_NAME])
+  9 - output([T_FUN_SUM(VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)) / T_FUN_COUNT(VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE))], [VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)],
+       [VIEW4.STORE_SALES.SS_ITEM_SK], [STORE.S_STORE_NAME]), filter(nil), rowset=256
+      win_expr(T_FUN_SUM(VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE))), partition_by([VIEW4.STORE_SALES.SS_STORE_SK]), order_by(nil), window_type(RANGE),
+       upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+      win_expr(T_FUN_COUNT(VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE))), partition_by([VIEW4.STORE_SALES.SS_STORE_SK]), order_by(nil), window_type(RANGE),
+       upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+ 10 - output([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK], [STORE.S_STORE_NAME]), filter(nil), rowset=256
+      sort_keys([VIEW4.STORE_SALES.SS_STORE_SK, ASC])
+ 11 - output([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK], [STORE.S_STORE_NAME]), filter(nil), rowset=256
+ 12 - output([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK], [STORE.S_STORE_NAME]), filter(nil), rowset=256
+      (#keys=1, [VIEW4.STORE_SALES.SS_STORE_SK]), dop=2
+ 13 - output([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK], [STORE.S_STORE_NAME]), filter(nil), rowset=256
+      conds(nil), nl_params_([VIEW4.STORE_SALES.SS_STORE_SK(:3)]), use_batch=true
+ 14 - output([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK]), filter(nil), rowset=256
+      access([VIEW4.T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)], [VIEW4.STORE_SALES.SS_STORE_SK], [VIEW4.STORE_SALES.SS_ITEM_SK])
+ 15 - output([T_FUN_SUM(T_FUN_SUM(STORE_SALES.SS_SALES_PRICE))], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK]), filter(nil), rowset=256
+      group([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK]), agg_func([T_FUN_SUM(T_FUN_SUM(STORE_SALES.SS_SALES_PRICE))])
+ 16 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK], [T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)]), filter(nil), rowset=256
+ 17 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK], [T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)]), filter(nil), rowset=256
+      (#keys=2, [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK]), dop=2
+ 18 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK], [T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)]), filter(nil), rowset=256
+      group([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK]), agg_func([T_FUN_SUM(STORE_SALES.SS_SALES_PRICE)])
+ 19 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SALES_PRICE]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 20 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 21 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 22 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 23 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 24 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_MONTH_SEQ >= 1177], [DATE_DIM.D_MONTH_SEQ <= 1177 + 11]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MONTH_SEQ]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 25 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_SALES_PRICE]), filter(nil), rowset=256
+ 26 - output([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SALES_PRICE]), filter(nil), rowset=256
+ 27 - output([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SALES_PRICE]), filter([STORE_SALES.SS_STORE_SK 
+      IS NOT NULL], [SYS_OP_BLOOM_FILTER(STORE_SALES.SS_SOLD_DATE_SK)]), rowset=256
+      access([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SALES_PRICE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 28 - output([STORE.S_STORE_NAME]), filter(nil), rowset=256
+      access([GROUP_ID], [STORE.S_STORE_NAME]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([STORE.S_STORE_SK]), range(MIN ; MAX), 
+      range_cond([:3 = STORE.S_STORE_SK])
+ 29 - output([ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 30 - output([ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+      (#keys=1, [ITEM.I_ITEM_SK]), dop=2
+ 31 - output([ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 32 - output([ITEM.I_ITEM_SK], [ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND]), filter(nil), rowset=256
+ 33 - output([ITEM.I_ITEM_SK], [ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND]), filter([SYS_OP_BLOOM_FILTER(ITEM.I_ITEM_SK)]), rowset=256
+      access([ITEM.I_ITEM_SK], [ITEM.I_ITEM_DESC], [ITEM.I_CURRENT_PRICE], [ITEM.I_WHOLESALE_COST], [ITEM.I_BRAND]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ITEM.I_ITEM_SK]), range(MIN ; MAX)always true
+select /*+parallel(2) TPC-DS Q71*/* from (select   s_store_name,
+i_item_desc,
+sc.revenue,
+i_current_price,
+i_wholesale_cost,
+i_brand
+from store, item,
+(select ss_store_sk, avg(revenue) as ave
+from       (select  ss_store_sk, ss_item_sk,
+sum(ss_sales_price) as revenue
+from store_sales, date_dim
+where ss_sold_date_sk = d_date_sk and d_month_seq between 1177 and 1177+11      group by ss_store_sk, ss_item_sk) sa
+group by ss_store_sk) sb,
+(select  ss_store_sk, ss_item_sk, sum(ss_sales_price) as revenue
+from store_sales, date_dim
+where ss_sold_date_sk = d_date_sk and d_month_seq between 1177 and 1177+11   group by ss_store_sk, ss_item_sk) sc
+where sb.ss_store_sk = sc.ss_store_sk
+and sc.revenue <= 0.1 * sb.ave
+and s_store_sk = sc.ss_store_sk
+and i_item_sk = sc.ss_item_sk
+order by s_store_name, i_item_desc
+) where rownum <= 100;
++--------------+-------------+---------+-----------------+------------------+---------+
+| S_STORE_NAME | I_ITEM_DESC | REVENUE | I_CURRENT_PRICE | I_WHOLESALE_COST | I_BRAND |
++--------------+-------------+---------+-----------------+------------------+---------+
++--------------+-------------+---------+-----------------+------------------+---------+
+
+
+********************** TPC_DS Q72
+EXPLAIN select /*+parallel(2) TPC-DS Q72*/ i_brand_id brand_id, i_brand brand,t_hour,t_minute,
+sum(ext_price) ext_price
+from item, (select ws_ext_sales_price as ext_price,
+ws_sold_date_sk as sold_date_sk,
+ws_item_sk as sold_item_sk,
+ws_sold_time_sk as time_sk
+from web_sales,date_dim
+where d_date_sk = ws_sold_date_sk
+and d_moy=11 and d_year=1998 union all  select cs_ext_sales_price as ext_price,
+cs_sold_date_sk as sold_date_sk,
+cs_item_sk as sold_item_sk,
+cs_sold_time_sk as time_sk
+from catalog_sales,date_dim
+where d_date_sk = cs_sold_date_sk
+and d_moy=11 and d_year=1998 union all select ss_ext_sales_price as ext_price,
+ss_sold_date_sk as sold_date_sk,
+ss_item_sk as sold_item_sk,
+ss_sold_time_sk as time_sk
+from store_sales,date_dim
+where d_date_sk = ss_sold_date_sk
+and d_moy=11 and d_year=1998) tmp,time_dim
+where   sold_item_sk = i_item_sk
+and i_manager_id=1   and time_sk = t_time_sk
+and (t_meal_time = 'breakfast' or t_meal_time = 'dinner')
+group by i_brand, i_brand_id,t_hour,t_minute
+order by ext_price desc, i_brand_id;
+Query Plan
+===================================================================================================
+|ID|OPERATOR                                                  |NAME         |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT                                 |             |1       |451         |
+|1 |└─EXCHANGE OUT DISTR                                      |:EX10006     |1       |451         |
+|2 |  └─SORT                                                  |             |1       |451         |
+|3 |    └─HASH GROUP BY                                       |             |1       |451         |
+|4 |      └─EXCHANGE IN DISTR                                 |             |2       |451         |
+|5 |        └─EXCHANGE OUT DISTR (HASH)                       |:EX10005     |2       |449         |
+|6 |          └─MATERIAL                                      |             |2       |446         |
+|7 |            └─HASH GROUP BY                               |             |2       |446         |
+|8 |              └─SHARED HASH JOIN                          |             |1       |446         |
+|9 |                ├─JOIN FILTER CREATE                      |:BF0006      |2       |16          |
+|10|                │ └─JOIN FILTER CREATE                    |:BF0005      |2       |16          |
+|11|                │   └─JOIN FILTER CREATE                  |:BF0004      |2       |16          |
+|12|                │     └─EXCHANGE IN DISTR                 |             |2       |16          |
+|13|                │       └─EXCHANGE OUT DISTR (BC2HOST)    |:EX10000     |2       |15          |
+|14|                │         └─PX BLOCK ITERATOR             |             |2       |13          |
+|15|                │           └─TABLE FULL SCAN             |TIME_DIM     |2       |13          |
+|16|                └─SHARED HASH JOIN                        |             |4       |582213      |
+|17|                  ├─JOIN FILTER CREATE                    |:BF0003      |3       |12          |
+|18|                  │ └─JOIN FILTER CREATE                  |:BF0002      |3       |12          |
+|19|                  │   └─JOIN FILTER CREATE                |:BF0001      |3       |12          |
+|20|                  │     └─EXCHANGE IN DISTR               |             |3       |12          |
+|21|                  │       └─EXCHANGE OUT DISTR (BC2HOST)  |:EX10001     |3       |10          |
+|22|                  │         └─PX BLOCK ITERATOR           |             |3       |7           |
+|23|                  │           └─TABLE FULL SCAN           |ITEM         |3       |7           |
+|24|                  └─SUBPLAN SCAN                          |TMP          |399     |582199      |
+|25|                    └─UNION ALL                           |             |399     |582198      |
+|26|                      ├─MATERIAL                          |             |1       |113         |
+|27|                      │ └─SHARED HASH JOIN                |             |1       |113         |
+|28|                      │   ├─EXCHANGE IN DISTR             |             |30      |66          |
+|29|                      │   │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10002     |30      |53          |
+|30|                      │   │   └─PX BLOCK ITERATOR         |             |30      |24          |
+|31|                      │   │     └─TABLE FULL SCAN         |DATE_DIM     |30      |24          |
+|32|                      │   └─JOIN FILTER USE               |:BF0001      |1       |42          |
+|33|                      │     └─JOIN FILTER USE             |:BF0004      |1       |42          |
+|34|                      │       └─PX PARTITION ITERATOR     |             |1       |42          |
+|35|                      │         └─TABLE FULL SCAN         |WEB_SALES    |1       |42          |
+|36|                      ├─MATERIAL                          |             |399     |581864      |
+|37|                      │ └─SHARED HASH JOIN                |             |399     |581864      |
+|38|                      │   ├─EXCHANGE IN DISTR             |             |30      |66          |
+|39|                      │   │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10003     |30      |53          |
+|40|                      │   │   └─PX BLOCK ITERATOR         |             |30      |24          |
+|41|                      │   │     └─TABLE FULL SCAN         |DATE_DIM     |30      |24          |
+|42|                      │   └─JOIN FILTER USE               |:BF0002      |402     |581776      |
+|43|                      │     └─JOIN FILTER USE             |:BF0005      |402     |581776      |
+|44|                      │       └─PX PARTITION ITERATOR     |             |402     |581776      |
+|45|                      │         └─TABLE FULL SCAN         |CATALOG_SALES|402     |581776      |
+|46|                      └─SHARED HASH JOIN                  |             |396     |120         |
+|47|                        ├─JOIN FILTER CREATE              |:BF0000      |30      |66          |
+|48|                        │ └─EXCHANGE IN DISTR             |             |30      |66          |
+|49|                        │   └─EXCHANGE OUT DISTR (BC2HOST)|:EX10004     |30      |53          |
+|50|                        │     └─PX BLOCK ITERATOR         |             |30      |24          |
+|51|                        │       └─TABLE FULL SCAN         |DATE_DIM     |30      |24          |
+|52|                        └─JOIN FILTER USE                 |:BF0000      |1       |50          |
+|53|                          └─JOIN FILTER USE               |:BF0003      |1       |50          |
+|54|                            └─JOIN FILTER USE             |:BF0006      |1       |50          |
+|55|                              └─PX PARTITION ITERATOR     |             |1       |50          |
+|56|                                └─TABLE FULL SCAN         |STORE_SALES  |1       |50          |
+===================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ITEM.I_BRAND_ID, ITEM.I_BRAND, TIME_DIM.T_HOUR, TIME_DIM.T_MINUTE, T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE)))]), filter(nil), rowset=256
+      sort_keys([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE)), DESC], [ITEM.I_BRAND_ID, ASC])
+  1 - output([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE))], [ITEM.I_BRAND_ID], [INTERNAL_FUNCTION(ITEM.I_BRAND_ID, ITEM.I_BRAND, TIME_DIM.T_HOUR, TIME_DIM.T_MINUTE,
+       T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE)))]), filter(nil), rowset=256
+      dop=2
+  2 - output([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE))], [ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), filter(nil), rowset=256
+      sort_keys([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE)), DESC], [ITEM.I_BRAND_ID, ASC])
+  3 - output([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE))], [ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), filter(nil), rowset=256
+      group([ITEM.I_BRAND], [ITEM.I_BRAND_ID], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), agg_func([T_FUN_SUM(T_FUN_SUM(TMP.EXT_PRICE))])
+  4 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [T_FUN_SUM(TMP.EXT_PRICE)]), filter(nil), rowset=256
+  5 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [T_FUN_SUM(TMP.EXT_PRICE)]), filter(nil), rowset=256
+      (#keys=4, [ITEM.I_BRAND], [ITEM.I_BRAND_ID], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), dop=2
+  6 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [T_FUN_SUM(TMP.EXT_PRICE)]), filter(nil), rowset=256
+  7 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [T_FUN_SUM(TMP.EXT_PRICE)]), filter(nil), rowset=256
+      group([ITEM.I_BRAND], [ITEM.I_BRAND_ID], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), agg_func([T_FUN_SUM(TMP.EXT_PRICE)])
+  8 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TMP.EXT_PRICE]), filter(nil), rowset=256
+      equal_conds([TMP.TIME_SK = TIME_DIM.T_TIME_SK]), other_conds(nil)
+  9 - output([TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TIME_DIM.T_TIME_SK]), filter(nil), rowset=256
+ 10 - output([TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TIME_DIM.T_TIME_SK]), filter(nil), rowset=256
+ 11 - output([TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TIME_DIM.T_TIME_SK]), filter(nil), rowset=256
+ 12 - output([TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TIME_DIM.T_TIME_SK]), filter(nil), rowset=256
+ 13 - output([TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE], [TIME_DIM.T_TIME_SK]), filter(nil), rowset=256
+      dop=2
+ 14 - output([TIME_DIM.T_TIME_SK], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), filter(nil), rowset=256
+ 15 - output([TIME_DIM.T_TIME_SK], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), filter([TIME_DIM.T_MEAL_TIME = 'breakfast' OR TIME_DIM.T_MEAL_TIME = 'dinner']), rowset=256
+      access([TIME_DIM.T_TIME_SK], [TIME_DIM.T_MEAL_TIME], [TIME_DIM.T_HOUR], [TIME_DIM.T_MINUTE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([TIME_DIM.T_TIME_SK]), range(MIN ; MAX)always true
+ 16 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [TMP.EXT_PRICE], [TMP.TIME_SK]), filter(nil), rowset=256
+      equal_conds([TMP.SOLD_ITEM_SK = ITEM.I_ITEM_SK]), other_conds(nil)
+ 17 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 18 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 19 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 20 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+ 21 - output([ITEM.I_BRAND_ID], [ITEM.I_BRAND], [ITEM.I_ITEM_SK]), filter(nil), rowset=256
+      dop=2
+ 22 - output([ITEM.I_ITEM_SK], [ITEM.I_BRAND], [ITEM.I_BRAND_ID]), filter(nil), rowset=256
+ 23 - output([ITEM.I_ITEM_SK], [ITEM.I_BRAND], [ITEM.I_BRAND_ID]), filter([ITEM.I_MANAGER_ID = 1]), rowset=256
+      access([ITEM.I_ITEM_SK], [ITEM.I_MANAGER_ID], [ITEM.I_BRAND], [ITEM.I_BRAND_ID]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ITEM.I_ITEM_SK]), range(MIN ; MAX)always true
+ 24 - output([TMP.EXT_PRICE], [TMP.SOLD_ITEM_SK], [TMP.TIME_SK]), filter(nil), rowset=256
+      access([TMP.EXT_PRICE], [TMP.SOLD_ITEM_SK], [TMP.TIME_SK])
+ 25 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=256
+ 26 - output([WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_TIME_SK]), filter(nil), rowset=256
+ 27 - output([WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_TIME_SK]), filter(nil), rowset=256
+      equal_conds([DATE_DIM.D_DATE_SK = WEB_SALES.WS_SOLD_DATE_SK]), other_conds(nil)
+ 28 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 29 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 30 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 31 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_MOY = 11], [DATE_DIM.D_YEAR = 1998]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MOY], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 32 - output([WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_TIME_SK], [WEB_SALES.WS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 33 - output([WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_TIME_SK], [WEB_SALES.WS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 34 - output([WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_SOLD_TIME_SK]), filter(nil), rowset=256
+      affinitize, partition wise, force partition granule
+ 35 - output([WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_SOLD_TIME_SK]), filter([SYS_OP_BLOOM_FILTER(WEB_SALES.WS_ITEM_SK)],
+       [SYS_OP_BLOOM_FILTER(WEB_SALES.WS_SOLD_TIME_SK)]), rowset=256
+      access([WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_EXT_SALES_PRICE], [WEB_SALES.WS_SOLD_TIME_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_ORDER_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 36 - output([CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_TIME_SK]), filter(nil), rowset=256
+ 37 - output([CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_TIME_SK]), filter(nil), rowset=256
+      equal_conds([DATE_DIM.D_DATE_SK = CATALOG_SALES.CS_SOLD_DATE_SK]), other_conds(nil)
+ 38 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 39 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 40 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 41 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_MOY = 11], [DATE_DIM.D_YEAR = 1998]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MOY], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 42 - output([CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_TIME_SK], [CATALOG_SALES.CS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 43 - output([CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_TIME_SK], [CATALOG_SALES.CS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 44 - output([CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_SOLD_TIME_SK]), filter(nil), rowset=256
+      affinitize, partition wise, force partition granule
+ 45 - output([CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_SOLD_TIME_SK]), filter([SYS_OP_BLOOM_FILTER(CATALOG_SALES.CS_ITEM_SK)],
+       [SYS_OP_BLOOM_FILTER(CATALOG_SALES.CS_SOLD_TIME_SK)]), rowset=256
+      access([CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_EXT_SALES_PRICE], [CATALOG_SALES.CS_SOLD_TIME_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_ORDER_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 46 - output([STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_TIME_SK]), filter(nil), rowset=256
+      equal_conds([DATE_DIM.D_DATE_SK = STORE_SALES.SS_SOLD_DATE_SK]), other_conds(nil)
+ 47 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 48 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 49 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 50 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 51 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_MOY = 11], [DATE_DIM.D_YEAR = 1998]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MOY], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 52 - output([STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_TIME_SK], [STORE_SALES.SS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 53 - output([STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_TIME_SK], [STORE_SALES.SS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 54 - output([STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_TIME_SK], [STORE_SALES.SS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 55 - output([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_SOLD_TIME_SK]), filter(nil), rowset=256
+      affinitize, partition wise, force partition granule
+ 56 - output([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_SOLD_TIME_SK]), filter([SYS_OP_BLOOM_FILTER(STORE_SALES.SS_SOLD_DATE_SK)],
+       [SYS_OP_BLOOM_FILTER(STORE_SALES.SS_ITEM_SK)], [SYS_OP_BLOOM_FILTER(STORE_SALES.SS_SOLD_TIME_SK)]), rowset=256
+      access([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_EXT_SALES_PRICE], [STORE_SALES.SS_SOLD_TIME_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false,false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) TPC-DS Q72*/ i_brand_id brand_id, i_brand brand,t_hour,t_minute,
+sum(ext_price) ext_price
+from item, (select ws_ext_sales_price as ext_price,
+ws_sold_date_sk as sold_date_sk,
+ws_item_sk as sold_item_sk,
+ws_sold_time_sk as time_sk
+from web_sales,date_dim
+where d_date_sk = ws_sold_date_sk
+and d_moy=11 and d_year=1998 union all  select cs_ext_sales_price as ext_price,
+cs_sold_date_sk as sold_date_sk,
+cs_item_sk as sold_item_sk,
+cs_sold_time_sk as time_sk
+from catalog_sales,date_dim
+where d_date_sk = cs_sold_date_sk
+and d_moy=11 and d_year=1998 union all select ss_ext_sales_price as ext_price,
+ss_sold_date_sk as sold_date_sk,
+ss_item_sk as sold_item_sk,
+ss_sold_time_sk as time_sk
+from store_sales,date_dim
+where d_date_sk = ss_sold_date_sk
+and d_moy=11 and d_year=1998) tmp,time_dim
+where   sold_item_sk = i_item_sk
+and i_manager_id=1   and time_sk = t_time_sk
+and (t_meal_time = 'breakfast' or t_meal_time = 'dinner')
+group by i_brand, i_brand_id,t_hour,t_minute
+order by ext_price desc, i_brand_id;
++----------+-------+--------+----------+-----------+
+| BRAND_ID | BRAND | T_HOUR | T_MINUTE | EXT_PRICE |
++----------+-------+--------+----------+-----------+
++----------+-------+--------+----------+-----------+
+
+
+********************** TPC_DS Q73
+EXPLAIN select /*+parallel(2) TPC-DS Q73*/ c_last_name
+,c_first_name
+,c_salutation
+,c_preferred_cust_flag
+,ss_ticket_number
+,cnt from   (select ss_ticket_number
+,ss_customer_sk
+,count(*) cnt
+from store_sales,date_dim,store,household_demographics
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_store_sk = store.s_store_sk
+and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+and (date_dim.d_dom between 1 and 3 or date_dim.d_dom between 25 and 28)
+and (household_demographics.hd_buy_potential = '501-1000' or         household_demographics.hd_buy_potential = '0-500')
+and household_demographics.hd_vehicle_count > 0    and (case when household_demographics.hd_vehicle_count > 0   then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count
+else null   end)  > 1.2    and date_dim.d_year in (1998,1998+1,1998+2)
+and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County',
+'Williamson County','Williamson County','Williamson County','Williamson County')
+group by ss_ticket_number,ss_customer_sk) dn,customer
+where ss_customer_sk = c_customer_sk
+and cnt between 15 and 20    order by c_last_name,c_first_name,c_salutation,c_preferred_cust_flag desc, ss_ticket_number;
+Query Plan
+========================================================================================================
+|ID|OPERATOR                                              |NAME                  |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT                             |                      |1       |593         |
+|1 |└─EXCHANGE OUT DISTR                                  |:EX10004              |1       |592         |
+|2 |  └─SORT                                              |                      |1       |592         |
+|3 |    └─NESTED-LOOP JOIN                                |                      |1       |592         |
+|4 |      ├─SUBPLAN SCAN                                  |DN                    |1       |587         |
+|5 |      │ └─HASH GROUP BY                               |                      |1       |587         |
+|6 |      │   └─EXCHANGE IN DISTR                         |                      |112     |566         |
+|7 |      │     └─EXCHANGE OUT DISTR (HASH)               |:EX10003              |112     |529         |
+|8 |      │       └─HASH GROUP BY                         |                      |112     |444         |
+|9 |      │         └─SHARED HASH JOIN                    |                      |112     |427         |
+|10|      │           ├─EXCHANGE IN DISTR                 |                      |12      |12          |
+|11|      │           │ └─EXCHANGE OUT DISTR (BC2HOST)    |:EX10000              |12      |9           |
+|12|      │           │   └─PX BLOCK ITERATOR             |                      |12      |2           |
+|13|      │           │     └─TABLE FULL SCAN             |STORE                 |12      |2           |
+|14|      │           └─SHARED HASH JOIN                  |                      |118     |408         |
+|15|      │             ├─JOIN FILTER CREATE              |:BF0000               |23      |47          |
+|16|      │             │ └─EXCHANGE IN DISTR             |                      |23      |47          |
+|17|      │             │   └─EXCHANGE OUT DISTR (BC2HOST)|:EX10001              |23      |35          |
+|18|      │             │     └─PX BLOCK ITERATOR         |                      |23      |8           |
+|19|      │             │       └─TABLE FULL SCAN         |HOUSEHOLD_DEMOGRAPHICS|23      |8           |
+|20|      │             └─SHARED HASH JOIN                |                      |123     |357         |
+|21|      │               ├─EXCHANGE IN DISTR             |                      |162     |257         |
+|22|      │               │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10002              |162     |186         |
+|23|      │               │   └─PX BLOCK ITERATOR         |                      |162     |25          |
+|24|      │               │     └─TABLE FULL SCAN         |DATE_DIM              |162     |25          |
+|25|      │               └─JOIN FILTER USE               |:BF0000               |281     |61          |
+|26|      │                 └─PX BLOCK ITERATOR           |                      |281     |61          |
+|27|      │                   └─TABLE FULL SCAN           |STORE_SALES           |281     |61          |
+|28|      └─DISTRIBUTED TABLE GET                         |CUSTOMER              |1       |16          |
+========================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(CUSTOMER.C_LAST_NAME, CUSTOMER.C_FIRST_NAME, CUSTOMER.C_SALUTATION, CUSTOMER.C_PREFERRED_CUST_FLAG, DN.SS_TICKET_NUMBER,
+       DN.CNT)]), filter(nil), rowset=256
+      sort_keys([CUSTOMER.C_LAST_NAME, ASC], [CUSTOMER.C_FIRST_NAME, ASC], [CUSTOMER.C_SALUTATION, ASC], [CUSTOMER.C_PREFERRED_CUST_FLAG, DESC], [DN.SS_TICKET_NUMBER,
+       ASC])
+  1 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG], [DN.SS_TICKET_NUMBER], [INTERNAL_FUNCTION(CUSTOMER.C_LAST_NAME,
+       CUSTOMER.C_FIRST_NAME, CUSTOMER.C_SALUTATION, CUSTOMER.C_PREFERRED_CUST_FLAG, DN.SS_TICKET_NUMBER, DN.CNT)]), filter(nil), rowset=256
+      dop=2
+  2 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG], [DN.SS_TICKET_NUMBER], [DN.CNT]), filter(nil), rowset=256
+      sort_keys([CUSTOMER.C_LAST_NAME, ASC], [CUSTOMER.C_FIRST_NAME, ASC], [CUSTOMER.C_SALUTATION, ASC], [CUSTOMER.C_PREFERRED_CUST_FLAG, DESC], [DN.SS_TICKET_NUMBER,
+       ASC])
+  3 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG], [DN.SS_TICKET_NUMBER], [DN.CNT]), filter(nil), rowset=256
+      conds(nil), nl_params_([DN.SS_CUSTOMER_SK(:6)]), use_batch=true
+  4 - output([DN.SS_CUSTOMER_SK], [DN.CNT], [DN.SS_TICKET_NUMBER]), filter(nil), rowset=256
+      access([DN.SS_CUSTOMER_SK], [DN.CNT], [DN.SS_TICKET_NUMBER])
+  5 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) >= 
+      15], [T_FUN_COUNT_SUM(T_FUN_COUNT(*)) <= 20]), rowset=256
+      group([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  6 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+  7 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+      (#keys=2, [STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), dop=2
+  8 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), agg_func([T_FUN_COUNT(*)])
+  9 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_STORE_SK = STORE.S_STORE_SK]), other_conds(nil)
+ 10 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 11 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+      dop=2
+ 12 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 13 - output([STORE.S_STORE_SK]), filter([STORE.S_COUNTY IN (cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)),
+       cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson 
+      County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)))]), rowset=256
+      access([STORE.S_STORE_SK], [STORE.S_COUNTY]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([STORE.S_STORE_SK]), range(MIN ; MAX)always true
+ 14 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_HDEMO_SK = HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), other_conds(nil)
+ 15 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 16 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 17 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+      dop=2
+ 18 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 19 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter([CASE WHEN HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT > 0 THEN HOUSEHOLD_DEMOGRAPHICS.HD_DEP_COUNT 
+      / HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT ELSE NULL END > 1.2], [HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL = '501-1000' OR HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL 
+      = '0-500'], [HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT > 0]), rowset=256
+      access([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK], [HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL], [HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT], [HOUSEHOLD_DEMOGRAPHICS.HD_DEP_COUNT]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false,false], 
+      range_key([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), range(MIN ; MAX)always true
+ 20 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 21 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 22 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 23 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 24 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_DOM >= 1 AND DATE_DIM.D_DOM <= 3 OR DATE_DIM.D_DOM >= 25 AND DATE_DIM.D_DOM <= 28], [DATE_DIM.D_YEAR 
+      IN (1998, 1998 + 1, 1998 + 2)]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DOM], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 25 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+ 26 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+ 27 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter([SYS_OP_BLOOM_FILTER(STORE_SALES.
+      SS_HDEMO_SK)]), rowset=256
+      access([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 28 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), filter(nil), rowset=256
+      access([GROUP_ID], [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CUSTOMER.C_CUSTOMER_SK]), range(MIN ; MAX), 
+      range_cond([:6 = CUSTOMER.C_CUSTOMER_SK])
+select /*+parallel(2) TPC-DS Q73*/ c_last_name
+,c_first_name
+,c_salutation
+,c_preferred_cust_flag
+,ss_ticket_number
+,cnt from   (select ss_ticket_number
+,ss_customer_sk
+,count(*) cnt
+from store_sales,date_dim,store,household_demographics
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_store_sk = store.s_store_sk
+and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+and (date_dim.d_dom between 1 and 3 or date_dim.d_dom between 25 and 28)
+and (household_demographics.hd_buy_potential = '501-1000' or         household_demographics.hd_buy_potential = '0-500')
+and household_demographics.hd_vehicle_count > 0    and (case when household_demographics.hd_vehicle_count > 0   then household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count
+else null   end)  > 1.2    and date_dim.d_year in (1998,1998+1,1998+2)
+and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County',
+'Williamson County','Williamson County','Williamson County','Williamson County')
+group by ss_ticket_number,ss_customer_sk) dn,customer
+where ss_customer_sk = c_customer_sk
+and cnt between 15 and 20    order by c_last_name,c_first_name,c_salutation,c_preferred_cust_flag desc, ss_ticket_number;
++-------------+--------------+--------------+-----------------------+------------------+------+
+| C_LAST_NAME | C_FIRST_NAME | C_SALUTATION | C_PREFERRED_CUST_FLAG | SS_TICKET_NUMBER | CNT  |
++-------------+--------------+--------------+-----------------------+------------------+------+
++-------------+--------------+--------------+-----------------------+------------------+------+
+
+
+********************** TPC_DS Q74
+EXPLAIN select /*+parallel(2) TPC-DS Q74*/ sum (ss_quantity)
+from store_sales, store, customer_demographics, customer_address, date_dim
+where s_store_sk = ss_store_sk
+and  ss_sold_date_sk = d_date_sk and d_year = 2000 and (
+(
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'S'
+and   cd_education_status = 'Advanced Degree'
+and   ss_sales_price between 100.00 and 150.00)
+or  (
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'D'
+and   cd_education_status = '4 yr Degree'   and   ss_sales_price between 50.00 and 100.00)
+or (
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'U'
+and   cd_education_status = 'Secondary'
+and   ss_sales_price between 150.00 and 200.00)
+)
+and (
+(
+ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('MN', 'TN', 'IL')
+and ss_net_profit between 0 and 2000    )
+or  (ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('TX', 'OR', 'ID')
+and ss_net_profit between 150 and 3000  )
+or  (ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('MI', 'AL', 'RI')
+and ss_net_profit between 50 and 25000  )
+);
+Query Plan
+===================================================================================================
+|ID|OPERATOR                                          |NAME                 |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                                   |                     |1       |732         |
+|1 |└─PX COORDINATOR                                  |                     |3       |732         |
+|2 |  └─EXCHANGE OUT DISTR                            |:EX10003             |3       |732         |
+|3 |    └─MERGE GROUP BY                              |                     |3       |731         |
+|4 |      └─NESTED-LOOP JOIN                          |                     |3       |731         |
+|5 |        ├─SHARED HASH JOIN                        |                     |3       |712         |
+|6 |        │ ├─EXCHANGE IN DISTR                     |                     |92      |552         |
+|7 |        │ │ └─EXCHANGE OUT DISTR (BC2HOST)        |:EX10002             |92      |516         |
+|8 |        │ │   └─SHARED HASH JOIN                  |                     |92      |435         |
+|9 |        │ │     ├─EXCHANGE IN DISTR               |                     |12      |7           |
+|10|        │ │     │ └─EXCHANGE OUT DISTR (BC2HOST)  |:EX10000             |12      |5           |
+|11|        │ │     │   └─PX BLOCK ITERATOR           |                     |12      |1           |
+|12|        │ │     │     └─TABLE FULL SCAN           |STORE                |12      |1           |
+|13|        │ │     └─SHARED HASH JOIN                |                     |96      |423         |
+|14|        │ │       ├─EXCHANGE IN DISTR             |                     |82      |100         |
+|15|        │ │       │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10001             |82      |75          |
+|16|        │ │       │   └─PX BLOCK ITERATOR         |                     |82      |17          |
+|17|        │ │       │     └─TABLE FULL SCAN         |CUSTOMER_ADDRESS     |82      |17          |
+|18|        │ │       └─PX BLOCK ITERATOR             |                     |1559    |241         |
+|19|        │ │         └─TABLE FULL SCAN             |STORE_SALES          |1559    |241         |
+|20|        │ └─PX BLOCK ITERATOR                     |                     |667     |116         |
+|21|        │   └─TABLE FULL SCAN                     |CUSTOMER_DEMOGRAPHICS|667     |116         |
+|22|        └─DISTRIBUTED TABLE GET                   |DATE_DIM             |1       |16          |
+===================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(STORE_SALES.SS_QUANTITY))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(STORE_SALES.SS_QUANTITY))])
+  1 - output([T_FUN_SUM(STORE_SALES.SS_QUANTITY)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(STORE_SALES.SS_QUANTITY)]), filter(nil), rowset=256
+      dop=2
+  3 - output([T_FUN_SUM(STORE_SALES.SS_QUANTITY)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(STORE_SALES.SS_QUANTITY)])
+  4 - output([STORE_SALES.SS_QUANTITY]), filter(nil), rowset=256
+      conds(nil), nl_params_([STORE_SALES.SS_SOLD_DATE_SK(:11)]), use_batch=true
+  5 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_QUANTITY]), filter(nil), rowset=256
+      equal_conds([CUSTOMER_DEMOGRAPHICS.CD_DEMO_SK = STORE_SALES.SS_CDEMO_SK]), other_conds([(T_OP_OR, (T_OP_AND, CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS 
+      = 'S', CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Advanced Degree', STORE_SALES.SS_SALES_PRICE >= 100, STORE_SALES.SS_SALES_PRICE <= 150), (T_OP_AND, 
+      CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'D', CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = '4 yr Degree', STORE_SALES.SS_SALES_PRICE >= 50, STORE_SALES.SS_SALES_PRICE 
+      <= 100), (T_OP_AND, CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'U', CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Secondary', STORE_SALES.SS_SALES_PRICE >= 
+      150, STORE_SALES.SS_SALES_PRICE <= 200))])
+  6 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE >= 100], [STORE_SALES.SS_SALES_PRICE 
+      <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150], [STORE_SALES.SS_SALES_PRICE <= 200]), filter(nil), rowset=256
+  7 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE >= 100], [STORE_SALES.SS_SALES_PRICE 
+      <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150], [STORE_SALES.SS_SALES_PRICE <= 200]), filter(nil), rowset=256
+      dop=2
+  8 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE >= 100], [STORE_SALES.SS_SALES_PRICE 
+      <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150], [STORE_SALES.SS_SALES_PRICE <= 200]), filter(nil), rowset=256
+      equal_conds([STORE.S_STORE_SK = STORE_SALES.SS_STORE_SK]), other_conds(nil)
+  9 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 10 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+      dop=2
+ 11 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 12 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+      access([STORE.S_STORE_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([STORE.S_STORE_SK]), range(MIN ; MAX)always true
+ 13 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE 
+      >= 100], [STORE_SALES.SS_SALES_PRICE <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150],
+       [STORE_SALES.SS_SALES_PRICE <= 200]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_ADDR_SK = CUSTOMER_ADDRESS.CA_ADDRESS_SK]), other_conds([(T_OP_OR, (T_OP_AND, CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN',
+       'IL'), STORE_SALES.SS_NET_PROFIT >= 0, STORE_SALES.SS_NET_PROFIT <= 2000), (T_OP_AND, CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID'), STORE_SALES.SS_NET_PROFIT 
+      >= 150, STORE_SALES.SS_NET_PROFIT <= 3000), (T_OP_AND, CUSTOMER_ADDRESS.CA_STATE IN ('MI', 'AL', 'RI'), STORE_SALES.SS_NET_PROFIT >= 50, STORE_SALES.SS_NET_PROFIT 
+      <= 25000))])
+ 14 - output([CUSTOMER_ADDRESS.CA_ADDRESS_SK], [CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN', 'IL')], [CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID')], [CUSTOMER_ADDRESS.CA_STATE 
+      IN ('MI', 'AL', 'RI')]), filter(nil), rowset=256
+ 15 - output([CUSTOMER_ADDRESS.CA_ADDRESS_SK], [CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN', 'IL')], [CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID')], [CUSTOMER_ADDRESS.CA_STATE 
+      IN ('MI', 'AL', 'RI')]), filter(nil), rowset=256
+      dop=2
+ 16 - output([CUSTOMER_ADDRESS.CA_ADDRESS_SK], [CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN', 'IL')], [CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID')], [CUSTOMER_ADDRESS.CA_STATE 
+      IN ('MI', 'AL', 'RI')]), filter(nil), rowset=256
+ 17 - output([CUSTOMER_ADDRESS.CA_ADDRESS_SK], [CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN', 'IL')], [CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID')], [CUSTOMER_ADDRESS.CA_STATE 
+      IN ('MI', 'AL', 'RI')]), f
+      ilter([(T_OP_OR, CUSTOMER_ADDRESS.CA_STATE IN ('MN', 'TN', 'IL'), CUSTOMER_ADDRESS.CA_STATE IN ('TX', 'OR', 'ID'), CUSTOMER_ADDRESS.CA_STATE IN ('MI', 'AL',
+       'RI'))], [CUSTOMER_ADDRESS.CA_COUNTRY = cast('United States', VARCHAR2(1048576 ))]), rowset=256
+      access([CUSTOMER_ADDRESS.CA_ADDRESS_SK], [CUSTOMER_ADDRESS.CA_COUNTRY], [CUSTOMER_ADDRESS.CA_STATE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([CUSTOMER_ADDRESS.CA_ADDRESS_SK]), range(MIN ; MAX)always true
+ 18 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_ADDR_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE 
+      >= 100], [STORE_SALES.SS_SALES_PRICE <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150],
+       [STORE_SALES.SS_SALES_PRICE <= 200], [STORE_SALES.SS_NET_PROFIT >= 0], [STORE_SALES.SS_NET_PROFIT <= 2000], [STORE_SALES.SS_NET_PROFIT >= 150], [STORE_SALES.SS_NET_PROFIT 
+      <= 3000], [STORE_SALES.SS_NET_PROFIT >= 50], [STORE_SALES.SS_NET_PROFIT <= 25000]), filter(nil), rowset=256
+ 19 - output([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_ADDR_SK], [STORE_SALES.SS_QUANTITY], [STORE_SALES.SS_SALES_PRICE 
+      >= 100], [STORE_SALES.SS_SALES_PRICE <= 150], [STORE_SALES.SS_SALES_PRICE >= 50], [STORE_SALES.SS_SALES_PRICE <= 100], [STORE_SALES.SS_SALES_PRICE >= 150],
+       [STORE_SALES.SS_SALES_PRICE <= 200], [STORE_SALES.SS_NET_PROFIT >= 0], [STORE_SALES.SS_NET_PROFIT <= 2000], [STORE_SALES.SS_NET_PROFIT >= 150], [STORE_SALES.SS_NET_PROFIT 
+      <= 3000], [STORE_SALES.SS_NET_PROFIT >= 50], [STORE_SALES.SS_NET_PROFIT <= 25000]), f
+      ilter([(T_OP_OR, STORE_SALES.SS_SALES_PRICE >= 100 AND STORE_SALES.SS_SALES_PRICE <= 150, STORE_SALES.SS_SALES_PRICE >= 50 AND STORE_SALES.SS_SALES_PRICE 
+      <= 100, STORE_SALES.SS_SALES_PRICE >= 150 AND STORE_SALES.SS_SALES_PRICE <= 200)], [(T_OP_OR, STORE_SALES.SS_NET_PROFIT >= 0 AND STORE_SALES.SS_NET_PROFIT 
+      <= 2000, STORE_SALES.SS_NET_PROFIT >= 150 AND STORE_SALES.SS_NET_PROFIT <= 3000, STORE_SALES.SS_NET_PROFIT >= 50 AND STORE_SALES.SS_NET_PROFIT <= 25000)]), rowset=256
+      access([STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CDEMO_SK], [STORE_SALES.SS_SALES_PRICE], [STORE_SALES.SS_ADDR_SK],
+       [STORE_SALES.SS_NET_PROFIT], [STORE_SALES.SS_QUANTITY]), p
+      artitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 20 - output([CUSTOMER_DEMOGRAPHICS.CD_DEMO_SK], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'S'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Advanced 
+      Degree'], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'D'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = '4 yr Degree'], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS 
+      = 'U'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Secondary']), filter(nil), rowset=256
+ 21 - output([CUSTOMER_DEMOGRAPHICS.CD_DEMO_SK], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'S'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Advanced 
+      Degree'], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'D'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = '4 yr Degree'], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS 
+      = 'U'], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Secondary']), f
+      ilter([(T_OP_OR, CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'S' AND CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = 'Advanced Degree', CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS 
+      = 'D' AND CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS = '4 yr Degree', CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS = 'U' AND CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS 
+      = 'Secondary')]), rowset=256
+      access([CUSTOMER_DEMOGRAPHICS.CD_DEMO_SK], [CUSTOMER_DEMOGRAPHICS.CD_MARITAL_STATUS], [CUSTOMER_DEMOGRAPHICS.CD_EDUCATION_STATUS]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([CUSTOMER_DEMOGRAPHICS.CD_DEMO_SK]), range(MIN ; MAX)always true
+ 22 - output(nil), filter([DATE_DIM.D_YEAR = 2000]), rowset=256
+      access([GROUP_ID], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX), 
+      range_cond([:11 = DATE_DIM.D_DATE_SK])
+select /*+parallel(2) TPC-DS Q74*/ sum (ss_quantity)
+from store_sales, store, customer_demographics, customer_address, date_dim
+where s_store_sk = ss_store_sk
+and  ss_sold_date_sk = d_date_sk and d_year = 2000 and (
+(
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'S'
+and   cd_education_status = 'Advanced Degree'
+and   ss_sales_price between 100.00 and 150.00)
+or  (
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'D'
+and   cd_education_status = '4 yr Degree'   and   ss_sales_price between 50.00 and 100.00)
+or (
+cd_demo_sk = ss_cdemo_sk
+and   cd_marital_status = 'U'
+and   cd_education_status = 'Secondary'
+and   ss_sales_price between 150.00 and 200.00)
+)
+and (
+(
+ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('MN', 'TN', 'IL')
+and ss_net_profit between 0 and 2000    )
+or  (ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('TX', 'OR', 'ID')
+and ss_net_profit between 150 and 3000  )
+or  (ss_addr_sk = ca_address_sk
+and  ca_country = 'United States'  and  ca_state in ('MI', 'AL', 'RI')
+and ss_net_profit between 50 and 25000  )
+);
++------------------+
+| SUM(SS_QUANTITY) |
++------------------+
+|             NULL |
++------------------+
+
+
+********************** TPC_DS Q75
+
+with customer_total_return as (select wr_returning_customer_sk as ctr_customer_sk
+,ca_state as ctr_state,
+sum(wr_return_amt) as ctr_total_return
+from web_returns
+,date_dim
+,customer_address
+where wr_returned_date_sk = d_date_sk
+and d_year =2002   and wr_returning_addr_sk = ca_address_sk
+group by wr_returning_customer_sk
+,ca_state)
+select /*+parallel(2) TPC-DS Q75*/* from ( select  c_customer_id,c_salutation,c_first_name,c_last_name,c_preferred_cust_flag
+,c_birth_day,c_birth_month,c_birth_year,c_birth_country,c_login,c_email_address
+,c_last_review_date,ctr_total_return
+from customer_total_return ctr1
+,customer_address
+,customer
+where ctr1.ctr_total_return > (select avg(ctr_total_return)*1.2 from customer_total_return ctr2
+where ctr1.ctr_state = ctr2.ctr_state)
+and ca_address_sk = c_current_addr_sk
+and ca_state = 'OH'       and ctr1.ctr_customer_sk = c_customer_sk
+order by c_customer_id,c_salutation,c_first_name,c_last_name,c_preferred_cust_flag
+,c_birth_day,c_birth_month,c_birth_year,c_birth_country,c_login,c_email_address
+,c_last_review_date,ctr_total_return
+) where rownum <= 100;
++---------------+--------------+--------------+-------------+-----------------------+-------------+---------------+--------------+-----------------+---------+-----------------+--------------------+------------------+
+| C_CUSTOMER_ID | C_SALUTATION | C_FIRST_NAME | C_LAST_NAME | C_PREFERRED_CUST_FLAG | C_BIRTH_DAY | C_BIRTH_MONTH | C_BIRTH_YEAR | C_BIRTH_COUNTRY | C_LOGIN | C_EMAIL_ADDRESS | C_LAST_REVIEW_DATE | CTR_TOTAL_RETURN |
++---------------+--------------+--------------+-------------+-----------------------+-------------+---------------+--------------+-----------------+---------+-----------------+--------------------+------------------+
++---------------+--------------+--------------+-------------+-----------------------+-------------+---------------+--------------+-----------------+---------+-----------------+--------------------+------------------+
+
+
+********************** TPC_DS Q76
+
+with year_total as (
+select c_customer_id customer_id
+,c_first_name customer_first_name
+,c_last_name customer_last_name
+,d_year as year       ,sum(ss_net_paid) year_total
+,'s' sale_type
+from customer
+,store_sales
+,date_dim
+where c_customer_sk = ss_customer_sk
+and ss_sold_date_sk = d_date_sk
+and d_year in (2000,2000+1)
+group by c_customer_id
+,c_first_name
+,c_last_name
+,d_year
+union all select c_customer_id customer_id
+,c_first_name customer_first_name
+,c_last_name customer_last_name
+,d_year as year       ,sum(ws_net_paid) year_total
+,'w' sale_type
+from customer
+,web_sales
+,date_dim
+where c_customer_sk = ws_bill_customer_sk
+and ws_sold_date_sk = d_date_sk
+and d_year in (2000,2000+1)
+group by c_customer_id
+,c_first_name
+,c_last_name
+,d_year
+)
+select /*+parallel(2) TPC-DS Q76*/* from ( select  t_s_secyear.customer_id, t_s_secyear.customer_first_name, t_s_secyear.customer_last_name
+from year_total t_s_firstyear
+,year_total t_s_secyear
+,year_total t_w_firstyear
+,year_total t_w_secyear
+where t_s_secyear.customer_id = t_s_firstyear.customer_id
+and t_s_firstyear.customer_id = t_w_secyear.customer_id
+and t_s_firstyear.customer_id = t_w_firstyear.customer_id
+and t_s_firstyear.sale_type = 's'  and t_w_firstyear.sale_type = 'w' and t_s_secyear.sale_type = 's'  and t_w_secyear.sale_type = 'w'  and t_s_firstyear.year = 2000 and t_s_secyear.year = 2000+1     and t_w_firstyear.year = 2000    and t_w_secyear.year = 2000+1 and t_s_firstyear.year_total > 0  and t_w_firstyear.year_total > 0  and case when t_w_firstyear.year_total > 0 then t_w_secyear.year_total / t_w_firstyear.year_total else null end  > case when t_s_firstyear.year_total > 0 then t_s_secyear.year_total / t_s_firstyear.year_total else null end order by 3,1,2 ) where rownum <= 100;
++-------------+---------------------+--------------------+
+| CUSTOMER_ID | CUSTOMER_FIRST_NAME | CUSTOMER_LAST_NAME |
++-------------+---------------------+--------------------+
++-------------+---------------------+--------------------+
+
+
+********************** TPC_DS Q77
+EXPLAIN select /*+parallel(2) TPC-DS Q77*/ count(*)
+from ((select distinct c_last_name, c_first_name, d_date
+from store_sales, date_dim, customer
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+minus     (select distinct c_last_name, c_first_name, d_date
+from catalog_sales, date_dim, customer
+where catalog_sales.cs_sold_date_sk = date_dim.d_date_sk
+and catalog_sales.cs_bill_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+minus      (select distinct c_last_name, c_first_name, d_date
+from web_sales, date_dim, customer
+where web_sales.ws_sold_date_sk = date_dim.d_date_sk
+and web_sales.ws_bill_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+) cool_cust;
+Query Plan
+=====================================================================================================
+|ID|OPERATOR                                                    |NAME         |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                                             |             |1       |440         |
+|1 |└─PX COORDINATOR                                            |             |4       |440         |
+|2 |  └─EXCHANGE OUT DISTR                                      |:EX10007     |4       |439         |
+|3 |    └─MERGE GROUP BY                                        |             |4       |437         |
+|4 |      └─SUBPLAN SCAN                                        |COOL_CUST    |0       |437         |
+|5 |        └─HASH EXCEPT DISTINCT                              |             |0       |437         |
+|6 |          ├─EXCHANGE IN DISTR                               |             |0       |378         |
+|7 |          │ └─EXCHANGE OUT DISTR (HASH)                     |:EX10004     |0       |378         |
+|8 |          │   └─MATERIAL                                    |             |0       |378         |
+|9 |          │     └─HASH EXCEPT DISTINCT                      |             |0       |378         |
+|10|          │       ├─EXCHANGE IN DISTR                       |             |0       |68          |
+|11|          │       │ └─EXCHANGE OUT DISTR (HASH)             |:EX10001     |0       |68          |
+|12|          │       │   └─NESTED-LOOP JOIN                    |             |0       |68          |
+|13|          │       │     ├─SHARED HASH JOIN                  |             |0       |68          |
+|14|          │       │     │ ├─JOIN FILTER CREATE              |:BF0000      |0       |18          |
+|15|          │       │     │ │ └─EXCHANGE IN DISTR             |             |0       |18          |
+|16|          │       │     │ │   └─EXCHANGE OUT DISTR (BC2HOST)|:EX10000     |0       |18          |
+|17|          │       │     │ │     └─PX BLOCK ITERATOR         |             |0       |18          |
+|18|          │       │     │ │       └─TABLE FULL SCAN         |DATE_DIM     |0       |18          |
+|19|          │       │     │ └─JOIN FILTER USE                 |:BF0000      |15      |50          |
+|20|          │       │     │   └─PX BLOCK ITERATOR             |             |15      |50          |
+|21|          │       │     │     └─TABLE FULL SCAN             |STORE_SALES  |15      |50          |
+|22|          │       │     └─DISTRIBUTED TABLE GET             |CUSTOMER     |1       |16          |
+|23|          │       └─EXCHANGE IN DISTR                       |             |0       |310         |
+|24|          │         └─EXCHANGE OUT DISTR (HASH)             |:EX10003     |0       |310         |
+|25|          │           └─NESTED-LOOP JOIN                    |             |0       |310         |
+|26|          │             ├─SHARED HASH JOIN                  |             |0       |310         |
+|27|          │             │ ├─EXCHANGE IN DISTR               |             |0       |18          |
+|28|          │             │ │ └─EXCHANGE OUT DISTR (BC2HOST)  |:EX10002     |0       |18          |
+|29|          │             │ │   └─PX BLOCK ITERATOR           |             |0       |18          |
+|30|          │             │ │     └─TABLE FULL SCAN           |DATE_DIM     |0       |18          |
+|31|          │             │ └─PX BLOCK ITERATOR               |             |4000    |110         |
+|32|          │             │   └─TABLE FULL SCAN               |CATALOG_SALES|4000    |110         |
+|33|          │             └─DISTRIBUTED TABLE GET             |CUSTOMER     |1       |16          |
+|34|          └─EXCHANGE IN DISTR                               |             |0       |60          |
+|35|            └─EXCHANGE OUT DISTR (HASH)                     |:EX10006     |0       |60          |
+|36|              └─NESTED-LOOP JOIN                            |             |0       |60          |
+|37|                ├─SHARED HASH JOIN                          |             |0       |60          |
+|38|                │ ├─JOIN FILTER CREATE                      |:BF0001      |0       |18          |
+|39|                │ │ └─EXCHANGE IN DISTR                     |             |0       |18          |
+|40|                │ │   └─EXCHANGE OUT DISTR (BC2HOST)        |:EX10005     |0       |18          |
+|41|                │ │     └─PX BLOCK ITERATOR                 |             |0       |18          |
+|42|                │ │       └─TABLE FULL SCAN                 |DATE_DIM     |0       |18          |
+|43|                │ └─JOIN FILTER USE                         |:BF0001      |14      |43          |
+|44|                │   └─PX BLOCK ITERATOR                     |             |14      |43          |
+|45|                │     └─TABLE FULL SCAN                     |WEB_SALES    |14      |43          |
+|46|                └─DISTRIBUTED TABLE GET                     |CUSTOMER     |1       |16          |
+=====================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  2 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      dop=2
+  3 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  4 - output(nil), filter(nil), rowset=256
+      access(nil)
+  5 - output([MINUS([1])], [MINUS([2])], [MINUS([3])]), filter(nil), rowset=256
+  6 - output([MINUS([1])], [MINUS([2])], [MINUS([3])]), filter(nil), rowset=256
+  7 - output([MINUS([1])], [MINUS([2])], [MINUS([3])]), filter(nil), rowset=256
+      (#keys=3, [MINUS([1])], [MINUS([2])], [MINUS([3])]), dop=2
+  8 - output([MINUS([1])], [MINUS([2])], [MINUS([3])]), filter(nil), rowset=256
+  9 - output([MINUS([1])], [MINUS([2])], [MINUS([3])]), filter(nil), rowset=256
+ 10 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 11 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      (#keys=3, [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), dop=2
+ 12 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      conds(nil), nl_params_([STORE_SALES.SS_CUSTOMER_SK(:2)]), use_batch=true
+ 13 - output([DATE_DIM.D_DATE], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 14 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 15 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 16 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 17 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 18 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter([DATE_DIM.D_MONTH_SEQ >= 1190], [DATE_DIM.D_MONTH_SEQ <= 1190 + 11]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MONTH_SEQ], [DATE_DIM.D_DATE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 19 - output([STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 20 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+ 21 - output([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter([SYS_OP_BLOOM_FILTER(STORE_SALES.SS_SOLD_DATE_SK)]), rowset=256
+      access([STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_CUSTOMER_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 22 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), filter(nil), rowset=256
+      access([GROUP_ID], [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CUSTOMER.C_CUSTOMER_SK]), range(MIN ; MAX), 
+      range_cond([:2 = CUSTOMER.C_CUSTOMER_SK])
+ 23 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 24 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      (#keys=3, [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), dop=2
+ 25 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      conds(nil), nl_params_([CATALOG_SALES.CS_BILL_CUSTOMER_SK(:6)]), use_batch=true
+ 26 - output([DATE_DIM.D_DATE], [CATALOG_SALES.CS_BILL_CUSTOMER_SK]), filter(nil), rowset=256
+      equal_conds([CATALOG_SALES.CS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 27 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 28 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 29 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 30 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter([DATE_DIM.D_MONTH_SEQ >= 1190], [DATE_DIM.D_MONTH_SEQ <= 1190 + 11]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MONTH_SEQ], [DATE_DIM.D_DATE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 31 - output([CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_BILL_CUSTOMER_SK]), filter(nil), rowset=256
+ 32 - output([CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_BILL_CUSTOMER_SK]), filter(nil), rowset=256
+      access([CATALOG_SALES.CS_SOLD_DATE_SK], [CATALOG_SALES.CS_BILL_CUSTOMER_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CATALOG_SALES.CS_ITEM_SK], [CATALOG_SALES.CS_ORDER_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 33 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), filter(nil), rowset=256
+      access([GROUP_ID], [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CUSTOMER.C_CUSTOMER_SK]), range(MIN ; MAX), 
+      range_cond([:6 = CUSTOMER.C_CUSTOMER_SK])
+ 34 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 35 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      (#keys=3, [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), dop=2
+ 36 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+      conds(nil), nl_params_([WEB_SALES.WS_BILL_CUSTOMER_SK(:10)]), use_batch=true
+ 37 - output([DATE_DIM.D_DATE], [WEB_SALES.WS_BILL_CUSTOMER_SK]), filter(nil), rowset=256
+      equal_conds([WEB_SALES.WS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 38 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 39 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 40 - output([DATE_DIM.D_DATE], [DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 41 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter(nil), rowset=256
+ 42 - output([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DATE]), filter([DATE_DIM.D_MONTH_SEQ >= 1190], [DATE_DIM.D_MONTH_SEQ <= 1190 + 11]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_MONTH_SEQ], [DATE_DIM.D_DATE]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 43 - output([WEB_SALES.WS_BILL_CUSTOMER_SK], [WEB_SALES.WS_SOLD_DATE_SK]), filter(nil), rowset=256
+ 44 - output([WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_BILL_CUSTOMER_SK]), filter(nil), rowset=256
+ 45 - output([WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_BILL_CUSTOMER_SK]), filter([SYS_OP_BLOOM_FILTER(WEB_SALES.WS_SOLD_DATE_SK)]), rowset=256
+      access([WEB_SALES.WS_SOLD_DATE_SK], [WEB_SALES.WS_BILL_CUSTOMER_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([WEB_SALES.WS_ITEM_SK], [WEB_SALES.WS_ORDER_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 46 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), filter(nil), rowset=256
+      access([GROUP_ID], [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CUSTOMER.C_CUSTOMER_SK]), range(MIN ; MAX), 
+      range_cond([:10 = CUSTOMER.C_CUSTOMER_SK])
+select /*+parallel(2) TPC-DS Q77*/ count(*)
+from ((select distinct c_last_name, c_first_name, d_date
+from store_sales, date_dim, customer
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+minus     (select distinct c_last_name, c_first_name, d_date
+from catalog_sales, date_dim, customer
+where catalog_sales.cs_sold_date_sk = date_dim.d_date_sk
+and catalog_sales.cs_bill_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+minus      (select distinct c_last_name, c_first_name, d_date
+from web_sales, date_dim, customer
+where web_sales.ws_sold_date_sk = date_dim.d_date_sk
+and web_sales.ws_bill_customer_sk = customer.c_customer_sk
+and d_month_seq between 1190 and 1190+11)
+) cool_cust;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+
+
+********************** TPC_DS Q78
+
+with ss as (select s_store_sk,
+sum(ss_ext_sales_price) as sales,
+sum(ss_net_profit) as profit
+from store_sales,
+date_dim,
+store
+where ss_sold_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+and ss_store_sk = s_store_sk
+group by s_store_sk)
+,
+sr as (select s_store_sk,
+sum(sr_return_amt) as returns,
+sum(sr_net_loss) as profit_loss
+from store_returns,
+date_dim,
+store
+where sr_returned_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+and sr_store_sk = s_store_sk
+group by s_store_sk),
+cs as (select cs_call_center_sk,
+sum(cs_ext_sales_price) as sales,
+sum(cs_net_profit) as profit
+from catalog_sales,
+date_dim
+where cs_sold_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+group by cs_call_center_sk
+),
+cr as (select cr_call_center_sk,
+sum(cr_return_amount) as returns,
+sum(cr_net_loss) as profit_loss
+from catalog_returns,
+date_dim
+where cr_returned_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+group by cr_call_center_sk
+),
+ws as ( select wp_web_page_sk,
+sum(ws_ext_sales_price) as sales,
+sum(ws_net_profit) as profit
+from web_sales,
+date_dim,
+web_page
+where ws_sold_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+and ws_web_page_sk = wp_web_page_sk
+group by wp_web_page_sk),
+wr as (select wp_web_page_sk,
+sum(wr_return_amt) as returns,
+sum(wr_net_loss) as profit_loss
+from web_returns,
+date_dim,
+web_page
+where wr_returned_date_sk = d_date_sk
+and d_date between cast('2000-08-02' as date)
+and (cast('2000-09-01' as date))
+and wr_web_page_sk = wp_web_page_sk
+group by wp_web_page_sk)
+select/*+parallel(2) TPC-DS Q78*/ * from ( select  channel
+, id
+, sum(sales) as sales
+, sum(returns) as returns
+, sum(profit) as profit
+from (select 'store channel' as channel
+, ss.s_store_sk as id
+, sales
+, coalesce(returns, 0) as returns
+, (profit - coalesce(profit_loss,0)) as profit
+from ss left join sr
+on  ss.s_store_sk = sr.s_store_sk
+union all select 'catalog channel' as channel
+, cs_call_center_sk as id
+, sales
+, returns
+, (profit - profit_loss) as profit
+from cs
+, cr
+union all select 'web channel' as channel
+, ws.wp_web_page_sk as id
+, sales
+, coalesce(returns, 0) returns
+, (profit - coalesce(profit_loss,0)) as profit
+from ws left join wr
+on  ws.wp_web_page_sk = wr.wp_web_page_sk
+) x
+group by rollup (channel, id)
+order by channel
+,id
+) where rownum <= 100;
++---------+------+-------+---------+--------+
+| CHANNEL | ID   | SALES | RETURNS | PROFIT |
++---------+------+-------+---------+--------+
++---------+------+-------+---------+--------+
+
+
+********************** TPC_DS Q79
+EXPLAIN select /*+parallel(2) TPC-DS Q79*/c_last_name
+,c_first_name
+,c_salutation
+,c_preferred_cust_flag
+,ss_ticket_number
+,cnt from   (select ss_ticket_number
+,ss_customer_sk
+,count(*) cnt
+from store_sales,date_dim,store,household_demographics
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_store_sk = store.s_store_sk
+and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+and date_dim.d_dom between 1 and 2    and (household_demographics.hd_buy_potential = '>10000' or         household_demographics.hd_buy_potential = '5001-10000')
+and household_demographics.hd_vehicle_count > 0    and case when household_demographics.hd_vehicle_count > 0 then             household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1    and date_dim.d_year in (1999,1999+1,1999+2)
+and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County')
+group by ss_ticket_number,ss_customer_sk) dj,customer
+where ss_customer_sk = c_customer_sk
+and cnt between 1 and 5    order by cnt desc, c_last_name asc;
+Query Plan
+========================================================================================================
+|ID|OPERATOR                                              |NAME                  |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT                             |                      |1       |284         |
+|1 |└─EXCHANGE OUT DISTR                                  |:EX10004              |1       |284         |
+|2 |  └─SORT                                              |                      |1       |284         |
+|3 |    └─NESTED-LOOP JOIN                                |                      |1       |284         |
+|4 |      ├─SUBPLAN SCAN                                  |DJ                    |1       |282         |
+|5 |      │ └─HASH GROUP BY                               |                      |1       |282         |
+|6 |      │   └─EXCHANGE IN DISTR                         |                      |32      |276         |
+|7 |      │     └─EXCHANGE OUT DISTR (HASH)               |:EX10003              |32      |266         |
+|8 |      │       └─HASH GROUP BY                         |                      |32      |242         |
+|9 |      │         └─SHARED HASH JOIN                    |                      |32      |237         |
+|10|      │           ├─EXCHANGE IN DISTR                 |                      |12      |12          |
+|11|      │           │ └─EXCHANGE OUT DISTR (BC2HOST)    |:EX10000              |12      |9           |
+|12|      │           │   └─PX BLOCK ITERATOR             |                      |12      |2           |
+|13|      │           │     └─TABLE FULL SCAN             |STORE                 |12      |2           |
+|14|      │           └─SHARED HASH JOIN                  |                      |34      |222         |
+|15|      │             ├─JOIN FILTER CREATE              |:BF0000               |23      |47          |
+|16|      │             │ └─EXCHANGE IN DISTR             |                      |23      |47          |
+|17|      │             │   └─EXCHANGE OUT DISTR (BC2HOST)|:EX10001              |23      |35          |
+|18|      │             │     └─PX BLOCK ITERATOR         |                      |23      |8           |
+|19|      │             │       └─TABLE FULL SCAN         |HOUSEHOLD_DEMOGRAPHICS|23      |8           |
+|20|      │             └─SHARED HASH JOIN                |                      |35      |172         |
+|21|      │               ├─EXCHANGE IN DISTR             |                      |46      |91          |
+|22|      │               │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10002              |46      |70          |
+|23|      │               │   └─PX BLOCK ITERATOR         |                      |46      |25          |
+|24|      │               │     └─TABLE FULL SCAN         |DATE_DIM              |46      |25          |
+|25|      │               └─JOIN FILTER USE               |:BF0000               |281     |61          |
+|26|      │                 └─PX BLOCK ITERATOR           |                      |281     |61          |
+|27|      │                   └─TABLE FULL SCAN           |STORE_SALES           |281     |61          |
+|28|      └─DISTRIBUTED TABLE GET                         |CUSTOMER              |1       |16          |
+========================================================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(CUSTOMER.C_LAST_NAME, CUSTOMER.C_FIRST_NAME, CUSTOMER.C_SALUTATION, CUSTOMER.C_PREFERRED_CUST_FLAG, DJ.SS_TICKET_NUMBER,
+       DJ.CNT)]), filter(nil), rowset=256
+      sort_keys([DJ.CNT, DESC], [CUSTOMER.C_LAST_NAME, ASC])
+  1 - output([DJ.CNT], [CUSTOMER.C_LAST_NAME], [INTERNAL_FUNCTION(CUSTOMER.C_LAST_NAME, CUSTOMER.C_FIRST_NAME, CUSTOMER.C_SALUTATION, CUSTOMER.C_PREFERRED_CUST_FLAG,
+       DJ.SS_TICKET_NUMBER, DJ.CNT)]), filter(nil), rowset=256
+      dop=2
+  2 - output([DJ.CNT], [CUSTOMER.C_LAST_NAME], [DJ.SS_TICKET_NUMBER], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), filter(nil), rowset=256
+      sort_keys([DJ.CNT, DESC], [CUSTOMER.C_LAST_NAME, ASC])
+  3 - output([DJ.CNT], [CUSTOMER.C_LAST_NAME], [DJ.SS_TICKET_NUMBER], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), filter(nil), rowset=256
+      conds(nil), nl_params_([DJ.SS_CUSTOMER_SK(:6)]), use_batch=true
+  4 - output([DJ.SS_CUSTOMER_SK], [DJ.CNT], [DJ.SS_TICKET_NUMBER]), filter(nil), rowset=256
+      access([DJ.SS_CUSTOMER_SK], [DJ.CNT], [DJ.SS_TICKET_NUMBER])
+  5 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) >= 
+      1], [T_FUN_COUNT_SUM(T_FUN_COUNT(*)) <= 5]), rowset=256
+      group([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  6 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+  7 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+      (#keys=2, [STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), dop=2
+  8 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), agg_func([T_FUN_COUNT(*)])
+  9 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_STORE_SK = STORE.S_STORE_SK]), other_conds(nil)
+ 10 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 11 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+      dop=2
+ 12 - output([STORE.S_STORE_SK]), filter(nil), rowset=256
+ 13 - output([STORE.S_STORE_SK]), filter([STORE.S_COUNTY IN (cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)),
+       cast('Williamson County', VARCHAR2(17 BYTE)), cast('Williamson County', VARCHAR2(17 BYTE)))]), rowset=256
+      access([STORE.S_STORE_SK], [STORE.S_COUNTY]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([STORE.S_STORE_SK]), range(MIN ; MAX)always true
+ 14 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_HDEMO_SK = HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), other_conds(nil)
+ 15 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 16 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 17 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+      dop=2
+ 18 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter(nil), rowset=256
+ 19 - output([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), filter([CASE WHEN HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT > 0 THEN HOUSEHOLD_DEMOGRAPHICS.HD_DEP_COUNT 
+      / HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT ELSE NULL END > 1], [HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL = '>10000' OR HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL 
+      = '5001-10000'], [HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT > 0]), rowset=256
+      access([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK], [HOUSEHOLD_DEMOGRAPHICS.HD_BUY_POTENTIAL], [HOUSEHOLD_DEMOGRAPHICS.HD_VEHICLE_COUNT], [HOUSEHOLD_DEMOGRAPHICS.HD_DEP_COUNT]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false,false], 
+      range_key([HOUSEHOLD_DEMOGRAPHICS.HD_DEMO_SK]), range(MIN ; MAX)always true
+ 20 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+      equal_conds([STORE_SALES.SS_SOLD_DATE_SK = DATE_DIM.D_DATE_SK]), other_conds(nil)
+ 21 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 22 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+      dop=2
+ 23 - output([DATE_DIM.D_DATE_SK]), filter(nil), rowset=256
+ 24 - output([DATE_DIM.D_DATE_SK]), filter([DATE_DIM.D_DOM <= 2], [DATE_DIM.D_DOM >= 1], [DATE_DIM.D_YEAR IN (1999, 1999 + 1, 1999 + 2)]), rowset=256
+      access([DATE_DIM.D_DATE_SK], [DATE_DIM.D_DOM], [DATE_DIM.D_YEAR]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false,false], 
+      range_key([DATE_DIM.D_DATE_SK]), range(MIN ; MAX)always true
+ 25 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_CUSTOMER_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK]), filter(nil), rowset=256
+ 26 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter(nil), rowset=256
+ 27 - output([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), filter([SYS_OP_BLOOM_FILTER(STORE_SALES.
+      SS_HDEMO_SK)]), rowset=256
+      access([STORE_SALES.SS_TICKET_NUMBER], [STORE_SALES.SS_SOLD_DATE_SK], [STORE_SALES.SS_STORE_SK], [STORE_SALES.SS_HDEMO_SK], [STORE_SALES.SS_CUSTOMER_SK]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([STORE_SALES.SS_ITEM_SK], [STORE_SALES.SS_TICKET_NUMBER]), range(MIN,MIN ; MAX,MAX)always true
+ 28 - output([CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), filter(nil), rowset=256
+      access([GROUP_ID], [CUSTOMER.C_LAST_NAME], [CUSTOMER.C_FIRST_NAME], [CUSTOMER.C_SALUTATION], [CUSTOMER.C_PREFERRED_CUST_FLAG]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([CUSTOMER.C_CUSTOMER_SK]), range(MIN ; MAX), 
+      range_cond([:6 = CUSTOMER.C_CUSTOMER_SK])
+select /*+parallel(2) TPC-DS Q79*/c_last_name
+,c_first_name
+,c_salutation
+,c_preferred_cust_flag
+,ss_ticket_number
+,cnt from   (select ss_ticket_number
+,ss_customer_sk
+,count(*) cnt
+from store_sales,date_dim,store,household_demographics
+where store_sales.ss_sold_date_sk = date_dim.d_date_sk
+and store_sales.ss_store_sk = store.s_store_sk
+and store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+and date_dim.d_dom between 1 and 2    and (household_demographics.hd_buy_potential = '>10000' or         household_demographics.hd_buy_potential = '5001-10000')
+and household_demographics.hd_vehicle_count > 0    and case when household_demographics.hd_vehicle_count > 0 then             household_demographics.hd_dep_count/ household_demographics.hd_vehicle_count else null end > 1    and date_dim.d_year in (1999,1999+1,1999+2)
+and store.s_county in ('Williamson County','Williamson County','Williamson County','Williamson County')
+group by ss_ticket_number,ss_customer_sk) dj,customer
+where ss_customer_sk = c_customer_sk
+and cnt between 1 and 5    order by cnt desc, c_last_name asc;
++-------------+--------------+--------------+-----------------------+------------------+------+
+| C_LAST_NAME | C_FIRST_NAME | C_SALUTATION | C_PREFERRED_CUST_FLAG | SS_TICKET_NUMBER | CNT  |
++-------------+--------------+--------------+-----------------------+------------------+------+
++-------------+--------------+--------------+-----------------------+------------------+------+
+

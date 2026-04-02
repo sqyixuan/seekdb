@@ -94,11 +94,14 @@ private:
 /*ObStorageType and OB_STORAGE_TYPES_STR should be mapped one by one*/
 enum ObStorageType : uint8_t
 {
-  OB_STORAGE_FILE = 0,
-  OB_STORAGE_LOCAL = 1,
-  OB_STORAGE_S3 = 2,
-  OB_STORAGE_LOCAL_CACHE = 3,
-  OB_STORAGE_AZBLOB = 4,
+  OB_STORAGE_OSS = 0,
+  OB_STORAGE_FILE = 1,
+  OB_STORAGE_COS = 2,
+  OB_STORAGE_LOCAL = 3,
+  OB_STORAGE_S3 = 4,
+  OB_STORAGE_LOCAL_CACHE = 5,
+  OB_STORAGE_HDFS = 6,
+  OB_STORAGE_AZBLOB = 7,
   OB_STORAGE_MAX_TYPE
 };
 

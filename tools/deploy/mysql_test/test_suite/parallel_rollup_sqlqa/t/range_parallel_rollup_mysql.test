@@ -1,0 +1,1197 @@
+#owner:zuojiao.hzj
+#owner group: SQL2
+#description: obmysql parallel rollup
+#author: wb-lyq858317
+#tags:
+
+--disable_warnings
+purge recyclebin;
+
+--echo  mysql不支持并行执行，只是兼容parallel hint的语法。  obmysql模式支持并行
+
+SET SESSION sql_mode = 'ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION';
+
+--error 0,1051
+DROP TABLE lyq_test_fk;
+
+--error 0,1051
+DROP TABLE lyq_test;
+CREATE TABLE lyq_test(  
+  c1 int primary key,  
+  c2 float, 
+  c3 DECIMAL(5,2) DEFAULT null, 
+  c4 BLOB(100), 
+  c5 bit(16),
+  c6 datetime, 
+  c7 json NOT NULL,
+  c8 SET('a', 'b', 'c', 'd'),   
+  c9 timestamp,
+  c10 VARCHAR(100) GENERATED ALWAYS AS(c7) VIRTUAL COMMENT '生成列') 
+  #PARALLEL 5
+    PARTITION BY RANGE (c1)(
+PARTITION less_3 VALUES less than (3),
+PARTITION b_3_8 VALUES less than (8),
+PARTITION b_8_2000 VALUES less than (2000),
+PARTITION greater_2000 VALUES less than MAXVALUE);
+
+--error 0,1305
+DROP PROCEDURE get_data1;
+
+DELIMITER //;
+CREATE  PROCEDURE get_data1(in j int)
+begin
+DECLARE i int;
+set i = 1;
+    while i <= j DO
+		insert into lyq_test(c1,c2,c3,c4,c5,c6,c7,c8,c9) values(i,mod(i,5),round(i/8, 0),substr('这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试',round(i/1, 0)),
+		hex((CASE round(i/20, 0) WHEN 0 THEN 1 ELSE round(i/20, 0) END)),ADDDATE('2018-12-22 22:22:22', round(i/6, 0)*10000) ,JSON_ARRAY(mod(i,5), "abc", NULL, TRUE, '{"a":100}'),
+		CASE mod(i,5) WHEN 0 THEN null ELSE 'b,d' END,ADDDATE('2018-12-22 22:22:22', 1 ));
+	set i = i + 1;
+    end WHILE;
+end;
+//
+DELIMITER ;//
+
+call get_data1(10);
+
+
+create table lyq_test_fk(
+c1 INT,
+c2 VARCHAR(100)) 
+#NOPARALLEL
+;
+
+--error 0,1305
+DROP PROCEDURE get_data2;
+
+DELIMITER //;
+CREATE  PROCEDURE get_data2(in j int)
+begin
+DECLARE i int;
+set i = 1;
+    while i <= j DO
+		insert into lyq_test_fk values(i,CASE mod(i,5) WHEN 0 THEN null ELSE mod(i,5) END);
+	set i = i + 1;
+    end WHILE;
+end;
+//
+DELIMITER ;//
+
+call get_data2(9);
+
+--echo create-1-1 普通索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T1 ON lyq_test(c1);
+
+--echo create-1-3 组合索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T3 ON lyq_test(c3,c2,c5);
+
+--echo create-1-4 hash索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T4 USING HASH ON lyq_test(c6);
+
+--echo create-1-5 json 生成列索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T5 ON lyq_test(c10);
+
+--echo create-1-6 全局分区索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T6 ON lyq_test(c1)
+   GLOBAL   PARTITION BY RANGE (c1)(
+PARTITION less_3 VALUES less than (2),
+PARTITION b_3_8 VALUES less than (5),
+PARTITION b_8_2000 VALUES less than (2000),
+PARTITION greater_2000 VALUES less than MAXVALUE);
+
+--echo distinct
+--sorted_result
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c1),c1,count(distinct c2),count(distinct c2) FROM lyq_test where c8 is not null and c4 like '%测试%'  
+GROUP BY c1,c2 with ROLLUP  HAVING c2 NOT IN (4) order by c1;
+
+--sorted_result
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c2),c1,min(distinct c2),min(distinct c9) FROM lyq_test where c3 <> 2 GROUP BY c1,c9,(c2) with rollup
+HAVING c2 > some(SELECT  min(c2) FROM lyq_test GROUP BY c3 with ROLLUP) order by c1;
+
+--sorted_result
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ CASE  WHEN avg(distinct c2) =1  THEN 1 when avg( distinct c2) > 1 then 2 else 3 END as a FROM lyq_test 
+where c3 is not null and c4 like '这是aseri%'  GROUP BY c3 with ROLLUP HAVING c3 NOT IN (4,40,400) order by c3;
+
+
+--sorted_result
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ c1,min(distinct c2),max(distinct c9),count(distinct c4),sum(distinct c6), avg(distinct c2) FROM lyq_test 
+where c3 <> 2 GROUP BY c1,c9,c4,c2,c3 with ROLLUP HAVING c2 > any(SELECT  min(c2) FROM lyq_test GROUP BY c3 with ROLLUP ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c8),c1,min(distinct c2),max(distinct c2),count(distinct c2),sum(distinct c2), avg(distinct c2) FROM lyq_test 
+where c3 <> 2 GROUP BY c1,c9,c4,c2,c8 with ROLLUP HAVING c2 > any(SELECT  min(c2) FROM lyq_test GROUP BY c8 with ROLLUP ) order by 1, 2;
+
+--sorted_result
+select /*+ parallel(3) */ count(distinct cast(c2 as char(100))),sum(distinct c2) FROM lyq_test where c2 is not null  
+GROUP BY c1,c4 with ROLLUP HAVING sum(distinct c1) NOT IN (4) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(distinct upper(c6)),avg(distinct c3) FROM lyq_test where c2 is not null and c4 like '%这是aseri%'  
+GROUP BY c1,c3 with ROLLUP HAVING max(distinct c1) NOT IN (4) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(distinct upper(c4)),avg(distinct upper(c6)) FROM lyq_test where c2 is not null and c4 like '%这是aseri%'  
+GROUP BY c1,c3,c8 with ROLLUP HAVING count(distinct c1) NOT IN (4) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ sum(DISTINCT c2+c3),min(DISTINCT c2 + 1000),avg(DISTINCT c1)
+FROM lyq_test GROUP BY  c1,c3 with ROLLUP ORDER BY c1 desc;
+
+
+--echo 聚合函数count
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null with rollup limit 1;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY '' with rollup;
+--error 1056
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null,null with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c7,null with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c4 like '这%' GROUP BY c1,c3,c7 with rollup HAVING count(c7)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING count(distinct c7)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(3) */ c1,count(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1 as a,count(c2) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING count(distinct c7)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(lyq_test 3) */ t1.c1,count(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c7 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(3) */ t1.c1,count(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,count(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,count(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,count(t2.c2) from (select c1,c2,c3,c7,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(lyq_test 3) */ c1,count(c3) from (select c1,c3,c7 from lyq_test where c1 < 10000 GROUP BY c1,c3,c7 with rollup ) a GROUP BY c1,c7 with rollup order by 1, 2;
+
+--echo 运算 常量
+--sorted_result
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+--sorted_result
+select /*+ parallel(lyq_test 3) */ count(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+--sorted_result
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+--error 1056
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(lyq_test 3) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ count(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(3) */ count(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having count(upper(LOWER(c2))) >0 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ count(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ count(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(lyq_test 3) */ count(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(3) */ count(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+--echo 聚合函数group_concat
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2,c1) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--error 1056
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(1) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2,c3) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c3,c4,c5,c6,c7,c8) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+--sorted_result
+select /*+ parallel(1) */ group_concat(distinct c2 ORDER BY c2 DESC SEPARATOR '_') from lyq_test where c8 is not null GROUP BY c3,c7 with rollup HAVING c3 in (0,1,2) order by c3,c7;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c4 like '这%' GROUP BY c1,c3,c7 with rollup HAVING group_concat(c7)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING group_concat(distinct c7)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ group_concat(distinct c6 ORDER BY c6 DESC SEPARATOR '_') from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c3,c8 with rollup 
+HAVING c8 is null order by c3,c8;
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(1) */ c1,group_concat(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ c1 as a,group_concat(c2) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING group_concat(distinct c7)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c7 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(1) */ t2.c1,group_concat(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(1) */ c1,group_concat(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ t2.c1,group_concat(t2.c2) from (select c1,c2,c3,c7,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(1) */ group_concat(concat_ws(', ',c8,c3) ORDER BY c1 DESC SEPARATOR '. ') from (select c1,c3,c8 from lyq_test where c1 < 10000 GROUP BY c1,c3,c8 with rollup ) a GROUP BY c3,c8 
+with rollup order by c3,c8;
+
+--echo 运算 常量
+--error 1056
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(1) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(1) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(1) */ group_concat(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(1) */ group_concat(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having group_concat(upper(LOWER(c2))) >0 order by c1;
+--sorted_result
+select /*+ parallel(1) */ group_concat(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(1) */ group_concat(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+#select /*+ parallel(1) */ group_concat(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+--sorted_result
+select /*+ parallel(1) */ group_concat(c2) from (select group_concat(c2) c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c3) from (select group_concat(c3) c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c4) from (select group_concat(c4) c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+#select /*+ parallel(1) */ group_concat(c5) from (select group_concat(c5) c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c6) from (select group_concat(c6) c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c7) from (select group_concat(c7) c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c8) from (select group_concat(c8) c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c9) from (select group_concat(c9) c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(1) */ group_concat(c10) from (select group_concat(c10) c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+
+--echo 聚合函数min
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(3) */ c1,min(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ min(c3) from lyq_test GROUP BY null with rollup limit 1;
+--sorted_result
+select /*+ parallel(3) */ min(c4) from lyq_test GROUP BY null with rollup;
+--error 1056
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c10) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+
+set _force_parallel_query_dop = 3;
+
+--sorted_result
+select  min(c2) from lyq_test GROUP BY null,null with rollup;
+
+--sorted_result
+select  c1,min(c3) from lyq_test GROUP BY c1,c7,null with rollup order by c1;
+
+--sorted_result
+select  c1,min(c4) from lyq_test GROUP BY 1,c1 with rollup order by c1;
+
+--sorted_result
+select  c1,min(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+explain basic select  c1,min(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+
+set _force_parallel_query_dop = 1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c10) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING min(c6)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING min(distinct c6)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(3) */ c1,min(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1 as a,min(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING min(distinct c6)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,min(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,min(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,min(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by 1, 2;
+
+--echo 运算 常量
+--sorted_result
+select /*+ parallel(3) */ c1,min(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+--sorted_result
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+--error 1056
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ min(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(3) */ min(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having min(upper(LOWER(c2))) >0 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ min(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ min(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ min(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(3) */ min(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+--echo 聚合函数max
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(3) */ c1,max(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ max(c3) from lyq_test GROUP BY null with rollup limit 1;
+--sorted_result
+select /*+ parallel(3) */ max(c4) from lyq_test GROUP BY null with rollup;
+
+--error 1056
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c10) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY null,null with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+--sorted_result
+select /*+ parallel(3) */ c1,max(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c10) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING max(c3)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING max(distinct c3)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(3) */ c1,max(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1 as a,max(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING max(distinct c3)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,max(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,max(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,max(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by 1, 2;
+
+--echo 运算 常量
+--sorted_result
+select /*+ parallel(3) */ c1,max(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+--sorted_result
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+--error 1056
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ max(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having max(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(3) */ max(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having max(upper(LOWER(c2))) >0 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ max(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ max(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ max(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(3) */ max(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+--echo 聚合函数sum
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ sum(c3) from lyq_test GROUP BY null with rollup limit 1;
+--sorted_result
+select /*+ parallel(3) */ sum(c4) from lyq_test GROUP BY null with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c5) from lyq_test GROUP BY '' with rollup;
+--error 1056
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY null,null with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c4) from lyq_test GROUP BY 1,c1 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING sum(c3)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING sum(distinct c3)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(3) */ c1,sum(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1 as a,sum(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING sum(distinct c3)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,sum(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,sum(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by 1, 2;
+
+--echo 运算 常量
+--sorted_result
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+--error 1056
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ sum(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having sum(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(3) */ sum(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having sum(upper(LOWER(c2))) >0 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ sum(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ sum(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(3) */ sum(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+
+--echo 聚合函数avg
+--echo rollup + 参数
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ avg(c3) from lyq_test GROUP BY null with rollup limit 1;
+--sorted_result
+select /*+ parallel(3) */ avg(c4) from lyq_test GROUP BY null with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c5) from lyq_test GROUP BY '' with rollup;
+--error 1056
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY (1) with rollup;
+--sorted_result
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY null,null with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c4) from lyq_test GROUP BY 1,c1 with rollup order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+
+--echo rollup + having some any all like...
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING avg(c3)>1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING avg(distinct c3)> 1 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+--echo 34113963
+#select /*+ parallel(3) */ c1,avg(c2) as c1 from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+#HAVING c8 is not null order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1 as a,avg(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+
+--echo rollup + union all  minus
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING avg(distinct c3)> 1 order by c1;
+
+--echo mysql不支持，ob支持
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+
+--echo rollup + join
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+--error 1055
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,avg(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+
+--echo rollup  subquery
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ t2.c1,avg(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by 1, 2;
+
+--echo 运算 常量
+--sorted_result
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+--error 1056
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+--error 1054
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+
+--sorted_result
+select /*+ parallel(3) */ avg(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having avg(cast('20111111' as dateTime)) >1;
+
+--echo 函数
+--sorted_result
+select /*+ parallel(3) */ avg(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having avg(upper(LOWER(c2))) >0 order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ avg(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+
+--sorted_result
+select /*+ parallel(3) */ avg(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+--sorted_result
+select /*+ parallel(3) */ avg(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+--error 0,1051
+DROP TABLE lyq_test_fk;
+--error 0,1051
+DROP TABLE lyq_test;
+--error 0,1305
+DROP PROCEDURE get_data1;
+--error 0,1305
+DROP PROCEDURE get_data2;
+
+--error 0,1051
+DROP TABLE t0;
+
+CREATE TABLE IF NOT EXISTS t0(c0 TINYINT(223) , c1 DATETIME )  PARTITION BY KEY (c0) SUBPARTITION BY RANGE (c0) subpartition template (subpartition sp0 VALUES LESS THAN(-1000000000), subpartition sp1 VALUES LESS THAN(0), subpartition sp2 VALUES LESS THAN(1000000000), subpartition sp3 VALUES LESS THAN(maxvalue)) partitions 10;
+ (SELECT /*+  PARALLEL(2),enable_parallel_dml  */ ALL AVG(DISTINCT t0.c0) AS AF0, * FROM t0 WHERE (3) < (0) GROUP BY t0.c0, t0.c1 WITH ROLLUP HAVING t0.c0 ORDER BY t0.c1 DESC) UNION ALL (SELECT /*+  PARALLEL(2),enable_parallel_dml  */ AVG(DISTINCT t0.c0) AS AF0, * FROM t0 WHERE (3) < (0) GROUP BY t0.c0, t0.c1 WITH ROLLUP HAVING (! (t0.c0)) ORDER BY t0.c1 DESC) UNION ALL (SELECT /*+  PARALLEL(2),enable_parallel_dml  */ AVG(DISTINCT t0.c0) AS AF0, * FROM t0 WHERE (3) < (0) GROUP BY t0.c0, t0.c1 WITH ROLLUP HAVING (t0.c0) IS UNKNOWN ORDER BY t0.c1 DESC);
+drop table t0;

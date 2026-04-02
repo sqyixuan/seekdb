@@ -746,6 +746,17 @@ int ObMultiTenant::create_tenant(const ObTenantMeta &meta, bool write_slog, cons
       create_step = ObTenantCreateStep::STEP_CTX_MEM_CONFIG_SETTED; // step1
     }
   }
+  if (OB_SUCC(ret)) {
+    if (!is_virtual_tenant_id(tenant_id)
+        && OB_FAIL(GCTX.log_block_mgr_->create_tenant(log_disk_size))) {
+      LOG_ERROR("create_tenant in ObServerLogBlockMgr failed", KR(ret));
+    }
+    // if create_tenant in ObServerLogBlockMGR success, the log disk size need by this tenant has been pinned,
+    // otherwise, the assigned log disk size of ObServerLogBlockMGR is origin.
+    if (OB_SUCC(ret)) {
+      create_step = ObTenantCreateStep::STEP_LOG_DISK_SIZE_PINNED;  // step2
+    }
+  }
 
   if (OB_FAIL(ret)) {
     // do nothing
@@ -840,6 +851,15 @@ int ObMultiTenant::create_tenant(const ObTenantMeta &meta, bool write_slog, cons
             LOG_ERROR("fail to cleanup ctx mem config", K(tmp_ret), K(tenant_id), K(ctx_id));
             SLEEP(1);
           }
+        }
+      }
+    } while (OB_SUCCESS != tmp_ret);
+
+    do {
+      tmp_ret = OB_SUCCESS;
+      if (create_step >= ObTenantCreateStep::STEP_LOG_DISK_SIZE_PINNED) {
+        if (!is_virtual_tenant_id(tenant_id)) {
+          GCTX.log_block_mgr_->abort_create_tenant(log_disk_size);
         }
       }
     } while (OB_SUCCESS != tmp_ret);
@@ -1239,7 +1259,7 @@ int ObMultiTenant::update_tenant_query_response_time_flush_config()
         LOG_DEBUG("config result is null", K(tenant_id), K(ret));
       } else if (OB_FAIL(result.get_result()->next())) {
         LOG_WARN("get result next failed", K(tenant_id), K(ret));
-      } else if (OB_FAIL(result.get_result()->get_int(static_cast<int64_t>(0L), flush_version))) {
+      } else if (OB_FAIL(result.get_result()->get_int(0L, flush_version))) {
         if (OB_ERR_NULL_VALUE != ret) {
           LOG_WARN("get config_version failed", K(tenant_id), K(ret));
         } else {
@@ -1550,6 +1570,9 @@ void ObMultiTenant::remove_tenant()
     }
 
     if (OB_SUCC(ret)) {
+      const share::ObUnitInfoGetter::ObTenantConfig &config = tenant_->get_unit();
+      const int64_t log_disk_size = config.config_.log_disk_size();
+      GCTX.log_block_mgr_->remove_tenant(log_disk_size);
       tenant_->destroy();
       ob_delete(tenant_);
       LOG_INFO("remove tenant success", K(tenant_id));

@@ -1,0 +1,97 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner : shanyan.g
+#owner group : transaction
+#description : 测试单partition事务的相关case
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+##修改配置
+--disable_abort_on_error
+##准备数据
+#create resource unit if not exists sp_trans_test max_cpu=1, memory_size='2G';
+#create resource pool if not exists sp_trans_test unit='sp_trans_test', unit_num=1;
+#create tenant if not exists sp_trans_test RESOURCE_POOL_LIST=('sp_trans_test') set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+
+## case:检查表结构
+connection conn1;
+use test;
+--disable_warnings
+drop table if exists sp_trans_test;
+--enable_warnings
+
+create table sp_trans_test(id1 int, id2 int);
+desc sp_trans_test;
+insert into sp_trans_test values(1, 1);
+insert into sp_trans_test values(1, 2);
+insert into sp_trans_test values(1, 3);
+
+##测试mini_sp_trans，autocommit=1的单partition只读事务
+set @@session.tx_read_only=1;
+select * from sp_trans_test;
+select * from sp_trans_test;
+
+##测试sp_trans，包括以下几种情况:
+#(1) autocommit=1，单partition读写事务
+set autocommit=1;
+set @@session.tx_read_only=0;
+insert into sp_trans_test values(1, 4);
+
+#(2) autocommit=0, 单partition多条只读或者读写语句
+set autocommit=0;
+set @@session.tx_read_only=0;
+begin;
+select * from sp_trans_test;
+insert into sp_trans_test values(1, 5);
+select count(1) from sp_trans_test;
+insert into sp_trans_test values(1, 6);
+insert into sp_trans_test values(1, 7);
+select count(1) from sp_trans_test;
+commit;
+
+create table sp_trans_test2(id1 int, id2 int);
+desc sp_trans_test2;
+
+##测试sp_trans转化成分布式事务的场景(sp_trans->dist_trans)
+#case1:
+set autocommit=0;
+set @@session.tx_read_only=0;
+begin;
+select * from sp_trans_test;
+insert into sp_trans_test2 values(1, 8);
+insert into sp_trans_test values(1, 9);
+select * from sp_trans_test2;
+commit;
+
+#case2:
+begin;
+insert into sp_trans_test values(1, 10);
+insert into sp_trans_test2 values(1, 11);
+select * from sp_trans_test2;
+select * from sp_trans_test;
+commit;
+
+#case3:
+begin;
+select * from sp_trans_test;
+insert into sp_trans_test values(1, 12);
+insert into sp_trans_test2 values(1, 13);
+select * from sp_trans_test2;
+commit;
+
+##删除table
+drop table if exists sp_trans_test;
+drop table if exists sp_trans_test2;
+
+connection obsys;
+##清理租户资源
+#drop tenant sp_trans_test force;
+#drop resource pool sp_trans_test;
+#drop resource unit sp_trans_test;
+
+##还原配置
+--enable_abort_on_error

@@ -1,0 +1,292 @@
+# owner: handora.qc
+# owner group: transaction
+# description: this case is use for minor freeze uncommitted transactions of follower
+
+--disable_query_log
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=2);
+
+ob1.z1.obs0.set extra_config=_private_buffer_size='1B';
+ob1.z2.obs0.set extra_config=_private_buffer_size='1B';
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+# 防止卡住转储
+ob1.mysql set GLOBAL optimizer_use_sql_plan_baselines = false;
+ob1.mysql set GLOBAL optimizer_capture_sql_plan_baselines = false;
+
+# 防止卡住转储
+ob1.mysql set GLOBAL optimizer_use_sql_plan_baselines = false;
+ob1.mysql set GLOBAL optimizer_capture_sql_plan_baselines = false;
+
+# 创建租户
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT sys_unit2 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=$cpu, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql create resource pool qc unit = 'sys_unit2', unit_num =1;
+ob1.mysql create tenant mysql replica_num = 1, resource_pool_list=('qc') set ob_tcp_invited_nodes='%';
+sleep 3;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $port1=deploy_get_value(ob1.z2.obs0.port);
+let $sql_port1=deploy_get_value(ob1.z2.obs0.mysql_port);
+
+connect(conn_sys,$ip0,root@sys,,oceanbase,$sql_port0);
+connect(conn1,$ip0,root@mysql,,test,$sql_port0);
+connect(conn2,$ip1,root@mysql,,test,$sql_port1);
+connect(conn3,$ip1,root@mysql,,test,$sql_port1);
+
+connection conn_sys;
+set optimizer_use_sql_plan_baselines = false;
+set optimizer_capture_sql_plan_baselines = false;
+set SESSION ob_query_timeout = 10000000000;
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_trx_idle_timeout = 10000000000;
+connection conn1;
+set optimizer_use_sql_plan_baselines = false;
+set optimizer_capture_sql_plan_baselines = false;
+set SESSION ob_query_timeout = 10000000000;
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_trx_idle_timeout = 10000000000;
+connection conn2;
+set optimizer_use_sql_plan_baselines = false;
+set optimizer_capture_sql_plan_baselines = false;
+set SESSION ob_query_timeout = 10000000000;
+set SESSION ob_trx_timeout = 10000000000;
+set SESSION ob_trx_idle_timeout = 10000000000;
+
+
+# 创建table和索引
+connection conn1;
+create table t1 (a int, b int, c int, d int, e int, index idx_a(a), index idx_b(b), index idx_c(c), index idx_d(d), unique key(a, b, c, d, e));
+
+# 测试复制表和索引
+create table t2 (x int, y int, index idx_x(x), index idx_y(y), unique key(x, y)) duplicate_scope = 'cluster';
+
+# 测试分布式事务的复制表
+create table t3 (x int, y int) duplicate_scope = 'cluster' partition by hash(y % 2) partitions 2;
+
+# 获取tid
+let $tid1=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+let $tid2=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t2', table_id, 1);
+let $tid3=deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t3', table_id, 1);
+
+# 转储前插入数据
+connection conn1;
+insert into t1 value(0, 0, 0, 0, 0);
+insert into t2 value(0, 0);
+insert into t3 value(0, 0);
+
+# ===================== 1.备机转储后读取数据 =====================
+# 转储前读取数据
+connection conn1;
+select * from t1;
+
+# 检测备机读可以在转储后读到写入
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+
+# 转储后读取数据
+connection conn2;
+select * from t1;
+
+# ===================== 2.备机转储后读取不到活跃事务数据 =====================
+# 因为现在还有事务层trans_node bug, 所以先不测
+# 转储前读取数据
+# connection conn1;
+# insert into t1 value(2, 0, 0, 0, 0);
+# begin;
+# insert into t1 value(2, 0, 0, 0, 1);
+
+# 检测备机读可以在转储后读到写入
+# ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+
+# 转储后读取数据
+# connection conn2;
+# select * from a;
+
+# connection conn1;
+# commit;
+
+# ===================== 3.备机语句提交/事务, 回滚/提交, 备机弱读 =====================
+connection conn1;
+insert into t1 value(3, 0, 0, 0, 0);
+begin;
+insert into t1 value(3, 0, 0, 0, 1);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+connection conn1;
+rollback;
+
+connection conn2;
+sleep 1;
+select /*+read_consistency(weak)*/* from t1;
+
+connection conn1;
+insert into t1 value(3, 0, 0, 0, 2);
+begin;
+insert into t1 value(3, 0, 0, 0, 3);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+connection conn1;
+commit;
+
+connection conn2;
+sleep 1;
+select /*+read_consistency(weak)*/* from t1;
+
+# ===================== 4.备机语句提交/事务, 回滚/提交, 备机强读 =====================
+# 语句提交, 事务回滚后, 强读
+connection conn1;
+insert into t2 value(4, 0);
+begin;
+insert into t2 value(4, 1);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+connection conn1;
+rollback;
+
+connection conn2;
+select * from t2;
+
+# 语句提交, 事务提交后, 强读
+connection conn1;
+insert into t2 values(4, 2);
+begin;
+insert into t2 values(4, 3);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+connection conn1;
+commit;
+
+connection conn2;
+select * from t2;
+
+# ===================== 5.备机语句回滚/事务提交, 备机弱读/强读 =====================
+
+### 备机弱读 ###
+
+connection conn1;
+insert into t1 values(5, 0, 0, 0, 0);
+
+# 卡住插入索引
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE wait_for qc execute 1000';
+
+connection conn1;
+begin;
+send insert into t1 values(5, 0, 0, 0, 1), (5, 0, 0, 0, 0);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal qc execute 10000';
+
+connection conn1;
+--error 1062
+reap;
+commit;
+
+connection conn2;
+select /*+read_consistency(weak)*/* from t1;
+
+###### 等待合并 #######
+ob1.check_until_timeout select ifnull(max(cnt), 0) < 5 from (select svr_ip, svr_port, table_id, partition_id, count(*) as cnt from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 group by svr_ip, svr_port, table_id, partition_id), 1, 300;
+
+### 复制表, 备机强读 ###
+connection conn1;
+insert into t2 values(5, 0);
+
+# 卡住插入索引
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE wait_for continue_signal execute 1000';
+
+connection conn1;
+begin;
+send insert into t2 values(5, 1), (5, 0);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal execute 1000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal execute 1000';
+ob1.mysql set ob_global_debug_sync = 'DELAY_INDEX_WRITE clear';
+
+connection conn1;
+--error 1062
+reap;
+commit;
+
+connection conn2;
+select * from t2;
+
+# ===================== 6.分布式事务复制表强读测试lock_for_read =====================
+# 切主以满足分布式事务
+ob1.z1.obs0.switch_partition mysql:test:t3:0;
+ob1.z2.obs0.switch_partition mysql:test:t3:1;
+sleep 5;
+ob1.z1.obs0.check_leader mysql:test:t3:0;
+ob1.z2.obs0.check_leader mysql:test:t3:1;
+
+connection conn1;
+insert into t3 values(6, 0);
+
+# 卡住提交
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DIST_COMMIT wait_for continue_signal2 execute 1000';
+
+connection conn1;
+send insert into t3 values(6, 0), (6, 1);
+
+connection conn_sys;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip0:$port0');
+sleep 3;
+ob1.mysql alter system minor freeze tenant mysql server = ('$ip1:$port1');
+
+# 检测memtable已经释放(因为超时切主原因, 先不测)
+# ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id = $tid3 and svr_ip = "$ip1" and svr_port = $port1 and table_type = 0 and is_active = 0, 0, 300;
+
+connection conn2;
+set SESSION ob_query_timeout = 3000000;
+set SESSION ob_trx_timeout = 10000000;
+# 此处会因为lock_for_read卡住
+send select * from t3;
+
+connection conn2;
+--error 6004
+reap;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_DIST_COMMIT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal2 execute 1000';
+
+connection conn1;
+reap;
+

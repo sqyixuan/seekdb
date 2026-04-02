@@ -46,7 +46,7 @@ public:
   };
 public:
   explicit ObExprVectorSimilarity(common::ObIAllocator &alloc);
-  explicit ObExprVectorSimilarity(common::ObIAllocator &alloc, ObExprOperatorType type,
+  explicit ObExprVectorSimilarity(common::ObIAllocator &alloc, ObExprOperatorType type, 
                                 const char *name, int32_t param_num, int32_t dimension);
   virtual ~ObExprVectorSimilarity() {};
   virtual int calc_result_typeN(ObExprResType &type,
@@ -59,13 +59,13 @@ public:
                       ObExpr &rt_expr) const override;
   static int calc_similarity(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
   static int calc_similarity(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum, ObVecSimilarityType dis_type);
-  static int calc_similarity_from_distance(const ObExprVectorDistance::ObVecDisType dis_type, const float &distance, float &similarity);
+  
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorSimilarity);
 };
 
 template <typename T>
-typename ObExprVectorSimilarity::SimilarityFunc<T>::FuncPtrType ObExprVectorSimilarity::SimilarityFunc<T>::similarity_funcs[] =
+typename ObExprVectorSimilarity::SimilarityFunc<T>::FuncPtrType ObExprVectorSimilarity::SimilarityFunc<T>::similarity_funcs[] = 
 {
   ObVectorCosineSimilarity<T>::cosine_similarity_func,
   ObVectorIPSimilarity<T>::ip_similarity_func,

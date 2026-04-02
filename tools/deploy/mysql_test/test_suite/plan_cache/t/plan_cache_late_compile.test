@@ -1,0 +1,119 @@
+#owner: luofan.zp
+#owner group: sql1
+##
+## Test Name: plan_cache_late_compile
+##
+## Scope: Test plan cache match for late compilation mechanism
+##
+## INFO:  if you want to add case; you should read ../README.md;
+#         don't use sys tenant, because when parallel run on obfarm, the hit_count can't be expected;
+#         so we use new tenant, new plan cache will be  used for this case only;
+##
+##
+## Date: 2018-8-14
+##
+
+connect (conn_admin,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+--disable_info
+--disable_metadata
+--disable_abort_on_error
+
+--disable_query_log
+--disable_result_log
+
+alter system flush plan cache;
+alter system set large_query_threshold = '1s';
+--sleep 3
+
+--enable_query_log
+--enable_result_log
+connection default;
+select effective_tenant();
+--disable_query_log
+--disable_result_log
+
+-disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+create database xy_db;
+use xy_db;
+
+--disable_warnings
+drop table if exists test_late;
+--enable_warnings
+
+--enable_query_log
+--echo
+set ob_enable_plan_cache=true;
+create table test_late (a bigint, b bigint, c varchar(128), d varchar(128));
+set ob_enable_jit=true;
+set ob_query_timeout=10000000;
+
+## case#0
+--echo ******************** Case #1 large query automatically turns on jit compilation **************************
+
+--disable_result_log
+--disable_query_log
+
+let $cnt = 0;
+while ($cnt < 1500)
+{
+  eval insert into test_late values ($cnt, $cnt + 1, "hello, jit", "hello, jit");
+  inc $cnt;
+}
+--echo
+--disable_result_log
+--enable_query_log
+--echo // execute ten times
+select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a);
+
+--disable_query_log
+let $cnt = 0;
+while ($cnt < 9)
+{
+select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a);
+inc $cnt;
+}
+
+--echo
+--enable_result_log
+--echo // first query, exepct cpu_time > 10s, is_use_jit = false, executions = 10
+--disable_warnings
+select cpu_time > 10000000, is_use_jit = 0, executions = 10 from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a)';
+--enable_warnings
+
+--echo
+--disable_result_log
+select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a);
+
+--echo
+--enable_result_log
+--echo // large query should automatically turn on jit compilation
+--echo // is_use_jit == 1, hit_count == 0, new plan with jit compilation is generated
+--disable_warnings
+select hit_count = 0, is_use_jit = 1 from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a)';
+--enable_warnings
+
+--echo
+--disable_result_log
+select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a);
+
+--echo
+--enable_result_log
+--echo // should hit plan with jit compilation, expect is_use_jit == 1, hit_count == 1
+--disable_warnings
+select hit_count = 1, is_use_jit = 1 from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select sum(a + b) from test_late tl where (a, c) = (select a, c from test_late where c = tl.c and a = tl.a)';
+--enable_warnings
+
+--disable_query_log
+--disable_result_log
+
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+
+# login using admin acount
+connection conn_admin;
+
+alter system set large_query_threshold = '100ms';

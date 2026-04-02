@@ -1,0 +1,51 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: 测试增减分区不影响 partition group 的聚集
+ob1=OBI(cluster=2:2:2,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_auto_leader_switch = "false";
+
+
+ob1.mysql CREATE RESOURCE POOL sys_pool_2 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt resource_pool_list=('sys_pool_2'), locality = 'F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+connection tt_conn;
+
+create database db primary_zone = 'z1';
+use db;
+
+create tablegroup tg1 partition by range (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t1(c1 int, c2 int, primary key(c1,c2)) tablegroup='tg1' partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t2(c1 int, c2 int, primary key(c1,c2)) tablegroup='tg1' partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t3(c1 int, c2 int, primary key(c1,c2)) tablegroup='tg1' partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+
+alter tablegroup tg1 add partition (partition p3 values less than(40), partition p4 values less than(50));
+
+alter tablegroup tg1 drop partition (p3);
+alter tablegroup tg1 drop partition (p4);
+alter tablegroup tg1 add partition (partition p3 values less than(40));
+alter tablegroup tg1 add partition (partition p4 values less than(50));
+
+
+
+connection sys_conn;
+
+use oceanbase;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z1', unit_id, 1);
+let $ip_from = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port_from = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $ip_to = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_server where zone = 'z1' and (svr_ip != '$ip_from' or svr_port != $port_from), svr_ip, 1);
+let $port_to = deploy_get_value(ob1.select select svr_port from oceanbase.__all_server where zone = 'z1' and (svr_ip!='$ip_from' or svr_port!=$port_from), svr_port, 1);
+ob1.mysql alter system migrate unit $unit_id destination "$ip_to:$port_to";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 360;

@@ -78,7 +78,7 @@ int ObDasVecScanUtils::get_distance_expr_type(ObExpr &expr,
     case T_FUN_SYS_COSINE_DISTANCE:
       dis_type = ObExprVectorDistance::ObVecDisType::COSINE;
       break;
-    default:
+    default: 
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("not support vector sort expr", K(ret), K(expr.type_));
       break;
@@ -92,21 +92,21 @@ int ObDasVecScanUtils::get_distance_expr_type(ObExpr &expr,
   return ret;
 }
 
-int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr,
-                                                   float &similarity_threshold,
+int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr, 
+                                                   float &similarity_threshold, 
                                                    float &distance_threshold)
 {
   int ret = OB_SUCCESS;
 
   switch (expr.type_) {
-    case T_FUN_SYS_L2_DISTANCE:
+    case T_FUN_SYS_L2_DISTANCE: 
       // l2_similarity = 1 / (1 + l2_square_distance), vsag l2_distance is l2_square_distance
       distance_threshold = 1 / similarity_threshold - 1;
       break;
     // currently we don't support ip similarity
     // case T_FUN_SYS_INNER_PRODUCT:
-    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT:
-
+    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT: 
+    
     case T_FUN_SYS_COSINE_DISTANCE:
       // cosine_similarity = (1 + cosine) / 2, vsag cosine_distance = 1 - cosine
       distance_threshold = 2 - 2 * similarity_threshold;
@@ -119,17 +119,23 @@ int ObDasVecScanUtils::get_distance_threshold_hnsw(ObExpr &expr,
   return ret;
 }
 
-int ObDasVecScanUtils::check_ivf_support_similarity_threshold(ObExpr &expr)
+int ObDasVecScanUtils::get_distance_threshold_ivf(ObExpr &expr, 
+                                                  float &similarity_threshold, 
+                                                  float &distance_threshold)
 {
   int ret = OB_SUCCESS;
-
+  
   switch (expr.type_) {
-    case T_FUN_SYS_L2_DISTANCE:
+    case T_FUN_SYS_L2_DISTANCE: 
+      // l2_similarity = 1 / (1 + l2_square_distance), ob use l2_distance
+      distance_threshold = sqrt(1 / similarity_threshold - 1);
       break;
     // currently we don't support ip similarity
     // case T_FUN_SYS_INNER_PRODUCT:
-    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT:
+    // case T_FUN_SYS_NEGATIVE_INNER_PRODUCT: 
     case T_FUN_SYS_COSINE_DISTANCE:
+      // cosine_similarity = (1 + cosine) / 2, ob cosine_distance = 1 - cosine
+      distance_threshold = 2 - 2 * similarity_threshold;
       break;
     default:
       ret = OB_NOT_SUPPORTED;
@@ -152,13 +158,7 @@ int ObDasVecScanUtils::get_real_search_vec(common::ObIAllocator &allocator,
     LOG_WARN("ptr is null", K(ret), K(sort_rtdef), K(origin_vec));
   } else if (OB_FAIL(origin_vec->eval(*(sort_rtdef->eval_ctx_), search_vec_datum))) {
     LOG_WARN("eval vec arg failed", K(ret));
-  } else if (search_vec_datum->is_null()) {
-    ret = OB_ERR_NULL_VALUE;
-    LOG_WARN("search vector is null", K(ret));
   } else if (OB_FALSE_IT(real_search_vec = search_vec_datum->get_string())) {
-  } else if (0 == real_search_vec.length()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("search vector is empty string", K(ret));
   } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(&allocator,
                                                                ObLongTextType,
                                                                CS_TYPE_BINARY,

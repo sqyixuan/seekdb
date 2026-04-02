@@ -1,0 +1,361 @@
+============================
+bootstrap
+============================
+ob1=OBI(cluster=1:1:1:1,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.z4.obs0.set status=disable;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'true';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+=========================================
+construct initial parameters
+=========================================
+=========================================
+add server in zone4
+=========================================
+ob1.z4.add;
+ob1.z4.start_zone;
+ob1.z4.obs0.set extra_config=$mini_ob_config;
+ob1.z4.obs0.set status=enable;
+ob1.z4.obs0.start;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where (a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0) and a.tenant_id = 1, 0, 120;
+ob1.z4.obs0.check_log_until_success -c "weak read service thread start";
+ob1.z4.obs0.add;
+ob1.check_until_timeout SELECT COUNT(*) c FROM DBA_OB_SERVERS WHERE START_SERVICE_TIME > 0, 4, 200;
+=========================================
+create mysql tenant
+=========================================
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL mysql_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('mysql_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+ob1.mysql CREATE RESOURCE POOL oracle_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST=('oracle_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+=========================================
+reset parameters to default value
+=========================================
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob1.mysql ALTER SYSTEM SET enable_transfer = 'true' tenant = all;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_rereplication" and value = "True", 4, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $sys_tenant_id, 4, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $oracle_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $oracle_meta_tenant_id, 3, 20;
+=========================================
+switch RS to z2 and hang RS
+=========================================
+alter tenant sys primary_zone = 'z1';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = "LEADER" and zone = "z1", 1, 30;
+ob1.mysql alter system set_tp tp_name = ERRSIM_RS_STOP_ERROR, error_code = 4002, frequency = 1;
+ob1.mysql alter system set_tp tp_name = ERRSIM_RS_START_SERVICE_ERROR, error_code = 4002, frequency = 1;
+alter tenant sys primary_zone = 'z2';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.GV\$OB_LOG_STAT where tenant_id = 1 and ls_id = 1 and role = "LEADER" and svr_ip = "$z2_dst_ip0" and svr_port = $z2_dst_port0, 1, 30;
+=========================================
+test database related DDL
+=========================================
+----- test create database -----
+create database mysql_db1;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1", 1, 20;
+----- test alter database -----
+alter database mysql_db1 read write;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1" and read_only = "NO", 1, 20;
+alter database mysql_db1 read only;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1" and read_only = "YES", 1, 20;
+alter database mysql_db1 default collate UTF8MB4_BIN;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1" and collation = "UTF8MB4_BIN", 1, 20;
+alter database mysql_db1 default collate utf8mb4_general_ci;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1" and collation = "utf8mb4_general_ci", 1, 20;
+----- test drop database -----
+drop database mysql_db1;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_DATABASES where tenant_id = $tenant_id and database_name = "mysql_db1", 0, 20;
+=========================================
+test table related DDL
+=========================================
+----- test parallel create table -----
+alter system set _enable_parallel_table_creation = true tenant = mysql;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_enable_parallel_table_creation%" and value like "%true%", 3, 20;
+create table mysql_t1(c1 int);
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1", 1, 20;
+----- test create table -----
+alter system set _enable_parallel_table_creation = false tenant = mysql;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_enable_parallel_table_creation%" and value like "%false%", 3, 20;
+create table mysql_t2(c1 int);
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t2", 1, 20;
+----- test create table like -----
+alter system set _enable_parallel_table_creation = true tenant = mysql;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_enable_parallel_table_creation%" and value like "%true%", 3, 20;
+create table mysql_t3 like mysql_t1;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t3", 1, 20;
+----- test alter table -----
+expect c1
+describe test.mysql_t1;
+Field	Type	Null	Key	Default	Extra
+c1	int(11)	YES		NULL	
+alter table mysql_t1 rename column c1 to c2;
+expect c2
+describe test.mysql_t1;
+Field	Type	Null	Key	Default	Extra
+c2	int(11)	YES		NULL	
+----- test parallel truncate table -----
+alter system set _parallel_ddl_control = 'CREATE_INDEX:OFF, TRUNCATE_TABLE:ON' tenant = 'mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_parallel_ddl_control%" and value like "%CREATE_INDEX:OFF, TRUNCATE_TABLE:ON%", 3, 20;
+insert into mysql_t1 values (1), (2), (3), (4), (5);
+expect 5 lines
+select * from test.mysql_t1 order by c2 desc;
+c2
+5
+4
+3
+2
+1
+truncate table mysql_t1;
+expect 0 lines
+select * from test.mysql_t1 order by c2 desc;
+c2
+----- test truncate table -----
+alter system set _parallel_ddl_control = 'CREATE_INDEX:OFF, TRUNCATE_TABLE:OFF' tenant = 'mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_parallel_ddl_control%" and value like "%CREATE_INDEX:OFF, TRUNCATE_TABLE:OFF%", 3, 20;
+insert into mysql_t1 values (1), (2), (3), (4), (5);
+expect 5 lines
+select * from test.mysql_t1 order by c2 desc;
+c2
+5
+4
+3
+2
+1
+truncate table mysql_t1;
+expect 0 lines
+select * from test.mysql_t1 order by c2 desc;
+c2
+----- test rename table -----
+insert into mysql_t1 values (1), (2), (3), (4), (5);
+expect 5 lines
+select * from test.mysql_t1 order by c2 desc;
+c2
+5
+4
+3
+2
+1
+rename table mysql_t1 to mysql_t1_new;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1", 0, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1_new", 1, 20;
+expect 5 lines
+select * from test.mysql_t1_new order by c2 desc;
+c2
+5
+4
+3
+2
+1
+---------test zone1 can refresh schema change by zone2 --------------
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1", 0, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1_new", 1, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t2", 1, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t3", 1, 20;
+expect 5 lines
+select * from test.mysql_t1_new order by c2 desc;
+c2
+5
+4
+3
+2
+1
+expect 0 line
+select * from test.mysql_t2 order by c1 desc;
+c1
+expect 0 line
+select * from test.mysql_t3 order by c1 desc;
+c1
+----- test drop table -----
+drop table mysql_t1_new;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_TABLES where table_name = "mysql_t1_new", 0, 20;
+=========================================
+test table group related DDL
+=========================================
+----- test create table group -----
+create tablegroup mysql_tg1 partition by hash partitions 10;
+Warnings:
+Warning	1235	create tablegroup with partition not supported
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_TABLEGROUPS where tenant_id = $tenant_id and tablegroup_name = "mysql_tg1", 1, 20;
+create tablegroup mysql_tg2 sharding = 'NONE';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_TABLEGROUPS where tenant_id = $tenant_id and tablegroup_name = "mysql_tg2" and sharding = "NONE", 1, 20;
+----- test alter table group -----
+alter tablegroup mysql_tg2 sharding = 'ADAPTIVE';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_TABLEGROUPS where tenant_id = $tenant_id and tablegroup_name = "mysql_tg2" and sharding = "ADAPTIVE", 1, 20;
+----- test drop table group -----
+drop tablegroup mysql_tg1;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_TABLEGROUPS where tenant_id = $tenant_id and tablegroup_name = "mysql_tg1", 0, 20;
+drop tablegroup mysql_tg2;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_TABLEGROUPS where tenant_id = $tenant_id and tablegroup_name = "mysql_tg2", 0, 20;
+========================================
+test index related DDL
+========================================
+----- test create index -----
+alter system set _parallel_ddl_control = 'CREATE_INDEX:OFF, TRUNCATE_TABLE:OFF' tenant = 'mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_parallel_ddl_control%" and value like "%CREATE_INDEX:OFF, TRUNCATE_TABLE:OFF%", 3, 20;
+create index mysql_t2_index on mysql_t2(c1) LOCAL;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name like "%mysql_t2_index%", 1, 100;
+----- test parallel create index -----
+alter system set _parallel_ddl_control = 'CREATE_INDEX:ON, TRUNCATE_TABLE:OFF' tenant = 'mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name like "%_parallel_ddl_control%" and value like "%CREATE_INDEX:ON, TRUNCATE_TABLE:OFF%", 3, 20;
+create index mysql_t3_index on mysql_t3(c1) GLOBAL;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name like "%mysql_t3_index%", 1, 100;
+----- test drop index -----
+drop index mysql_t2_index on mysql_t2;
+drop index mysql_t3_index on mysql_t3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name like "%mysql_t2_index%", 0, 100;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name like "%mysql_t3_index%", 0, 100;
+========================================
+test trigger related DDL
+========================================
+----- test create trigger -----
+create table oracle_t1(c1 int);
+create table oracle_t2(c1 int);
+expect 0 lines
+select * from oracle_t1 order by c1 desc;
+C1
+expect 0 lines
+select * from oracle_t2 order by c1 desc;
+C1
+create or replace trigger oracle_t1_trigger before insert on oracle_t1 for each row begin insert into oracle_t2 values (:new.c1); end;
+insert into oracle_t1 values (1), (2), (3);
+expect 3 lines
+select * from oracle_t1 order by c1 desc;
+C1
+3
+2
+1
+expect 3 lines
+select * from oracle_t2 order by c1 desc;
+C1
+3
+2
+1
+----- test alter trigger -----
+alter trigger oracle_t1_trigger rename to oracle_t1_trigger_new;
+insert into oracle_t1 values (1), (2), (3);
+expect 6 lines
+select * from oracle_t1 order by c1 desc;
+C1
+3
+3
+2
+2
+1
+1
+expect 6 lines
+select * from oracle_t2 order by c1 desc;
+C1
+3
+3
+2
+2
+1
+1
+----- test drop trigger -----
+drop trigger oracle_t1_trigger_new;
+insert into oracle_t1 values (1), (2), (3);
+expect 9 lines
+select * from oracle_t1 order by c1 desc;
+C1
+3
+3
+3
+2
+2
+2
+1
+1
+1
+expect 6 lines
+select * from oracle_t2 order by c1 desc;
+C1
+3
+3
+2
+2
+1
+1
+=======================================
+test user related DDL
+=======================================
+----- test create user -----
+create user oracle_user1 identified by SYS;
+create table oracle_tt1(c1 int);
+insert into oracle_tt1 values(1), (2), (3);
+----- test rename user -----
+create user user_to_rename;
+rename user user_to_rename to user_to_rename_1;
+drop user user_to_rename_1;
+----- test drop user -----
+drop user oracle_user1 cascade;
+=======================================
+test outline related DDL
+=======================================
+----- test create outline -----
+create outline oracle_outline on select * from oracle_t1 where c1 = 1;
+----- test alter outline -----
+alter outline oracle_outline add select /*+max_concurrent(1)*/* from oracle_t1 where c1 = 1;
+----- test drop outline -----
+drop outline oracle_outline;
+=======================================
+test synonym related DDL
+=======================================
+----- test create synonym -----
+create synonym oracle_t1_syn for oracle_t1;
+expect 9 lines
+select * from oracle_t1_syn order by c1 desc;
+C1
+3
+3
+3
+2
+2
+2
+1
+1
+1
+----- test drop synonym -----
+drop synonym oracle_t1_syn;
+=======================================
+test package related DDL
+=======================================
+----- test create package -----
+CREATE PACKAGE my_debug1 IS   debug CONSTANT BOOLEAN := TRUE;   trace CONSTANT BOOLEAN := TRUE;   grade constant number := 1+8*9-14; END my_debug1;
+----- test alter package -----
+CREATE or replace PACKAGE my_debug1 IS   debug CONSTANT BOOLEAN := TRUE;   trace CONSTANT BOOLEAN := TRUE;   grade constant number := 1+8*9-14+14; END my_debug1;
+alter package my_debug1 compile package;
+----- test drop package -----
+drop package my_debug1;
+=========================================
+try set sys parameters
+=========================================
+ob1.mysql alter system set enable_rereplication =  false;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_rereplication" and value = "False", 4, 20;
+=========================================
+try set tenant parameters
+=========================================
+ob1.mysql alter system set enable_transfer = false tenant = mysql;
+ob1.mysql alter system set enable_transfer = false tenant = oracle;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $sys_tenant_id, 4, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $oracle_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $oracle_meta_tenant_id, 3, 20;
+ob1.mysql alter system set enable_transfer = false tenant = sys;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $sys_tenant_id, 4, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $oracle_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $oracle_meta_tenant_id, 3, 20;
+ob1.mysql alter system set enable_transfer = false tenant = all_meta;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $sys_tenant_id, 4, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $oracle_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $oracle_meta_tenant_id, 3, 20;

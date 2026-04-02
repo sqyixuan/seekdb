@@ -155,17 +155,16 @@ class ObReqColumnExpr : public ObReqExpr
 {
 public:
   ObReqColumnExpr() = delete;
-  static int construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name = ObString(), double weight = -1.0, bool print_weight = false);
-  static int construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, const ObString &table_name, double weight = -1.0, bool print_weight = false);
+  static int construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name = ObString(), double weight = -1.0);
+  static int construct_column_expr(ObReqColumnExpr *&expr, ObIAllocator &alloc, const ObString &expr_name, const ObString &table_name, double weight = -1.0);
   virtual ~ObReqColumnExpr() {}
   virtual int translate_expr(ObObjPrintParams &print_params_, char *buf_, int64_t buf_len_, int64_t *pos_, ObReqScope scope = FIELD_LIST_SCOPE, bool need_alias = true);
   virtual int get_expr_type() { return ObReqExprType::COLUMN_EXPR; }
   common::ObString table_name;
   double weight_;
-  bool print_weight_;
 private:
-  ObReqColumnExpr(const ObString &expr_name, const ObString &table_name = ObString(), double weight = -1.0, bool print_weight = false)
-    : ObReqExpr(expr_name), table_name(table_name), weight_(weight), print_weight_(print_weight) {}
+  ObReqColumnExpr(const ObString &expr_name, const ObString &table_name = ObString(), double weight = -1.0)
+    : ObReqExpr(expr_name), table_name(table_name), weight_(weight) {}
 };
 
 class ObReqConstExpr : public ObReqExpr
@@ -196,7 +195,7 @@ public:
   static int construct_binary_op_expr(ObReqOpExpr *&expr, ObIAllocator &alloc, ObItemType type, ObReqExpr *l_param, ObReqExpr *r_param, const ObString &alias_name = ObString());
   static int construct_unary_op_expr(ObReqOpExpr *&expr, ObIAllocator &alloc, ObItemType type,  ObReqExpr *param);
   static int construct_op_expr(ObReqOpExpr *&expr, ObIAllocator &alloc, ObItemType type, const common::ObIArray<ObReqExpr *> &params);
-  static int construct_in_expr(ObIAllocator &alloc, ObReqExpr *key_expr, common::ObIArray<ObReqConstExpr *> &value_exprs, ObReqOpExpr *&in_expr);
+  static int construct_in_expr(ObIAllocator &alloc, ObReqColumnExpr *col_expr, common::ObIArray<ObReqConstExpr *> &value_exprs, ObReqOpExpr *&in_expr);
   virtual ~ObReqOpExpr() {}
   virtual int translate_expr(ObObjPrintParams &print_params_, char *buf_, int64_t buf_len_, int64_t *pos_, ObReqScope scope = FIELD_LIST_SCOPE, bool need_alias = true);
   int translate_in_expr(ObObjPrintParams &print_params_, char *buf_, int64_t buf_len_, int64_t *pos_, ObReqScope scope = FIELD_LIST_SCOPE, bool need_alias = true);

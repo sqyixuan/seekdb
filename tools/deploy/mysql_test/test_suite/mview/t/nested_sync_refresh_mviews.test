@@ -1,0 +1,110 @@
+# owner: wyh329796 
+# owner group: mv
+# tags: 
+# descriotion: test the behavior of nested mview sync refresh
+
+connect (sys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connect (conn1, $OBMYSQL_MS0, root,,test, $OBMYSQL_PORT);
+
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 5;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+sleep 5;
+
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_mv_nested_sync_refresh_views;
+--enable_warnings
+create database test_mv_nested_sync_refresh_views;
+use test_mv_nested_sync_refresh_views;
+
+create table ta(id int primary key, name varchar(30));
+create table tb(id int primary key, age int);
+create table tc(id int primary key, salary int);
+
+create materialized view log on ta with primary key (name) including new values;
+create materialized view log on tb with primary key (age) including new values;
+create materialized view log on tc with primary key (salary) including new values;
+
+create materialized view mv1 (primary key (id_a)) refresh fast as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+
+create materialized view mv2 (primary key (id_a)) refresh fast as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+create materialized view log on mv2 with primary key (name, salary) including new values;
+
+create materialized view mv3 refresh fast as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+
+insert into ta values (1, 'j');
+insert into tb values (1, 21);
+insert into tc values (1, 10000);
+
+connection sys;
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH wait_for signalxxx execute 10000';
+sleep 3;
+
+connection default;
+use test_mv_nested_sync_refresh_views;
+send CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+connection conn1;
+use test_mv_nested_sync_refresh_views;
+sleep 3;
+select count(job_type = 4) = 1 from oceanbase.__all_virtual_mview_running_job;
+## 生成data_sync_scn后，继续向基表写入数据，验证新数据不会被刷新到mv中
+insert into ta values (2, 'jj');
+insert into tb values (2, 22);
+insert into tc values (2, 20000);
+
+connection sys;
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'now signal signalxxx';
+sleep 3;
+
+connection default;
+reap;
+
+select * from mv1;
+select * from mv2;
+select * from mv3;
+
+###### 验证级联全量刷新后，后写入基表的数据不会刷新到mv中
+connection default;
+use test_mv_nested_sync_refresh_views;
+send CALL DBMS_MVIEW.REFRESH('mv3', 'C', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+connection conn1;
+use test_mv_nested_sync_refresh_views;
+sleep 3;
+select count(job_type = 4) = 1 from oceanbase.__all_virtual_mview_running_job;
+## 生成data_sync_scn后，继续向基表写入数据，验证新数据不会被刷新到mv中
+insert into ta values (3, 'jjj');
+insert into tb values (3, 33);
+insert into tc values (3, 30000);
+
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'now signal signalxxx';
+sleep 5;
+
+connection default;
+reap;
+
+select * from mv1;
+select * from mv2;
+select * from mv3;
+
+##### 清理
+connection sys;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+sleep 5;
+
+connection default;
+drop database test_mv_nested_sync_refresh_views;

@@ -1,0 +1,103 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+CREATE RESOURCE UNIT small_unit MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL small_pool_0 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql',lower_case_table_names=1;
+set global wait_timeout = 288000;
+===============================================================
+====================     create table   =======================
+===============================================================
+use test;
+create table t0 (c0 int primary key, c1 char(100));
+create table t1 (c1 int,
+c2 char(100),
+c3 char(50),
+c4 int,
+c5 int,
+c6 set ('abc', 'cde', 'def'),
+c7 enum ('a', 'b', 'c'),
+CONSTRAINT TEST_PRIMARY_KEY primary key(c1),
+CONSTRAINT TEST_UNIQUE UNIQUE(C3),
+CONSTRAINT TEST_CHECK CHECK(C4>20),
+CONSTRAINT TEST_FOREIGN_KEY FOREIGN KEY(c1) REFERENCES T0 (c0));
+alter table t1 add CONSTRAINT TEST_NOT_NULL CHECK(c2 is not null);
+insert into t0 values (1, "Mysql");
+insert into t0 values (2, "Oracle");
+insert into t0 values (3, "OceanBase");
+insert into t0 values (4, "Mysql");
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (1, 'allen ', '1234567890123', 30, 1, 'abc', 'a');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (2, 'sam ', '2234567890123', 30, 2, 'cde', 'c');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (3, 'billy ', '3234567890123', 30, 3, 'cde', 'b');
+insert into t1 (c1, c2, c3, c4, c5, c6, c7) values (4, 'carl', '4234567890123', 30, 4, 'cde', 'a');
+===============================================================
+==============   check constraint and index   =================
+===============================================================
+use oceanbase;
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 't1' or table_name = 't2');
+table_name	index_type	index_status
+__idx_DATA_TABLE_ID_TEST_UNIQUE	2	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name = 't1' or table_name = 't2');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+TEST_CHECK	3	(`c4` > 20)	0	1	1
+TEST_NOT_NULL	3	(`c2` is not null)	0	1	1
+===============================================================
+==============   backup and archive   =========================
+===============================================================
+use oceanbase;
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) from cdb_ob_backup_jobs, 0, 600;
+ob1.check_until_timeout select checkpoint_scn > $restore_checkpoint1 from CDB_OB_ARCHIVELOG, 1, 600;
+===============================================================
+====================   recover table   ========================
+===============================================================
+create database recover_test;
+use recover_test;
+create table TEST_DUP_BASE (c1 int,
+c2 char(100),
+c3 varchar(50),
+c4 int,
+c5 int,
+c6 int,
+CONSTRAINT TEST_PRIMARY_KEY primary key(c1),
+CONSTRAINT TEST_UNIQUE UNIQUE(C3),
+CONSTRAINT TEST_CHECK CHECK(C4>20),
+CONSTRAINT TEST_FOREIGN_KEY FOREIGN KEY(c4) REFERENCES TEST_DUP_BASE (c1));
+alter table TEST_DUP_BASE add CONSTRAINT TEST_NOT_NULL CHECK(c2 is not null);
+use oceanbase;
+ob1.mysql alter system recover table test.t0, test.t1 to tenant backup_oracle_tenant from '$restore_path' until scn = $restore_checkpoint1 with 'pool_list=small_pool_0&primary_zone=z1' remap table test.t0:recover_test.t0,test.t1:recover_test.recover_restore_normal_table_t1;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = 1004, SUCCESS, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 600;
+SELECT target_database, target_table, result, comment from __all_virtual_import_table_task_history ORDER BY GMT_CREATE;
+target_database	target_table	result	comment
+recover_test	t0	SUCCESS	
+recover_test	recover_restore_normal_table_t1	SUCCESS	
+select table_name, index_type, index_status from oceanbase.__all_virtual_table where data_table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%RECOVER_RESTORE_NORMAL_TABLE%') and table_name not like '%AUX_LOB%';
+table_name	index_type	index_status
+__idx_DATA_TABLE_ID_TEST_UNIQUE	2	2
+select constraint_name, constraint_type, check_expr, rely_flag, enable_flag, validate_flag from oceanbase.__all_virtual_constraint where table_id in (
+select table_id from oceanbase.__all_virtual_table where table_name like '%RECOVER_RESTORE_NORMAL_TABLE%');
+constraint_name	constraint_type	check_expr	rely_flag	enable_flag	validate_flag
+use recover_test;
+insert into recover_restore_normal_table_t1 values (1, NULL, '1234567890123', 0, 1, 'abc', 'a');
+ERROR 23000: Duplicate entry '1' for key 'PRIMARY'
+SELECT * FROM recover_restore_normal_table_t1 ORDER BY C1, C2, C3, C4, C5;
+c1	c2	c3	c4	c5	c6	c7
+1	allen	1234567890123	30	1	abc	a
+2	sam	2234567890123	30	2	cde	c
+3	billy	3234567890123	30	3	cde	b
+4	carl	4234567890123	30	4	cde	a

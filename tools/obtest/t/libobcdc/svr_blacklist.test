@@ -1,0 +1,83 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#   svr blacklist
+#
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+
+# 准备环境
+source include/liboblog/create_tenant_multiple_zone.inc;
+
+connection oblog_conn_sys;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'oblog_tt', tenant_id, 1);
+connection oblog_conn_tt;
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建database 1
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+create database oblog_db1;
+ob1.oblog.next;
+
+use oblog_db1;
+# TODO specified t1 primary_zone to z1,z2,z3
+create table t1 (pk int primary key, c1 int);
+ob1.oblog.next;
+
+use oceanbase;
+let $svr_ip1 = query_get_value(select svr_ip from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_ip, 1);
+let $svr_ip2 = query_get_value(select svr_ip from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_ip, 2);
+let $svr_ip3 = query_get_value(select svr_ip from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_ip, 3);
+let $svr_port1 = query_get_value(select svr_port from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_port, 1);
+let $svr_port2 = query_get_value(select svr_port from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_port, 2);
+let $svr_port3 = query_get_value(select svr_port from DBA_OB_TABLE_LOCATIONS where table_name = 't1' and ls_id = 1001, svr_port, 3);
+
+use oblog_db1;
+insert into t1 values(1, 1);
+ob1.oblog.next;
+# stop liboblog
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* server_blacklist=$svr_ip1:$svr_port1 sql_server_blacklist=$svr_ip1:$svr_port1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+ob1.oblog.check_log "[SQL_SERVER_PROVIDER] refresh server list succ(server_count=2, remove_server_count=1";
+ob1.oblog.check_log "[SERVER_BLACKLIST] [FILTER] [KEY={cluster_id:1, tenant_id:$tenant_id, ls_id:{id:1001}}] [FILTER_SVR_CNT=1(3/2)] [REMOVE_SVR=[\"$svr_ip1:$svr_port1";
+# stop liboblog
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* server_blacklist=$svr_ip1:$svr_port1|$svr_ip2:$svr_port2 sql_server_blacklist=$svr_ip1:$svr_port1|$svr_ip2:$svr_port2 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+ob1.oblog.check_log "[SQL_SERVER_PROVIDER] refresh server list succ(server_count=1, remove_server_count=2";
+## check_log(using fgrep) won't succ if pattern contains  \"
+#ob1.oblog.check_log "[SERVER_BLACKLIST] [FILTER] [KEY={cluster_id:1, tenant_id:$tenant_id, ls_id:{id:1}}] [FILTER_SVR_CNT=2(3/1)] [REMOVE_SVR=[\"$svr_ip1:$svr_port1\", \"$svr_ip2:$svr_port2";
+ob1.oblog.check_log "[SERVER_BLACKLIST] [FILTER] [KEY={cluster_id:1, tenant_id:$tenant_id, ls_id:{id:1}}] [FILTER_SVR_CNT=2(3/1)] [REMOVE_SVR=[\"$svr_ip1:$svr_port1";
+# stop liboblog
+ob1.oblog.stop;
+
+# 删除oblog_tt租户
+#connection oblog_conn_sys;
+#drop tenant oblog_tt;
+#ob1.oblog.next;
+
+#drop tenant oblog_tt force;
+#ob1.oblog.next;
+
+# 清理数据
+--disable_warnings
+#drop resource pool if exists oblog_pool;
+--disable_warnings
+#drop resource unit if exists oblog_box;
+--disable_warnings
+#drop database if exists oblog_db1;

@@ -1,0 +1,49 @@
+ob1=OBI(cluster=1:1:1:1:1,proxy_num=0,init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3, R@z4", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+ALTER TENANT sys SET PRIMARY_ZONE='z1;z2;z3';
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+========================================================================
+||       [MILESTONE] case 1: 永久下线踢出不在__all_server表成员           ||
+========================================================================
+===================================================
+delete line in __all_server
+===================================================
+delete from __all_server where zone = 'z2' or zone = 'z4';
+===================================================
+wait permanent offline
+===================================================
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where zone = 'z2', 0, 40;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where zone = 'z4', 0, 40;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and learner_list like "%$z4_dst0%", 0, 40;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and member_list like "%$z4_dst0%", 0, 40;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and learner_list like "%$z2_dst0%", 0, 40;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and member_list like "%$z2_dst0%", 0, 40;
+select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY order by tenant_id and ls_id and target_replica_type;
+tenant_id	ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1	1	REMOVE PAXOS REPLICA	HIGH	COMPLETED	5	FULL	5	NULL	remove permanent offline replica
+1	1	REMOVE PAXOS REPLICA	HIGH	COMPLETED	5	FULL	5	NULL	remove permanent offline replica
+1001	1	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	3	READONLY	3	NULL	remove permanent offline replica
+1001	1	REMOVE PAXOS REPLICA	HIGH	COMPLETED	3	FULL	3	NULL	remove permanent offline replica
+1002	1	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	3	READONLY	3	NULL	remove permanent offline replica
+1002	1	REMOVE PAXOS REPLICA	HIGH	COMPLETED	3	FULL	3	NULL	remove permanent offline replica
+1002	1001	REMOVE NON PAXOS REPLICA	HIGH	COMPLETED	3	READONLY	3	NULL	remove permanent offline replica
+1002	1001	REMOVE PAXOS REPLICA	HIGH	COMPLETED	3	FULL	3	NULL	remove permanent offline replica
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+========================================================================
+||              [MILESTONE] case 2: ret_comment相关测试                 ||
+========================================================================
+ob1.mysql alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_EXECUTE_TASK_ERROR, error_code = 4018, frequency = 1;
+alter system modify ls=1001 paxos_replica_num=2 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 20;
+select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where TASK_TYPE like "%MODIFY PAXOS REPLICA NUMBER%";
+tenant_id	ls_id	task_type	priority	task_status	target_paxos_replica_number	target_replica_type	source_paxos_replica_number	source_replica_type	comment
+1002	1001	MODIFY PAXOS REPLICA NUMBER	HIGH	FAILED	2		3	NULL	modify paxos_replica_num by manual

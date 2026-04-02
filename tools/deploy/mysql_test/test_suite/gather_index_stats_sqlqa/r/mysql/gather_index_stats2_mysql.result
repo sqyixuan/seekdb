@@ -1,0 +1,1115 @@
+drop database IF EXISTS yyl;
+purge recyclebin;
+purge recyclebin;
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+create database yyl  character set utf8;
+use yyl;
+###无主键、唯一键、索引表,普通表、均匀分布###
+purge recyclebin;
+create view index_stats_view as SELECT
+CAST(DB.DATABASE_NAME AS CHAR(128)) AS OWNER,
+CAST(V.INDEX_NAME AS     CHAR(128)) AS INDEX_NAME,
+CAST(DB.DATABASE_NAME AS     CHAR(128)) AS TABLE_OWNER,
+CAST(T.TABLE_NAME       AS  CHAR(128)) AS TABLE_NAME,
+CAST(V.PARTITION_NAME   AS  CHAR(128)) AS PARTITION_NAME,
+CAST(V.SUBPARTITION_NAME  AS    CHAR(128)) AS SUBPARTITION_NAME,
+CAST(V.OBJECT_TYPE AS CHAR(12)) AS OBJECT_TYPE,
+CAST(STAT.ROW_CNT AS    DECIMAL) AS NUM_ROWS,
+CAST(STAT.AVG_ROW_LEN AS    DECIMAL) AS AVG_ROW_LEN,
+CAST(STAT.macro_blk_cnt AS    DECIMAL) AS MACRO_BLK_CNT,
+CAST(STAT.micro_blk_cnt AS    DECIMAL) AS MICRO_BLK_CNT
+FROM
+(SELECT TENANT_ID,
+DATABASE_ID,
+TABLE_ID,
+DATA_TABLE_ID,
+CASE WHEN PART_LEVEL = 0 THEN -2 ELSE -1 END AS PARTITION_ID,
+SUBSTR(TABLE_NAME, 7 + INSTR(SUBSTR(TABLE_NAME, 7), '_')) AS INDEX_NAME,
+NULL AS PARTITION_NAME,
+NULL AS SUBPARTITION_NAME,
+NULL AS PARTITION_POSITION,
+NULL AS SUBPARTITION_POSITION,
+'INDEX' AS OBJECT_TYPE
+FROM
+oceanbase.__all_table T
+WHERE T.TABLE_TYPE = 5
+UNION ALL
+SELECT T.TENANT_ID,
+T.DATABASE_ID,
+T.TABLE_ID,
+T.DATA_TABLE_ID,
+P.PART_ID,
+SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+P.PART_NAME,
+NULL,
+P.PART_ID + 1,
+NULL,
+'PARTITION'
+        FROM
+oceanbase.__all_table T
+JOIN
+oceanbase.__all_part P
+ON T.TENANT_ID = P.TENANT_ID
+AND T.TABLE_ID = P.TABLE_ID
+WHERE T.TABLE_TYPE = 5
+UNION ALL
+SELECT T.TENANT_ID,
+T.DATABASE_ID,
+T.TABLE_ID,
+T.DATA_TABLE_ID,
+SP.SUB_PART_ID AS PARTITION_ID,
+SUBSTR(T.TABLE_NAME, 7 + INSTR(SUBSTR(T.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+P.PART_NAME,
+SP.SUB_PART_NAME,
+P.PART_ID + 1,
+SP.SUB_PART_ID + 1,
+'SUBPARTITION'
+        FROM
+oceanbase.__all_table T
+JOIN
+oceanbase.__all_part P
+ON T.TENANT_ID = P.TENANT_ID
+AND T.TABLE_ID = P.TABLE_ID
+JOIN
+oceanbase.__all_sub_part SP
+ON T.TENANT_ID = SP.TENANT_ID
+AND T.TABLE_ID = SP.TABLE_ID
+AND P.PART_ID = SP.PART_ID
+WHERE T.TABLE_TYPE = 5
+) V
+JOIN oceanbase.__all_table T
+ON T.TABLE_ID = V.DATA_TABLE_ID
+AND T.TENANT_ID = V.TENANT_ID
+AND T.DATABASE_ID = V.DATABASE_ID
+AND V.TENANT_ID in (0, 1)
+JOIN
+oceanbase.__all_database DB
+ON DB.TENANT_ID = V.TENANT_ID
+AND DB.DATABASE_ID = V.DATABASE_ID
+AND DB.DATABASE_NAME !=  '__recyclebin'
+    LEFT JOIN
+oceanbase.__all_table_stat STAT
+ON V.TENANT_ID = STAT.TENANT_ID
+AND V.TABLE_ID = STAT.TABLE_ID
+AND (V.PARTITION_ID = STAT.PARTITION_ID OR V.PARTITION_ID = -2)
+AND STAT.INDEX_TYPE = 1;
+###————————————————————————————————————————————————————————————————————————————————————###
+set ob_query_timeout=30000000;
+DROP TABLE t1 ;
+create table t1 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+insert into t1 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4);
+create index gkey on t1(c2,c3,c4) global;
+###收集统计信息、gather_index_stats-03-02-01-01
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t1	NULL	NULL	INDEX	4	80	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t1	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	4
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	4
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t1',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t1;
+create table t2 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+insert into t2 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+create index gkey on t2(c2,c3,c4) global partition by hash(c2) partitions 5;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t2	NULL	NULL	INDEX	5	80	0	0
+t2	p0	NULL	PARTITION	1	80	0	0
+t2	p1	NULL	PARTITION	1	80	0	0
+t2	p2	NULL	PARTITION	1	80	0	0
+t2	p3	NULL	PARTITION	1	80	0	0
+t2	p4	NULL	PARTITION	1	80	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t2	NULL	NULL	NULL	NULL
+t2	p0	1	NULL	NULL
+t2	p1	2	NULL	NULL
+t2	p2	3	NULL	NULL
+t2	p3	4	NULL	NULL
+t2	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t2',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t2;
+create table t3(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2)) partition by hash(c1)  subpartition by range columns(c2)  subpartition template ( subpartition p0 values less than (5),   subpartition p1 values less than (100)) partitions 2;
+create index gkey on t3(c3) global partition by hash(c3) partitions 2;
+insert into t3 values(1, 1, 1, 1), (2, 2, 2, 2), (3, 3, 3, 3);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t3	NULL	NULL	INDEX	3	60	0	0
+t3	p0	NULL	PARTITION	1	60	0	0
+t3	p1	NULL	PARTITION	2	60	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t3	NULL	NULL	NULL	NULL
+t3	p0	1	NULL	NULL
+t3	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t3',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t3;
+create table t4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2)) partition by hash(c1)  subpartition by range columns(c2)  subpartition template ( subpartition p0 values less than (5),   subpartition p1 values less than (100)) partitions 2;
+insert into t4 values(1, 1, 1, 1), (2, 2, 2, 2), (3, 3, 3, 3);
+create index gkey on t4(c3) global partition by hash(c3) partitions 2;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t4	NULL	NULL	INDEX	3	60	0	0
+t4	p0	NULL	PARTITION	1	60	0	0
+t4	p1	NULL	PARTITION	2	60	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t4	NULL	NULL	NULL	NULL
+t4	p0	1	NULL	NULL
+t4	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t4',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t4;
+create table t5(a int, b int, c int, primary key(a)) partition by hash(a) partitions 5;
+create index gkey on t5(b) global;
+insert into t5 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t5	NULL	NULL	INDEX	5	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t5	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t5',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t5;
+create table t6(a int, b int, c int, primary key(a)) partition by hash(a) partitions 5;
+create index gkey on t6(b) global;
+insert into t6 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t6	NULL	NULL	INDEX	5	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t6	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t6',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t6;
+create table t7(a int, b int, c int, primary key(a));
+create index gkey on t7(b) global partition by hash(b) partitions 5;
+insert into t7 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t7	NULL	NULL	INDEX	5	40	0	0
+t7	p0	NULL	PARTITION	1	40	0	0
+t7	p1	NULL	PARTITION	1	40	0	0
+t7	p2	NULL	PARTITION	1	40	0	0
+t7	p3	NULL	PARTITION	1	40	0	0
+t7	p4	NULL	PARTITION	1	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t7	NULL	NULL	NULL	NULL
+t7	p0	1	NULL	NULL
+t7	p1	2	NULL	NULL
+t7	p2	3	NULL	NULL
+t7	p3	4	NULL	NULL
+t7	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t7',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t7;
+create table t8(a int, b int, c int, primary key(a));
+create unique index gkey on t8(b) global partition by hash(b) partitions 5;
+insert into t8 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t8	NULL	NULL	INDEX	5	40	0	0
+t8	p0	NULL	PARTITION	1	40	0	0
+t8	p1	NULL	PARTITION	1	40	0	0
+t8	p2	NULL	PARTITION	1	40	0	0
+t8	p3	NULL	PARTITION	1	40	0	0
+t8	p4	NULL	PARTITION	1	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t8	NULL	NULL	NULL	NULL
+t8	p0	1	NULL	NULL
+t8	p1	2	NULL	NULL
+t8	p2	3	NULL	NULL
+t8	p3	4	NULL	NULL
+t8	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t8',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t8;
+create table t9 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+create index gkey on t9(c2,c3) global partition by hash(c2) partitions 5;
+insert into t9 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t9	NULL	NULL	INDEX	5	60	0	0
+t9	p0	NULL	PARTITION	1	60	0	0
+t9	p1	NULL	PARTITION	1	60	0	0
+t9	p2	NULL	PARTITION	1	60	0	0
+t9	p3	NULL	PARTITION	1	60	0	0
+t9	p4	NULL	PARTITION	1	60	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t9	NULL	NULL	NULL	NULL
+t9	p0	1	NULL	NULL
+t9	p1	2	NULL	NULL
+t9	p2	3	NULL	NULL
+t9	p3	4	NULL	NULL
+t9	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t9',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t9;
+create table t10 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+create index gkey on t10(c2,c3);
+insert into t10 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t10	NULL	NULL	INDEX	4	60	0	0
+t10	p0	NULL	PARTITION	1	60	0	0
+t10	p1	NULL	PARTITION	1	60	0	0
+t10	p2	NULL	PARTITION	1	60	0	0
+t10	p3	NULL	PARTITION	1	60	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t10	NULL	NULL	NULL	NULL
+t10	p0	1	NULL	NULL
+t10	p1	2	NULL	NULL
+t10	p2	3	NULL	NULL
+t10	p3	4	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	4
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	4
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t10',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t10;
+create table t11 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by range columns(c1) (partition p0 values less than (1), partition p1 values less than (100));
+create index gkey on t11(c2,c3) global partition by hash(c2) partitions 5;
+insert into t11 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t11	NULL	NULL	INDEX	5	60	0	0
+t11	p0	NULL	PARTITION	1	60	0	0
+t11	p1	NULL	PARTITION	1	60	0	0
+t11	p2	NULL	PARTITION	1	60	0	0
+t11	p3	NULL	PARTITION	1	60	0	0
+t11	p4	NULL	PARTITION	1	60	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t11	NULL	NULL	NULL	NULL
+t11	p0	1	NULL	NULL
+t11	p1	2	NULL	NULL
+t11	p2	3	NULL	NULL
+t11	p3	4	NULL	NULL
+t11	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t11',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t11;
+create table t12 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by key(c1) partitions 4;
+create index gkey on t12(c2,c3) global partition by key(c2) partitions 5;
+insert into t12 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t12	NULL	NULL	INDEX	5	60	0	0
+t12	p0	NULL	PARTITION	1	60	0	0
+t12	p1	NULL	PARTITION	2	60	0	0
+t12	p2	NULL	PARTITION	2	60	0	0
+t12	p3	NULL	PARTITION	0	0	0	0
+t12	p4	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t12	NULL	NULL	NULL	NULL
+t12	p0	1	NULL	NULL
+t12	p1	2	NULL	NULL
+t12	p2	3	NULL	NULL
+t12	p3	4	NULL	NULL
+t12	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+PARTITION	NULL	NULL	NULL	NULL	2
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+PARTITION	NULL	NULL	NULL	NULL	2
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t12',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t12;
+create table t13 (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by list(c1+1) (partition p0 values in (1,2,3), partition p1 values in (default));
+create index gkey on t13(c2,c3) global partition by key(c2) partitions 5;
+insert into t13 values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'gkey' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t13	NULL	NULL	INDEX	5	60	0	0
+t13	p0	NULL	PARTITION	1	60	0	0
+t13	p1	NULL	PARTITION	2	60	0	0
+t13	p2	NULL	PARTITION	2	60	0	0
+t13	p3	NULL	PARTITION	0	0	0	0
+t13	p4	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t13	NULL	NULL	NULL	NULL
+t13	p0	1	NULL	NULL
+t13	p1	2	NULL	NULL
+t13	p2	3	NULL	NULL
+t13	p3	4	NULL	NULL
+t13	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+PARTITION	NULL	NULL	NULL	NULL	2
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='gkey' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	5
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+PARTITION	NULL	NULL	NULL	NULL	2
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'gkey', tabname=>'t13',granularity=>'SUBPARTITION');
+DROP INDEX gkey on t13;
+create table t18(a int primary key, b int, c int);
+create unique index idx on t18(b) partition by hash(b) partitions 5;
+create unique index idx2 on t18(c) local;
+insert into t18 values(1, 1, 1);
+insert into t18 values(2, 2, 2);
+insert into t18 values(3, 3, 3);
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t18	NULL	NULL	INDEX	3	40	0	0
+t18	p0	NULL	PARTITION	0	0	0	0
+t18	p1	NULL	PARTITION	1	40	0	0
+t18	p2	NULL	PARTITION	1	40	0	0
+t18	p3	NULL	PARTITION	1	40	0	0
+t18	p4	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t18	NULL	NULL	NULL	NULL
+t18	p0	1	NULL	NULL
+t18	p1	2	NULL	NULL
+t18	p2	3	NULL	NULL
+t18	p3	4	NULL	NULL
+t18	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	1
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t18',granularity=>'SUBPARTITION');
+DROP INDEX idx on t18;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx2' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t18	NULL	NULL	INDEX	3	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx2' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t18	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx2' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx2' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx2' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx2', tabname=>'t18',granularity=>'SUBPARTITION');
+DROP INDEX idx2 on t18;
+create table t19(a int primary key, b int, c int);
+create unique index idx on t19(b) partition by hash(b) partitions 5;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t19	NULL	NULL	INDEX	0	0	0	0
+t19	p0	NULL	PARTITION	0	0	0	0
+t19	p1	NULL	PARTITION	0	0	0	0
+t19	p2	NULL	PARTITION	0	0	0	0
+t19	p3	NULL	PARTITION	0	0	0	0
+t19	p4	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t19	NULL	NULL	NULL	NULL
+t19	p0	1	NULL	NULL
+t19	p1	2	NULL	NULL
+t19	p2	3	NULL	NULL
+t19	p3	4	NULL	NULL
+t19	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t19',granularity=>'SUBPARTITION');
+DROP INDEX idx on t19;
+create table t20 (c1 int, c2 int, c3 int, primary key(c1));
+create index idx on t20(c2) partition by hash(c2) partitions 2;
+insert into t20 values(1, 2, 3), (2, 3, 4), (3, 4, 5);
+insert into t20 values(1, 2, 3), (2, 3, 4), (3, 4, 5) on duplicate key update c2=c2+1;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t20	NULL	NULL	INDEX	3	40	0	0
+t20	p0	NULL	PARTITION	1	40	0	0
+t20	p1	NULL	PARTITION	2	40	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t20	NULL	NULL	NULL	NULL
+t20	p0	1	NULL	NULL
+t20	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	3
+PARTITION	NULL	NULL	NULL	NULL	1
+PARTITION	NULL	NULL	NULL	NULL	2
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t20',granularity=>'SUBPARTITION');
+DROP INDEX idx on t20;
+create table t21(a int auto_increment, b int, c int, primary key(b));
+create unique index idx on t21(b) partition by hash(b) partitions 5;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t21	NULL	NULL	INDEX	0	0	0	0
+t21	p0	NULL	PARTITION	0	0	0	0
+t21	p1	NULL	PARTITION	0	0	0	0
+t21	p2	NULL	PARTITION	0	0	0	0
+t21	p3	NULL	PARTITION	0	0	0	0
+t21	p4	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t21	NULL	NULL	NULL	NULL
+t21	p0	1	NULL	NULL
+t21	p1	2	NULL	NULL
+t21	p2	3	NULL	NULL
+t21	p3	4	NULL	NULL
+t21	p4	5	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t21',granularity=>'SUBPARTITION');
+DROP INDEX idx on t21;
+create table t22(a int primary key, b int, c int, d timestamp(6) NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)) partition by hash(a) partitions 5;
+create index idx on t22(c, d) global;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t22	NULL	NULL	INDEX	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t22	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t22',granularity=>'SUBPARTITION');
+DROP INDEX idx on t22;
+create table t23(a int primary key, b int, c int, d timestamp(6) NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)) partition by hash(a) partitions 5;
+create index idx on t23(c, d) global;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t23	NULL	NULL	INDEX	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t23	NULL	NULL	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t23',granularity=>'SUBPARTITION');
+DROP INDEX idx on t23;
+create table t24(a int primary key, b int, c int);
+create index idx on t24(b) partition by hash(b) partitions 2;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'idx' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t24	NULL	NULL	INDEX	0	0	0	0
+t24	p0	NULL	PARTITION	0	0	0	0
+t24	p1	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t24	NULL	NULL	NULL	NULL
+t24	p0	1	NULL	NULL
+t24	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='idx' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'idx', tabname=>'t24',granularity=>'SUBPARTITION');
+DROP INDEX idx on t24;
+drop table if exists t26;
+create table t26 (c1 int primary key, c2 int, c3 int, c4 int) partition by hash(c1) partitions 2;
+create index sl_global_i1 on t26 (c2) partition by hash(c2) partitions 2;
+create index sl_global_i2 on t26 (c3) partition by hash(c3) partitions 2;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'sl_global_i1' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t26	NULL	NULL	INDEX	0	0	0	0
+t26	p0	NULL	PARTITION	0	0	0	0
+t26	p1	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i1' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t26	NULL	NULL	NULL	NULL
+t26	p0	1	NULL	NULL
+t26	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i1' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i1' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i1' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i1', tabname=>'t26',granularity=>'SUBPARTITION');
+DROP INDEX sl_global_i1 on t26;
+收集统计信息
+call dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26');
+### OB关注的内容
+SELECT TABLE_NAME,PARTITION_NAME,SUBPARTITION_NAME,OBJECT_TYPE,NUM_ROWS,AVG_ROW_LEN,MACRO_BLK_CNT,MICRO_BLK_CNT FROM index_stats_view where INDEX_NAME = 'sl_global_i2' ;
+TABLE_NAME	PARTITION_NAME	SUBPARTITION_NAME	OBJECT_TYPE	NUM_ROWS	AVG_ROW_LEN	MACRO_BLK_CNT	MICRO_BLK_CNT
+t26	NULL	NULL	INDEX	0	0	0	0
+t26	p0	NULL	PARTITION	0	0	0	0
+t26	p1	NULL	PARTITION	0	0	0	0
+SELECT table_name, partition_name, partition_position, subpartition_name, subpartition_position FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i2' ORDER BY subpartition_name,partition_name;
+table_name	partition_name	partition_position	subpartition_name	subpartition_position
+t26	NULL	NULL	NULL	NULL
+t26	p0	1	NULL	NULL
+t26	p1	2	NULL	NULL
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i2' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+SELECT GLOBAL_STATS,USER_STATS,STATTYPE_LOCKED,STALE_STATS FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i2' ORDER BY subpartition_name,partition_name;
+GLOBAL_STATS	USER_STATS	STATTYPE_LOCKED	STALE_STATS
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+NO	NO	NULL	NO
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',estimate_percent=>100);
+SELECT object_type,BLEVEL,LEAF_BLOCKS,DISTINCT_KEYS,CLUSTERING_FACTOR, num_rows FROM oceanbase.dba_ind_statistics WHERE INDEX_NAME='sl_global_i2' ORDER BY subpartition_name,partition_name;
+object_type	BLEVEL	LEAF_BLOCKS	DISTINCT_KEYS	CLUSTERING_FACTOR	num_rows
+INDEX	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+PARTITION	NULL	NULL	NULL	NULL	0
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'AUTO');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'DEFAULT');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'APPROX_GLOBAL AND PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'GLOBAL');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'PARTITION');
+CALL dbms_stats.gather_index_stats('YYL', 'sl_global_i2', tabname=>'t26',granularity=>'SUBPARTITION');
+DROP INDEX sl_global_i2 on t26;
+drop user yyl;
+purge recyclebin;

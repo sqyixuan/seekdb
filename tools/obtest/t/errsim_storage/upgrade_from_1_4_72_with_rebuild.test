@@ -1,0 +1,174 @@
+## 
+# owner      : muwei
+# owner group: storage
+# description: 测试从2_1_x 升级到 2.2.x 版本 rebuild
+##
+ob1=OBI(cluster=1:1:1,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120,version=2_1_20);
+ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.reboot;
+sleep 5;
+
+# 设置proxy租户内存规格为5G
+ob1.mysql alter RESOURCE UNIT proxyunit max_memory=5368709120,min_memory=5368709120;
+
+let $leader=deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table);
+let $follower_1=deploy_get_value(ob1.get_follower sys:oceanbase:__all_core_table,1);
+let $follower_2=deploy_get_value(ob1.get_follower sys:oceanbase:__all_core_table,2);
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z2.obs0.workdir);
+ob1.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z3.obs0.workdir);
+ob1.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+# 2. 修改配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set resource_soft_limit=200;
+ob1.mysql alter system set resource_hard_limit=200;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+
+# 3. proxy同步集群状态的时间间隔
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_proxy,$ip,root@obproxy,,test,$port);
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+alter proxyconfig set server_state_refresh_interval='1s';
+
+# 5.2 设置租户的主
+connection conn_obtest;
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.mysql alter tenant obtest set primary_zone='z1';
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+sleep 5;
+
+# 5.3.1 第1次合并
+create database db1;
+create table db1.table_for_migration(c1 int, c2 int) primary_zone='z1';
+let $cnt = 1;
+while ($cnt < 20)
+{
+  eval insert into db1.table_for_migration values($cnt, $cnt);
+  inc $cnt;
+}
+
+sleep 5;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_table where table_name='table_for_migration', table_id, 1);
+let $src_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_virtual_meta_table where zone='z1' and table_id=$table_id, host, 1);
+let $src = deploy_get_value(ob1.get_obs_by_addr $src_host);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_unit where zone='z3' and svr_ip != '$src_ip' and resource_pool_id = 1002, host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+
+# 6 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+ob1.mysql alter system begin upgrade;
+sleep 2;
+
+# 7.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+sleep 5;
+
+# 8. 先升级z3 rs在老server上
+# 8.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @saved_ob_query_timeout = @@session.ob_query_timeout;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z3';
+set @@session.ob_query_timeout = @saved_ob_query_timeout;
+ob1.check_until_timeout select info from __all_zone where zone='z3' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z3',0,20;
+sleep 2;
+ob1.z3.check_state_in_congest upgrade;
+# 8.2 check sql no in z3
+#--disable_query_log
+#--disable_result_log
+#let $cnt=10;
+#while($cnt>0)
+#{
+#  connection conn_obtest;
+#  select * from db1.tb_normal;
+#  source include/get_last_query_addr.inc;
+#  if($zone == z2)
+#  {
+#    --echo flow in z2. bug!
+#    --exit
+#  }
+#  connection conn_obtest;
+#  eval select * from db1.tb_normal where pk=$cnt;
+#  source include/get_last_query_addr.inc;
+#  if($zone == z2)
+#  {
+#    --echo flow in z2. bug!
+#    --exit
+#  }
+#  dec $cnt;
+#}
+--enable_query_log
+--enable_result_log
+# 8.3 升级版本
+ob1.z3.stop;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time<=0 or status='INACTIVE'),0,1000;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z3';
+sleep 2;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,3,120;
+ob1.z3.check_state_in_congest active;
+
+# 8.4 验证
+# 等obtest租户切主到z3上
+# 等obtest租户切主到z3上
+sleep 10;
+
+let $ip = deploy_get_value($leader.ip);
+let $port = deploy_get_value($leader.mysql_port);
+connect(conn1, $ip, admin, admin, oceanbase, $port);
+sleep 5;
+alter system set enable_rebuild_on_purpose=true;
+$leader.block_net $follower_2;
+
+let $line_cnt = 21;
+#while ($line_cnt < 10)
+#{
+#  eval insert into table_for_rebuild values($line_cnt,$line_cnt);
+#  inc $line_cnt;
+#}
+#ob1.mysql alter system major freeze;
+#ob1.check_version 3;
+
+connection conn_obtest;
+
+while ($line_cnt < 40)
+{
+  eval insert into db1.table_for_migration values($line_cnt,$line_cnt);
+  inc $line_cnt;
+}
+ob1.mysql alter system minor freeze zone = 'z1';
+sleep 10;
+ob1.mysql alter system minor freeze zone = 'z2';
+sleep 10;
+
+leader.clean_net $follower_2;
+sleep 5;
+
+select count(*) from __all_rootservice_event_history where module like 'balancer' and value1 like '%1099511677777%' and event like '%finish_rebuild_replica%';

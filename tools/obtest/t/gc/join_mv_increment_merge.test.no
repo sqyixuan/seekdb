@@ -1,0 +1,74 @@
+# owner: bin.lb
+# owner group: STORAGE
+
+ob1=OBI(cluster=1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+
+create table l (lk1 int, lk2 int, lk3 int , lv1 int, lv2 varchar(512), primary key(lk1, lk2, lk3)) compression = 'none' partition by key (lk1) partitions 2;
+create table r (rk int, rv1 int, rv2 varchar(512), primary key(rk)) locality = 'F@z1, R{all_server}@z1';
+
+create materialized view mv as select lk1, lk2, lk3, lv1, lv2, rk, rv1, rv2 from l, r where lk2 = rk order by lk1, lv1;
+
+let $lid = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'l' and tenant_id = 1, table_id, 1);
+let $rid = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'r' and tenant_id = 1, table_id, 1);
+let $mvid = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'mv' and tenant_id = 1, table_id, 1);
+
+--disable_query_log
+let $cnt = 0;
+while ($cnt < 1000)
+{
+  eval insert into l values (1, 1, $cnt * 10 + 0, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 1, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 2, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 3, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 4, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 5, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 6, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 7, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 8, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), (1, 1, $cnt * 10 + 9, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  inc $cnt;
+}
+eval insert into l values (1, 2, 100000, $cnt, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+insert into r values(2, 1, 'a');
+--enable_query_log
+
+alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1 and table_name = 'mv', 2, 20;
+
+let $mb_before = deploy_get_value(ob1.select select macro_blocks as v from oceanbase.__all_virtual_storage_stat where major_version = 2 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_before_first = deploy_get_value(ob1.select select substring_index(macro_blocks, ",", 1) as v from oceanbase.__all_virtual_storage_stat where major_version = 2 and sstable_id = $mvid and occupy_size > 0, v, 1);
+
+update r set rv1 = 2 where rk = 2;
+
+alter system major freeze;
+ob1.check_version 3;
+
+let $mb_after = deploy_get_value(ob1.select select macro_blocks as v from oceanbase.__all_virtual_storage_stat where major_version = 3 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_after_first = deploy_get_value(ob1.select select substring_index(macro_blocks, ",", 1) as v from oceanbase.__all_virtual_storage_stat where major_version = 3 and sstable_id = $mvid and occupy_size > 0, v, 1);
+
+ob1.mysql_p select "$mb_before" = "$mb_after" as macro_block_equal;
+ob1.mysql_p select "$mb_before_first" = "$mb_after_first" as first_macro_block_equal;
+
+select * from mv where lk1 = 1 and lk2 = 1 and lk3 = 0;
+select * from mv where lk1 = 1 and lk2 = 2;
+
+insert into r values(1, 1, 'a');
+alter system major freeze;
+ob1.check_version 4;
+let $mb_after4 = deploy_get_value(ob1.select select macro_blocks as v from oceanbase.__all_virtual_storage_stat where major_version = 4 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_after_first4 = deploy_get_value(ob1.select select substring_index(macro_blocks, ",", 1) as v from oceanbase.__all_virtual_storage_stat where major_version = 4 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_after_second4 = deploy_get_value(ob1.select select substring_index(substring_index(macro_blocks, ",", 2), ",", -1) as v from oceanbase.__all_virtual_storage_stat where major_version = 4 and sstable_id = $mvid and occupy_size > 0, v, 1);
+
+ob1.mysql_p select "$mb_after" = "$mb_after4" as macro_block_equal;
+select * from mv where lk1 = 1 and lk2 = 1 and lk3 = 0;
+select * from mv where lk1 = 1 and lk2 = 2;
+
+update l set lv1 = 10 where lk1 = 1 and lk2 = 1 and lk3 = 0;
+alter system major freeze;
+ob1.check_version 5;
+let $mb_after5 = deploy_get_value(ob1.select select macro_blocks as v from oceanbase.__all_virtual_storage_stat where major_version = 5 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_after_first5 = deploy_get_value(ob1.select select substring_index(macro_blocks, ",", 1) as v from oceanbase.__all_virtual_storage_stat where major_version = 5 and sstable_id = $mvid and occupy_size > 0, v, 1);
+let $mb_after_second5 = deploy_get_value(ob1.select select substring_index(substring_index(macro_blocks, ",", 2), ",", -1) as v from oceanbase.__all_virtual_storage_stat where major_version = 5 and sstable_id = $mvid and occupy_size > 0, v, 1);
+
+ob1.mysql_p select "$mb_after_first4" = "$mb_after_first5" as first_macro_block_equal;
+ob1.mysql_p select "$mb_after_second4" = "$mb_after_second5" as second_macro_block_equal;
+
+select * from mv where lk1 = 1 and lk2 = 1 and lk3 = 0;
+select * from mv where lk1 = 1 and lk2 = 2;
+

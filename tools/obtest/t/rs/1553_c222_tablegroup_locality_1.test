@@ -1,0 +1,430 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 测试tablegroup的locality属性
+#
+# 下面的tablegroup如未做特殊说明，都指的是2.0后创建的tablegroup
+#
+# 1.原有的locality继承关系是table继承自tenant,
+#   新的继承关系中，若table属于2.0后创建的tablegroup，则table继承自tablegroup，tablegroup继承自tenant；
+#                   若table不属性2.0后创建的tablegroup, 则继承自tenant。
+#
+# 2.locality不允许被置为空串，特别地，tenant的locality属性不允许设置为DEFAULT
+#
+# 3.create tablegroup set locality
+#   1) locality不设置, 设置为DEFAULT都表示继承语义
+#   2) locality需与tenant paxos成员分布匹配
+#   3) locality与tenant完全一致，会被重置为继承语义
+#
+# 4.create table set tablegroup
+#   1) 若设置了locality，要求与tablegroup的locality完全一致，然后会被重置为继承语义
+#
+# 5. alter table set tablegroup / alter tablegroup add table_list
+#   1) 支持从tablegroup中移出table, 从tablegroup移出时会设置table的locality（按继承关系）
+#   2) 不允许将table加入到2.0之前创建的tablegroup中（create table暂未做该限制）
+#   3) 加入到tablegroup中，要求table的locality与之完全匹配，然后会table的locality会被重置为继承关系
+#   4) table变更tablegroup(包括移除tablegroup)，要求table不能处于locality变更中（按继承关系取previous_locality是否为空进行判断），
+#      且目的tablegroup也不能处于locality变更过程中（若移除tablegroup，则目的tenant不能处于locality变更过程中）。
+#      上述“处于locality变更”指，根据继承关系取非空previous_locality, 若previous_locality不为空，则认为locality处于变更过程中。
+#
+# 6. alter table/tablegroup set locality
+#   1) 不允许变更在tablegroup中table的locality
+#   2) 与上一级locality的paxos成员分布完全匹配
+#   3) 允许设置为DEFAULT值，有以下条件：
+#      a. 要求当前table/tablegroup不能发生locality变更
+#      b. 变更后继承关系的上一级不能发生locality变更
+#      c. 原locality与变更后继承关系的上一级locality完全匹配
+#   4) 若与原locality（按继承关系取）一致，则认为没发生locality变更
+#   5) 若与previous_locality一致，则认为触发rollback locality操作
+#   6) 不允许连续变更locality
+#
+# 7.alter tenant set locality
+#   1) 不允许设置为继承语义, 也不会重置为继承语义
+#   2) 若与原locality（按继承关系取）一致，则认为没发生locality变更
+#   3) 若与previous_locality一致，则认为触发rollback locality操作
+#   4) 不允许连续变更locality
+#   5) tenant做locality变更时：
+#      若其下tablegroup/table正在做locality变更，则禁止；
+#      若其下tablegroup/table的locality与tenant原locality不一致，则禁止
+
+ob1=OBI(cluster=2:2:2, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 2;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $case_index = 1;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant_$case_index", tenant_id, 1);
+sleep 10;
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+
+# case 1: create tablegroup set locality
+# locality不设置，设置为DEFAULT都表示继承语义，禁止设置为空
+--error 4179
+create tablegroup tg1 locality = "";
+create tablegroup tg1;
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg1";
+drop tablegroup tg1;
+create tablegroup tg1 locality = DEFAULT;
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg1";
+
+# paxo成员分布不匹配
+--error 1210
+create tablegroup tg2 locality = "F@z1,F@z2";
+# 与unit num不匹配
+--error 4179
+create tablegroup tg2 locality = "F@z1,F@z2,F@z3,R{2}@z3";
+# zone不存在
+--error 1210
+create tablegroup tg2 locality = "F@z1,F@z2,F@z4";
+
+# 与tenant完全一致会被重置为继承语义
+create tablegroup tg2 locality = "F@z1,F@z2,F@z3,R@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg2";
+drop tablegroup tg2;
+
+create tablegroup tg2 locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg2";
+
+# case 2: create table set tablegroup
+# 加入2.0创建的tablegroup的table, table的locality需要与tablegroup的完全一致
+# tg1 locality继承自tenant, 为"F@z1,F@z2,F@z3,R@z3"；tg2 设置了locality，为"F@z1,F@z2,F@z3"
+--error 4179
+create table t1_1 (c1 int, c2 int) tablegroup = "tg1" locality = "F@z1,F@z2,F@z3";
+create table t1_1 (c1 int, c2 int) tablegroup = "tg1";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t1_1";
+--error 4179
+create table t1_2 (c1 int, c2 int) tablegroup = "tg1" locality = "";
+create table t1_3 (c1 int, c2 int) tablegroup = "tg1" locality = DEFAULT;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t1_3";
+create table t1_4 (c1 int, c2 int) tablegroup = "tg1" locality = "F@z1,F@z2,F@z3,R@z3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t1_4";
+
+--error 4179
+create table t2_1 (c1 int, c2 int) tablegroup = "tg2" locality = "F@z1,F@z2,F@z3,R@z3";
+create table t2_1 (c1 int, c2 int) tablegroup = "tg2";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t2_1";
+--error 4179
+create table t2_2 (c1 int, c2 int) tablegroup = "tg2" locality = "";
+create table t2_3 (c1 int, c2 int) tablegroup = "tg2" locality = DEFAULT;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t2_3";
+create table t2_4 (c1 int, c2 int) tablegroup = "tg2" locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t2_4";
+
+# 禁止修改tablegroup中table的locality
+--error 4179
+alter table t1_1 locality = DEFAULT;
+--error 4179
+alter table t1_1 locality = "";
+--error 4179
+alter table t1_1 locality = "F@z1,F@z2,F@z3,R@z3";
+
+# case 3: alter table set tablegroup/alter tablegroup add table_list
+# create table
+# paxo成员分布不匹配
+--error 1210
+create table t0_1 (c1 int, c2 int) locality = "F@z1,F@z2";
+# 与unit num不匹配
+--error 4179
+create table t0_1 (c1 int, c2 int) locality = "F@z1,F@z2,F@z3,R{2}@z3";
+# zone不存在
+--error 1210
+create table t0_1 (c1 int, c2 int) locality = "F@z1,F@z2,F@z4";
+
+--error 4179
+create table t0_1 (c1 int, c2 int) locality = "";
+create table t0_1 (c1 int, c2 int);
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_1";
+drop table t0_1;
+create table t0_1 (c1 int, c2 int) locality = DEFAULT;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_1";
+create table t0_2 (c1 int, c2 int) locality = "F@z1,F@z2,F@z3,R@z3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_2";
+create table t0_3 (c1 int, c2 int) locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_3";
+
+# alter table set tablegroup的场景
+--error 4179
+alter table t0_1 tablegroup = "tg2";
+alter table t0_1 tablegroup = "tg1";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_1";
+--error 4179
+alter table t0_2 tablegroup = "tg2";
+alter table t0_2 tablegroup = "tg1";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_2";
+--error 4179
+alter table t0_3 tablegroup = "tg1";
+alter table t0_3 tablegroup = "tg2";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_3";
+
+alter table t0_1 set tablegroup = "";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_1";
+alter table t0_2 set tablegroup = "";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_2";
+alter table t0_3 set tablegroup = "";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_3";
+
+# alter tablegroup add table的场景
+--error 4179
+alter tablegroup tg1 add t0_3;
+--error 4179
+alter tablegroup tg2 add t0_1;
+--error 4179
+alter tablegroup tg2 add t0_2;
+--error 4179
+alter tablegroup tg1 add t0_1, t0_3;
+
+alter tablegroup tg1 add t0_1, t0_2;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_1";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_2";
+alter tablegroup tg2 add t0_3;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "t0_3";
+
+# case 4: alter tablegroup set locality
+# 与tenant匹配
+create tablegroup tg3;
+# paxo成员分布不匹配
+--error 1210
+alter tablegroup tg3 locality = "F@z1,F@z2";
+# 与unit num不匹配
+--error 4179
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3,R{2}@z3";
+# zone不存在
+--error 1210
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z4";
+# 不允许设置为空
+--error 4179
+alter tablegroup tg3 locality = "";
+
+# 加表
+create table t3_1 (c1 int, c2 int) tablegroup = "tg3";
+create table t3_2 (c1 int, c2 int) tablegroup = "tg3";
+create table t3_3 (c1 int, c2 int) tablegroup = "tg3";
+let $tablegroup_id = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3", tablegroup_id, 1);
+# eval select tablegroup_id, table_id, count(*) as replica_num from oceanbase.gv\$partition where tablegroup_id = $tablegroup_id group by tablegroup_id, table_id order by tablegroup_id, table_id;
+# 变更locality, 由空－>非空，与tenant一致，认为没有发生locality变更
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3,R@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+# 变更locality，由空－>非空，与tenant不一致，认为发生locality变更
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+# 继承自tenant的locality非空的tablegroup正在做locality变更，不允许tenant做locality变更
+--error 4179
+ob1.mysql_p alter tenant tenant_1 locality = "F@z1,F@z2,F@z3";
+# 不允许连续变更
+--error 4179
+alter tablegroup tg3 locality = "F@z1,F@z2,R@z2,F@z3,R@z3";
+# 检查变更完成
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+# eval select tablegroup_id, table_id, count(*) as replica_num from oceanbase.gv\$partition where tablegroup_id = $tablegroup_id group by tablegroup_id, table_id order by tablegroup_id, table_id;
+ob1.mysql alter system set enable_rereplication = 'false';
+# 变更locality，由非空->非空，与原来一致，认为没有发生locality变更
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+# 变更locality，由非空->非空，与tenant一致，不会重置为继承语义
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3,R@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+# 触发回滚操作
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+# 检查变更完成
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+# eval select tablegroup_id, table_id, count(*) as replica_num from oceanbase.gv\$partition where tablegroup_id = $tablegroup_id group by tablegroup_id, table_id order by tablegroup_id, table_id;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+# case 5: tablegroup和tenant的locality变更约束
+
+# tenant变了才能变
+--error 1210
+alter tablegroup tg3 locality = "F@z1,F@z2";
+
+# 变更前副本分区情况
+# eval select tablegroup_id, table_id, count(*) as replica_num from oceanbase.gv\$partition group by tablegroup_id, table_id order by tablegroup_id, table_id;
+
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3,R@z3";
+# tenant下locality非空tablegroup正在做locality变更，禁止tenant做locality变更
+--error 4179
+ob1.mysql_p alter tenant tenant_1 set locality = "F@z1, F@z2";
+
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != "" and tenant_name = "tenant_1", 0, 180;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+# tenant做locality变更
+ob1.mysql alter tenant tenant_1 set locality = "F@z1, F@z2";
+ob1.mysql_p select tenant_id, locality, previous_locality from oceanbase.__all_tenant where tenant_name = "tenant_1";
+# tenant locality 变更过程中，以tenant新locality为准
+--error 1210
+alter tablegroup tg3 locality = "F@z1,F@z2,F@z3,R@z3";
+--error 1210
+create tablegroup tg4 locality = "F@z1,F@z2,F@z3,R@z3";
+
+alter tablegroup tg3 locality = "F@z1,F@z2";
+ob1.mysql_p select tablegroup_id, tablegroup_name, locality, previous_locality from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3";
+create tablegroup tg4 locality = "F@z1,F@z2";
+
+ob1.mysql alter system set enable_rereplication = 'true';
+# 按照实现，tenant任务继承自它的tablegroup和table完成locality变更就认为tenant的locality做完，无需等tg2(F@z1,F@z2,F@z3)做完
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != "" and tenant_name = "tenant_1", 0, 180;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+# 变更后副本分区情况
+# eval select tablegroup_id, table_id, count(*) as replica_num from oceanbase.gv\$partition group by tablegroup_id, table_id order by tablegroup_id, table_id;
+
+# case 6: 验证table在tablegroup间的转移
+
+# table在tablegroup间迁移
+# 在tablgroup之间迁移
+create table transfer_1 (c1 int, c2 int) tablegroup = "tg3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_1";
+--error 4179
+alter table transfer_1 tablegroup = "tg2";
+--error 4179
+alter tablegroup tg2 add transfer_1;
+
+alter table transfer_1 tablegroup = "tg4";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_1";
+alter tablegroup tg3 add transfer_1;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_1";
+
+# 迁出迁进tablegroup
+create table transfer_2 (c1 int, c2 int) locality = "F@z1,F@z2";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_2";
+--error 4179
+alter table transfer_2 tablegroup = "tg2";
+--error 4179
+alter tablegroup tg2 add transfer_2;
+
+alter tablegroup tg3 add transfer_2;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_2";
+alter table transfer_2 tablegroup = "";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_2";
+alter table transfer_2 tablegroup = "tg3";
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_2";
+
+# case 7: locality变更过程中，不允许变更tablegroup
+# tenant正在做locality变更，不允许继承自tenant的table迁入tablegroup; 不允许tablegroup中的table迁出
+create table transfer_3 (c1 int, c2 int) locality = "F@z1,F@z2,R@z2";
+alter table transfer_3 locality = "F@z1,F@z2";
+alter tablegroup tg3 set locality = "F@z1, F@z2";
+alter tablegroup tg2 set locality = "F@z1, F@z2";
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg2", 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where previous_locality != "" and table_name = "transfer_3", 0, 120;
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_3";
+
+create table transfer_4 (c1 int, c2 int);
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_4";
+
+alter tablegroup tg3 add transfer_3;
+alter table transfer_3 tablegroup = "";
+
+ob1.mysql_p alter tenant tenant_1 set locality = "F@z1, F@z2, R@z2";
+
+# 禁止迁入
+--error 4179
+alter tablegroup tg3 add transfer_3;
+ob1.mysql_p select table_id, table_name, locality from oceanbase.__all_virtual_table where table_name = "transfer_3";
+--error 4179
+alter table transfer_4 tablegroup = "tg3";
+--error 4179
+alter tablegroup tg3 add transfer_4;
+# 禁止迁出
+--error 4179
+alter table transfer_3 tablegroup = "";
+
+## FIXME: 现在补副本的逻辑有问题, locality不会成功, 通过回滚操作使后续测试能进行下去
+ob1.mysql alter tenant tenant_1 set locality = "F@z1, F@z2";
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where previous_locality != "" and tenant_name = "tenant_1", 0, 180;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+alter table transfer_4 tablegroup = "tg3";
+alter table transfer_3 tablegroup = "";
+
+# tablegroup正在做locality变更，不允许迁入迁出该tablegroup
+create table transfer_5 (c1 int, c2 int) tablegroup = "tg2";
+create table transfer_6 (c1 int, c2 int) locality = "F@z1, F@z2, R@z2";
+create table transfer_7 (c1 int, c2 int);
+create table transfer_8 (c1 int, c2 int) tablegroup = "tg3";
+# 禁止迁入
+alter tablegroup tg3 locality = "F@z1, F@z2, R@z2";
+--error 4179
+alter tablegroup tg3 add transfer_5;
+--error 4179
+alter tablegroup tg3 add transfer_6;
+--error 4179
+alter tablegroup tg3 add transfer_7;
+
+--error 4179
+alter table transfer_5 tablegroup = "tg3";
+--error 4179
+alter table transfer_6 tablegroup = "tg3";
+--error 4179
+alter table transfer_7 tablegroup = "tg3";
+
+# 禁止迁出
+--error 4179
+alter tablegroup tg2 add transfer_8;
+--error 4179
+alter tablegroup tg4 add transfer_8;
+--error 4179
+alter table transfer_8 tablegroup = "tg2";
+--error 4179
+alter table transfer_8 tablegroup = "tg4";
+
+## FIXME: 现在补副本的逻辑有问题, locality不会成功, 通过回滚操作使后续测试能进行下去
+alter tablegroup tg3 set locality = "F@z1, F@z2";
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablegroup where previous_locality != "" and tablegroup_name = "tg3", 0, 120;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+alter table transfer_5 tablegroup = "tg3";
+alter table transfer_8 tablegroup = "tg4";
+
+# table处于locality变更过程中，禁止变更tablegroup
+# (目前tablegroup中的table都为继承属性，且不允许变更tablegroup中table的locality，故只有不在tablegroup中的table会处于locality变更)
+create tablegroup tg5 locality = "F@z1, F@z2, R@z2";
+create table transfer_10 (c1 int, c2 int);
+
+alter table transfer_10 locality = "F@z1, F@z2, R@z2";
+
+--error 4179
+alter tablegroup tg3 add transfer_10;
+--error 4179
+alter tablegroup tg5 add transfer_10;
+--error 4179
+alter table transfer_10 tablegroup = "tg3";
+--error 4179
+alter table transfer_10 tablegroup = "tg5";
+
+## FIXME: 现在补副本的逻辑有问题, locality不会成功, 通过回滚操作使后续测试能进行下去
+alter table transfer_10 set locality = "F@z1, F@z2";
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where previous_locality != "" and table_name = "transfer_10", 0, 120;
+ob1.mysql alter system set enable_rereplication = 'false';
+
+alter tablegroup tg3 add transfer_10;

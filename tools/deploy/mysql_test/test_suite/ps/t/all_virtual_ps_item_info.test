@@ -1,0 +1,91 @@
+--source mysql_test/test_suite/ps/t/enable_ps.sql
+# owner: xiaoyi.xy
+# owner group: SQL2
+# description: 测试__all_virtual_ps_item_info虚拟表
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+--echo
+--echo // Case0: check desc, in sys tenant
+desc oceanbase.__all_virtual_ps_item_info;
+connection default;
+--echo // in MySQL tenant
+desc oceanbase.GV$OB_PS_ITEM_INFO;
+desc oceanbase.V$OB_PS_ITEM_INFO;
+--echo // virtual table can only be accessed by sys tenant
+--error 1146
+desc oceanbase.__all_virtual_ps_item_info;
+
+connection conn_admin;
+--echo // conn_admin connected
+--echo
+--echo // Case1: test deallocate
+set @x = 1;
+prepare stmt1 from select substr('abc', 1, ?) from dual;
+--echo // check here. before deallocate. should be only one record, ref_count should be 2(one for session, one for virtual table access)
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+execute stmt1 using @x;
+--echo // check here. should be same
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+
+--echo
+--echo // prepare again
+prepare stmt1 from select substr('abc', 1, ?) from dual;
+execute stmt1 using @x;
+--echo // check here. prepare again. should be only one record. ref_count should be same.
+--echo // because ref count of ps_session_info inc, but ps_item_info/ps_stmt_id in ps cache do not change. but we cannot see ps_session_info in virtual table.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+
+--echo // deallocating
+deallocate prepare stmt1;
+
+--echo // check here. after deallocate. ref_count should be same.
+--echo // ref count of ps_session_info dec by one, and because we prepare twice, so ps_item_info/ps_stmt_id in ps cache do not change
+--sleep 1
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(''abc''%';
+
+--echo
+--echo // Case1.1 prepare once, and deallocate, check ref_count
+prepare stmt2 from select concat('abc', ?) from dual;
+execute stmt2 using @x;
+--echo // check here. ref_count should be 2.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select concat(''abc''%';
+deallocate prepare stmt2;
+--echo // check here. deallocate done, res should be empty. ref_count of ps_session_info is dec to zero, so ps_stmt_id/ps_item_info of stmt2 is destroied
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select concat(''abc''%';
+
+--echo
+--echo // Case2: try Case1 again, but for testing disconnect
+connect (conn1, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn1;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 varchar(10));
+insert into t1 values('abc');
+
+set @x = 1;
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+--echo // check here. before disconnect. should be only one record, ref_count should be 2(one for session, one for virtual table access)
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+execute stmt1 using @x;
+--echo // check here. executed done. ref_count should be same
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+
+--echo
+--echo // prepare again
+prepare stmt1 from select substr(c1, 1, ?) from t1;
+execute stmt1 using @x;
+--echo // check here. prepare again. should be only one record. ref_count should be same.
+--echo // because ref count of ps_session_info inc, ps_item_info/ps_stmt_id in ps cache do not change. but we cannot see ps_session_info in virtual table.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+
+--echo // disconnecting
+disconnect conn1;
+
+--sleep 1
+connect (conn2, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn2;
+--echo // check here. should be empty. because session is closed, so no one ref ps_item_info and ps_stmt_id of stmt1.
+select tenant_id, ps_sql, param_count, stmt_item_ref_count, stmt_info_ref_count, stmt_type, checksum from oceanbase.__all_virtual_ps_item_info where ps_sql like 'select substr(c1%';
+--source mysql_test/test_suite/ps/t/disable_ps.sql

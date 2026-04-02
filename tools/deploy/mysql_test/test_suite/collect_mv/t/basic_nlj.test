@@ -1,0 +1,87 @@
+# owner: yht146439
+# owner group: storage
+# description: collect mv basic nlj query
+
+--disable_warnings
+set session ob_query_timeout=1000000000;
+--error 0,9757
+drop materialized view basic_nlj_mv_1;
+drop table if exists t1,t2;
+--enable_warnings
+
+CREATE TABLE `t1` (
+  `c1` int(11) NOT NULL,
+  `c2` int(11) NOT NULL,
+  PRIMARY KEY (`c1`, `c2`)
+) partition by hash(c1) partitions 1;
+CREATE TABLE `t2` (
+  `c2` int(11) NOT NULL,
+  `c3` int(11) DEFAULT NULL,
+  PRIMARY KEY (`c2`)
+) DUPLICATE_SCOPE = 'CLUSTER' DUPLICATE_READ_CONSISTENCY = 'WEAK';
+
+CREATE MATERIALIZED VIEW basic_nlj_mv_1(c1,c2,t2_c2,t2_c3, primary key(c1,c2))
+partition by hash(c1) partitions 1
+refresh fast enable query rewrite enable on query computation
+AS
+select /*+LEADING(t1) USE_NL(t2) USE_DAS(t2) NO_USE_NL_MATERIALIZATION(t2) */ t1.c1 as c1, t1.c2 as c2, t2.c2 as t2_c2, t2.c3 as t2_c3 from t1 join t2 on t1.c2 = t2.c2;
+
+--disable_query_log
+--let $count = 1
+while($count < 101)
+{
+  --let $stmt1=insert into t1(c1,c2) values (1,$count);
+  --let $stmt2=insert into t2(c2,c3) values($count,1000);
+  eval $stmt1;
+  eval $stmt2;
+  inc $count;
+}
+
+--enable_query_log
+SET query_rewrite_enabled = 'force';
+alter system set _hash_join_enabled = false;
+alter system set _optimizer_sortmerge_join_enabled=false;
+alter system flush plan cache;
+
+select * from basic_nlj_mv_1;
+select /*+leading(t1) use_nl(t2) use_das(t2) no_use_nl_materialization(t2)*/ * from t1 join t2 on t1.c2 = t2.c2;
+
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+select * from basic_nlj_mv_1;
+select /*+leading(t1) use_nl(t2) use_das(t2) no_use_nl_materialization(t2)*/ * from t1 join t2 on t1.c2 = t2.c2;
+
+let $scn1 = query_get_value(select last_refresh_scn as mv_scn from oceanbase.__all_virtual_mview where mview_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'basic_nlj_mv_1'), mv_scn, 1);
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+let $__i__=240;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $scn2=query_get_value(select last_refresh_scn as mv_scn from oceanbase.__all_virtual_mview where mview_id = (select table_id from oceanbase.__all_virtual_table where table_name = 'basic_nlj_mv_1'), mv_scn, 1);
+    if($scn1 != $scn2)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo wait last refresh scn refresh failed
+}
+
+select * from basic_nlj_mv_1;
+select /*+leading(t1) use_nl(t2) use_das(t2) no_use_nl_materialization(t2)*/ * from t1 join t2 on t1.c2 = t2.c2;
+
+delete from t2 where 1=1;
+select * from basic_nlj_mv_1;
+select /*+leading(t1) use_nl(t2) use_das(t2) no_use_nl_materialization(t2)*/ * from t1 join t2 on t1.c2 = t2.c2;
+
+SET query_rewrite_enabled = 'false';
+alter system set _hash_join_enabled = true;
+alter system set _optimizer_sortmerge_join_enabled=true;
+alter system flush plan cache;
+drop materialized view basic_nlj_mv_1;
+drop table t1,t2;

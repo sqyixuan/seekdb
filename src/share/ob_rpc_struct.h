@@ -2602,58 +2602,6 @@ public:
   common::ObArenaAllocator allocator_;
 };
 
-struct ObForkTableArg : public ObDDLArg
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObForkTableArg():
-      ObDDLArg(),
-      tenant_id_(common::OB_INVALID_ID),
-      src_database_name_(),
-      src_table_name_(),
-      dst_database_name_(),
-      dst_table_name_(),
-      if_not_exist_(false),
-      session_id_(0)
-  {}
-  bool is_valid() const;
-  virtual bool is_allow_when_upgrade() const { return true; }
-  int assign(const ObForkTableArg &other);
-  DECLARE_TO_STRING;
-
-  uint64_t tenant_id_;
-  common::ObString src_database_name_;
-  common::ObString src_table_name_;
-  common::ObString dst_database_name_;
-  common::ObString dst_table_name_;
-  bool if_not_exist_;
-  int64_t session_id_;
-};
-
-struct ObForkDatabaseArg : public ObDDLArg
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObForkDatabaseArg():
-      ObDDLArg(),
-      tenant_id_(common::OB_INVALID_ID),
-      src_database_name_(),
-      dst_database_name_(),
-      if_not_exist_(false),
-      session_id_(0)
-  {}
-  bool is_valid() const;
-  virtual bool is_allow_when_upgrade() const { return true; }
-  int assign(const ObForkDatabaseArg &other);
-  DECLARE_TO_STRING;
-
-  uint64_t tenant_id_;
-  common::ObString src_database_name_;
-  common::ObString dst_database_name_;
-  bool if_not_exist_;
-  int64_t session_id_;
-};
-
 struct ObOptimizeTableArg : public ObDDLArg
 {
   OB_UNIS_VERSION(1);
@@ -4201,18 +4149,8 @@ public:
            const bool is_create_bind_hidden_tablets,
            const ObIArray<int64_t> &create_commit_versions,
            const bool has_cs_replica);
-  int init(const ObIArray<common::ObTabletID> &tablet_ids,
-           const common::ObTabletID data_tablet_id,
-           const common::ObIArray<int64_t> &table_schema_index,
-           const lib::Worker::CompatMode &mode,
-           const bool is_create_bind_hidden_tablets,
-           const ObIArray<int64_t> &create_commit_versions,
-           const bool has_cs_replica,
-           const ObIArray<share::ObForkTabletInfo> &fork_tablet_infos);
   common::ObTabletID get_data_tablet_id() const { return data_tablet_id_; }
   int64_t get_tablet_count() const { return tablet_ids_.count(); }
-  // Get fork tablet info at index, return default ObForkTabletInfo if fork_tablet_infos_ is empty
-  int get_fork_tablet_info(const int64_t idx, share::ObForkTabletInfo &fork_tablet_info) const;
   DECLARE_TO_STRING;
 
   common::ObSArray<common::ObTabletID> tablet_ids_;
@@ -4223,7 +4161,6 @@ public:
   bool is_create_bind_hidden_tablets_;
   ObSArray<int64_t> create_commit_versions_;
   bool has_cs_replica_;
-  common::ObSArray<share::ObForkTabletInfo> fork_tablet_infos_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObCreateTabletInfo);
 };
@@ -13063,8 +13000,8 @@ struct ObRevokeObjMysqlArg : public ObDDLArg
 
 public:
   ObRevokeObjMysqlArg() : ObDDLArg(), tenant_id_(common::OB_INVALID_ID), user_id_(common::OB_INVALID_ID),
-                            obj_name_(), obj_type_(common::OB_INVALID_ID),
-                            priv_set_(0), grant_(true),
+                            obj_name_(), obj_type_(common::OB_INVALID_ID), 
+                            priv_set_(0), grant_(true), 
                             grantor_(), grantor_host_()
   { }
   bool is_valid() const;

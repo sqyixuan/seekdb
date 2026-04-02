@@ -1,0 +1,256 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner:yibo.tyf
+#owner group: sql1
+# tags: optimizer
+# description: user variable with assign
+
+--enable_sorted_result
+--disable_warnings
+drop table if exists t1,t2,t3,t4,fruits,fruits_part;
+--enable_warnings
+create table t1 (pk int primary key, c1 int, c2 int);
+create table t2 (pk int primary key, c1 int, c2 int);
+create table t3 (pk int primary key, c1 int, c2 int) partition by hash(pk) partitions 3;
+create table t4 (pk int primary key, c1 int, c2 int) partition by hash(pk) partitions 3;
+CREATE TABLE fruits (
+  id int PRIMARY KEY,
+  type varchar(10) NOT NULL,
+  variety varchar(20) NOT NULL,
+  price decimal(5,2) NOT NULL default 0
+);
+CREATE TABLE fruits_part (
+  id int PRIMARY KEY,
+  type varchar(10) NOT NULL,
+  variety varchar(20) NOT NULL,
+  price decimal(5,2) NOT NULL default 0
+) partition by hash(id) partitions 3;
+
+--disable_query_log
+insert into t1 values (1,1,1),(2,3,3),(3,2,2),(4,4,4),(5,6,6),(6,5,5);
+insert into t2 values (1,1,1),(2,3,3),(3,4,4),(4,4,4),(5,4,4),(6,2,2);
+insert into t3 values (1,1,1),(2,3,3),(3,2,2),(4,4,4),(5,6,6),(6,5,5);
+insert into t4 values (1,1,1),(2,3,3),(3,4,4),(4,4,4),(5,4,4),(6,2,2);
+insert into fruits(id, type, variety, price) values
+(1, 'apple',  'gala',       2.79),
+(2, 'apple',  'fuji',       0.24),
+(3, 'apple',  'limbertwig', 2.87),
+(4, 'orange', 'valencia',   3.59),
+(5, 'orange', 'navel',      9.36),
+(6, 'pear',   'bradford',   6.05),
+(7, 'pear',   'bartlett',   2.14),
+(8, 'cherry', 'bing',       2.55),
+(9, 'cherry', 'chelan',     6.33);
+insert into fruits_part(id, type, variety, price) values
+(1, 'apple',  'gala',       2.79),
+(2, 'apple',  'fuji',       0.24),
+(3, 'apple',  'limbertwig', 2.87),
+(4, 'orange', 'valencia',   3.59),
+(5, 'orange', 'navel',      9.36),
+(6, 'pear',   'bradford',   6.05),
+(7, 'pear',   'bartlett',   2.14),
+(8, 'cherry', 'bing',       2.55),
+(9, 'cherry', 'chelan',     6.33);
+--enable_query_log
+--disable_result_log
+select count(*) from t1;
+select count(*) from t2;
+select count(*) from t3;
+select count(*) from t4;
+select count(*) from fruits;
+select count(*) from fruits_part;
+--enable_result_log
+--enable_query_log
+
+--result_format 4
+--explain_protocol 2
+
+## ~~用户变量赋值只能出现在select list中且只能作为root expr~~
+select @a := c1 from t1;
+select @a;
+#--error 5799
+select 1 + (@a := c1) from t1;
+
+select c1, @a := sum(c1) over (partition by c2) from t1;
+select @a;
+#--error 5799
+select c1, sum(@a := c1) over (partition by c2) from t1;
+
+select @a := c2 from t1 order by c2 desc;
+select @a;
+select @a := c2 as uv from t1 order by uv desc;
+
+## 当前stmt或下层stmt中存在用户变量赋值时, 包含对应用户变量的expr不能下推或作为start up filter
+set @a = 0;
+select @a := c1 from t1 where @a < 4;
+select @a;
+
+set @a = 0;
+select @a := t1.c1 from t1,t2 where t1.c1 = t2.c1 and t1.c1 > @a;
+select @a;
+
+set @a = 0;
+select @a := t1.c1 from t1,t2 where t1.c1 = t2.c1 + @a;
+select @a;
+
+set @a = 0;
+select @a := t1.c1 from t1,t2,t3 where t3.c1 = t2.c1 and t1.c1 = t2.c1 + @a;
+select @a;
+
+set @a= 0;
+select @a := c1 from (select t1.c1 from t1,t2 where t1.c1 = t2.c1 + @a);
+select @a;
+
+## 存在涉及赋值的用户变量的子查询不能作为onetime expr/ init plan
+set @a = 0;
+select c1 from t1 where exists (select @a := sum(c1) from t2);
+select @a;
+
+set @a = 0;
+select c1 from t1 where exists (select @a := sum(c1) from t2 where c2 > @a);
+select @a;
+
+set @a = 0;
+select c1 from t1 where c1 in (select @a := c1 from t2);
+select @a;
+
+## ~~当前stmt或下层stmt中存在用户变量赋值, 且where/having中存在子查询时, 包含用户变量的expr需要提到subplan filter上执行~~
+set @a = 0;
+select c1 from t1 where c1 > @a and exists (select @a := avg(c1) from t2);
+select @a;
+
+set @a = 0;
+select c1 from t1 where c1 > @a and c2 in (select @a := c1 from t2);
+select @a;
+
+set @a = 0;
+select c1 from t1 group by c1 having sum(c2) > @a and c1 in (select @a := c1 from t2);
+select @a;
+
+set @a = 0;
+select c1 from t1 group by c1 having sum(c2) > @a and exists (select @a := t2.c1 from t2 where sum(t1.c1) = t2.c1);
+select @a;
+
+## 禁掉了一些改写, 主要原则为视图合并要求内外层stmt不含赋值, 子查询提升要求子查询及其下层stmt中不含涉及赋值的用户变量
+set @a = 0;
+select @a := c1 from (select c1 from t1 where c2 > @a);
+select @a;
+
+set @a = 0;
+select a from (select @a := c1 as a from t1 order by c1) v where a > @a / 2;
+select @a;
+
+set @a = 0;
+select c1, @a from t1 where c1 > (select @a := avg(c1) from t2 where t1.c1 = t2.c1);
+select @a;
+
+set @a= 0;
+select @a := c1 from t1 where t1.c1 in (select c1 from t2 where t1.c1 = t2.c1 + @a);
+select @a;
+
+## ~~存在赋值操作的时分区表需要拉回本地, 且赋值操作放到 exchange 算子的 receive 节点做~~
+set @a = 0;
+select @a := c1 from t3;
+select @a;
+
+#set @a = 0;
+#select /*+parallel(2)*/ @a := c1 from t3;
+#select @a;
+
+set @a = 0;
+select @a := c1 from t3 where c1 > @a;
+select @a;
+
+#set @a = 0;
+#select /*+parallel(2)*/ @a := c1 from t3 where c1 > @a;
+#select @a;
+
+set @a = 0;
+select * from (select pk, @a := c1, c2 from t3 where c1 > @a) v order by c2;
+select @a;
+
+#set @a = 0;
+#select /*+parallel(2)*/ * from (select pk, @a := c1, c2 from t3 where c1 > @a) v order by c2;
+#select @a;
+
+select @a := t3.c1 from t3,t4 where t3.c1 = t4.c1;
+select @a;
+
+#select /*+parallel(2)*/ @a := t3.c1 from t3,t4 where t3.c1 = t4.c1;
+#select @a;
+
+set @a = 0;
+select @a := c1 from t3 where c2 in (select c1 from t4 where c1 > @a);
+
+#set @a = 0;
+#select /*+parallel(2)*/ @a := c1 from t3 where c2 in (select c1 from t4 where c1 > @a);
+
+set @a = 0;
+select c1 from t3 where c2 in (select @a := c1 from t4 where c1 > @a);
+
+#set @a = 0;
+#select /*+parallel(2)*/ c1 from t3 where c2 in (select @a := c1 from t4 where c1 > @a);
+
+## 用户变量赋值的常见操作
+## 1. 作为自增列
+set @a = 0;
+select *, @a := @a +1 as rn from t1;
+
+set @a = 0;
+select *, @a := @a +1 as rn from t3 order by c1;
+
+#set @a = 0;
+#select /*+parallel(2)*/ *, @a := @a +1 as rn from t3 order by c1;
+
+set @a = 0;
+select * from (select *, @a := @a +1 as rn from t1) v where rn > 2;
+
+set @a = 0;
+select * from (select *, @a := @a +1 as rn from t3 order by c1) v where rn > 2;
+
+#set @a = 0;
+#select /*+parallel(2)*/ * from (select *, @a := @a +1 as rn from t3 order by c1) v where rn > 2;
+
+## 2. 记录某个聚合结果
+select @a := sum(c1) from t1;
+select @a;
+
+select @a := sum(c1) from t3;
+select @a;
+
+#select /*+parallel(2)*/ @a := sum(c1) from t3;
+#select @a;
+
+select @a := sum(t1.c1) from t1,t2 where t1.c1 = t2.c1;
+select @a;
+
+select @a := sum(t3.c1) from t3,t4 where t3.c1 = t4.c1;
+select @a;
+
+#select /*+parallel(2)*/ @a := sum(t3.c1) from t3,t4 where t3.c1 = t4.c1;
+#select @a;
+
+## 3. 用于分类
+set @type := '', @num := 1;
+select type, variety,
+       @num := if(@type = type, @num + 1, 1) as type_id,
+       @type := type as dummy
+from fruits
+order by type, variety;
+
+set @type := '', @num := 1;
+select type, variety,
+       @num := if(@type = type, @num + 1, 1) as type_id,
+       @type := type as dummy
+from fruits_part
+order by type, variety;
+
+#set @type := '', @num := 1;
+#select /*+parallel(2)*/ type, variety,
+#       @num := if(@type = type, @num + 1, 1) as type_id,
+#       @type := type as dummy
+#from fruits_part
+#order by type, variety;
+
+drop table t1,t2,t3,t4,fruits,fruits_part;

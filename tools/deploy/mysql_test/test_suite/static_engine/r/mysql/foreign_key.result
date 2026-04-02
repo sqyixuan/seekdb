@@ -1,0 +1,397 @@
+result_format: 4
+alter system flush plan cache global;
+
+
+set @ori_fk_ck = @@foreign_key_checks;
+set @@ob_enable_plan_cache = 0;
+set @@foreign_key_checks = false;
+
+drop table if exists t2;
+drop table if exists t1;
+set @@foreign_key_checks = true;
+
+// delete; action is cascade
+create table t1(c1 int primary key);
+create table t2(c1 int, foreign key (c1) references t1(c1) on delete cascade);
+insert into t1 values(1), (2), (3);
+insert into t2 values(1), (2), (3);
+select * from t1;
++----+
+| c1 |
++----+
+|  1 |
+|  2 |
+|  3 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+
+delete from t1 where c1 = 1;
+select * from t1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
+|    2 |
+|    3 |
++------+
+
+delete from t1;
+select * from t1;
++----+
+| c1 |
++----+
++----+
+select * from t2;
++------+
+| c1   |
++------+
++------+
+drop table t2;
+drop table t1;
+
+// replace; action is cascade
+create table t1(c1 int primary key);
+create table t2(c1 int, foreign key (c1) references t1(c1));
+
+replace into t2 values(1);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+replace into t1 values(1);
+select * from t1;
++----+
+| c1 |
++----+
+|  1 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
++------+
+drop table t2;
+drop table t1;
+
+// insert; action is cascade
+create table t1(c1 int primary key);
+create table t2(c1 int, foreign key (c1) references t1(c1));
+
+insert into t2 values(1);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+insert into t1 values(1);
+insert into t2 values(1);
+
+select * from t1;
++----+
+| c1 |
++----+
+|  1 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
+|    1 |
++------+
+drop table t2;
+drop table t1;
+
+// update; test self ref here
+create table t1(a int primary key, b int, key t1_b(b), constraint foreign key (b) references t1 (a) on update CASCADE on delete CASCADE);
+insert into t1 values (1, 1);
+insert into t1 values (2, 1);
+insert into t1 values (3, 1);
+update t1 set a = 9 where a = 1;
+ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+select * from t1;
++---+------+
+| a | b    |
++---+------+
+| 1 |    1 |
+| 2 |    1 |
+| 3 |    1 |
++---+------+
+drop table t1;
+
+// insert on dup;
+create table t1(c1 int primary key);
+create table t2(c1 int, foreign key(c1) references t1(c1) on update cascade);
+
+insert into t1 values(1);
+insert into t2 values(1);
+insert into t1 values(1) on duplicate key update c1 = 2;
+select * from t1;
++----+
+| c1 |
++----+
+|  2 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
+|    2 |
++------+
+drop table t2;
+drop table t1;
+
+// multi part delete;
+create table t1 (c1 int primary key, c2 int);
+create index i1 on t1(c2) global partition by hash(c2) partitions 2;
+create table t2 (c1 int primary key, foreign key (c1) references t1(c1) on delete cascade);
+insert into t1 values(1, 1), (2, 2), (3, 3);
+insert into t2 values(1);
+select * from t2;
++----+
+| c1 |
++----+
+|  1 |
++----+
+explain_protocol: 2
+EXPLAIN delete from t1 where c1 = 1;
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED DELETE|    |1       |23          |
+|1 |└─TABLE GET       |t1  |1       |5           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      table_columns([{t1: ({t1: (t1.c1, t1.c2)}, {i1: (t1.c2, t1.c1)})}])
+  1 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1]), range[1 ; 1], 
+      range_cond([t1.c1 = 1])
+delete from t1 where c1 = 1;
+explain_protocol: 0
+select * from t1;
++----+------+
+| c1 | c2   |
++----+------+
+|  2 |    2 |
+|  3 |    3 |
++----+------+
+select * from t2;
++----+
+| c1 |
++----+
++----+
+drop table t2;
+drop table t1;
+
+// multi part insert;
+create table t1 (c1 int primary key) partition by hash(c1) partitions 3;
+create table t2 (c1 int primary key, foreign key (c1) references t1(c1) on delete cascade) partition by hash(c1) partitions 2;
+explain_protocol: 2
+insert into t2 values(1), (2), (3);
+ERROR 23000: Cannot add or update a child row: a foreign key constraint fails
+EXPLAIN insert into t1 values(1), (2), (3);
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED INSERT|    |3       |26          |
+|1 |└─EXPRESSION      |    |3       |1           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t1: ({t1: (t1.c1)})}]), 
+      column_values([column_conv(INT,PS:(11,0),NOT NULL,__values.c1)])
+  1 - output([__values.c1]), filter(nil)
+      values({1}, {2}, {3})
+insert into t1 values(1), (2), (3);
+EXPLAIN insert into t2 values(1), (2), (3);
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED INSERT|    |3       |26          |
+|1 |└─EXPRESSION      |    |3       |1           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t2: ({t2: (t2.c1)})}]), 
+      column_values([column_conv(INT,PS:(11,0),NOT NULL,__values.c1)])
+  1 - output([__values.c1]), filter(nil)
+      values({1}, {2}, {3})
+insert into t2 values(1), (2), (3);
+explain_protocol: 0
+select * from t1;
++----+
+| c1 |
++----+
+|  3 |
+|  1 |
+|  2 |
++----+
+select * from t2;
++----+
+| c1 |
++----+
+|  2 |
+|  1 |
+|  3 |
++----+
+drop table t2;
+drop table t1;
+
+// multi part update;
+create table t1 (c1 int primary key) partition by hash(c1) partitions 3;
+create table t2 (c1 int, foreign key (c1) references t1(c1) on update cascade);
+insert into t1 values(1);
+insert into t2 values(1);
+explain_protocol: 2
+EXPLAIN update t1 set c1 = 2 where c1 = 1;
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED UPDATE|    |1       |37          |
+|1 |└─TABLE GET       |t1  |1       |5           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      table_columns([{t1: ({t1: (t1.c1)})}]),
+      update([t1.c1=column_conv(INT,PS:(11,0),NOT NULL,cast(2, INT(-1, 0)))])
+  1 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1]), range[1 ; 1], 
+      range_cond([t1.c1 = 1])
+update t1 set c1 = 2 where c1 = 1;
+explain_protocol: 0
+select * from t1;
++----+
+| c1 |
++----+
+|  2 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
+|    2 |
++------+
+drop table t2;
+drop table t1;
+
+// multi part update; self reference
+create table t1 (c1 int primary key, c2 int,
+                  foreign key(c2) references t1(c1) on update cascade
+                  ) partition by hash(c1) partitions 3;
+create index i1 on t1(c2) global;
+insert into t1 values(1, 1);
+explain_protocol: 2
+update t1 set c1 = 2 where c1 = 1;
+ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+explain_protocol: 0
+select * from t1;
++----+------+
+| c1 | c2   |
++----+------+
+|  1 |    1 |
++----+------+
+drop table t1;
+
+create table t1 (c1 int primary key, c2 int, c3 int,
+                  foreign key(c2) references t1(c1) on update cascade,
+                  foreign key(c3) references t1(c1) on update cascade
+                  ) partition by hash(c1) partitions 3;
+create index i1 on t1(c2, c3) global;
+insert into t1 values(1, 1, 1);
+explain_protocol: 2
+update t1 set c1 = 2 where c1 = 1;
+ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+explain_protocol: 0
+select * from t1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 |    1 |
++----+------+------+
+drop table t1;
+
+// multi part replace;
+create table t1(c1 int primary key) partition by hash(c1) partitions 3;
+create table t2(c1 int, foreign key(c1) references t1(c1) on update cascade on delete cascade);
+insert into t1 values(1);
+insert into t2 values(1);
+select * from t2;
++------+
+| c1   |
++------+
+|    1 |
++------+
+explain_protocol: 2
+EXPLAIN replace into t1 values(1);
+Query Plan
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |DISTRIBUTED REPLACE|    |1       |13          |
+|1 |└─EXPRESSION       |    |1       |1           |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t1: ({t1: (t1.c1)})}]), 
+      column_values([column_conv(INT,PS:(11,0),NOT NULL,__values.c1)])
+  1 - output([__values.c1]), filter(nil)
+      values({1})
+replace into t1 values(1);
+explain_protocol: 0
+select * from t1;
++----+
+| c1 |
++----+
+|  1 |
++----+
+select * from t2;
++------+
+| c1   |
++------+
++------+
+drop table t2;
+drop table t1;
+
+// self ref delete
+create table t1(a int primary key, b int, key t1_b(b), constraint foreign key (b) references t1 (a) on update CASCADE on delete CASCADE);
+insert into t1 values (1, 1);
+insert into t1 values (2, 1);
+insert into t1 values (3, 1);
+update t1 set a = 9 where a = 1;
+ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fails
+select * from t1;
++---+------+
+| a | b    |
++---+------+
+| 1 |    1 |
+| 2 |    1 |
+| 3 |    1 |
++---+------+
+delete from t1 where a = 1;
+select * from t1;
++---+------+
+| a | b    |
++---+------+
++---+------+
+
+set @@foreign_key_checks = @ori_fk_ck;
+drop table t1;

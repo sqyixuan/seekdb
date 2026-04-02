@@ -1,0 +1,86 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: 测试unit缩容指定unit_id。
+ob1=OBI(cluster=3:3:3,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+sleep 20 ;
+ob1.mysql alter system set enable_auto_leader_switch = "true";
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set resource_soft_limit = 100;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+
+let $proxy_ip = deploy_get_value(ob1.proxy0.ip);
+let $proxy_port = deploy_get_value(ob1.proxy0.port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.mysql CREATE RESOURCE UNIT unit1 max_cpu 1, max_memory '1G', max_iops 100000,max_disk_size '10G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='1G', MIN_IOPS=128;
+
+ob1.mysql CREATE RESOURCE POOL tt_pool UNIT = "unit1", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+# 扩容时不能指定delete unit
+--error 1235
+eval alter resource pool tt_pool unit_num = 3 delete unit (1, 2, 3);
+ob1.mysql alter resource pool tt_pool unit_num = 3;
+ob1.mysql CREATE TENANT tt resource_pool_list=('tt_pool'), locality = "F,R{all_server}@z1,F,R{all_server}@z2,F,R{all_server}@z3" set ob_tcp_invited_nodes='%';
+sleep 3;
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+# 创建若干用户表
+connection tt_conn;
+create table t1(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t2(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+create table t3(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10), partition p1 values less than(20), partition p2 values less than(30));
+
+# 不指定unit id的缩容，rs会自己选择删除的unit
+connection sys_conn;
+eval alter resource pool tt_pool unit_num = 2;
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = 'DELETING', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,300;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt", tenant_id, 1);
+ob1.mysql alter TENANT tt resource_pool_list=('tt_pool'), locality = "F,R{1}@z1,F,R{1}@z2,F,R{1}@z3";
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,300;
+
+eval alter resource pool tt_pool unit_num = 3;
+ ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id>$job_id ,0,30;
+ob1.mysql alter TENANT tt resource_pool_list=('tt_pool'), locality = "F,R{all_server}@z1,F,R{all_server}@z2,F,R{all_server}@z3";
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="ALTER_TENANT_LOCALITY" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = "tt_pool", resource_pool_id, 1);
+let $z1_unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $pool_id and zone = 'z1' order by unit_id, unit_id, 1);
+let $z1_unit_id2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $pool_id and zone = 'z1' order by unit_id, unit_id, 2);
+let $z2_unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $pool_id and zone = 'z2' order by unit_id, unit_id, 1);
+let $z3_unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $pool_id and zone = 'z3' order by unit_id, unit_id, 1);
+let $confused_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = 1 and zone = 'z1', unit_id, 1);
+connection sys_conn;
+# 不允许删除一个不属于该resource pool的unit
+--error 1235
+eval alter resource pool tt_pool unit_num = 2 delete unit ($confused_id);
+# 不允许每个zone删除的unit数量不同
+--error 1235
+eval alter resource pool tt_pool unit_num = 2 delete unit ($z1_unit_id, $z2_unit_id);
+# 不允许每个zone删除的unit数量不同
+--error 1235
+eval alter resource pool tt_pool unit_num = 2 delete unit ($z1_unit_id, $z2_unit_id, $z3_unit_id, $z1_unit_id2);
+# 不允许删除的unit的数量与unit_num不一致
+--error 1235
+eval alter resource pool tt_pool unit_num = 1 delete unit ($z1_unit_id, $z2_unit_id, $z3_unit_id);
+# 不允许unit list中有重复的unit id
+--error 1235
+eval alter resource pool tt_pool unit_num = 2 delete unit ($z1_unit_id, $z2_unit_id, $z3_unit_id, $z3_unit_id);
+ ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id>$job_id ,0,30;
+
+eval alter resource pool tt_pool unit_num = 2 delete unit ($z1_unit_id, $z2_unit_id, $z3_unit_id);
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="SHRINK_RESOURCE_POOL_UNIT_NUM" and job_status="INPROGRESS",job_id,1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where status = 'DELETING', 0, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+connection sys_conn;
+--error 1064
+eval create resource pool tt_pool1 unit = "unit1", unit_num = 3 delete unit (1001);

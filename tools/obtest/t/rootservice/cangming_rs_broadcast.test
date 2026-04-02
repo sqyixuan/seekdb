@@ -1,0 +1,92 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    本case是为了验证OB解除对config url的依赖；
+#    ConfigServer不可访问的情况下，OB能切RS，RS能宕机重启；OBS能宕机重启；
+#    ConfigServer不可访问的情况下，成员列表为ABC的情况下，A网络隔离，恢复以后成员列表变成DEF，验证A能重新寻址RS；
+#    ConfigServer不可访问的情况下，成员列表未ABC的情况下，A网络隔离，恢复以后A当选成LEADER。验证其他OBS能寻址RS；
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot_no_url_rslist;
+
+let $case_index = 1;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+source include/check_schema_sync.inc;
+alter system set balancer_idle_time = '10s';
+#alter system set enable_rebalance=false;
+
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+ob_connect(tt1_conn, ob1.z1.obs1, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 5;
+insert into t values (1,2),(3,4),(5,6);
+select * from t;
+#case 1
+# ConfigServer不可访问的情况下，OB能切RS，RS能宕机重启；OBS能宕机重启；
+ob1.mysql alter system set obconfig_url= 'aaaa';
+ob1.mysql alter system set all_server_list = '';
+sleep 5;
+ob1.mysql alter tenant sys set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1 and zone = 'z2', 1, 60;
+ob1.z2.obs0.force_stop;
+sleep 3;
+ob1.z2.obs0.start;
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1, 1, 120;
+ob1.force_stop;
+sleep 3;
+ob1.start;
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1, 1, 120;
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table, 3, 120;
+ob1.check_until_timeout select count(*) from __all_server where status = 'active' and start_service_time > 0, 6, 70;
+source include/check_schema_sync.inc;
+
+#case 2
+# ConfigServer不可访问的情况下，成员列表为ABC的情况下，A网络隔离，恢复以后成员列表变成DEF，验证A能重新寻址RS；
+ob1.mysql alter tenant sys set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table where role = 1 and zone = 'z1', 1, 120;
+##停掉ob1.z1.obs1非RS
+ob1.z1.obs1.force_stop;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+sleep 20;
+##等待副本迁移到ob1.z1.obs0;
+ob1.check_until_timeout select count(*) from __all_server where status = 'inactive', 1, 30;
+let $svr_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from oceanbase.__all_server where status = 'inactive' and zone = 'z1', addr, 1);
+ob1.check_until_timeout select count(*) from __all_unit where concat(svr_ip,":",svr_port) = '$svr_addr', 0, 60;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 300;
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table, 3, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%$svr_addr%', 0, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%,%,%', 4, 80;
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where status = 'inactive', 2, 30;
+let $svr_addr2 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where status = 'inactive' and zone = 'z2', addr, 1);
+ob1.check_until_timeout select count(*) from __all_unit where concat(svr_ip,":",svr_port) = '$svr_addr2', 0, 60;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 300;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%$svr_addr2%', 0, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%,%,%', 4, 80;
+
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table, 3, 60;
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where status = 'inactive', 3, 30;
+let $svr_addr3 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where status = 'inactive' and zone = 'z3', addr, 1);
+ob1.check_until_timeout select count(*) from __all_unit where concat(svr_ip,":",svr_port) = '$svr_addr3', 0, 60;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 300;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%$svr_addr3%', 0, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where role = 'LEADER' and paxos_member_list like '%,%,%', 4, 80;
+ob1.check_until_timeout select count(*) from __all_virtual_core_meta_table, 3, 60;
+###停掉RS；
+ob1.z1.obs0.force_stop;
+ob1.z2.obs1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active', 2, 30;
+ob1.z2.obs1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1 and zone != 'z1', 1, 120;
+ob1.z1.obs1.start;
+###验证OBS1的日志，通过强设rs_list找到leader;
+##检查obs1启动成功；
+ob1.z2.obs1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active', 3, 30;
+ob1.z1.obs0.start;
+ob1.z2.obs1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active', 4, 30;

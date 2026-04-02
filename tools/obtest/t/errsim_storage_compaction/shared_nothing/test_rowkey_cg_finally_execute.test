@@ -1,0 +1,70 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: test make rowkey cg co merge dag finally scheduled for consistent progressive merge
+# 
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set undo_retention = 0;
+ob1.mysql set global recyclebin = OFF;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@obtest,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE", error_code = 4016, frequency = 1;
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "obtest", tenant_id, 1);
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+# 51 columns, will take 2 batches to do co major merge
+create table t1 (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int, c18 int, c19 int, c20 int, c21 int, c22 int, c23 int, c24 int, c25 int, c26 int, c27 int, c28 int,c29 int, c30 int,c31 int, c32 int, c33 int, c34 int, c35 int, c36 int, c37 int, c38 int,c39 int,c40 int,c41 int, c42 int, c43 int, c44 int, c45 int, c46 int, c47 int, c48 int,c49 int,
+  c50 varchar(1024) default "default", c51 varchar(1024) default "default") compression 'none' with column group (each column);
+
+alter table t1 set progressive_merge_num = 3;
+create sequence seq cache 100000 noorder;
+set ob_query_timeout = 1000000000;
+insert into t1 (c50) select MD5(seq.nextval + 50) from table(generator(500000));
+
+connection sys_conn;
+ob1.mysql alter system major freeze tenant obtest;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+connection conn_mysql;
+alter table t1 modify c50 varchar(1024) default "default-c30" not null;
+alter table t1 modify c51 varchar(1024) default "default-c31" not null;
+insert into t1 (c50, c51) select MD5(seq.nextval + 50), MD5(seq.nextval + 51) from table(generator(100000));
+
+connection sys_conn;
+# 1st round merge after online ddl, all columns need rewrite macro blocks to alter default value
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE", error_code = 1001, frequency = 1;
+ob1.mysql alter system major freeze tenant obtest;
+sleep 60;
+ob1.z1.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for normal cg.*1001";
+ob1.z2.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for rowkey cg.*1001";
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+# 2nd round merge after online ddl, all columns except c50 (with more than one macro blocks) finish rewrite, c50 continue do progressive merge
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE", error_code = 1002, frequency = 1;
+ob1.mysql alter system major freeze tenant obtest;
+sleep 60;
+ob1.z1.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for normal cg.*1002";
+ob1.z2.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for rowkey cg.*1002";
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+
+# 3rd round merge after online ddl, before bugfix, leader will not do progressive merge since the batch with rowkey cg finsihed before rewrite c50 in another batch
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE", error_code = 1003, frequency = 1;
+ob1.mysql alter system major freeze tenant obtest;
+sleep 60;
+ob1.z1.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for normal cg.*1003";
+ob1.z2.obs0.check_log_until_success -c "EN EN_COMPACTION_DELAY_FOLLOWER_ROWKEY_CG_MERGE for rowkey cg.*1003";
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;

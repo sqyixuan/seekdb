@@ -29,19 +29,7 @@ class ObTableLoadTableCtx;
 struct ObTableLoadTransCtx
 {
 public:
-  enum TransType
-  {
-    INVALID_TYPE = 0,
-    COORDINATOR = 1,
-    STORE = 2,
-    MAX_TYPE
-  };
-  static bool is_trans_type_valid(const TransType trans_type)
-  {
-    return trans_type > TransType::INVALID_TYPE && trans_type < TransType::MAX_TYPE;
-  }
-public:
-  ObTableLoadTransCtx(ObTableLoadTableCtx *ctx, const TransType trans_type, const table::ObTableLoadTransId &trans_id);
+  ObTableLoadTransCtx(ObTableLoadTableCtx *ctx, const table::ObTableLoadTransId &trans_id);
   OB_INLINE table::ObTableLoadTransStatusType get_trans_status() const
   {
     obsys::ObRLockGuard guard(rwlock_);
@@ -56,14 +44,11 @@ public:
   }
   int advance_trans_status(table::ObTableLoadTransStatusType trans_status);
   int set_trans_status_error(int error_code);
-  int set_trans_status_abort(int error_code = OB_CANCELED);
+  int set_trans_status_abort();
   int check_trans_status(table::ObTableLoadTransStatusType trans_status) const;
-  int check_trans_status(table::ObTableLoadTransStatusType trans_status1,
-                         table::ObTableLoadTransStatusType trans_status2) const;
-  TO_STRING_KV(K_(trans_type), K_(trans_id), K_(trans_status), K_(error_code));
+  TO_STRING_KV(K_(trans_id), K_(trans_status), K_(error_code));
 public:
   ObTableLoadTableCtx * const ctx_;
-  const TransType trans_type_;
   const table::ObTableLoadTransId trans_id_;
   mutable obsys::ObRWLock rwlock_;
   common::ObArenaAllocator allocator_;

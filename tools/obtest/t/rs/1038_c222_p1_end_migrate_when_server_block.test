@@ -1,0 +1,90 @@
+## 这个case不能很好的验证场景，先禁掉
+
+# owner: wenduo.swd
+# owner group: storage
+
+## unit is beging migrated, for example migrate from A to B, then B be blocked,
+## if A can migrate in, should migrate unit from B to A.
+
+ob1=OBI(cluster=2:2:2);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+sleep 4;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT test MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT = 'test', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT obtest1 RESOURCE_POOL_LIST = ('pool1') set ob_tcp_invited_nodes='%';
+
+# login as new tenant and create a table
+let $obs=deploy_get_value(ob1.proxy0.ip);
+let $port =deploy_get_value(ob1.proxy0.port);
+sleep 10;
+connect(conn1,$obs,root@obtest1,,oceanbase,$port);
+connection conn1;
+CREATE DATABASE obtest;
+use obtest;
+create table test_table (pk int primary key);
+
+let $unit_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $unit_port = deploy_get_value(ob1.z1.obs1.port);
+let $migrate_from_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $migrate_from_port = deploy_get_value(ob1.z1.obs0.port);
+# means use sys tenant execute sql
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = 'pool1', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone = 'z1' and resource_pool_id = $pool_id, unit_id, 1);
+
+# migrate unit from obs0 to obs1
+ob1.mysql UPDATE oceanbase.__all_unit set svr_ip = '$unit_ip', svr_port = $unit_port, migrate_from_svr_ip = '$migrate_from_ip', migrate_from_svr_port = '$migrate_from_port' where unit_id = $unit_id;
+
+# set obs1 blocked
+let $block_migrate_in_time = deploy_get_value(ob1.select select time_to_usec(gmt_modified) as time from oceanbase.__all_server where svr_ip = '$unit_ip' and svr_port = $unit_port, time, 1);
+ob1.mysql UPDATE oceanbase.__all_server set block_migrate_in_time=$block_migrate_in_time where svr_ip = '$unit_ip' and svr_port = $unit_port;
+
+# make balance thread run
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+# make balance thread wait after do unit balance
+ob1.mysql set ob_global_debug_sync = 'UNIT_BALANCE_BEFORE_PARTITION_BALANCE wait_for dead timeout 1000000000';
+sleep 2;
+
+# switch rs to z2
+ob1.z2.obs0.switch_partition sys:oceanbase:__all_core_table;
+sleep 30;
+
+# check result
+let $got_unit_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $got_unit_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $got_migrate_from_ip = deploy_get_value(ob1.select select migrate_from_svr_ip from oceanbase.__all_unit where unit_id = $unit_id, migrate_from_svr_ip, 1);
+let $got_migrate_from_port = deploy_get_value(ob1.select select migrate_from_svr_port from oceanbase.__all_unit where unit_id = $unit_id, migrate_from_svr_port, 1);
+if ($got_unit_ip == $migrate_from_ip)
+{
+  echo pass;
+}
+if ($got_unit_port == $migrate_from_port)
+{
+  echo pass;
+}
+if ($got_migrate_from_ip == $unit_ip)
+{
+  echo pass;
+}
+if ($got_migrate_from_port == $unit_port)
+{
+  echo pass;
+}
+
+

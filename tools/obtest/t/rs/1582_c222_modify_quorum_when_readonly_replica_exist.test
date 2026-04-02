@@ -1,0 +1,84 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 修复bug 
+
+ob1=OBI(cluster=2:2:2, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set replica_safe_remove_time = '1m';
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1','z2','z3');
+
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1;z2;z3', locality='F@z1,F@z2,F,R@z3' set ob_tcp_invited_nodes='%';
+sleep 10;
+
+connect (conn_tenant,$rs_ip,root@tenant_1,,test,$rs_mysql_port);
+
+# 关闭root_balance相关逻辑
+connection conn_sys;
+alter system set __balance_controller='{"ENABLE_MODIFY_QUORUM":"false"}';
+sleep 5;
+
+# 建表
+connection conn_tenant;
+create table tt(c1 int primary key, c2 int);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = "tt", table_id, 1);
+
+# 检查初始值
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and replica_type = 0, 3, 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and replica_type = 16 and zone = "z3", 1, 5;
+# 成员数目为3, quorum值为3
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%,%" and quorum = 3, 1, 5;
+
+# 使z3的F永久下线，并触发踢成员操作
+let $stop_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and zone = "z3" and replica_type = 0, addr, 1);
+let $stop_obs = deploy_get_value(ob1.get_obs_by_addr $stop_addr);
+$stop_obs.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where concat(svr_ip, ":", svr_port) = "$stop_addr" and (status = "inactive" or start_service_time <= 0), 1, 60;
+
+# 预期此时成员数目为2，quorum值为3
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%,%" and quorum = 3, 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%" and quorum = 3, 1, 60;
+
+# 触发locality变更, 此时预期locality变更能做完，成员数目为2，且quorum值为3
+ob1.mysql alter tenant tenant_1 set locality = "F@z1,F@z2,R@z3";
+# 由于该租户其余系统表有可能和用户表在z3的F副本可能不在一台server上, 需要开类型转换开关，保证locality变更能做完。
+# 只需保证locality变更完之后，用户表的成员数为2，quorum值为3，能触发modify_quorum逻辑即可。
+connection conn_sys;
+alter system set __balance_controller='{"ENABLE_MODIFY_QUORUM":"false", "ENABLE_TYPE_TRANSFORM":"true"}';
+sleep 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = "tenant_1" and previous_locality != "", 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and replica_type = 0, 2, 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and replica_type = 16 and zone = "z3", 1, 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%,%" and quorum = 3, 0, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%" and quorum = 3, 1, 20;
+
+# 开modify_quorum
+connection conn_sys;
+alter system set __balance_controller='{"ENABLE_MODIFY_QUORUM":"true"}';
+sleep 5;
+# 按照旧逻辑，此时给底层传的quorum是2，成员数目是3（包含R副本），底层校验member_list会失败，导致modify_quorum失败；
+# 按照新逻辑，此时modify_quorum会成功
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_table where table_id = "$table_id" and role = 1 and member_list like "%,%" and quorum = 2, 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where event = "finish_modify_quorum" and value1 like "%$table_id%" and value2 = 2 and value3 = 3 and value5 = 0, 1, 5;

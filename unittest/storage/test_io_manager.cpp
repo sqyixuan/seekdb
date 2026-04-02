@@ -661,8 +661,10 @@ TEST_F(TestIOStruct, IOCallbackManager)
   // test init
   ObIOCallbackManager callback_mgr;
   ASSERT_FALSE(callback_mgr.is_inited_);
-  ASSERT_FAIL(callback_mgr.init(TEST_TENANT_ID, 0, 1000));
-  ASSERT_SUCC(callback_mgr.init(TEST_TENANT_ID, 2, 1000));
+  ASSERT_FAIL(callback_mgr.init(TEST_TENANT_ID, 0, 1000, nullptr));
+  ObIOAllocator io_allocator;
+  ASSERT_SUCC(io_allocator.init(TEST_TENANT_ID, IO_MEMORY_LIMIT));
+  ASSERT_SUCC(callback_mgr.init(TEST_TENANT_ID, 2, 1000, &io_allocator));
   ASSERT_TRUE(callback_mgr.is_inited_);
 
   // test enqueue and dequeue
@@ -1178,11 +1180,7 @@ int prepare_file(const char *file_path, const int64_t file_size, int32_t &fd)
       ret = OB_IO_ERROR;
       LOG_WARN("fail to create file", K(ret));
     } else {
-#ifdef __linux__
       if (fallocate(fd, 0, 0, file_size) < 0) {
-#else
-      if (myfallocate(fd, 0, 0, file_size) < 0) {
-#endif
         ret = OB_IO_ERROR;
         LOG_WARN("fail to allocate file", K(ret), K(fd), K(file_size));
       } else {

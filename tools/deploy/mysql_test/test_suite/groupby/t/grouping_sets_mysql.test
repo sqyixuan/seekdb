@@ -1,0 +1,1367 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhuangyifeng.zyf
+#owner group: sql1
+#tags: pl, optimizer, groupby
+#--echo # Scope: test function of grouping sets for mysql mode
+
+--result_format 4
+--explain_protocol 2
+--enable_sorted_result
+
+--echo # MaxCompute 语法兼容测试
+--disable_warnings
+DROP TABLE IF EXISTS REQUESTS;
+--enable_warnings
+
+--disable_query_log
+--disable_result_log
+CREATE TABLE REQUESTS(id int, os char(20), device char(20), city char(20));
+INSERT INTO REQUESTS VALUES 
+    (1, 'windows', 'PC', 'Beijing'),
+    (2, 'windows', 'PC', 'Shijiazhuang'),
+    (3, 'linux', 'Phone', 'Beijing'),
+    (4, 'windows', 'PC', 'Beijing'),
+    (5, 'ios', 'Phone', 'Shijiazhuang'),
+    (6, 'linux', 'PC', 'Beijing'),
+    (7, 'windows', 'Phone', 'Shijiazhuang')
+;
+--enable_result_log
+--enable_query_log
+
+--echo # 使用 select 语句分组
+--sorted_result
+select NULL, NULL, NULL, count(*)
+from requests
+union all
+select os, device, NULL, count(*)
+from requests group by os, device
+union all
+select null, null, city, count(*)
+from requests group by city;
+--echo # 等效于使用 grouping sets 分组
+--sorted_result
+select os,device, city ,count(*)
+from requests
+group by grouping sets((os, device), (city), ());
+
+--echo # cube
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by cube (os, device, city);
+--echo # 等效的 grouping sets
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by grouping sets ((os, device, city),(os, device),(os, city),(device,city),(os),(device),(city),());
+
+--echo # cube
+--sorted_result
+select os,device, city, count(*) 
+from requests 
+group by cube ((os, device), (device, city));
+--echo # 等效的 grouping sets
+--sorted_result
+select os,device, city, count(*) 
+from requests 
+group by grouping sets ((os, device, city),(os, device),(device,city),());
+
+--echo # rollup
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by rollup (os, device, city);
+--echo # 等效的 grouping sets
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by grouping sets ((os, device, city),(os, device),(os),());
+
+--echo # rollup
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by rollup (os, (os,device), city);
+--echo # 等效的 grouping sets
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by grouping sets ((os, device, city),(os, device),(os),());
+
+--echo # 混合使用 group by, cube, grouping sets
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by os, cube(os,device), grouping sets(city);
+--echo # OB 中等效于
+--sorted_result
+select os,device, city, count(*)
+from requests group by
+grouping sets((os, os, device, city), (os, os, city), (os, device, city), (os, city));
+--echo # odps 认为它等效于
+--sorted_result
+select os,device, city, count(*)
+from requests 
+group by grouping sets((os,device,city),(os,city),(os,device,city));
+
+--echo # grouping id
+--sorted_result
+select
+  a,b,c,count(*),
+  grouping(a) ga, 
+  grouping(b) gb, 
+  grouping(c) gc, 
+  grouping_id(a,b,c) groupingid 
+from (values row(1,2,3)) as t(a,b,c)
+group by cube(a,b,c);
+
+--sorted_result
+select
+  if(grouping(os) = 0, os, 'ALL') as os,
+  if(grouping(device) = 0, device, 'ALL') as device,
+  if(grouping(city) = 0, city, 'ALL') as city, 
+  count(*) as count 
+from requests 
+group by grouping sets((os, device), (city), ());
+
+--echo # grouping sets 不能和 with rollup 一起使用
+--error 1064
+select count(os) from requests group by grouping sets(os) with rollup;
+
+--echo # 测试反拼
+--disable_warnings
+drop view if exists v1;
+--enable_warnings
+
+create view v1 as select id, os from requests group by rollup(id, os), 1, 2;
+desc v1;
+show create view v1;
+drop view v1;
+
+create view v1 as select id, os from requests group by cube(id, os), rollup(id, os), id, 1;
+desc v1;
+show create view v1;
+drop view v1;
+
+create view v1 as select id, os, device from requests group by 1, grouping sets(id, os), grouping sets(cube(id, device), rollup(id), 1), id, os, 1, cube(1, os), rollup(city, 1);
+desc v1;
+show create view v1;
+drop view v1;
+
+DROP TABLE REQUESTS;
+
+--echo # grouping_id() 函数仅支持最大 63 个参数
+--disable_warnings
+drop table IF EXISTS t1;
+--enable_warnings
+
+create table t1(a int, b int, c int, d int);
+insert into t1 values(1,2,3,4),(0,0,0,0),(4,3,2,1);
+
+--error 1582
+select a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d,
+                   a,b,c,d,a,b,c,d)
+from t1 group by rollup(a,b,c,d);
+
+--echo # 测试 grouping_id 在不同配置下的行为
+
+--echo # 关闭向量化
+--sorted_result
+select /*+opt_param('rowsets_enabled', 'false')*/
+       a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c)
+from t1 group by rollup(a,b,c,d);
+
+--echo # 开启向量化, 关闭向量化 2.0, 关闭 hash rollup
+--sorted_result
+select /*+opt_param('rowsets_enabled', 'true') opt_param('enable_rich_vector_format', 'false') opt_param('use_hash_rollup', 'disabled')*/
+       a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c)
+from t1 group by rollup(a,b,c,d);
+
+--echo # 开启向量化, 关闭向量化 2.0, 开启 hash rollup
+--sorted_result
+select /*+opt_param('rowsets_enabled', 'true') opt_param('enable_rich_vector_format', 'false') opt_param('use_hash_rollup', 'forced')*/
+       a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c)
+from t1 group by rollup(a,b,c,d);
+
+--echo # 开启向量化, 开启向量化 2.0, 关闭 hash rollup
+--sorted_result
+select /*+opt_param('rowsets_enabled', 'true') opt_param('enable_rich_vector_format', 'true') opt_param('use_hash_rollup', 'disabled')*/
+       a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c)
+from t1 group by rollup(a,b,c,d);
+
+--echo # 开启向量化, 开启向量化 2.0, 开启 hash rollup
+--sorted_result
+select /*+opt_param('rowsets_enabled', 'true') opt_param('enable_rich_vector_format', 'true') opt_param('use_hash_rollup', 'forced')*/
+       a,b,c,d,
+       grouping_id(a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c,d,a,b,c)
+from t1 group by rollup(a,b,c,d);
+
+drop table t1;
+
+--disable_warnings
+drop table IF EXISTS t1, t2, t11;
+--enable_warnings
+
+#普通表，含有主键序
+create table t1(a int, b int, c int, d int, e int, primary key(a, b, c, d));
+create table t2(a int, b int, c int, d int, primary key(a,b));
+
+--disable_query_log
+--disable_result_log
+insert into t1 values(1, 2, 3, 4, 5);
+insert into t1 values(1, 2, 3, 6, 6);
+insert into t1 values(2, 2, 3, 6, 6);
+insert into t1 values(2, 4, 3, 6, 6);
+insert into t1 values(3, 3, 3, 3, null);
+insert into t1 values(3, 4, 4, 4, null);
+insert into t2 values (1,1,1,1);
+insert into t2 values (2,1,1,2);
+insert into t2 values (3,1,1,1);
+insert into t2 values (4,1,2,1);
+insert into t2 values (5,1,2,2);
+insert into t2 values (6,2,3,1);
+insert into t2 values (7,2,3,4);
+insert into t2 values (8,2,3,3);
+insert into t2 values (9,2,3,4);
+insert into t2 values (1,2,2,null);
+insert into t2 values (2,3,null,null);
+--enable_result_log
+--enable_query_log
+
+--disable_query_log
+--disable_result_log
+select * from t1;
+select * from t2;
+--enable_query_log
+--enable_result_log
+
+--echo # mysql 模式支持 cube/rollup 关键字
+select a,b,c from t1 group by cube(a,b,c);
+select a,b,c from t1 group by cube(a,b,c),cube(b,c);
+select a,b,c from t1 group by grouping sets(cube(a,b,c));
+select a,b,c from t1 group by grouping sets(cube(a,b,c)), cube(a,b);
+select a,b,c from t1 group by grouping sets(rollup(a,b,c));
+select a,b,c from t1 group by grouping sets(rollup(a,b,c)), rollup(a,b);
+
+--sorted_result
+select t1.a,t1.b,sum(t1.b) from t1,t2 where t1.a = t1.b group by t1.a, t1.b order by t1.a;
+
+--sorted_result
+select a,b,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+--sorted_result
+select a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+--sorted_result
+select a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select item中的复合计算 
+--sorted_result
+select a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select a,b from t1 group by grouping sets (a,b), c;
+--sorted_result
+select a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+--sorted_result
+select a,b from t1 group by grouping sets (a,b), rollup(c);
+--sorted_result
+select a,b,sum(a+c),avg(a+c+b) from t1 group by grouping sets (a,b), rollup(c);
+--sorted_result
+select a,b,b+c,sum(a+c),avg(a+c+b) from t1 group by grouping sets (a,b), rollup(c);
+--sorted_result
+select a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select a,b,c from t1 group by grouping sets ((a,b),(b,c)), rollup(b);
+--sorted_result
+select a,b,c,avg(b+c) from t1 group by grouping sets ((a,b),(b,c)), rollup(b);
+--sorted_result
+select a,b,c,avg(b+c) from t1 group by grouping sets ((a,b),(b,c)), rollup(b);
+--sorted_result
+select a,b,c from t1 group by grouping sets ((a,b),(b,c)), rollup(b,c);
+--sorted_result
+select a,b,c,sum(a+c) from t1 group by grouping sets ((a,b),(b,c)), rollup(b,c);
+
+--echo # mysql 模式下使用 grouping sets 时, 不允许非标
+--error 1055
+select a,b,c from t1 group by grouping sets ((a,b), b);
+--error 1055
+select a,b,c from t1 group by grouping sets ((a,c), c);
+--error 1055
+select a,b,c from t1 group by grouping sets ((a,b), (b,a));
+--error 1055
+select a,b,c,sum(b) from t1 group by grouping sets ((a,b), b);
+--error 1055
+select a,b,c,sum(b) from t1 group by grouping sets ((a,c), c);
+--error 1055
+select a,b,c,sum(b) from t1 group by grouping sets ((a,b), (b,a));
+
+#测试加连接情况(各种连接类型，外连接，全外连接)
+--sorted_result
+select t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c)); #测试insert/access对应关系
+--sorted_result
+select t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+
+#测试加上窗口函数/order by/having等
+--error 1055
+select t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+#测试包含子查询及被子查询包含
+
+--sorted_result
+select * from (select t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c)); 
+--sorted_result
+select /*+no_rewrite*/* from (select t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select * from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select /*+no_rewrite*/* from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select /*+no_rewrite*/* from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select * from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select /*+no_rewrite*/* from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select v.a,v.b from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+--sorted_result
+select /*+no_rewrite*/v.a,v.b from (select t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+
+--sorted_result
+select v.a from (select t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select v.a from (select t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a, v.c); 
+
+--echo # test multi temp table, temp table in dml
+select /*+no_pred_deduce use_concat*/ * from (select /*+no_pred_deduce*/ a, max(b) b from t1 group by grouping sets(a, b)) v where a = 4 or b = 5;
+select * from (select a, max(b) b from t1 group by grouping sets(a, b)) v where exists(select 1 from t2 where b > 2) or exists(select 1 from t2 where a < 5);
+select /*+use_concat*/ * from (select a, max(b) b from t1 group by grouping sets(a, b)) v where exists(select 1 from t2 where b > 2) or exists(select 1 from t2 where a < 5);
+
+select  a, max(b) b from t1 group by grouping sets(a, b) union all select  a, max(b) b from t2 group by grouping sets(a, b);
+select v1.*, v2.* from (select a, max(b) b from t1 group by grouping sets(a, b)) v1, (select  a, max(b) b from t2 group by grouping sets(a, b)) v2;
+select * from (select a, max(b) b from (select a, max(b) b from t2 group by grouping sets(a, b)) group by grouping sets(a, b));
+
+set autocommit = 0;
+drop table if exists t3;
+drop table if exists t4;
+
+create table t3(a int, b int);
+create table t4(a int, b int) partition by hash(a) partitions 5;
+
+delete from t3 where 1 in (select max(b) b from t1 group by grouping sets(a, b));
+delete from t4 where 1 in (select max(b) b from t1 group by grouping sets(a, b));
+rollback;
+
+insert into t3 select  a, max(b) b from t1 group by grouping sets(a, b);
+insert into t4 select  a, max(b) b from t1 group by grouping sets(a, b);
+rollback;
+
+insert into t3 select  a, max(b) b from t1 group by grouping sets(a, b) union all select a, max(b) b from t2 group by grouping sets(a, b);
+insert into t4 select  a, max(b) b from t1 group by grouping sets(a, b) union all select a, max(b) b from t2 group by grouping sets(a, b);
+rollback;
+
+update t3 set a = 4 where exists (select max(b) b from t1 group by grouping sets(a, b));
+update t4 set a = 4 where exists (select max(b) b from t1 group by grouping sets(a, b));
+rollback;
+
+update t3 set a = 4 where exists (select max(b) b from t1 group by grouping sets(a, b)) and exists (select sum(b) b from t1 group by grouping sets(a, b));
+update t4 set a = 4 where exists (select max(b) b from t1 group by grouping sets(a, b)) and exists (select sum(b) b from t1 group by grouping sets(a, b));
+rollback;
+
+set autocommit = 1;
+
+drop table t1;
+drop table t2;
+drop table t3;
+drop table t4;
+create table t1(a int, b int, c int, d int, e int, primary key(a, b, c, d)) partition by hash(a) partitions 2;
+create table t2(a int, b int, c int, d int, primary key(a,b)) partition by hash(a) partitions 2;
+
+--disable_query_log
+--disable_result_log
+insert into t1 values(1, 2, 3, 4, 5);
+insert into t1 values(1, 2, 3, 6, 6);
+insert into t1 values(2, 2, 3, 6, 6);
+insert into t1 values(2, 4, 3, 6, 6);
+insert into t1 values(3, 3, 3, 3, null);
+insert into t1 values(3, 4, 4, 4, null);
+insert into t2 values (1,1,1,1);
+insert into t2 values (2,1,1,2);
+insert into t2 values (3,1,1,1);
+insert into t2 values (4,1,2,1);
+insert into t2 values (5,1,2,2);
+insert into t2 values (6,2,3,1);
+insert into t2 values (7,2,3,4);
+insert into t2 values (8,2,3,3);
+insert into t2 values (9,2,3,4);
+insert into t2 values (1,2,2,null);
+insert into t2 values (2,3,null,null);
+--enable_result_log
+--enable_query_log
+
+--disable_query_log
+--disable_result_log
+select * from t1;
+select * from t2;
+--enable_query_log
+--enable_result_log
+##测试分区表的情况
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t1.b) from t1,t2 where t1.a = t1.b group by t1.a, t1.b order by t1.a;
+
+--sorted_result
+select /*+no_use_px*/ a,b,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c); #测单dfo调度
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+select /*+use_px, parallel(1)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+select /*+use_px, parallel(1)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+select /*+use_px, parallel(1)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+
+#测试加连接情况(各种连接类型，外连接，全外连接)
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+
+#测试加上窗口函数/order by/having等
+--error 1055
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+#测试包含子查询及被子查询包含
+
+select * from (select /*+no_use_px*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select * from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+select v.a,v.b from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+--sorted_result
+select /*+no_rewrite*/v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+select /*+no_rewrite*/v.a,v.b from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+
+--sorted_result
+select v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a, v.c); 
+
+drop table t1;
+drop table t2;
+create table t1(a int, b int, c int, d int, e int, primary key(a, b, c, d));
+create table t2(a int, b int, c int, d int, primary key(a,b)) partition by hash(a) partitions 2;
+
+--disable_query_log
+--disable_result_log
+insert into t1 values(1, 2, 3, 4, 5);
+insert into t1 values(1, 2, 3, 6, 6);
+insert into t1 values(2, 2, 3, 6, 6);
+insert into t1 values(2, 4, 3, 6, 6);
+insert into t1 values(3, 3, 3, 3, null);
+insert into t1 values(3, 4, 4, 4, null);
+insert into t2 values (1,1,1,1);
+insert into t2 values (2,1,1,2);
+insert into t2 values (3,1,1,1);
+insert into t2 values (4,1,2,1);
+insert into t2 values (5,1,2,2);
+insert into t2 values (6,2,3,1);
+insert into t2 values (7,2,3,4);
+insert into t2 values (8,2,3,3);
+insert into t2 values (9,2,3,4);
+insert into t2 values (1,2,2,null);
+insert into t2 values (2,3,null,null);
+--enable_result_log
+--enable_query_log
+
+--disable_query_log
+--disable_result_log
+select * from t1;
+select * from t2;
+--enable_query_log
+--enable_result_log
+##测试分区表的情况
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t1.b) from t1,t2 where t1.a = t1.b group by t1.a, t1.b order by t1.a;
+
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c); #测单dfo调度
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+select /*+use_px, parallel(1)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+select /*+use_px, parallel(1)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+select /*+use_px, parallel(1)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+
+#测试加连接情况(各种连接类型，外连接，全外连接)
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+
+#测试加上窗口函数/order by/having等
+--error 1055
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+#测试包含子查询及被子查询包含
+
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select * from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+select v.a,v.b from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+--sorted_result
+select /*+no_rewrite*/v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+
+--sorted_result
+select v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a, v.c); 
+
+drop table t1;
+drop table t2;
+
+create table t1(a int, b int, c int, d int, e int, primary key(a, b, c, d)) partition by hash(a) partitions 2;
+create table t2(a int, b int, c int, d int, primary key(a,b));
+
+--disable_query_log
+--disable_result_log
+insert into t1 values(1, 2, 3, 4, 5);
+insert into t1 values(1, 2, 3, 6, 6);
+insert into t1 values(2, 2, 3, 6, 6);
+insert into t1 values(2, 4, 3, 6, 6);
+insert into t1 values(3, 3, 3, 3, null);
+insert into t1 values(3, 4, 4, 4, null);
+insert into t2 values (1,1,1,1);
+insert into t2 values (2,1,1,2);
+insert into t2 values (3,1,1,1);
+insert into t2 values (4,1,2,1);
+insert into t2 values (5,1,2,2);
+insert into t2 values (6,2,3,1);
+insert into t2 values (7,2,3,4);
+insert into t2 values (8,2,3,3);
+insert into t2 values (9,2,3,4);
+insert into t2 values (1,2,2,null);
+insert into t2 values (2,3,null,null);
+--enable_result_log
+--enable_query_log
+
+--disable_query_log
+--disable_result_log
+select * from t1;
+select * from t2;
+--enable_query_log
+--enable_result_log
+##测试分区表的情况
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t1.b) from t1,t2 where t1.a = t1.b group by t1.a, t1.b order by t1.a;
+
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a,b,c); #测单dfo调度
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+select /*+use_px, parallel(1)*/ a,b,sum(b),avg(c) from t1 group by grouping sets(a,b,c); #验证改写case
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+select /*+use_px, parallel(1)*/ a,b,avg(b+c),max(c) from t1 group by grouping sets(a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+select /*+use_px, parallel(1)*/ a,b,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b), c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+select /*+use_px, parallel(1)*/ a,b,sum(b)+avg(b+a) from t1 group by grouping sets (a, (b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets (a,b,c);
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+select /*+use_px, parallel(1)*/ a,b,c,b+c,sum(b) from t1 group by grouping sets (a,b,c); #验证select /*+use_px, parallel(2)*/ item中的复合计算
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c, a+b, c+b, sum(b+c),avg(b+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b+c,sum(b), avg(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c,sum(b),avg(c),max(a+c) from t1 group by grouping sets ((a,b),(b,c));
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+select /*+use_px, parallel(1)*/ a,b,sum(b+c) from t1 group by grouping sets (a,b), c;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,a+b,b+c+a from t1 group by grouping sets ((a,b),(b,c)), b;
+--sorted_result
+select /*+use_px, parallel(2)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+select /*+use_px, parallel(1)*/ a,b,c,sum(a+b+c) from t1 group by grouping sets ((a,b),(b,c)), b;
+
+#测试加连接情况(各种连接类型，外连接，全外连接)
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t1.a group by grouping sets((t1.a,t1.b), t2.c);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.c,sum(t2.b) from t1,t2 where t1.a=t2.c group by grouping sets((t1.a,t1.b), (t1.a,t2.c));
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+select /*+use_px parallel(1)*/t1.a,t1.b,sum(t2.b+t1.c) from t1,t2 group by grouping sets(t1.a,t1.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px parallel(1)*/t1.a,t1.b,t1.c,sum(t2.b) from t1,t2 where t1.a=t2.a group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 left join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 right join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+--sorted_result
+select /*+use_px, parallel(2)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+select /*+use_px, parallel(1)*/t1.a,t1.b,t1.c,sum(t1.b+t2.b) from t1 full join t2 on t1.c=t2.c group by grouping sets(t1.a,t1.b,t1.c);
+
+#测试加上窗口函数/order by/having等
+--error 1055
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b);
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over() from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a order by t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(2)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+--sorted_result
+select /*+use_px parallel(1)*/t1.a,t1.b,t2.a,sum(t2.b) over(partition by t1.a + t1.b) from t1,t2 where t1.a=t2.b group by grouping sets(t1.a,t1.b,t2.a,t2.b) order by t1.a,t1.b,t2.a;
+#测试包含子查询及被子查询包含
+
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select * from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a,t1.b,t1.c from t1 group by grouping sets(t1.a, t1.b, t1.c));
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v, t2 where v.a = t2.a order by v.a, t2.b, t2.c;
+--sorted_result
+select * from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select * from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select /*+no_rewrite*/* from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+select /*+no_rewrite*/* from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v join t2 on v.a = t2.b;
+--sorted_result
+select v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+select v.a,v.b from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+--sorted_result
+select /*+no_rewrite*/v.a,v.b from (select /*+use_px parallel(2)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+select /*+no_rewrite*/v.a,v.b from (select /*+use_px parallel(1)*/t1.a as a,t1.b as b,t1.c as c from t1 group by grouping sets(t1.a, t1.b, t1.c)) v left join t2 on v.a = t2.a and v.b = t2.b;
+
+--sorted_result
+select v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(1)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a);
+--sorted_result
+select /*+no_rewrite*/v.a from (select /*+use_px parallel(2)*/t1.a as a, t1.c as c, sum(t1.b)  from t1 group by t1.a, t1.c) v, t2 where v.a = t2.a group by grouping sets(v.a, v.c); 
+
+select nvl(a, b), c from t1 group by grouping sets(nvl(a, b), c);
+
+select nvl(a, 1), c from t1 group by grouping sets(a, c);
+
+select c, a + b from t1 group by grouping sets(a+b,c);
+
+select a, b from t1 group by grouping sets(a, b) having max(a) < 5 or a > 1 or b > 1 or max(b) < 3;
+
+select a, b, c, d from t1 group by grouping sets(a, b, c, d) having a > 1 or b > 1 or c > 1 or d > 1;
+
+select nvl(a, 1), c from t1 group by grouping sets(a, c) having a + c > 1;
+
+select nvl(a, 1) + c from t1 group by grouping sets(nvl(a,1), c);
+
+select nvl(a, c)+max(b) from t1 group by grouping sets(nvl(a,c),b);
+
+--error 1054
+select nvl(a, b), c from t1 group by grouping sets(nvl(a, b) ,c) having nvl(a, b) > 1;
+--sorted_result
+select a, b from t1 group by grouping sets(a, b, (), ());
+--sorted_result
+select a, b, max(a), max(b), max(c), max(d), e from t1 group by grouping sets(a, b), grouping sets(c, d), grouping sets(e, ());
+--sorted_result
+select a, b + max(a) + max(b) + max(c) + max(d), e from t1 group by grouping sets(a, (b, c)), grouping sets(d, e);
+--sorted_result
+select a from t1 group by grouping sets(a,(),()),grouping sets(a,(),());
+--sorted_result
+select max(a), sum(b), min(c) over(partition by d order by e) from t1 group by a, grouping sets(b, c), grouping sets(d, e);
+--sorted_result
+select a,b from t1 group by grouping sets(a,()),grouping sets(a,()),b;
+--sorted_result
+select grouping(a) from t1 group by grouping sets(a,b);
+
+drop table t1;
+drop table t2;
+
+--disable_warnings
+drop table IF EXISTS Z0CASE;
+--enable_warnings
+
+CREATE TABLE Z0CASE(z0_test0 char(100), z0_test1 char(50),z0_test3 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(111,222,11);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(' ',' ',100);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT z0_test0 FROM z0case GROUP BY GROUPING SETS (z0_test0,());
+SELECT z0_test0 FROM z0case GROUP BY GROUPING SETS ((),z0_test0,());
+
+--error 1055
+SELECT z0_test0 FROM z0case GROUP BY GROUPING SETS (());
+--error 1055
+SELECT z0_test0 FROM z0case GROUP BY GROUPING SETS ((),(),(),());
+SELECT (z0_test0),(z0_test1) FROM z0case GROUP BY GROUPING SETS (z0_test0),(z0_test1);
+SELECT (z0_test0),(z0_test1) FROM z0case GROUP BY GROUPING SETS (z0_test0), GROUPING SETS(z0_test1);
+SELECT (z0_test0),(z0_test1) FROM z0case GROUP BY GROUPING SETS (z0_test0, z0_test1), GROUPING SETS(z0_test0, z0_test1);
+
+drop table Z0CASE;
+
+drop table if exists t3;
+
+create table t3(c1 TEXT, c2 TEXT);
+select c1,c2 from t3 group by grouping sets (c1,c2);
+
+drop table t3;
+
+DROP TABLE IF EXISTS EMP;
+
+create TABLE EMP(empno INTEGER, ename TEXT(100), job TEXT(100), mgr NUMBER, hiredate DATE, sal NUMBER(9,2), comm NUMBER(9,2), deptno NUMBER(20), deptnoname char(100));
+
+--disable_query_log
+--disable_result_log
+INSERT INTO EMP VALUES(1,'SMITH','CLERK',7902,str_to_date('17-12-1980','%d-%m-%Y'),800,NULL,20,'分部1');
+INSERT INTO EMP VALUES(4,'JONES','MANAGER',7839,str_to_date('2-4-1981','%d-%m-%Y'),2975,NULL,20,'分部1');
+INSERT INTO EMP VALUES(300,'SCOTT','ANALYST',7566,str_to_date('13-4-1987','%d-%m-%Y'),3000,NULL,20,'分部1');
+INSERT INTO EMP VALUES(1,'ADAMS','CLERK',7788,str_to_date('13-5-1987', '%d-%m-%Y'),1100,NULL,20,'分部1');
+INSERT INTO EMP VALUES(300,'FORD','ANALYST',7566,str_to_date('3-12-1981','%d-%m-%Y'),3000,NULL,20,'分部1');
+INSERT INTO EMP VALUES(2,'ALLEN','SALESMAN',7698,str_to_date('20-2-1981','%d-%m-%Y'),1600,300,30,'分部2');
+INSERT INTO EMP VALUES(3,'WARD','SALESMAN',7698,str_to_date('22-2-1981','%d-%m-%Y'),1250,500,30,'分部2');
+INSERT INTO EMP VALUES(5,'MARTIN','SALESMAN',7698,str_to_date('28-9-1981','%d-%m-%Y'),1250,1400,30,'分部2');
+INSERT INTO EMP VALUES(100,'BLAKE','MANAGER',7839,str_to_date('1-5-1981','%d-%m-%Y'),2850,NULL,30,'分部2');
+INSERT INTO EMP VALUES(200,'TURNER','SALESMAN',7698,str_to_date('8-9-1981','%d-%m-%Y'),1500,0,30,'分部2');
+INSERT INTO EMP VALUES(200,'JAMES','CLERK',7698,str_to_date('3-12-1981','%d-%m-%Y'),950,NULL,30,'分部2');
+INSERT INTO EMP VALUES(200,'CLARK','MANAGER',7839,str_to_date('9-6-1981','%d-%m-%Y'),2450,NULL,10,'总部');
+INSERT INTO EMP VALUES(400,'KING','PRESIDENT',NULL,str_to_date('17-11-1981','%d-%m-%Y'),5000,NULL,10,'总部');
+INSERT INTO EMP VALUES(500,'MILLER','CLERK',7782,str_to_date('23-1-1982','%d-%m-%Y'),1300,NULL,10,'总部');
+INSERT INTO EMP VALUES(500,'MILLER','CLERK',7782,str_to_date('23-1-1982','%d-%m-%Y'),1700,NULL,10,'总部');
+SELECT COUNT(*) FROM EMP;
+--enable_query_log
+--enable_result_log
+
+select t.empno, sum(t.sal), grouping(t.sal) FROM emp t group BY grouping sets ((t.empno,t.sal), t.COMM);
+
+select empno,sal,sum(t.SAL) from emp t group BY grouping sets (hiredate,empno,sal) HAVING t.SAL>10;
+
+DROP TABLE EMP;
+
+DROP TABLE IF EXISTS W1CASE;
+DROP TABLE IF EXISTS W0CASE;
+
+CREATE TABLE W0CASE (ID NUMBER PRIMARY KEY, W0_TEST0 VARCHAR(100), W0_TEST1 DATE, W0_TEST2 CHAR(100), W0_TEST3 CHAR(20) AS ( ID + W0_TEST1 ));
+CREATE TABLE W1CASE (ID NUMBER PRIMARY KEY REFERENCES W0CASE(ID), W1_TEST0 CHAR(10), W1_TEST1 TIMESTAMP, W1_TEST2 CHAR(20) AS ( ID + W1_TEST1 ));
+
+--disable_query_log
+--disable_result_log
+INSERT INTO W0CASE (ID,W0_TEST0,W0_TEST1,W0_TEST2) VALUES (1,'A',DATE'2020-02-20','0A');
+INSERT INTO W0CASE (ID,W0_TEST0,W0_TEST1,W0_TEST2) VALUES (2,'B',DATE'2020-02-21','0B');
+INSERT INTO W0CASE (ID,W0_TEST0,W0_TEST1,W0_TEST2) VALUES (3,'C',DATE'2020-02-22','0C');
+INSERT INTO W1CASE (ID,W1_TEST0,W1_TEST1) VALUES (1,'D',TIMESTAMP'2020-02-20 20:20:20.000');
+INSERT INTO W1CASE (ID,W1_TEST0,W1_TEST1) VALUES (2,'E',TIMESTAMP'2020-02-21 20:20:20.000');
+INSERT INTO W1CASE (ID,W1_TEST0,W1_TEST1) VALUES (3,'F',TIMESTAMP'2020-02-22 20:20:20.000');
+SELECT COUNT(*) FROM W0CASE;
+SELECT COUNT(*) FROM W1CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT W0_TEST0 FROM W0CASE JOIN W1CASE USING (ID) GROUP BY GROUPING SETS (ID,W0_TEST0,W0_TEST3);
+SELECT W0_TEST0 FROM W0CASE, W1CASE WHERE W0CASE.ID = W1CASE.ID GROUP BY GROUPING SETS (W0CASE.ID,W0CASE.W0_TEST0,W0CASE.W0_TEST3);
+SELECT ID FROM W0CASE JOIN W1CASE USING (ID) GROUP BY GROUPING SETS (ID,W0_TEST0,W0_TEST3);
+SELECT W0_TEST0 FROM W0CASE GROUP BY GROUPING SETS (ID,W0_TEST0,W0_TEST3);
+
+DROP TABLE W1CASE;
+DROP TABLE W0CASE;
+
+--error 1096
+SELECT * FROM dual GROUP BY 1;
+--error 1096
+SELECT * FROM dual GROUP BY GROUPING sets(1,2);
+
+DROP TABLE IF EXISTS Z0CASE;
+
+CREATE TABLE Z0CASE(Z0_TEST0 char(100) , Z0_TEST1 char(100),Z0_TEST2 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values('abc ABC','123213',2);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values(111,'123213',11);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values(NULL,' ',0);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values('',' ',100);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2) values('111 ','abc ABC ',100);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT avg(z0_test2) FROM Z0CASE GROUP BY GROUPING SETS (Z0_TEST0,z0_test1) HAVING Z0_TEST0 IS NOT NULL;
+SELECT avg(z0_test2) FROM Z0CASE WHERE z0_test2 > 1 GROUP BY GROUPING SETS (Z0_TEST0,z0_test1) HAVING Z0_TEST0 IS NOT NULL;
+
+DROP TABLE Z0CASE;
+
+SELECT 1 FROM dual GROUP BY GROUPING SETS ('123',());
+
+SELECT 1 FROM dual GROUP BY GROUPING SETS ((),());
+
+DROP TABLE IF EXISTS Z0CASE;
+
+CREATE TABLE Z0CASE(Z0_TEST0 char(100), Z0_TEST1 char(100),Z0_TEST2 REAL);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2)values('abcABC','2011-11-11 ',1);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2)values('abcABC','2011/11/11 01:00:00',2.0);
+INSERT INTO Z0CASE (Z0_TEST0,Z0_TEST1,Z0_TEST2)values('111','2011-11-11 01:00:00',11.0);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT sum(Z0_TEST2) FROM Z0CASE GROUP BY GROUPING sets (());
+SELECT sum(Z0_TEST2) FROM Z0CASE GROUP BY ();
+SELECT sum(Z0_TEST2) FROM Z0CASE GROUP BY Z0_TEST0, ();
+SELECT sum(Z0_TEST2) FROM Z0CASE GROUP BY Z0_TEST0, (), GROUPING sets ((), Z0_TEST1);
+select 1 from dual group by ();
+select 1 from dual group by grouping sets (());
+
+DROP TABLE Z0CASE;
+
+CREATE TABLE Z0CASE(z0_test0 char(100), z0_test1 char(50), z0_test3 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(111,222,11);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(' ',' ',100);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('2011-11-11','2011-11-11',20);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(20111111,'abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(111,222,10);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('',' ',10);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('2011-11-11','2011-11-11',20);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT z0_test3 + 1 FROM Z0CASE a GROUP BY GROUPING SETS ((), z0_test3);
+SELECT z0_test3 + 1 FROM Z0CASE a GROUP BY GROUPING SETS ((), z0_test3);
+SELECT Z0_TEST0, 1 FROM Z0CASE a GROUP BY GROUPING SETS (Z0_TEST0, 1) HAVING COUNT(Z0_TEST0) > 1;
+
+DROP TABLE z0case;
+
+CREATE TABLE Z0CASE(z0_test0 char(100), z0_test1 char(50),z0_test3 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(111,222,11);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(' ',' ',100);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('2011-11-11','2011-11-11',20);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(20111111,'abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values(111,222,10);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('',' ',10);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test3)values('2011-11-11','2011-11-11',20);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT GROUPING(z0_test3) FROM Z0CASE GROUP BY GROUPING SETS ((),z0_test3) ORDER BY 1;
+
+DROP TABLE z0case;
+
+CREATE TABLE Z0CASE(z0_test0 char(100), z0_test1 char(50),z0_test2 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(111,222,11);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(' ',' ',100);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values('2011-11-11','2011-11-11',20);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(20111111,'abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(111,222,10);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+--echo # mysql 不支持嵌套 aggr
+--error 1111
+SELECT 1,sum(count(z0_test0)) FROM Z0CASE GROUP BY (z0_test0);
+--error 1111
+SELECT count(sum(z0_test2)) FROM Z0CASE GROUP BY GROUPING sets(z0_test2, z0_test0);
+--error 1055
+SELECT count(Z0_TEST2) FROM Z0CASE GROUP BY GROUPING sets(()),() HAVING GROUPING(Z0_TEST2) > 1;
+--error 1055
+ SELECT 1 + GROUPING(z0_test1) FROM Z0CASE GROUP BY Z0_TEST2;
+
+DROP TABLE z0case;
+
+CREATE TABLE Z0CASE(z0_test0 char(100), z0_test1 char(50),z0_test2 NUMBER);
+
+--disable_query_log
+--disable_result_log
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values('abc ABC','abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(111,222,11);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(' ',' ',100);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values('2011-11-11','2011-11-11',20);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(20111111,'abc%%^#AB C',1);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(NULL,NULL,0);
+INSERT INTO Z0CASE (z0_test0,z0_test1,z0_test2)values(111,222,10);
+SELECT COUNT(*) FROM Z0CASE;
+--enable_query_log
+--enable_result_log
+
+SELECT Z0_TEST0,Z0_TEST1 FROM Z0CASE a GROUP BY GROUPING SETS (Z0_TEST0,Z0_TEST1)HAVING GROUPING(Z0_TEST0)> GROUPING(Z0_TEST1);
+
+DROP TABLE Z0CASE;

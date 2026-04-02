@@ -1,0 +1,393 @@
+# owner: dachuan.sdc
+# owner group: sql2
+# description:
+#
+# test of recyclebin of error case
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+--disable_warnings
+set @@recyclebin = off;
+drop database if exists hualong;
+drop database if exists hualong_2;
+drop database if exists hualong_3;
+drop database if exists hualong_4;
+drop database if exists hualong_5;
+drop database if exists new_hualong_5;
+drop database if exists hulong_6;
+drop tablegroup if exists tg1;
+drop tablegroup if exists tg2;
+--enable_warnings
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter tenant sys set primary_zone='RANDOM';
+disconnect obsys;
+connection default;
+create database hualong;
+create database hualong_2;
+create tablegroup tg1;
+create tablegroup tg2;
+
+create table hualong.tr1 (c1 int primary key, c2 int, key(c1), unique key(c2));
+insert into hualong.tr1 values (1,1), (2,2), (3,3);
+select * from hualong.tr1;
+use hualong;
+create table tr2 (c1 int, c2 varchar(100));
+alter tablegroup tg1 add table hualong.tr1;
+alter tablegroup tg2 add table hualong.tr2;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $hualong_id = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong', database_id, 1);
+let $hualong_2_id = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong_2', database_id, 1);
+let $tr1_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tr1' and database_id = $hualong_id, table_id, 1);
+disconnect obsys;
+connection default;
+set @@recyclebin = on;
+#####################################################################################
+
+##flashback non exist table
+--error 5270
+flashback table t1 to before drop;
+
+--error 5270
+flashback table tr1 to before drop;
+
+
+##flashback non-exist database
+--error 5270
+flashback database hualong to before drop;
+
+--error 5270
+flashback database xxxx to before drop;
+
+drop table tr1;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,*NO-ONE*,$OBMYSQL_PORT);
+connection obsys;
+select database();
+--error 1046
+FLASHBACK TABLE __recycle_$_1_1688535624460528 TO BEFORE DROP;
+disconnect obsys;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tr1_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $tr1_id and type = 1, object_name, 1);
+let $tr1_index_c1 = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $hualong_id and type = 2, object_name, 1);
+disconnect obsys;
+connection default;
+
+create table tr1 (c1 int primary key, c2 int);
+
+--disable_query_log
+##flashback table to same exist table
+--echo flashback table tr1 to before drop
+--error ER_TABLE_EXISTS_ERROR
+eval flashback table $tr1_objname to before drop;
+
+##flashback index
+--echo flashback index tr1_index_c1 from recyclebin
+--error 5270
+eval flashback table $tr1_index_c1 to before drop;
+
+##flashback table to non-exist database
+--echo flashback table tr1 to before drop rename to hualong2.tr1
+--error ER_BAD_DB_ERROR
+eval flashback table $tr1_objname to before drop rename to hualong2.tr1;
+
+--echo flashback table tr1 to before drop rename to hualong.tr2
+--error ER_TABLE_EXISTS_ERROR
+eval flashback table $tr1_objname to before drop rename to hualong.tr2;
+
+--enable_query_log
+drop table tr1;
+###########################################
+#test of database __recyclebin
+##flashback table to recyclebin database
+show databases like '__recyclebin';
+
+--disable_query_log
+--echo flashback table tr1 to recyclebin
+--error 4179
+eval flashback table $tr1_objname to before drop rename to __recyclebin.tr1;
+
+--enable_query_log
+
+--disable_result_log
+show tables from __recyclebin;
+--enable_result_log
+
+use __recyclebin;
+############################################
+
+use hualong;
+drop database hualong_2;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $hualong_2_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $hualong_2_id and type = 4, object_name, 1);
+disconnect obsys;
+connection default;
+
+--disable_query_log
+##flashback table to database in recyclebin
+--echo flashback table to database in recyclebin
+--error 4179
+eval flashback table $tr1_objname to before drop rename to $hualong_2_objname.xxx;
+
+##flashback table and rename to same table
+
+--enable_query_log
+
+##drop system table
+
+##drop virtual table --error
+
+
+##drop table and drop tablegroup and then flashback
+drop tablegroup tg1;
+--disable_query_log
+--echo flashback table tr1 to before drop
+eval flashback table $tr1_objname to before drop;
+--enable_query_log
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tr1;
+alter tablegroup tg2 add table tr1;
+drop table tr1;
+--disable_query_log
+--echo flashback table tr1 to before drop
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tr1_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $tr1_id and type = 1, object_name, 1);
+disconnect obsys;
+connection default;
+eval flashback table $tr1_objname to before drop;
+--enable_query_log
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table tr1;
+drop table tr1;
+
+##purge table with original name in recyclebin
+--error 5270
+purge table tr123;
+--error 5270
+purge table hualong.tr123;
+
+##purge non-exist db in recyclebin
+--error 5270
+purge database hualong;
+
+--error 5270
+purge database xxxxx;
+
+--disable_query_log
+--echo purge database using table_object_name
+--error 5270
+purge database $tr1_objename;
+
+
+##dml on table in recyclebin
+--disable_query_log
+--echo select * from __recyclebin.tr1
+#eval select * from __recyclebin.$tr1_objname;
+
+##modify table in recyclebin
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tr1_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $tr1_id and type = 1, object_name, 1);
+disconnect obsys;
+connection default;
+--echo insert into table in recyclebin
+--error 5269
+eval insert into __recyclebin.$tr1_objname values(4, 4);
+
+--echo replace into table in recyclebin
+--error 5269
+eval replace into __recyclebin.$tr1_objname values(4, 4);
+
+--echo update table in recyclebin
+--error 5269
+eval update __recyclebin.$tr1_objname set c2 = 11 where c1 = 1;
+
+--echo delete from table in recyclebin
+--error 5269
+eval delete from __recyclebin.$tr1_objname where c1 = 1;
+
+##ddl on database in recyclebin
+--echo alter database in recyclebin
+--error 5269
+eval alter database $hualong_2_objname read only;
+
+--echo drop database in recyclebin
+--error 5269
+eval drop database $hualong_2_objname;
+
+--enable_query_log
+
+
+##purge database should purge table in recyclebin
+create database hualong_3;
+create table hualong_3.tr3 (c1 int primary key);
+create index idx on hualong_3.tr3 (c1);
+create view hualong_3.v3 as select c1 from hualong_3.tr3;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $database_id_3 = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong_3', database_id, 1);
+let $tr3_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tr3' and database_id = $database_id_3, table_id, 1);
+disconnect obsys;
+connection default;
+
+drop table hualong_3.tr3;
+drop view hualong_3.v3;
+drop database hualong_3;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--echo select count(*) from oceanbase.__all_virtual_recyclebin where datababase = 'hualong_3';
+eval select count(*) from oceanbase.__all_virtual_recyclebin where database_id = $database_id_3;
+disconnect obsys;
+connection default;
+--enable_query_log
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $hualong_3_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $database_id_3 and type = 4, object_name, 1);
+disconnect obsys;
+connection default;
+
+--disable_query_log
+--echo purge database hualong_3;
+eval purge database $hualong_3_objname;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--echo select count(*) from oceanbase.__all_virtual_recyclebin where datababase = 'hualong_3';
+eval select count(*) from oceanbase.__all_virtual_recyclebin where database_id = $database_id_3;
+disconnect obsys;
+connection default;
+--enable_query_log
+
+##drop database should purge table in recyclebin
+create database hualong_4;
+create table hualong_4.tr4 (c1 int primary key);
+create index idx on hualong_4.tr4 (c1);
+create view hualong_4.v4 as select c1 from hualong_4.tr4;
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $database_id_4 = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong_4', database_id, 1);
+let $tr4_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tr4' and database_id = $database_id_4, table_id, 1);
+disconnect obsys;
+connection default;
+
+drop table hualong_4.tr4;
+drop view hualong_4.v4;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--echo select count(*) from oceanbase.__all_virtual_recyclebin where datababase = 'hualong_4';
+eval select count(*) from oceanbase.__all_virtual_recyclebin where database_id = $database_id_4;
+disconnect obsys;
+connection default;
+--enable_query_log
+
+## flashback database rename to exists database
+create database hualong_5;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $database_id_5 = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong_5', database_id, 1);
+disconnect obsys;
+connection default;
+drop database hualong_5;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $hualong_5_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $database_id_5 and type = 4, object_name, 1);
+disconnect obsys;
+connection default;
+create database new_hualong_5;
+--disable_query_log
+--echo falshback database hualong_5 to before drop rename to new_hualong_5
+--error ER_DB_CREATE_EXISTS
+eval flashback database $hualong_5_objname to before drop rename to new_hualong_5;
+--enable_query_log
+
+
+set @@recyclebin = off;
+drop database hualong_4;
+drop database new_hualong_5;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--echo select count(*) from oceanbase.__all_virtual_recyclebin where datababase = 'hualong_4';
+eval select count(*) from oceanbase.__all_virtual_recyclebin where database_id = $database_id_4;
+disconnect obsys;
+connection default;
+--enable_query_log
+
+## restrict ddl on table in recyclebin
+set @@recyclebin = on;
+create database hualong_6;
+create table hualong.single_table3 (c1 int);
+use hualong_6;
+create table single_table (c1 int primary key, c2 varchar(11), index i1 (c1), unique i2 (c1, c2));
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $database_id_6 = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'hualong_6', database_id, 1);
+disconnect obsys;
+connection default;
+drop database hualong_6;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $hualong_6_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $database_id_6 and type = 4, object_name, 1);
+disconnect obsys;
+connection default;
+--disable_query_log
+##alter database in recyclebin
+--echo alter database hualong_6 read write;
+--error 5269
+eval alter database $hualong_6_objname read write;
+##drop database in recyclebin
+--echo drop database hualong_6;
+--error 5269
+eval drop database $hualong_6_objname;
+##create table of db in recyclebin
+--echo create table hualong_6.new_table (c1 int);
+--error 5269
+eval create table $hualong_6_objname.new_table (c1 int);
+##create index of table of db in recyclebin
+--echo create index i3 on hualong_6.single_table (c1);
+--error 5269
+eval create index i3 on $hualong_6_objname.single_table (c1);
+## drop index of table of db in recyclebin
+--echo drop index i2 on hualong_6.single_table;
+--error 5269
+eval drop index i2 on $hualong_6_objname.single_table;
+##rename table in recyclebin
+--echo rename table hualong_6.single_table to hualong_6.single_table2;
+--error 5269
+eval rename table $hualong_6_objname.single_table to $hualong_6_objname.single_table2;
+--echo rename table hualong_6.single_table to oceanbase.single_table2;
+--echo rename table hualong.single_table3 to hualong_6.single_table3;
+--error 5269
+eval rename table hualong.single_table3 to $hualong_6_objname.single_table3;
+##truncate table in recyclebin
+--echo truncate table hualong_6.single_table;
+--error 5269
+eval truncate table $hualong_6_objname.single_table;
+##create table in recyclebin
+--echo create table hualong_6.single_table2 like hualong.single_table;
+--error 5269
+eval create table $hualong_6_objname.single_table2 like hualong.single_table3;
+--echo create table hualong.single_table2 like hualong_6.single_table;
+--error 5269
+eval create table hualong.single_table2 like $hualong_6_objname.single_table;
+
+##clear
+set @@recyclebin = off;
+drop database hualong;
+
+

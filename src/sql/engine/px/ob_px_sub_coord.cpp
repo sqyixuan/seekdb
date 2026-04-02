@@ -17,8 +17,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_sub_coord.h"
-#include <algorithm>
-#include <random>
 #include "sql/engine/px/exchange/ob_px_receive_op.h"
 #include "sql/engine/px/exchange/ob_px_transmit_op.h"
 #include "sql/engine/join/ob_join_filter_op.h"
@@ -426,13 +424,7 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
           for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_ctx.interm_result_infos_.count(); ++j) {
             if (sqc.get_exec_addr() == temp_table_ctx.interm_result_infos_.at(j).addr_) {
               ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(j);
-#ifdef __APPLE__
-                std::random_device rd;
-                std::mt19937 g(rd());
-                std::shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end(), g);
-#else
-                std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
-#endif
+              std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
               if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
                 LOG_WARN("failed to assign result ids", K(ret));
               } else {
@@ -473,13 +465,7 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
           for (int64_t j = 0; OB_SUCC(ret) && !find && j < temp_table_ctx.interm_result_infos_.count(); ++j) {
             if (sqc.get_exec_addr() == temp_table_ctx.interm_result_infos_.at(j).addr_) {
               ObTempTableResultInfo &info = temp_table_ctx.interm_result_infos_.at(j);
-#ifdef __APPLE__
-                std::random_device rd;
-                std::mt19937 g(rd());
-                std::shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end(), g);
-#else
-                std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
-#endif
+              std::random_shuffle(info.interm_result_ids_.begin(), info.interm_result_ids_.end());
               if (OB_FAIL(access_input->interm_result_ids_.assign(info.interm_result_ids_))) {
                 LOG_WARN("failed to assign result ids", K(ret));
               } else {
@@ -584,11 +570,33 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
       // do nothing
     } else { 
       if (!GCONF._use_odps_jni_connector) {
+#if defined (OB_BUILD_CPP_ODPS)
+        ObOdpsPartitionDownloaderMgr &odps_mgr = sqc_ctx.gi_pump_.get_odps_mgr();
+        if (OB_FAIL(odps_mgr.init_uploader(
+                select_into_spec->external_properties_.str_,
+                select_into_spec->external_partition_.str_,
+                select_into_spec->is_overwrite_, sqc.get_task_count()))) {
+          LOG_WARN("failed to init odps uploader", K(ret));
+        }
+#else
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support odps cpp connector", K(ret));
+#endif
       } else {
+#if defined (OB_BUILD_JNI_ODPS)
+        // For the same partition with multiple tasks, these tasks share one session
+        ObOdpsJniUploaderMgr &odps_mgr =
+            sqc_ctx.gi_pump_.get_odps_jni_uploader_mgr();
+        if (OB_FAIL(odps_mgr.init_writer_params_in_px(
+                select_into_spec->external_properties_.str_,
+                select_into_spec->external_partition_.str_,
+                select_into_spec->is_overwrite_, sqc.get_task_count()))) {
+          LOG_WARN("failed to init odps jni uploader", K(ret));
+        }
+#else
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support odps jni connector", K(ret));
+#endif
       }
     }
   }

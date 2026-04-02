@@ -1,0 +1,86 @@
+# owner: dengzhi.ldz
+# description: test limit/offset for vectorized engine
+
+--disable_query_log
+
+connection default;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+
+create table t1 (a bigint auto_increment primary key, b bigint, c varchar(1000)) row_format = compressed block_size = 2048;
+insert into t1 (b, c) values(1, repeat('ab', 100));
+insert into t1 (b, c) values(3, repeat('bb', 100));
+insert into t1 (b, c) values(5, repeat('cb', 100));
+insert into t1 (b, c) values(7, repeat('aa', 100));
+insert into t1 (b, c) values(9, repeat('cc', 100));
+insert into t1 (b, c) values(2, repeat('bb', 100));
+insert into t1 (b, c) values(4, repeat('ab', 100));
+insert into t1 (b, c) values(6, repeat('cb', 100));
+insert into t1 (b, c) values(8, repeat('aa', 100));
+--let $loop=5
+while($loop > 0)
+{
+  insert into t1 (b, c) select b + 1, c from t1;
+  dec $loop;
+}
+select count(1) from t1;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set _rowsets_enabled=true tenant=all;
+alter system set _rowsets_max_rows = 8 tenant=all;
+alter system flush plan cache global;
+
+# major table
+alter system major freeze tenant = all;
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+
+# minor table
+--let $loop=5
+while($loop > 0)
+{
+  eval insert into t1 (b, c) values($loop, repeat("ab", 100));
+  dec $loop;
+}
+select count(1) from t1;
+
+connection obsys;
+alter system minor freeze tenant = all;
+--source mysql_test/include/wait_minor_merge.inc
+
+# memtable
+insert into t1 (b, c) values(1, repeat('aa', 100));
+insert into t1 (b, c) values(10, repeat('cc', 100));
+--sleep 2
+
+select count(1) from t1;
+select b, c from t1 limit 0;
+select b, c from t1 limit 1;
+select b, c from t1 limit 3;
+
+# netsed limit
+select * from (select * from t1 limit 11) AS t2 limit 2;
+
+select count(*) FROM t1 WHERE b > 5 LIMIT 3;
+select sum(b) FROM t1 WHERE b > 7 LIMIT 3;
+select b, c FROM t1 where b < 3 limit 15;
+
+# offset
+select b from t1 where b > 5 limit 0 offset 9;
+select b from t1 where b > 5 limit 8 offset 9;
+select b from t1 where b < 7 limit 9 offset 0;
+select b from t1 where b < 8 limit 10 offset 9;
+select b from t1 where c > 'ab' limit 10 offset 50;
+select b from t1 where c < 'bb' limit 20 offset 30;
+
+drop table t1;
+
+--disable_query_log
+connection obsys;
+alter system set _rowsets_max_rows = 256 tenant=all;
+alter system flush plan cache global;
+--enable_query_log

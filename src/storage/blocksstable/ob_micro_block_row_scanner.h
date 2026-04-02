@@ -167,19 +167,6 @@ public:
       const ObDatumRowkey &border_rowkey, 
       const ObDatumRow &deleted_row, 
       ObCSRowId &co_current);
-  int skip_to_range(
-      const int64_t begin,
-      const int64_t end,
-      const ObDatumRange &range,
-      const bool is_left_border,
-      const bool is_right_border,
-      int64_t &skip_row_idx,
-      bool &has_data,
-      bool &range_finished);
-  OB_INLINE void skip_to_end()
-  {
-    current_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
-  }
   VIRTUAL_TO_STRING_KV(K_(is_left_border), K_(is_right_border), K_(can_ignore_multi_version), K_(use_private_bitmap),
                        K_(can_blockscan), K_(is_filter_applied), K_(current), K_(start), K_(last), K_(step));
 protected:
@@ -338,8 +325,7 @@ public:
         reserved_pos_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
         trans_version_col_idx_(-1),
         sql_sequence_col_idx_(-1),
-        cell_cnt_(0),
-        skip_running_tx_(false)
+        cell_cnt_(0)
   {}
   virtual ~ObMultiVersionMicroBlockRowScanner() {}
   virtual void reuse() override;
@@ -418,7 +404,6 @@ private:
   int64_t sql_sequence_col_idx_;
   int64_t cell_cnt_;
   common::ObVersionRange version_range_;
-  bool skip_running_tx_;
 };
 
 // multi version sstable micro block scanner for mow tables
@@ -483,8 +468,7 @@ public:
       trans_version_col_idx_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
       sql_sequence_col_idx_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
       committed_trans_version_(INT64_MAX),
-      last_trans_state_(INT64_MAX),
-      skip_running_tx_(false)
+      last_trans_state_(INT64_MAX)
   {}
   virtual ~ObMultiVersionMicroBlockMinorMergeRowScanner()
   {}
@@ -527,14 +511,13 @@ private:
     const transaction::ObTxSEQ &sql_seq,
     int64_t &state,
     bool &can_read);
-  int check_row_trans_state(bool &skip_curr_row, const bool skip_running_tx = false);
+  int check_row_trans_state(bool &skip_curr_row);
 private:
   // multi version
   int64_t trans_version_col_idx_;
   int64_t sql_sequence_col_idx_;
   int64_t committed_trans_version_;
   int64_t last_trans_state_;
-  bool skip_running_tx_;  // If true, skip RUNNING transactions (e.g., for fork operations)
 };
 
 }

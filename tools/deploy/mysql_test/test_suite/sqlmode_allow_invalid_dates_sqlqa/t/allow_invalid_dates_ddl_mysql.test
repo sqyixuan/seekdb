@@ -1,0 +1,226 @@
+#owner: dachuan.sdc
+#owner group: SQL2
+#description: ddl以及分区表中应用非法日期
+#tags:ddl
+#author: wb-zc01084078
+
+--result_format 4
+--disable_warnings
+--error 0,1396
+drop user 'zc_subquery_mysql'@'%';
+drop table if EXISTS ff01;
+--enable_warnings
+create user 'zc_subquery_mysql'@'%' IDENTIFIED BY 'zc_subquery_mysql';
+grant all on *.* to 'zc_subquery_mysql'@'%' WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,zc_subquery_mysql,zc_subquery_mysql,test,$OBMYSQL_PORT);
+connection conn;
+
+SET SESSION sql_mode ='ALLOW_INVALID_DATES';
+
+##严格模式下查看有非法日期的表mysql会显示空表，ob因为转换了正常日期可以正常查看##
+####creat####
+##table##
+#default#
+--error 1067
+CREATE table ff01 (a date DEFAULT '2001-2-29',b timestamp DEFAULT '1900-2-29');
+
+drop table if EXISTS ff01;
+CREATE table ff01 (a date DEFAULT '2001-2-29',b date DEFAULT '1900-2-29',c varchar(20) DEFAULT '2001-6-31' );
+insert into ff01(c) VALUES(date('2001-2-29'));
+insert into ff01(c) VALUES('2001-2-29');
+select * from ff01;
+--disable_warnings
+drop TABLE if EXISTS ff02;
+--enable_warnings
+CREATE TABLE ff02 LIKE ff01;
+DESC ff02;
+DELETE from ff01;
+##创建唯一索引后ob因日期转换无法插入非法日期##
+CREATE UNIQUE INDEX in01 on ff01 (a,b);
+insert into ff01(a,b) VALUES('2001-2-29','1900-2-29');
+insert into ff01(a,b) VALUES('2001-3-1','1900-3-1');
+
+##约束##
+#check#
+--disable_warnings
+drop table if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a date DEFAULT '2001-2-29' ,b timestamp ,CHECK (b>'2001-2-30'));
+##ob插入timestamp类型时会把日期转为0000-00-00，违反check无法插入，mysql在创建时check约束时就把非法日期转为null，所以可以插入，插入的值为0000-00-00##
+--error 3819
+INSERT into ff01(b) VALUES ('2002-2-29');
+
+--disable_warnings
+drop table if EXISTS ff01;
+--enable_warnings
+##因为转换了非法日期，无法插入数据##
+CREATE TABLE ff01 (a date PRIMARY KEY,b date not NULL,c date ,CHECK (c>'2001-2-30'));
+# --error 3819
+# 当前sql_mode下，insert时会将'2001-2-29'转为'2001-03-01';
+# 但比较时，为了与mysql做兼容，会将'2001-2-30'视作'2001-2-28'-'2001-3-1'之间的一个时间
+# 导致检查可以通过
+# 有点反逻辑，但受限于ob的时间存储方式，暂时只能做成这样
+INSERT INTO ff01 VALUES('2001-2-29','1900-2-29','2001-03-01');
+delete from ff01;
+
+##view##
+##mysql无法创建有default非法日期表的视图##
+CREATE or REPLACE VIEW vv01 as SELECT * from ff01;
+select * from vv01;
+insert into vv01(a,b,c) VALUES('1800-2-29','2001-2-30','2001-3-1');
+--disable_warnings
+drop VIEW vv01;
+--enable_warnings
+
+####alter####
+##add##
+##add直接跟default非法日期ob会报错##
+ALTER TABLE ff01 ADD d date DEFAULT '2002-2-31';
+ALTER TABLE ff01 ADD d1 datetime DEFAULT '2006-6-31';
+ALTER TABLE ff01 DROP d;
+ALTER TABLE ff01 DROP d1;
+
+ALTER TABLE ff01 ADD e date;
+INSERT INTO ff01 VALUES('2001-2-29','1900-2-29','2001-2-31','2001-2-31');
+ALTER TABLE ff01 ADD CONSTRAINT chk CHECK (e < '2002-3-2');
+--error 1064
+ALTER TABLE ff01 ADD d2 timestamp DEFAULT UNIX_TIMESTAMP('2006-6-31');
+ALTER TABLE ff01 add d2 timestamp;
+ALTER TABLE ff01 ADD CONSTRAINT chk1 CHECK (d2 > '1900-2-29');
+
+##分成两句可以添加成功##
+ALTER TABLE ff01 ADD f date ;
+ALTER TABLE ff01 ALTER f set DEFAULT '2002-2-31';
+ALTER TABLE ff01 ADD f1 timestamp;
+--error 1064
+ALTER TABLE ff01 ALTER f1 set DEFAULT UNIX_TIMESTAMP('1900-2-29');
+
+##drop##
+ALTER TABLE ff01 drop e;
+ALTER TABLE ff01 drop f;
+ALTER TABLE ff01 drop f1;
+ALTER TABLE ff01 drop d2;
+
+##modify##
+ALTER TABLE ff01 ADD f date ;
+ALTER TABLE ff01 MODIFY f date DEFAULT '2001-2-29';
+ALTER TABLE ff01 MODIFY a date DEFAULT '2001-2-29';
+ALTER TABLE ff01 MODIFY f date DEFAULT '1900-2-29';
+ALTER TABLE ff01 MODIFY f datetime DEFAULT '2002-4-31';
+
+--error 1067
+ALTER TABLE ff01 MODIFY f timestamp DEFAULT '2003-06-31 00:00:00';
+--error 1064
+ALTER TABLE ff01 MODIFY f timestamp DEFAULT UNIX_TIMESTAMP('2003-06-31 00:00:00');
+##mysql无法set##
+ALTER TABLE ff01 MODIFY f timestamp;
+--error 1067
+ALTER TABLE ff01 ALTER f set DEFAULT date'2002-2-29 00:00:00';
+
+##alter_view##
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a date DEFAULT '2001-2-29',b datetime DEFAULT '2002-4-31',c timestamp,CHECK (c>date'2001-2-30') );
+--disable_warnings
+drop TABLE if EXISTS ff02;
+--enable_warnings
+CREATE TABLE ff02 (a1 datetime DEFAULT '1900-2-29',b1 date DEFAULT '2002-2-29',c timestamp DEFAULT '2000-02-29 00:00:00');
+##mysql无法创建##
+CREATE OR REPLACE VIEW vv01 as select * from ff01;
+ALTER VIEW vv01 as select * from ff02;
+show CREATE view vv01;
+
+##drop##
+drop TABLE if EXISTS ff01;
+drop TABLE if EXISTS ff02;
+drop VIEW if EXISTS vv01;
+
+##########分区##########
+####Range/Range Columns####
+##timestamp目前无法转换非法日期，所有非法日期转换为时间戳都为0##
+--error 1697
+CREATE TABLE ff01 (a datetime , b date ,c timestamp NOT NULL)
+PARTITION BY RANGE(UNIX_TIMESTAMP(c))(PARTITION p0 VALUES less than (UNIX_TIMESTAMP('2000-2-30 00:00:00')),
+                                      PARTITION p1 VALUES less than (UNIX_TIMESTAMP('2001-2-30 00:00:00')),
+                                      PARTITION p2 VALUES less than (UNIX_TIMESTAMP('2002-2-30 00:00:00')),
+                                      PARTITION p3 VALUES less than (UNIX_TIMESTAMP('2003-2-30 00:00:00')),
+                                      PARTITION p4 VALUES less than (UNIX_TIMESTAMP('2004-2-30 00:00:00')),
+                                      PARTITION p5 VALUES less than MAXVALUE
+                                      );
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a datetime , b date ,c timestamp NOT NULL)
+PARTITION BY RANGE(DAY(b))(PARTITION p0 VALUES less than (28),
+                           PARTITION p1 VALUES less than (29),
+                           PARTITION p2 VALUES less than (30),
+                           PARTITION p3 VALUES less than (31)
+                           );
+ALTER TABLE ff01 ADD PARTITION (PARTITION p4 VALUES less than (32));
+
+insert into ff01 VALUES('1900-2-29','2001-2-28','2001-4-31');
+insert into ff01 VALUES('1900-2-29','2001-2-29','2001-5-31');
+insert into ff01 VALUES('1900-2-29','2001-2-30','2001-6-31');
+insert into ff01 VALUES('1900-2-29','2001-2-31','2001-6-31');
+##日期转换，ob与mysql存入的分区不同##
+select * from ff01 PARTITION(p0);
+select * from ff01 PARTITION(p1);
+select * from ff01 PARTITION(p2);
+select * from ff01 PARTITION(p3);
+select * from ff01 PARTITION(p4);
+
+##无法以非法日期作为分区条件##
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a datetime , b date ,c timestamp NOT NULL)
+PARTITION BY RANGE COLUMNS(b)(PARTITION p0 VALUES less than ('2001-5-1'),
+                              PARTITION p1 VALUES less than ('2001-6-1'),
+                              PARTITION p2 VALUES less than ('2001-7-1'),
+                              PARTITION p3 VALUES less than MAXVALUE
+                              );
+insert into ff01 VALUES('1900-2-29','2001-4-31','2001-4-31');
+insert into ff01 VALUES('1900-2-29','2001-5-31','2001-5-31');
+insert into ff01 VALUES('1900-2-29','2001-6-31','2001-6-31');
+##日期转换，ob与mysql存入的分区不同##
+select * from ff01 PARTITION(p0);
+select * from ff01 PARTITION(p1);
+select * from ff01 PARTITION(p2);
+select * from ff01 PARTITION(p3);
+
+##List/List Columns##
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+##mysql无法创建带有非法日期的list分区##
+CREATE TABLE ff01 (a datetime , b date ,c timestamp)
+PARTITION BY LIST COLUMNS(a)(PARTITION p0 VALUES IN('2001-6-31','2001-2-27','2001-2-26'),
+                             PARTITION p1 VALUES IN('1900-2-28','1900-2-27','1900-2-26'),
+                             PARTITION p2 VALUES IN('2002-4-30','2002-6-30','2002-9-30')
+                            );
+
+##hash,key##
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a datetime DEFAULT '2001-2-29' , b date DEFAULT '1900-2-29' ,c timestamp)
+PARTITION BY hash (DAY(a)) PARTITIONS 10;
+
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+CREATE TABLE ff01 (a datetime DEFAULT '2001-2-29' , b date DEFAULT '1900-2-29' ,c timestamp)
+PARTITION BY KEY (a,b,c) PARTITIONS 10;
+
+--disable_warnings
+drop TABLE if EXISTS ff01;
+--enable_warnings
+
+connection default;
+--disable_warnings
+--error 0,1396
+drop user 'zc_subquery_mysql'@'%';
+--enable_warnings
+

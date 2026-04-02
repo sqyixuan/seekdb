@@ -1,0 +1,82 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+=================================================================================
+create source mysql tenant
+=================================================================================
+ob1.mysql CREATE TENANT $source_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+set global wait_timeout = 288000;
+=================================================================================
+create tablet for mysql
+=================================================================================
+create table t1(c1 int, c2 int, c3 varchar(20));
+=================================================================================
+enable archivelog for mysql tenant
+=================================================================================
+ob1.check_until_timeout select status from oceanbase.__all_virtual_log_archive_progress where tenant_id=$source_mysql_tenant_id, DOING, 600;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_virtual_ls_info where tenant_id=$source_mysql_tenant_id and (select MIN(checkpoint_scn) as min_scn from oceanbase.__all_virtual_ls_info where tenant_id=$source_mysql_tenant_id) >= $start_scn, 1, 600;
+=================================================================================
+enable backup for mysql tenant
+=================================================================================
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_BACKUP_JOBS where tenant_id = $source_mysql_tenant_id, 1, 100;
+=================================================================================
+clone tenant from mysql
+=================================================================================
+ob1.mysql CREATE TENANT $clone_mysql_tenant FROM $source_mysql_tenant WITH RESOURCE_POOL = $clone_mysql_resource_pool, UNIT = small_unit;
+ob1.check_until_timeout select status from oceanbase.__all_clone_job_history where clone_tenant_name='$clone_mysql_tenant', CLONE_SYS_SUCCESS, 300;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "$clone_mysql_tenant" and status = "NORMAL", 1, 60;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_info where tenant_id = $clone_mysql_tenant_id and tenant_role = "STANDBY", 1, 60;
+=================================================================================
+clone tenant finished
+=================================================================================
+=================================================================================
+check data from clone tenant
+=================================================================================
+select count(*) from t1;
+count(*)
+200
+select * from t1 order by c1 limit 5;
+c1	c2	c3
+1	1	aaa
+2	2	aaa
+3	3	aaa
+4	4	aaa
+5	5	aaa
+=================================================================================
+wait backup finished
+=================================================================================
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $source_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $source_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint_ts' from CDB_OB_ARCHIVELOG, 1, 600;
+=================================================================================
+restore tenant
+=================================================================================
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_1&primary_zone=z1';
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_name = "$restore_mysql_tenant" and status = "NORMAL", 1, 600;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = $restore_mysql_tenant_id, SUCCESS, 60;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_info where tenant_id = $restore_mysql_tenant_id and tenant_role = "STANDBY", 1, 60;
+=================================================================================
+restore tenant finished
+=================================================================================
+=================================================================================
+check data from restore tenant
+=================================================================================
+select count(*) from t1;
+count(*)
+200
+select * from t1 order by c1 limit 5;
+c1	c2	c3
+1	1	aaa
+2	2	aaa
+3	3	aaa
+4	4	aaa
+5	5	aaa

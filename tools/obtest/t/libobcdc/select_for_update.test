@@ -1,0 +1,96 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description: 测试select for update
+#
+##
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 创建database
+create database oblog_db1;
+ob1.oblog.next;
+use oblog_db1;
+
+# 创建表
+create table t1 (pk int primary key, c1 int, c2 int);
+ob1.oblog.next;
+
+let $dml_cnt = 0;
+begin;
+# select for update不存在行
+select pk from t1 where pk = 1 for update;
+insert into t1 values(2, 20, 200);
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+begin;
+insert into t1 values(1, 10, 100);
+update t1 set c1=21 where pk=2;
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+### 依赖关系先T1, 后T2
+######################### case 1:
+# 事务T1
+begin;
+select pk from t1 where pk = 1 for update;
+insert into t1 values(3, 30, 300);
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+# 事务T2
+begin;
+update t1 set c1=11 where pk=1;
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+######################### case 2:
+# 事务T1
+begin;
+select pk from t1 where pk = 1 for update;
+update t1 set c2=101 where pk=1;
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+# 事务T2
+begin;
+update t1 set c2=102 where pk=1;
+commit;
+ob1.oblog.next;
+inc $dml_cnt;
+
+# stop liboblog
+ob1.oblog.stop;
+
+### 重启，回拉日志，确认输出顺序正确
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db1.* skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+let $cnt=$dml_cnt;
+while ($cnt > 0)
+{
+  ob1.oblog.next_dml;
+  dec $cnt;
+}
+
+# stop liboblog
+ob1.oblog.stop;

@@ -274,7 +274,6 @@ public:
             || stmt_type == stmt::T_CREATE_DATABASE
             || stmt_type == stmt::T_ALTER_DATABASE
             || stmt_type == stmt::T_DROP_DATABASE
-            || stmt_type == stmt::T_FORK_DATABASE
             // tablegroup
             || stmt_type == stmt::T_CREATE_TABLEGROUP
             || stmt_type == stmt::T_ALTER_TABLEGROUP
@@ -285,7 +284,6 @@ public:
             || stmt_type == stmt::T_RENAME_TABLE
             || stmt_type == stmt::T_TRUNCATE_TABLE
             || stmt_type == stmt::T_CREATE_TABLE_LIKE
-            || stmt_type == stmt::T_FORK_TABLE
             || stmt_type == stmt::T_ALTER_TABLE
             || stmt_type == stmt::T_SET_TABLE_COMMENT
             // column

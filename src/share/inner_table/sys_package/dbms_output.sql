@@ -1,0 +1,27 @@
+#package_name:dbms_output
+#author: guangang.gg
+
+CREATE OR REPLACE PACKAGE dbms_output AS
+
+  TYPE CHARARR IS TABLE OF VARCHAR2(32767) INDEX BY BINARY_INTEGER;
+
+  TYPE DBMSOUTPUT_LINESARRAY IS VARRAY(2147483647) OF VARCHAR2(32767);
+
+  PROCEDURE enable(buffer_size IN INTEGER DEFAULT 20000);
+
+  PROCEDURE disable;
+
+  PROCEDURE put(a VARCHAR2);
+
+  PROCEDURE put_line(a VARCHAR2);
+
+  PROCEDURE new_line;
+
+  PROCEDURE get_line(line OUT VARCHAR2, status OUT INTEGER);
+
+  PROCEDURE get_lines(lines OUT CHARARR, numlines IN OUT INTEGER);
+
+  PROCEDURE get_lines(lines OUT DBMSOUTPUT_LINESARRAY, numlines IN OUT INTEGER);
+
+END dbms_output;
+//

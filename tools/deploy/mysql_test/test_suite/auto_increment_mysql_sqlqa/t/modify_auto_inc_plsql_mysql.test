@@ -1,0 +1,887 @@
+#owner:zhenjiang.xzj
+#owner group: 技术部-存储
+#description: 对不类型的plsql，修改引用列为自增列后并调用、触发
+#author: wb-zc01081081
+
+--disable_result_log
+
+purge recyclebin;
+let $char_charset = 'UTF8';
+
+--enable_result_log
+
+--disable_warnings
+
+#创建数据库naaj_test
+CREATE DATABASE IF NOT EXISTS naaj_test;
+USE naaj_test;
+
+
+SET sql_mode='STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_AUTO_VALUE_ON_ZERO';
+
+--echo #设置超时等待时间
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 30000000;
+SET ob_query_timeout = 30000000;
+
+
+--echo #########################创建事务、触发器、存储过程、自定义函数，修改引用列为自增列，然后再执行########
+
+--echo #####事务#####
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 FLOAT(5,0),
+                c1 INT,
+                c2 VARCHAR(10))
+PARTITION BY RANGE(c1)
+(PARTITION p1 VALUES LESS THAN(15),
+PARTITION p2 VALUES LESS THAN(25),
+PARTITION p3 VALUES LESS THAN(35)
+);
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+SET @@AUTOCOMMIT=0;
+
+#回滚修改普通列为自增列操作，然后插入数据后再回滚，最后提交
+
+
+BEGIN;
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+ROLLBACK;
+
+SHOW CREATE TABLE t1;
+
+INSERT INTO t1 VALUES(8,NULL,'G'),(9,NULL,'H'),(10,-50,'I'),(11,28,'G'),(12,NULL,'K'),(13,NULL,'L');
+SELECT * FROM t1 ORDER BY 1;
+
+ROLLBACK;
+
+SELECT * FROM t1 ORDER BY 1;
+
+INSERT INTO t1(c0,c2) VALUES(14,'M'),(15,'N');
+SELECT * FROM t1 ORDER BY 1;
+
+ROLLBACK;
+
+SELECT * FROM t1 ORDER BY 1;
+COMMIT;
+
+
+#在事务中修改列为自增列，并设置savepoint进行回滚
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 FLOAT(5,0),
+                c1 INT,
+                c2 VARCHAR(10))
+PARTITION BY RANGE(c1)
+(PARTITION p1 VALUES LESS THAN(15),
+PARTITION p2 VALUES LESS THAN(25),
+PARTITION p3 VALUES LESS THAN(35)
+);
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+BEGIN;
+INSERT INTO t1 VALUES(8,21,'H');
+SAVEPOINT s1;
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SAVEPOINT s2;
+INSERT INTO t1(c0) VALUES(9),(10),(11);
+
+--error 01305
+ROLLBACK TO s1;
+
+ROLLBACK TO s2;
+SELECT * FROM t1 ORDER BY 1;
+SHOW CREATE TABLE t1;
+
+COMMIT;
+
+#事务开始前修改列为自增列，在事务中校验自增列的插入和回滚
+
+
+BEGIN;
+SAVEPOINT s1;
+INSERT INTO t1 VALUES(9,NULL,'H'),(10,NULL,'I'),(11,28,'J'),(12,-50,'K'),(13,NULL,'L'),(14,NULL,'M');
+SAVEPOINT s2;
+INSERT INTO t1(c0) VALUES(15),(16);
+
+
+ROLLBACK TO s1;
+SELECT * FROM t1 ORDER BY 1;
+
+--error 01305
+ROLLBACK TO s2;
+
+COMMIT;
+
+INSERT INTO t1(c0) VALUES(15),(16);
+
+
+#回滚到最后一个savepoint
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 FLOAT(5,0),
+                c1 INT,
+                c2 VARCHAR(10))
+PARTITION BY RANGE(c1)
+(PARTITION p1 VALUES LESS THAN(15),
+PARTITION p2 VALUES LESS THAN(25),
+PARTITION p3 VALUES LESS THAN(35)
+);
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+BEGIN;
+SAVEPOINT s1;
+INSERT INTO t1 VALUES(9,NULL,'H'),(10,NULL,'I'),(11,28,'J'),(12,-50,'K'),(13,NULL,'L'),(14,NULL,'M');
+SAVEPOINT s2;
+INSERT INTO t1(c0) VALUES(15),(16);
+
+ROLLBACK TO s2;
+SELECT * FROM t1 ORDER BY 1;
+
+COMMIT;
+
+--error 01305
+ROLLBACK TO s1;
+
+SET @@AUTOCOMMIT=1;
+
+
+
+--echo #####触发器#####
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+#创建INSERT型触发器器
+
+
+DROP TRIGGER IF EXISTS trg_insert;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_insert AFTER INSERT ON t2
+    FOR EACH ROW
+    BEGIN
+        DECLARE c INT;
+        SELECT MAX(c0) INTO c FROM t1;
+
+        IF NEW.c0 = c THEN
+            INSERT INTO t1(c0,c2) VALUES(NEW.c1,'TEST1'),(NEW.c1-NEW.c0,'TEST2');
+        ELSE
+            INSERT INTO t1 VALUES(NEW.c0,NULL,'AA'),(NEW.c0+1,NULL,'BB'),(NEW.c0+2,-50,'CC'),(NEW.c0+3,30,'DD'),(NEW.c0+4,NULL,'EE'),(NEW.c0+5,NULL,'FF');
+        END IF;
+    END;
+
+//
+
+DELIMITER ;//
+
+
+#修改触发器引用列为自增列
+
+
+ALTER TABLE t2 MODIFY c0 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+INSERT INTO t2 VALUES(NULL,1),(NULL,3),(-50,21),(7,22),(NULL,17),(NULL,25);
+
+SELECT * FROM t2 ORDER BY 1;
+SELECT * FROM t1 ORDER BY 1;
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+#创建UPDATE型触发器器
+
+
+DROP TRIGGER IF EXISTS trg_update;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_update BEFORE UPDATE ON t2
+    FOR EACH ROW
+    BEGIN
+        DECLARE c INT;
+        SELECT COUNT(c0) INTO c FROM t1;
+
+        IF c >= 20 THEN
+            UPDATE t1 SET c1=NEW.c0 WHERE c0=NEW.c0;
+        ELSE
+            INSERT INTO t1 VALUES(NEW.c0,NULL,'AA'),(NEW.c0+1,NULL,'BB'),(NEW.c0+2,-50,'CC'),(NEW.c0+3,30,'DD'),(NEW.c0+4,NULL,'EE'),(NEW.c0+5,NULL,'FF');
+        END IF;
+    END;
+
+//
+
+DELIMITER ;//
+
+
+ALTER TABLE t2 MODIFY c0 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+INSERT INTO t2(c1) VALUES(8),(9),(10);
+SELECT * FROM t2 ORDER BY 1,2;
+SELECT * FROM t1 ORDER BY 1,2;
+
+UPDATE t2 SET c0=25 WHERE c1>15;
+SELECT * FROM t2 ORDER BY 1,2;
+SELECT * FROM t1 ORDER BY 1,2,3;
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+#创建DELETE型触发器器
+
+
+DROP TRIGGER IF EXISTS trg_delete;
+
+DELIMITER //;
+
+CREATE TRIGGER trg_delete AFTER DELETE ON t2
+    FOR EACH ROW
+    BEGIN
+        DECLARE c INT;
+        SELECT COUNT(c0) INTO c FROM t1;
+        IF c >= 15 THEN
+            INSERT INTO t1(c0,c2) VALUES(OLD.c0+10,'TEST1'),(OLD.c0+20,'TEST2');
+        ELSE
+            INSERT INTO t1 VALUES(OLD.c0,NULL,'AA'),(OLD.c0+1,NULL,'BB'),(OLD.c0+2,-50,'CC'),(OLD.c0+2,30,'DD'),(OLD.c0+3,NULL,'EE'),(OLD.c0+4,NULL,'FF');
+        END IF;
+    END;
+
+//
+
+DELIMITER ;//
+
+
+ALTER TABLE t2 MODIFY c0 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+INSERT INTO t2(c1) VALUES(8),(9),(10);
+SELECT * FROM t2 ORDER BY 1,2;
+SELECT * FROM t1 ORDER BY 1,2,3;
+
+
+UPDATE t2 SET c0=25 WHERE c1>15;
+SELECT * FROM t2 ORDER BY 1,2;
+SELECT * FROM t1 ORDER BY 1,2,3;
+
+
+DELETE FROM t2 WHERE c0>10;
+SELECT * FROM t2 ORDER BY 1,2;
+SELECT * FROM t1 ORDER BY 1,2,3;
+
+DROP TRIGGER IF EXISTS trg_delete;
+
+
+#在触发器中执行修改列为自增列的sql
+
+
+#INSERT型
+
+
+DROP TRIGGER IF EXISTS trg_ddl;
+
+DELIMITER //;
+
+--error 01422
+
+CREATE TRIGGER trg_ddl AFTER INSERT ON t2
+    FOR EACH ROW
+    BEGIN
+        ALTER TABLE t1 CHANGE c1 c1 INT PRIMARY KEY AUTO_INCREMENT;
+    END;
+
+//
+
+
+#UPDATE型
+
+
+--error 01422
+
+CREATE TRIGGER trg_ddl AFTER UPDATE ON t2
+    FOR EACH ROW
+    BEGIN
+        ALTER TABLE t1 CHANGE c1 c1 INT PRIMARY KEY AUTO_INCREMENT;
+    END;
+
+//
+
+
+#DELETE型
+
+
+--error 01422
+
+CREATE TRIGGER trg_ddl AFTER DELETE ON t2
+    FOR EACH ROW
+    BEGIN
+        ALTER TABLE t1 CHANGE c1 c1 INT PRIMARY KEY AUTO_INCREMENT;
+    END;
+
+//
+
+DELIMITER ;//
+
+
+
+--echo #####存储过程#####
+
+
+#修改存储过程引用列为自增列，然后调用存储过程
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+
+#IF...ELSE
+
+
+
+DROP PROCEDURE IF EXISTS p1;
+
+DELIMITER //;
+
+CREATE PROCEDURE p1(IN d INT)
+BEGIN
+    IF d > 10 THEN
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+
+    ELSEIF d > 5 THEN
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100,'CC'),(d*5,50,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100,102),(50,103),(NULL,104),(NULL,105);
+
+    ELSE
+        INSERT INTO t1(c0) SELECT c1 FROM t2 WHERE c0 < 5;
+        INSERT INTO t2(c1) SELECT c1 FROM t1 WHERE c0 < 5;
+
+    END IF;
+END;
+
+//
+
+DELIMITER ;//
+
+
+#修改引用表的引用列为自增列
+
+
+ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+CALL p1(20);
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+CALL p1(6);
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+CALL p1(0);
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+DROP PROCEDURE IF EXISTS p1;
+
+
+
+#WHILE
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+
+DROP PROCEDURE IF EXISTS p2;
+
+DELIMITER //;
+
+CREATE PROCEDURE p2(IN d INT)
+BEGIN
+    whl:WHILE d <= 5 DO
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100-d,'CC'),(d*5,50*d,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100-d,102),(50*d,103),(NULL,104),(NULL,105);
+
+    SET d = d + 1;
+
+    END WHILE;
+END;
+
+//
+
+DELIMITER ;//
+
+
+#修改引用表的引用列为自增列
+
+
+ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+CALL p2(3);
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+DROP PROCEDURE IF EXISTS p2;
+
+
+
+#LOOP
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+DROP PROCEDURE IF EXISTS p3;
+
+DELIMITER //;
+
+CREATE PROCEDURE p3(IN d INT)
+BEGIN
+    lop:LOOP
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100-d,'CC'),(d*5,50*d,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100-d,102),(50*d,103),(NULL,104),(NULL,105);
+
+        IF d = 10 THEN
+            LEAVE lop;
+        END IF;
+
+    SET d = d + 1;
+    END LOOP;
+END;
+
+//
+
+DELIMITER ;//
+
+
+ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+
+CALL p3(7);
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+DROP PROCEDURE IF EXISTS p3;
+
+
+
+#在存储过程中修改列为自增列并执行DML操作。
+
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+DROP PROCEDURE IF EXISTS p4;
+
+DELIMITER //;
+
+CREATE PROCEDURE p4(IN d INT)
+BEGIN
+    ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+    ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+
+    lop:LOOP
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100-d,'CC'),(d*5,50*d,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100-d,102),(50*d,103),(NULL,104),(NULL,105);
+
+        IF d = 10 THEN
+            LEAVE lop;
+        END IF;
+
+    SET d = d + 1;
+    END LOOP;
+END;
+
+//
+
+DELIMITER ;//
+
+
+CALL p4(8);
+
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+
+
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+DROP PROCEDURE IF EXISTS p4;
+
+
+#创建动态sql执行修改列为自增列操作
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c1 DOUBLE,
+                c2 BIGINT,
+                c3 VARBINARY(10));
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 FLOAT(5,0),
+                c1 INT,
+                c2 VARCHAR(10))
+PARTITION BY RANGE(c1)
+(PARTITION p1 VALUES LESS THAN(5),
+PARTITION p2 VALUES LESS THAN(55),
+PARTITION p3 VALUES LESS THAN(105)
+);
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP PROCEDURE IF EXISTS p5;
+
+DELIMITER //;
+
+CREATE PROCEDURE p5(IN table_name VARCHAR(50),IN column_type VARCHAR(20),IN con_index VARCHAR(100),IN position VARCHAR(20))
+BEGIN
+    DECLARE var_1 VARCHAR(100);
+
+    IF table_name = 't1' THEN
+        SET var_1 = CONCAT("alter table ",table_name," MODIFY",column_type,con_index,position);
+
+    ELSE
+        SET var_1 = CONCAT("show create table ",table_name);
+
+    END IF;
+
+    SET @var_2 = var_1;
+    PREPARE stmt FROM @var_2;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+
+END;
+
+//
+
+DELIMITER ;//
+
+
+CALL p5('t2',' c1 int(10)',' primary key auto_increment',' first');
+
+CALL p5('t1',' c1 int(10)',' primary key auto_increment',' first');
+SHOW CREATE TABLE t1;
+
+INSERT INTO t1 VALUES(NULL,8,'H'),(NULL,9,'I'),(-100,10,'J'),(90,11,'K'),(NULL,12,'L'),(NULL,13,'M');
+SELECT * FROM t1 ORDER BY 2;
+
+INSERT INTO t1(c0,c2) VALUES(14,'N'),(15,'O');
+SELECT * FROM t1 ORDER BY 2;
+
+
+--echo #####UDF函数#####
+
+
+#创建自定义函数，然后修改引用列为自增列，最后调用函数
+
+
+DROP TABLE IF EXISTS t1;
+
+CREATE TABLE t1(c0 INT(5),
+                c1 INT,
+                c2 VARCHAR(10));
+
+INSERT INTO t1 VALUES(1,0,'A'),(2,2,'B'),(3,4,'C'),(4,8,'D'),(5,16,'E'),(6,18,'F'),(7,20,'G');
+
+
+DROP TABLE IF EXISTS t2;
+
+CREATE TABLE t2(c0 INT(5),
+                c1 INT);
+
+INSERT INTO t2 VALUES(1,0),(2,2),(3,4),(4,8),(5,16),(6,18),(7,20);
+
+
+DROP FUNCTION IF EXISTS f1;
+
+
+DELIMITER //;
+
+CREATE FUNCTION f1( d INT)
+RETURNS VARCHAR(100)
+BEGIN
+    DECLARE d1 INT;
+    DECLARE d2 INT;
+    DECLARE d3 VARCHAR(100);
+
+    IF d > 10 THEN
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+
+    ELSEIF d > 5 THEN
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100,'CC'),(d*5,50,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100,102),(50,103),(NULL,104),(NULL,105);
+
+    ELSE
+        INSERT INTO t1(c0) SELECT c1 FROM t2 WHERE c0 < 5;
+        INSERT INTO t2(c1) SELECT c1 FROM t1 WHERE c0 < 5;
+
+    END IF;
+
+    SELECT COUNT(c1) INTO d1 FROM t1;
+    SELECT COUNT(c0) INTO d2 FROM t2;
+
+    SET d3 = CONCAT('t1表执行函数后条目合计：',d1,',','t2表执行函数后条目合计：',d2);
+
+    RETURN d3;
+
+END;
+//
+
+DELIMITER ;//
+
+
+#修改基表中的列为自增列
+
+
+ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t2;
+
+ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+SHOW CREATE TABLE t1;
+
+
+SELECT f1(15);
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+SELECT f1(8);
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+SELECT f1(4);
+SELECT * FROM t1 ORDER BY 1,2,3;
+SELECT * FROM t2 ORDER BY 1,2;
+
+
+DROP FUNCTION IF EXISTS f1;
+
+
+
+#在函数中修改列为自增列
+
+
+
+DROP FUNCTION IF EXISTS f2;
+
+
+DELIMITER //;
+
+--error 01422
+
+CREATE FUNCTION f2( d INT)
+RETURNS VARCHAR(100)
+BEGIN
+    DECLARE d1 INT;
+    DECLARE d2 INT;
+    DECLARE d3 VARCHAR(100);
+
+    ALTER TABLE t2 MODIFY c0 INT PRIMARY KEY AUTO_INCREMENT;
+    ALTER TABLE t1 MODIFY c1 INT PRIMARY KEY AUTO_INCREMENT;
+
+    IF d > 10 THEN
+        INSERT INTO t1(c0,c2) VALUES(d+100,'test1'),(d+200,'test2'),(d+300,'test3');
+        INSERT INTO t2(c1) VALUES(d+50),(d+60),(d+70);
+
+    ELSEIF d > 5 THEN
+        INSERT INTO t1 VALUES(d*2,NULL,'AA'),(d*3,NULL,'BB'),(d*4,-100,'CC'),(d*5,50,'DD'),(d*6,NULL,'EE'),(d*7,NULL,'FF');
+        INSERT INTO t2 VALUES(NULL,100),(NULL,101),(-100,102),(50,103),(NULL,104),(NULL,105);
+
+    ELSE
+        INSERT INTO t1(c0) SELECT c1 FROM t2 WHERE c0 < 5;
+        INSERT INTO t2(c1) SELECT c1 FROM t1 WHERE c0 < 5;
+
+    END IF;
+
+    SELECT COUNT(c1) INTO d1 FROM t1;
+    SELECT COUNT(c0) INTO d2 FROM t2;
+
+    SET d3 = CONCAT('t1表执行函数后条目合计：',d1,',','t2表执行函数后条目合计：',d2);
+
+    RETURN d3;
+
+END;
+//
+
+DELIMITER ;//
+
+
+DROP TABLE IF EXISTS t2;
+DROP TABLE IF EXISTS t1;
+
+--enable_warnings
+
+
+--echo  #########Empty recycle bin, delete test database, tables, etc##########
+purge recyclebin;

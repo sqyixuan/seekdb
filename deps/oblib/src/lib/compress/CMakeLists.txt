@@ -19,25 +19,14 @@ oblib_add_library(compress
   zstd_1_3_8/ob_zstd_compressor_1_3_8.cpp
   zstd_1_3_8/ob_zstd_compressor_1_3_8.h
   zstd_1_3_8/ob_zstd_stream_compressor_1_3_8.cpp
-  zstd_1_3_8/ob_zstd_stream_compressor_1_3_8.h)
-
-# On macOS, the architecture must be explicitly specified
-set(ARCH_ARGS "")
-set(OB_DEPLOY "")
-if(APPLE)
-  # preferably using CMake's CMAKE_OSX_ARCHITECTURES configuration
-  if(CMAKE_OSX_ARCHITECTURES)
-      set(ARCH_ARGS -arch ${CMAKE_OSX_ARCHITECTURES})
-  else()
-      set(ARCH_ARGS -arch ${ARCHITECTURE})
-  endif()
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS deployment version")
-  set(OB_DEPLOY -platform_version macos ${CMAKE_OSX_DEPLOYMENT_TARGET} ${CMAKE_OSX_DEPLOYMENT_TARGET})
-endif()
+  zstd_1_3_8/ob_zstd_stream_compressor_1_3_8.h
+  zlib_lite/ob_zlib_lite_compressor.cpp
+  zlib_lite/ob_zlib_lite_compressor.h)
 
 add_subdirectory(zstd)
 add_subdirectory(zstd_1_3_8)
 add_subdirectory(lz4)
 add_subdirectory(snappy)
+add_subdirectory(zlib_lite)
 
-target_link_libraries(compress PUBLIC lz4 snappy zstd zstd_1_3_8)
+target_link_libraries(compress PUBLIC lz4 snappy zstd zstd_1_3_8 zlib_lite)

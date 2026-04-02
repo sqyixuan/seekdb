@@ -1,0 +1,315 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 测试default tablegroup的语法
+#
+# 1.tenant/database新增default_tablegroup_id属性
+#
+# 2.table创建时若未指定tablegroup，则取database的default_tablegroup_id;
+#   若database的default_tablegroup_id为-1，则取tenant的default_tablegroup_id。
+#
+# 3.通过alter tenant set default_tablegroup, 可以变更tenant的default_tablegroup;
+#
+# 4.通过create/alter database set default_tablegroup，可以设置或修改database的default_tablegroup。
+#
+# 5.删除tablegroup时，tablegroup不能是任何一个tenant/database的default tablegroup
+ob1=OBI(cluster=2:2:2, init_unit_cpu=1, proxy_num=0, ct_num=0, locality=hz:hz:hz);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 2;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name ='obtest', tenant_id,1);
+let $resource_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id,resource_pool_id,1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_ip, 1);
+let $svr_port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port=$svr_port, inner_port, 1);
+connect(conn_obtest, $tt1ip, root@obtest,,test, $tt1port);
+
+connection conn_sys;
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1','z2','z3');
+connection conn_obtest;
+create tablegroup tg_sys;
+
+# create tenant时不允许设置default_tablegroup
+connection conn_sys;
+--error 4179
+eval CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1,z2,z3', locality='F@z1,F@z2,F@z3', default tablegroup = NULL set ob_tcp_invited_nodes='%';
+--error 4179
+eval CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1,z2,z3', locality='F@z1,F@z2,F@z3', default tablegroup = test set ob_tcp_invited_nodes='%';
+
+set @@session.ob_query_timeout = 20000000;
+eval CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1,z2,z3', locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool_1', resource_pool_id, 1);
+let $tenant1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+
+connect (conn_tenant,$rs_ip,root@tenant_1,,test,$rs_mysql_port);
+
+# case 0: tenant/database设置default tablegroup的基本语法
+connection conn_tenant;
+create tablegroup tg_tenant;
+let $tablegroup_id = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg_tenant", tablegroup_id, 1);
+# alter tenant
+ob1.mysql alter tenant tenant_1 default tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+ob1.mysql alter tenant tenant_1 default tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "-1", 1, 5;
+ob1.mysql alter tenant tenant_1 default tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+ob1.mysql alter tenant tenant_1 default tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "-1", 1, 5;
+ob1.mysql alter tenant tenant_1 tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+ob1.mysql alter tenant tenant_1 tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "-1", 1, 5;
+ob1.mysql alter tenant tenant_1 tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+ob1.mysql alter tenant tenant_1 tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id = "$tenant1_id" and default_tablegroup_id = "-1", 1, 5;
+# alter database
+alter database test default tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+alter database test default tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "-1", 1, 5;
+alter database test default tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+alter database test default tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "-1", 1, 5;
+alter database test tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+alter database test tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "-1", 1, 5;
+alter database test tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+alter database test tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "test" and default_tablegroup_id = "-1", 1, 5;
+# create database
+create database db_tenant default tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+drop database db_tenant;
+create database db_tenant default tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "-1", 1, 5;
+drop database db_tenant;
+create database db_tenant default tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+drop database db_tenant;
+create database db_tenant default tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "-1", 1, 5;
+drop database db_tenant;
+create database db_tenant tablegroup = tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+drop database db_tenant;
+create database db_tenant tablegroup = null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "-1", 1, 5;
+drop database db_tenant;
+create database db_tenant tablegroup tg_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "$tablegroup_id", 1, 5;
+drop database db_tenant;
+create database db_tenant tablegroup null;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_database where tenant_id = "$tenant1_id" and database_name = "db_tenant" and default_tablegroup_id = "-1", 1, 5;
+drop database db_tenant;
+
+# case 1: 验证tenant/database设置default_tablegroup的功能
+connection conn_tenant;
+create tablegroup tg_test;
+let $tablegroup_id = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg_test", tablegroup_id, 1);
+
+# alter tenant的场景
+connection conn_sys;
+# tablegroup not exist
+--error 5151
+alter tenant tenant_1 default tablegroup = tg_not_exist;
+# tablegroup belog to other tenant
+--error 5151
+alter tenant tenant_1 default tablegroup = tg_sys;
+# tablegroup exist
+ob1.mysql_p select tenant_name, default_tablegroup_id from oceanbase.__all_tenant where tenant_name = "tenant_1";
+alter tenant tenant_1 default tablegroup = tg_test;
+ob1.mysql_p select tenant_name, default_tablegroup_id from oceanbase.__all_tenant where tenant_name = "tenant_1";
+# reset default_tablegroup
+ob1.mysql_p select tenant_name, default_tablegroup_id from oceanbase.__all_tenant where tenant_name = "tenant_1";
+alter tenant tenant_1 default tablegroup = null;
+ob1.mysql_p select tenant_name, default_tablegroup_id from oceanbase.__all_tenant where tenant_name = "tenant_1";
+
+# create database的场景
+connection conn_tenant;
+# tablegroup not exist
+--error 5151
+create database db_test default tablegroup = tg_not_exist;
+# tablegroup belog to other tenant
+--error 5151
+create database db_test default tablegroup = tg_sys;
+# tablegroup exist
+create database db_test default tablegroup = tg_test;
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+# reset default_tablegroup
+drop database db_test;
+create database db_test default tablegroup = null;
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+
+# alter database的场景
+connection conn_tenant;
+# tablegroup not exist
+--error 5151
+alter database db_test default tablegroup = tg_not_exist;
+# tablegroup belog to other tenant
+--error 5151
+alter database db_test default tablegroup = tg_sys;
+# tablegroup exist
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+alter database db_test default tablegroup = tg_test;
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+
+# reset default_tablegroup
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+alter database db_test default tablegroup = null;
+ob1.mysql_p select database_name, default_tablegroup_id from oceanbase.__all_virtual_database where database_name = "db_test";
+
+# case 2: 验证table使用缺省tablegroup的功能
+connection conn_tenant;
+create tablegroup tg0 locality='F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3';
+create tablegroup tg1 locality='F{1},R{1}@z1,F{1}@z2,F{1}@z3';
+create tablegroup tg2 locality='F{1}@z1,F{1},R{1}@z2,F{1}@z3';
+create tablegroup tg3 locality='F{1}@z1,F{1}@z2,F{1},R{1}@z3';
+let $tablegroup_id_0 = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg0", tablegroup_id, 1);
+let $tablegroup_id_1 = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg1", tablegroup_id, 1);
+let $tablegroup_id_2 = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg2", tablegroup_id, 1);
+let $tablegroup_id_3 = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name = "tg3", tablegroup_id, 1);
+
+create database db_1 default tablegroup = tg1;
+create database db_2 default tablegroup = tg2;
+create database db_3 default tablegroup = tg3;
+
+# database/tenant都未设置default_tablegroup，此时新建table缺省无tablegroup
+use test;
+create table t0_1 (c1 int, c2 int) locality = 'F{1},R{1}@z1,F{1}@z2,F{1}@z3';
+create table t0_2 (c1 int, c2 int) locality = 'F{1}@z1,F{1},R{1}@z2,F{1}@z3';
+create table t0_3 (c1 int, c2 int) locality = 'F{1}@z1,F{1}@z2,F{1},R{1}@z3';
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = -1 and table_name in ("t0_1", "t0_2", "t0_3") order by table_name;
+
+# database设置了default_tablegroup为tg1, tenant未设置，新建table以database为准，需要满足tg1的约束
+use db_1;
+--error 4179
+create table t1_1 (c1 int, c2 int) locality = 'F{1}@z1,F{1},R{1}@z2,F{1}@z3';
+--error 4179
+create table t1_1 (c1 int, c2 int) locality = 'F{1}@z1,F{1}@z2,F{1},R{1}@z3';
+create table t1_1 (c1 int, c2 int) locality = 'F{1},R{1}@z1,F{1}@z2,F{1}@z3';
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_1 and table_name = "t1_1";
+
+# database未设置default_tablegroup, tenant设置了default_tablegroup为tg0，新建table以tenant为准，需要满足tg0的约束
+connection conn_sys;
+alter tenant tenant_1 default tablegroup = tg0;
+connection conn_tenant;
+use test;
+--error 4179
+create table t0_4 (c1 int, c2 int) locality = 'F{1},R{1}@z1,F{1}@z2,F{1}@z3';
+--error 4179
+create table t0_4 (c1 int, c2 int) locality = 'F{1}@z1,F{1},R{1}@z2,F{1}@z3';
+--error 4179
+create table t0_4 (c1 int, c2 int) locality = 'F{1}@z1,F{1}@z2,F{1},R{1}@z3';
+create table t0_4 (c1 int, c2 int) locality = 'F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3';
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_0 and table_name = "t0_4";
+
+# database设置了default_tablegroup为tg2, tenant设置了default_tablegroup为tg0，新建table以database为准,需要满足tg2的约束
+use db_2;
+--error 4179
+create table t2_1 (c1 int, c2 int) locality = 'F{1},R{1}@z1,F{1}@z2,F{1}@z3';
+--error 4179
+create table t2_1 (c1 int, c2 int) locality = 'F{1}@z1,F{1}@z2,F{1},R{1}@z3';
+create table t2_1 (c1 int, c2 int) locality = 'F{1}@z1,F{1},R{1}@z2,F{1}@z3';
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_2 and table_name = "t2_1";
+
+# case 3: 通过alter tenant/database变更default_tablegroup
+
+# 初始，database的default_tablegroup为tg3, tenant的为tg0，新建table以database为准
+use db_3;
+--error 4179
+create table t3_1 (c1 int, c2 int) locality = "F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3";
+create table t3_1 (c1 int, c2 int) locality = "F{1}@z1,F{1}@z2,F{1},R{1}@z3";
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_3 and table_name = "t3_1";
+
+# database未设置default_tablegroup, tenant的为tg0, 新建table以database为准
+use db_3;
+alter database db_3 default tablegroup = NULL;
+--error 4179
+create table t3_2 (c1 int, c2 int) locality = "F{1}@z1,F{1}@z2,F{1},R{1}@z3";
+create table t3_2 (c1 int, c2 int) locality = "F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3";
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_0 and table_name = "t3_2";
+
+# database未设置default_tablegroup, tenant也未设置, 新建table无缺省tablegroup
+connection conn_sys;
+alter tenant tenant_1 default tablegroup = NULL;
+connection conn_tenant;
+use db_3;
+create table t3_3 (c1 int, c2 int) locality = "F{1}@z1,F{1}@z2,F{1},R{1}@z3";
+create table t3_4 (c1 int, c2 int) locality = "F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3";
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = -1 and table_name in ("t3_3", "t3_4");
+
+# database设置default_tablegroup为tg3, tenant未设置, 新建table以database为准
+use db_3;
+alter database db_3 default tablegroup = tg3;
+--error 4179
+create table t3_5 (c1 int, c2 int) locality = "F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3";
+create table t3_5 (c1 int, c2 int) locality = "F{1}@z1,F{1}@z2,F{1},R{1}@z3";
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_3 and table_name = "t3_5";
+
+# database的default_tablegroup为tg3, tenant的为tg0, 新建table以database为准
+connection conn_sys;
+alter tenant tenant_1 default tablegroup = tg0;
+connection conn_tenant;
+use db_3;
+--error 4179
+create table t3_6 (c1 int, c2 int) locality = "F{1},R{1}@z1,F{1},R{1}@z2,F{1},R{1}@z3";
+create table t3_6 (c1 int, c2 int) locality = "F{1}@z1,F{1}@z2,F{1},R{1}@z3";
+ob1.mysql_p select table_name from oceanbase.__all_virtual_table where tablegroup_id = $tablegroup_id_3 and table_name = "t3_6";
+
+# case 4: drop tablegroup, 需判断tablegroup为空，且不是任一tenant/database的default tablegroup
+# tablegroup不为空的场景
+use db_test;
+create tablegroup drop_tg;
+create table drop_table(c1 int, c2 int) tablegroup = "drop_tg";
+--error 4615
+drop tablegroup drop_tg;
+drop table drop_table;
+drop tablegroup drop_tg;
+
+# tablegroup为database的default tablegroup
+create tablegroup drop_tg;
+alter database db_test default tablegroup = drop_tg;
+--error 4615
+drop tablegroup drop_tg;
+alter database db_test default tablegroup = null;
+drop tablegroup drop_tg;
+
+# tablegroup为tenant的default tablegroup
+create tablegroup drop_tg;
+connection conn_sys;
+alter tenant tenant_1 default tablegroup = drop_tg;
+connection conn_tenant;
+use db_test;
+--error 4615
+drop tablegroup drop_tg;
+connection conn_sys;
+alter tenant tenant_1 default tablegroup = null;
+connection conn_tenant;
+use db_test;
+drop tablegroup drop_tg;

@@ -1,0 +1,421 @@
+drop database if exists db1;
+create database db1;
+use db1;
+result_format: 4
+alter system flush plan cache global;
+affected rows: 0
+
+alter system set _rowsets_enabled=false;
+affected rows: 0
+
+set autocommit = false;
+affected rows: 0
+alter system set ob_enable_batched_multi_statement=true;
+affected rows: 0
+
+#key分区
+drop table if exists t10,t11,t12;
+affected rows: 0
+Warnings:
+Note	1051	Unknown table 'db1.t10'
+Note	1051	Unknown table 'db1.t11'
+Note	1051	Unknown table 'db1.t12'
+create table t10(c1 year not null primary key , c2 double,index index_c1(c1))
+partition by key(c1)
+partitions 4;
+affected rows: 0
+
+create table t11(a1 varchar(60),a2 float);
+affected rows: 0
+insert into t11 values(2001,1.11),(2002,2.22),(2003,3.33),(2004,4.44),(2005,5.55),(2006,6.666);
+affected rows: 6
+info: Records: 6  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+
+create table t12(b1 int,b2 decimal(10,3));
+affected rows: 0
+insert into t12 values(2001,1.123),(2003,3.345),(2005,5.567),(2002,2.23),(2006,6.678),(2004,8.456);
+affected rows: 6
+info: Records: 6  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+alter system flush plan cache global;
+affected rows: 0
+
+#普通插入 
+insert into t10 values(2001,10.1111);insert into t10 values(2002,12.213);insert into t10 values(2003,5.3421);//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t10;
++------+---------+
+| c1   | c2      |
++------+---------+
+| 2001 | 10.1111 |
+| 2003 |  5.3421 |
+| 2002 |  12.213 |
++------+---------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t10 %' order by hit_count;
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                   | query_sql                                                                                                     |
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------------+
+|         0 |                     1 | insert into t10 values(?,?) | insert into t10 values(2001,10.1111);insert into t10 values(2002,12.213);insert into t10 values(2003,5.3421); |
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------------+
+affected rows: 1
+rollback;
+affected rows: 0
+
+#value类型不同，场景回退
+alter system flush plan cache global;
+affected rows: 0
+insert into t10 values('2020',1.1);insert into t10 values('2021',1.2);insert into t10 values(2022,1.3);//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t10;
++------+------+
+| c1   | c2   |
++------+------+
+| 2021 |  1.2 |
+| 2020 |  1.1 |
+| 2022 |  1.3 |
++------+------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t10 %' order by hit_count;
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                   | query_sql                                                                                               |
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------+
+|         0 |                     1 | insert into t10 values(?,?) | insert into t10 values('2020',1.1);insert into t10 values('2021',1.2);insert into t10 values(2022,1.3); |
++-----------+-----------------------+-----------------------------+---------------------------------------------------------------------------------------------------------+
+affected rows: 1
+rollback;
+affected rows: 0
+
+#异常插入 违反主键约束,场景正常回退。
+insert into t10 values('2020',1.1);insert into t10 values('2021',1.2);insert into t10 values('2020',1.3);//
+affected rows: 1
+affected rows: 1
+ERROR 23000: Duplicate entry '2020' for key 'PRIMARY'
+
+#insert into select (单表)
+insert into t10 select 21%8,b2 from t12 where t12.b1 = 2003;insert into t10 select 66%8,b2 from t12 where t12.b1 = 2005;insert into t10 select 78%8,b2 from t12 where t12.b1 = 2006;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t10;
++------+-------+
+| c1   | c2    |
++------+-------+
+| 2021 |   1.2 |
+| 2006 | 6.678 |
+| 2002 | 5.567 |
+| 2005 | 3.345 |
+| 2020 |   1.1 |
++------+-------+
+affected rows: 5
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t10 select % from t12 where t12.b1 = %' order by hit_count;
++-----------+-----------------------+----------------------------------------------------------+--------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                | query_sql                                                    |
++-----------+-----------------------+----------------------------------------------------------+--------------------------------------------------------------+
+|         2 |                     0 | insert into t10 select ?%?,b2 from t12 where t12.b1 = ?; | insert into t10 select 21%8,b2 from t12 where t12.b1 = 2003; |
+|         2 |                     0 | insert into t10 select ?%?,b2 from t12 where t12.b1 = ?; | insert into t10 select 21%8,b2 from t12 where t12.b1 = 2003; |
++-----------+-----------------------+----------------------------------------------------------+--------------------------------------------------------------+
+affected rows: 2
+rollback;
+affected rows: 0
+
+#insert into select  cross join
+insert into t10 select 6+6+6,b2 from t11 cross join t12 where t11.a1 = 2 limit 1;insert into t10 select 3+3+3,b2 from t11 cross join t12 where t11.a1 = 3 limit 1;insert into t10 select 5+5+5,b2 from t11 cross join t12 where t11.a1 = 5 limit 1;//
+affected rows: 0
+affected rows: 0
+affected rows: 0
+select * from t10;
++----+------+
+| c1 | c2   |
++----+------+
++----+------+
+affected rows: 0
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t10 select % from t11 cross join t12 where t11.a1 = %' order by hit_count;
++-----------+-----------------------+-----------------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                                         | query_sql                                                                         |
++-----------+-----------------------+-----------------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
+|         2 |                     0 | insert into t10 select ?+?+?,b2 from t11 cross join t12 where t11.a1 = ? limit ?; | insert into t10 select 6+6+6,b2 from t11 cross join t12 where t11.a1 = 2 limit 1; |
+|         2 |                     0 | insert into t10 select ?+?+?,b2 from t11 cross join t12 where t11.a1 = ? limit ?; | insert into t10 select 6+6+6,b2 from t11 cross join t12 where t11.a1 = 2 limit 1; |
++-----------+-----------------------+-----------------------------------------------------------------------------------+-----------------------------------------------------------------------------------+
+affected rows: 2
+rollback;
+affected rows: 0
+
+drop table t10;
+affected rows: 0
+drop table t11;
+affected rows: 0
+drop table t12;
+affected rows: 0
+
+#range columns分区
+drop table if exists t13,t14,t15;
+affected rows: 0
+Warnings:
+Note	1051	Unknown table 'db1.t13'
+Note	1051	Unknown table 'db1.t14'
+Note	1051	Unknown table 'db1.t15'
+CREATE TABLE t13 (
+    c1 INT,
+    c2 INT,
+    key index_c1_c2(c1,c2)
+)
+PARTITION BY RANGE COLUMNS(c1,c2) (
+    PARTITION p1 VALUES LESS THAN (4, 4),
+    PARTITION p2 VALUES LESS THAN (8, 8),
+    PARTITION p3 VALUES LESS THAN (MAXVALUE, MAXVALUE)
+);
+affected rows: 0
+
+create table t14(a1 int,a2 int);
+affected rows: 0
+insert into t14 values(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(9,9),(11,11),(10,10),(8,8),(12,12),(7,7),(13,13);
+affected rows: 13
+info: Records: 13  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+
+create table t15(b1 int,b2 int);
+affected rows: 0
+insert into t15 values(1,1),(3,3),(5,5),(2,2),(6,6),(8,8),(9,9),(10,10),(11,11),(12,12),(13,13),(14,14);
+affected rows: 12
+info: Records: 12  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+
+#普通插入
+alter system flush plan cache global;
+affected rows: 0
+insert into t13 values(2,2);insert into t13 values(5,5);insert into t13 values(9,9);//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t13;
++------+------+
+| c1   | c2   |
++------+------+
+|    2 |    2 |
+|    5 |    5 |
+|    9 |    9 |
++------+------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t13 %' order by hit_count;
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                   | query_sql                                                                            |
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------+
+|         0 |                     1 | insert into t13 values(?,?) | insert into t13 values(2,2);insert into t13 values(5,5);insert into t13 values(9,9); |
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------+
+affected rows: 1
+rollback;
+affected rows: 0
+
+#insert into set (普通表中没有进行batch优化,分区表优化)
+insert into t13 set c1 = 3,c2 = 3;insert into t13 set c1 = 5,c2 = 5;insert into t13 set c1 = 9,c2 = 9;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t13;
++------+------+
+| c1   | c2   |
++------+------+
+|    3 |    3 |
+|    5 |    5 |
+|    9 |    9 |
++------+------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t13 set %' order by hit_count;
++-----------+-----------------------+-----------------------------------+--------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                         | query_sql                                                                                              |
++-----------+-----------------------+-----------------------------------+--------------------------------------------------------------------------------------------------------+
+|         0 |                     1 | insert into t13 set c1 = ?,c2 = ? | insert into t13 set c1 = 3,c2 = 3;insert into t13 set c1 = 5,c2 = 5;insert into t13 set c1 = 9,c2 = 9; |
++-----------+-----------------------+-----------------------------------+--------------------------------------------------------------------------------------------------------+
+affected rows: 1
+rollback;
+affected rows: 0
+
+#insert into select (单表)
+insert into t13 select 3*2*1,a1 from t14 where t14.a1 = 3;insert into t13 select 4*2*1,a1 from t14 where t14.a1 = 4;insert into t13 select 5*2*1,a1 from t14 where t14.a1 = 5;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t13;
++------+------+
+| c1   | c2   |
++------+------+
+|    6 |    3 |
+|    8 |    4 |
+|   10 |    5 |
++------+------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t13 select % from t14 where t14.a1 = %' order by hit_count;
++-----------+-----------------------+------------------------------------------------------------+------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                  | query_sql                                                  |
++-----------+-----------------------+------------------------------------------------------------+------------------------------------------------------------+
+|         2 |                     0 | insert into t13 select ?*?*?,a1 from t14 where t14.a1 = ?; | insert into t13 select 3*2*1,a1 from t14 where t14.a1 = 3; |
+|         2 |                     0 | insert into t13 select ?*?*?,a1 from t14 where t14.a1 = ?; | insert into t13 select 3*2*1,a1 from t14 where t14.a1 = 3; |
++-----------+-----------------------+------------------------------------------------------------+------------------------------------------------------------+
+affected rows: 2
+rollback;
+affected rows: 0
+
+
+insert into t13 select 1*2*3,b2 from t14 left join t15 on t14.a1 = t15.b1 where a1 >4 and a1 <6;insert into t13 select 1*2*3,b2 from t14 left join t15 on t14.a1 = t15.b1 where a1 >6 and a1 <8;insert into t13 select 1*2*3,b2 from t14 left join t15 on t14.a1 = t15.b1 where a1 >8 and a1 <10;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t13;
++------+------+
+| c1   | c2   |
++------+------+
+|    6 |    5 |
+|    6 | NULL |
+|    6 |    9 |
++------+------+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t13 select % from t14 left join t15 on t14.a1 = t15.b1 where a1 > % and a1 < %' order by hit_count;
++-----------+-----------------------+-----------+-----------+
+| hit_count | is_batched_multi_stmt | statement | query_sql |
++-----------+-----------------------+-----------+-----------+
++-----------+-----------------------+-----------+-----------+
+affected rows: 0
+rollback;
+affected rows: 0
+drop table t13;
+affected rows: 0
+drop table t14;
+affected rows: 0
+drop table t15;
+affected rows: 0
+
+
+#list columns
+create table t16(c1 int not null,c2 int not null,key index_c1_c2(c1,c2),primary key(c1,c2))
+partition by list columns(c1)
+(
+partition p0 values in(1,2,3),
+partition p1 values in(4,5,6),
+partition p2 values in(7,8,9),
+partition p3 values in(10,11,12)
+);
+affected rows: 0
+create table t17(a1 int,a2 int);
+affected rows: 0
+insert into t17 values(1,1),(5,5),(8,8),(9,9),(11,11),(15,15);
+affected rows: 6
+info: Records: 6  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+
+create table t18(b1 int,b2 int);
+affected rows: 0
+insert into t18 values(1,1),(5,5),(8,8),(9,9),(11,11),(15,15);
+affected rows: 6
+info: Records: 6  Duplicates: 0  Warnings: 0
+commit;
+affected rows: 0
+
+#普通插入
+alter system flush plan cache global;
+affected rows: 0
+insert into t16 values(3,3);insert into t16 values(5,5);insert into t16 values(8,8);insert into t16 values(11,11);//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t16;
++----+----+
+| c1 | c2 |
++----+----+
+|  3 |  3 |
+|  5 |  5 |
+|  8 |  8 |
+| 11 | 11 |
++----+----+
+affected rows: 4
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t16 %' order by hit_count;
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                   | query_sql                                                                                                          |
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------+
+|         0 |                     1 | insert into t16 values(?,?) | insert into t16 values(3,3);insert into t16 values(5,5);insert into t16 values(8,8);insert into t16 values(11,11); |
++-----------+-----------------------+-----------------------------+--------------------------------------------------------------------------------------------------------------------+
+affected rows: 1
+rollback;
+affected rows: 0
+
+#异常插入
+insert into t16 values(3,3);insert into t16 values(5,5);insert into t16 values(20,20);insert into t16 values(11,11);//
+affected rows: 1
+affected rows: 1
+ERROR HY000: Table has no partition for value
+rollback;
+affected rows: 0
+
+#insert into select 单表
+insert into t16 select 6/2/3,a2 from t17 where a1 > 4 and a1 < 6;insert into t16 select 8/2/2,a2 from t17 where a1 > 7 and a1 < 9;insert into t16 select 9/3/1,a2 from t17 where a1 > 10 and a1 < 12;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t16;
++----+----+
+| c1 | c2 |
++----+----+
+|  1 |  5 |
+|  2 |  8 |
+|  3 | 11 |
++----+----+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t16 select % from t17 where a1 > % and a1 < %' order by hit_count;
++-----------+-----------------------+-------------------------------------------------------------------+-------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                         | query_sql                                                         |
++-----------+-----------------------+-------------------------------------------------------------------+-------------------------------------------------------------------+
+|         2 |                     0 | insert into t16 select ?/?/?,a2 from t17 where a1 > ? and a1 < ?; | insert into t16 select 6/2/3,a2 from t17 where a1 > 4 and a1 < 6; |
+|         2 |                     0 | insert into t16 select ?/?/?,a2 from t17 where a1 > ? and a1 < ?; | insert into t16 select 6/2/3,a2 from t17 where a1 > 4 and a1 < 6; |
++-----------+-----------------------+-------------------------------------------------------------------+-------------------------------------------------------------------+
+affected rows: 2
+rollback;
+affected rows: 0
+
+#insert into select inner join
+insert into t16 select 1*2*3,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > 4 and a1 < 6;insert into t16 select 2*2*2,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > 7 and a1 < 9;insert into t16 select 3*2*1,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > 10 and a1 < 12;//
+affected rows: 1
+affected rows: 1
+affected rows: 1
+select * from t16;
++----+----+
+| c1 | c2 |
++----+----+
+|  6 |  5 |
+|  6 | 11 |
+|  8 |  8 |
++----+----+
+affected rows: 3
+select hit_count, is_batched_multi_stmt, statement, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t16 select % from t17 inner join t18 on t17.a1 = t18.b1 where a1 > % and a1 < %' order by hit_count;
++-----------+-----------------------+-----------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------+
+| hit_count | is_batched_multi_stmt | statement                                                                                           | query_sql                                                                                           |
++-----------+-----------------------+-----------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------+
+|         2 |                     0 | insert into t16 select ?*?*?,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > ? and a1 < ?; | insert into t16 select 1*2*3,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > 4 and a1 < 6; |
+|         2 |                     0 | insert into t16 select ?*?*?,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > ? and a1 < ?; | insert into t16 select 1*2*3,b2 from t17 inner join t18 on t17.a1 = t18.b1 where a1 > 4 and a1 < 6; |
++-----------+-----------------------+-----------------------------------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------+
+affected rows: 2
+rollback;
+affected rows: 0
+drop table t16;
+affected rows: 0
+drop table t17;
+affected rows: 0
+drop table t18;
+affected rows: 0
+
+alter system set _rowsets_enabled=true;
+affected rows: 0
+set autocommit = true;
+affected rows: 0
+alter system set ob_enable_batched_multi_statement=false;
+affected rows: 0

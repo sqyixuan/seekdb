@@ -1,0 +1,1 @@
+--replace_regex /'oss:\/\/[^']*'/'#DATA_FOLDER_NAME#\/?#OSS_HOST#:#OSS_ACCESS_ID#@#OSS_ACCESS_KEY#'/

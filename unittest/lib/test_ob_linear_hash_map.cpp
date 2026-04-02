@@ -28,17 +28,6 @@ using namespace common;
 namespace unittest
 {
 
-inline void set_thread_name(const char *name)
-{
-#ifdef __APPLE__
-  pthread_setname_np(name);
-#elif defined(__linux__)
-  prctl(PR_SET_NAME, name);
-#else
-  (void)name;
-#endif
-}
-
 const int64_t MAX_KEY_NUM = 1000000;
 const int64_t GET_THREAD_NUM = 2;
 const int64_t ERASE_THREAD_NUM = 2;
@@ -101,7 +90,7 @@ public :
 
 void *do_get(void *args)
 {
-  set_thread_name(__func__);
+  prctl(PR_SET_NAME, __func__);
   MyHashMap *map = (MyHashMap *)args;
   while (!g_exiting) {
     MyKey key = MyKey::get_random_key();
@@ -116,7 +105,7 @@ void *do_get(void *args)
 
 void *do_erase(void *args)
 {
-  set_thread_name(__func__);
+  prctl(PR_SET_NAME, __func__);
   MyHashMap *map = (MyHashMap *)args;
   while (!g_exiting) {
     MyKey key = MyKey::get_random_key();
@@ -130,7 +119,7 @@ void *do_erase(void *args)
 
 void *do_insert(void *args)
 {
-  set_thread_name(__func__);
+  prctl(PR_SET_NAME, __func__);
   MyHashMap *map = (MyHashMap *)args;
   while (!g_exiting) {
     MyKey key = MyKey::get_random_key();
@@ -144,7 +133,7 @@ void *do_insert(void *args)
 
 void *do_update(void *args)
 {
-  set_thread_name(__func__);
+  prctl(PR_SET_NAME, __func__);
   MyHashMap *map = (MyHashMap *)args;
   while (!g_exiting) {
     MyKey key = MyKey::get_random_key();
@@ -159,7 +148,7 @@ void *do_update(void *args)
 
 void *do_clear(void *args)
 {
-  set_thread_name(__func__);
+  prctl(PR_SET_NAME, __func__);
   MyHashMap *map = (MyHashMap *)args;
   while (!g_exiting) {
     (void)map->clear();
@@ -196,7 +185,7 @@ TEST_F(TestObLinearHashMap, test_currency)
     sleep(1);
   }
   g_exiting = 1;
-  for (int64_t i = 0; i < tid_idx; i++) {
+  for (int64_t i = 0; i < ALL_THREAD_NUM && tids[i] > 0; i++) {
     pthread_join(tids[i], NULL);
   }
   my_hashmap_.clear();

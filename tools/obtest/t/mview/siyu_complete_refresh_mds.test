@@ -1,0 +1,91 @@
+# owner:wyh329796
+# owner group: data
+# Testing Case: broadcast table route 
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $mysql_tenant = mysql_tenant;
+
+let $z1_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_rpc_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip       = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port     = deploy_get_value(ob1.z2.obs0.mysql_port);
+let $z2_rpc_port = deploy_get_value(ob1.z2.obs0.port);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+alter system set syslog_level = 'TRACE';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+source include/check_schema_sync.inc;
+connection sys_conn;
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$mysql_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $mysql_tenant_id, resource_pool_id, 1);
+let $ls_cnt = deploy_get_value(ob1.select select count(unique(ls_id)) as ls_cnt from oceanbase.__all_virtual_ls_info where tenant_id = $mysql_tenant_id, ls_cnt, 1);
+let $src_ls_id = 1001;
+
+--echo ===============================================================
+--echo ==================     create table ===========================
+--echo ===============================================================
+connect(sys_conn_mysql, $z1_ip, root@$mysql_tenant,,oceanbase, $z1_port);
+connection sys_conn_mysql;
+
+connection sys_conn_mysql;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+
+connect(mysql_conn, $z1_ip,test@$mysql_tenant,test,test, $z1_port);
+connection mysql_conn;
+
+# 创建mview
+create tablegroup tg1 sharding='PARTITION';
+create table mv_tt(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+create table mv_tg(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+insert into mv_tt values(1,1), (2,1),(3,1);
+insert into mv_tg values(1,1), (2,1),(3,2);
+
+connection sys_conn;
+# 打开debug sync
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MV_LOAD_DATA wait_for signalxxx execute 10000';
+
+connection mysql_conn;
+# 异步创建MV
+send create materialized view mv1 (primary key(mv_tt_c1,mv_tt_c2)) tablegroup='tg1' partition by hash(mv_tt_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+
+sleep 5;
+connection sys_conn;
+use oceanbase;
+# 校验mivew mds虚拟表和ddl信息
+let $kept_snapshot =  deploy_get_value(ob1.select select read_snapshot from oceanbase.__all_virtual_mview_running_job where tenant_id = $mysql_tenant_id, read_snapshot, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ddl_task_status where snapshot_version = $kept_snapshot, 1, 60;
+# 关闭debug sync
+ob1.mysql set ob_global_debug_sync = 'now signal signalxxx';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MV_LOAD_DATA clear';
+
+connection mysql_conn;
+reap;
+select * from mv1;

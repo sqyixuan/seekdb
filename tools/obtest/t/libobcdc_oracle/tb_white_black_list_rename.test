@@ -1,0 +1,143 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description:
+# 测试点:
+# 1. rename table in white_list to table in black_list
+# 2. rename table in black_list to table in white_list
+# 3. restart
+# 4. restart with different white_black_list
+# 5. restart with data_dict refresh mode
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建oracle租户，并切换到oracle租户
+source include/liboblog/create_oracle_tenant.inc;
+
+# 启动liboblog，同步oracle租户数据
+ob1.oblog.gen_conf tb_white_list=oracle.*.white* tb_black_list=oracle.*.black* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $restart_ts_usec1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+alter session set current_schema = oblog_db;
+sleep 1;
+
+let $ddl_stmt_count = 0;
+let $white_dml_stmt_count = 0;
+let $black_dml_stmt_count = 0;
+
+# ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all;
+
+# 创建黑白名单测试表，防止ob1.oblog.next输出EOF 
+create table white0(id int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 创建白名单表
+create table white1(id int, c1 timestamp(6), c2 date);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 输出
+insert into white1 values(1, '2019-1-30 12:00:00.123456', '2019-1-30');
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# rename
+rename white1 to black1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 不输出
+insert into black1 values(2, '2020-1-30 12:00:00.123456', '2020-1-30');
+insert into white0 values(1);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+# 创建黑名单表
+create table black2(id int, c1 timestamp(6), c2 date);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 不输出
+insert into black2 values(1, '2019-1-30 12:00:00.123456', '2019-1-30');
+insert into white0 values(2);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+inc $black_dml_stmt_count;
+
+# rename
+rename black2 to white2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 输出
+insert into white2 values(2, '2020-1-30 12:00:00.123456', '2020-1-30');
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# wait to generate data_dict
+sleep 10;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 目前存在的表：black1, white2
+# 重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oracle.*.white* tb_black_list=oracle.*.black* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+
+# ouput the ddls and dmls
+let $stmt_count = $ddl_stmt_count + $white_dml_stmt_count;
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+# 目前存在的表：black1, white2
+# 重新启动libobcdc并指定不同的黑白名单
+ob1.oblog.gen_conf tb_white_list=oracle.*.black* tb_black_list=oracle.*.white* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+
+# ouput
+let $stmt_count = $ddl_stmt_count + $black_dml_stmt_count;
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+# 以数据字典模式重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oracle.*.black* tb_black_list=oracle.*.white* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+
+# ouput
+let $stmt_count = $ddl_stmt_count + $black_dml_stmt_count;
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.gen_conf tb_white_list=oracle.*.black* tb_black_list=oracle.*.white* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oracle.*.black* tb_black_list=oracle.*.white* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+ob1.oblog.stop;

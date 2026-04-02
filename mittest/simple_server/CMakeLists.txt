@@ -51,13 +51,13 @@ function(ob_offline_observer case case_file)
     ${CMAKE_SOURCE_DIR}/unittest ${CMAKE_SOURCE_DIR}/mittest)
   target_link_libraries(${case}
     PRIVATE
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group>
+    -Wl,--start-group
     oceanbase_static
     ob_sql_static
     ob_storage_static
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+    -Wl,--end-group
+    -static-libgcc
+    -static-libstdc++
     gtest
     gmock)
 endfunction()

@@ -1,0 +1,314 @@
+# 测试场景：
+# 1. 启动两个仲裁server，4个2 zone的ob集群；
+# 2. 4个集群都接入到asvr0上，均为sys租户开启仲裁，并创建一个mysql租户；
+# 3. mysql租户上建表、写入数据；
+# 4. 测试仲裁server重启场景；
+# 5. 测试observer宕机触发降级;
+# 6. 测试observer拉起触发升级；
+# 7. 测试replace仲裁场景，验证仲裁server上能够清理cluster目录；
+# 8. 测试remove仲裁场景，验证仲裁server上能够清理cluster目录.
+#
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+let $arb_extra_conf = "cpu_count=1,memory_limit='2G',log_disk_size='5G'";
+
+ob1=OBI(cluster=1:1, proxy_num=0, asvr_num=2);
+ob1.asvr0.set extra_config=$arb_extra_conf;
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+
+ob2=OBI(cluster=1:1, proxy_num=0);
+ob2.z1.obs0.set extra_config=$extra_conf;
+ob2.z2.obs0.set extra_config=$extra_conf;
+
+ob3=OBI(cluster=1:1, proxy_num=0);
+ob3.z1.obs0.set extra_config=$extra_conf;
+ob3.z2.obs0.set extra_config=$extra_conf;
+
+ob4=OBI(cluster=1:1, proxy_num=0);
+ob4.z1.obs0.set extra_config=$extra_conf;
+ob4.z2.obs0.set extra_config=$extra_conf;
+
+
+ob1.asvr1.set extra_config=$arb_extra_conf;
+ob1.asvr1.set status=disable;
+
+# bootstrap
+ob1.reboot;
+ob2.reboot;
+ob3.reboot;
+ob4.reboot;
+
+ob1.asvr1.set status=enable;
+ob1.asvr1.reboot;
+
+sleep 3;
+
+ob_connect(conn_sys1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# 获取仲裁server的ip、port, 检查仲裁server是否成功运行
+let $arb_svr_ip = deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port = deploy_get_value(ob1.asvr0.port);
+
+let $arb_svr_ip_2 = deploy_get_value(ob1.asvr1.ip);
+let $arb_svr_port_2 = deploy_get_value(ob1.asvr1.port);
+
+ob1.check_until_timeout select count(*) from __all_arbitration_service where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+
+# sys租户开启仲裁
+ob1.mysql alter tenant sys enable_arbitration_service = true;
+
+# 建租户时指定开启仲裁服务
+set @@session.ob_query_timeout = 100000000;
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $ob1_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $ob1_cluster_id = deploy_get_value(ob1.select select value from oceanbase.GV\$OB_PARAMETERS where name = 'cluster_id' limit 1, value, 1);
+
+# check arbitration member exist for tenant's ls
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$ob1_mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 6, 30;
+
+let $ob1_z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $ob1_z1_port = deploy_get_value(ob1.z1.obs0.port);
+let $ob1_z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $ob1_z2_port = deploy_get_value(ob1.z2.obs0.port);
+
+# 建表、写入数据;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 1;
+# 数据准备
+create table t1(pk int primary key, c1 int, c2 varchar(20));
+# 确认leader已经汇报成功
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$ob1_mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+--disable_query_log
+let $cnt=10;
+while($cnt>0)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+# 宕机z2，验证降级
+ob1.z2.obs0.force_stop;
+sleep 5;
+ob1.check_until_timeout select count(*)  from __all_virtual_log_stat where tenant_id = $ob1_mysql_tenant_id and degraded_list not like "%$ob1_z2_ip:$ob1_z2_port%", 0, 120;
+
+# 启动z2，验证升级
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like "%$ob1_z2_ip:$ob1_z2_port%", 0, 120;
+
+# 验证arb server宕机重启
+ob1.asvr0.force_stop;
+ob1.asvr0.nstart;
+sleep 5;
+
+## 验证多集群接入
+# 为sys租户开启仲裁服务
+ob2.mysql alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+ob2.mysql alter tenant sys enable_arbitration_service = true;
+sleep 1;
+ob_connect(conn_sys2, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU = 1, MEMORY_SIZE = '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $ob2_mysql_tenant_id = deploy_get_value(ob2.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $ob2_cluster_id = deploy_get_value(ob2.select select value from oceanbase.GV\$OB_PARAMETERS where name = 'cluster_id' limit 1, value, 1);
+
+# check arbitration member exist for tenant's ls
+ob2.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$ob2_mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 6, 30;
+
+let $ob2_z1_ip = deploy_get_value(ob2.z1.obs0.ip);
+let $ob2_z1_port = deploy_get_value(ob2.z1.obs0.port);
+let $ob2_z2_ip = deploy_get_value(ob2.z2.obs0.ip);
+let $ob2_z2_port = deploy_get_value(ob2.z2.obs0.port);
+
+## 建表、写入数据;
+ob_connect(conn_mysql2, ob2.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 1;
+# 数据准备
+create table t100(pk int primary key, c1 int, c2 varchar(20));
+# 确认leader已经汇报成功
+ob2.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$ob2_mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+--disable_query_log
+let $cnt=10;
+while($cnt>0)
+{
+	eval insert into t100 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+# 宕机z2,触发降级
+ob2.z2.obs0.force_stop;
+connection conn_sys2;
+sleep 5;
+
+ob2.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $ob2_mysql_tenant_id and degraded_list not like "%$ob2_z2_ip:$ob2_z2_port%", 0, 120;
+
+# 启动z2，验证升级
+ob2.z2.obs0.nstart;
+ob2.check_until_timeout select count(*) from __all_virtual_log_stat where  degraded_list like "%$ob2_z2_ip:$ob2_z2_port%", 0, 120;
+
+# 验证arb server宕机重启
+ob1.asvr0.force_stop;
+ob1.asvr0.nstart;
+sleep 5;
+
+# ob3接入arb
+ob3.mysql alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+ob3.mysql alter tenant sys enable_arbitration_service = true;
+sleep 1;
+# check arbitration member exist for tenant's ls
+ob3.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=1 and arbitration_member not like "%$arb_svr_ip:$arb_svr_port%", 0, 60;
+
+ob_connect(conn_sys3, ob3.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $ob3_mysql_tenant_id = deploy_get_value(ob3.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $ob3_cluster_id = deploy_get_value(ob3.select select value from oceanbase.GV\$OB_PARAMETERS where name = 'cluster_id' limit 1, value, 1);
+
+# check arbitration member exist for tenant's ls
+ob3.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$ob3_mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 6, 30;
+
+let $ob3_z1_ip = deploy_get_value(ob3.z1.obs0.ip);
+let $ob3_z1_port = deploy_get_value(ob3.z1.obs0.port);
+let $ob3_z2_ip = deploy_get_value(ob3.z2.obs0.ip);
+let $ob3_z2_port = deploy_get_value(ob3.z2.obs0.port);
+
+## 建表、写入数据;
+ob_connect(conn_mysql3, ob3.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 1;
+# 数据准备
+create table t100(pk int primary key, c1 int, c2 varchar(20));
+# 确认leader已经汇报成功
+ob3.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$ob3_mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+--disable_query_log
+let $cnt=10;
+while($cnt>0)
+{
+	eval insert into t100 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+# 宕机z2后触发降级
+ob3.z2.obs0.force_stop;
+connection conn_sys3;
+sleep 5;
+
+ob3.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $ob3_mysql_tenant_id and degraded_list not like "%$ob3_z2_ip:$ob3_z2_port%", 0, 120;
+
+# 启动z2，验证升级
+ob3.z2.obs0.nstart;
+ob3.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like "%$ob3_z2_ip:$ob3_z2_port%", 0, 120;
+
+# 验证arb server宕机重启
+ob1.asvr0.force_stop;
+ob1.asvr0.nstart;
+sleep 5;
+
+# ob4接入arb
+ob4.mysql alter system add arbitration service "$arb_svr_ip:$arb_svr_port";
+ob4.mysql alter tenant sys enable_arbitration_service = true;
+sleep 1;
+# check arbitration member exist for tenant's ls
+ob4.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=1 and arbitration_member not like "%$arb_svr_ip:$arb_svr_port%", 0, 60;
+
+ob_connect(conn_sys4, ob4.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# create mysql tenant (2F1A)
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2');
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='RANDOM', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+let $ob4_mysql_tenant_id = deploy_get_value(ob4.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $ob4_cluster_id = deploy_get_value(ob4.select select value from oceanbase.GV\$OB_PARAMETERS where name = 'cluster_id' limit 1, value, 1);
+
+# check arbitration member exist for tenant's ls
+ob4.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$ob4_mysql_tenant_id and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 6, 30;
+
+let $ob4_z1_ip = deploy_get_value(ob4.z1.obs0.ip);
+let $ob4_z1_port = deploy_get_value(ob4.z1.obs0.port);
+let $ob4_z2_ip = deploy_get_value(ob4.z2.obs0.ip);
+let $ob4_z2_port = deploy_get_value(ob4.z2.obs0.port);
+
+## 建表、写入数据;
+ob_connect(conn_mysql4, ob4.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+# wait leader takeover
+sleep 1;
+# 数据准备
+create table t100(pk int primary key, c1 int, c2 varchar(20));
+# 确认leader已经汇报成功
+ob4.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = '$ob4_mysql_tenant_id' and ls_id = 1001 and role = 1, 1, 60;
+--disable_query_log
+let $cnt=10;
+while($cnt>0)
+{
+	eval insert into t100 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+# 宕机后触发降级
+ob4.z2.obs0.force_stop;
+connection conn_sys4;
+sleep 5;
+
+ob4.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $ob4_mysql_tenant_id and degraded_list not like "%$ob4_z2_ip:$ob4_z2_port%", 0, 120;
+
+# 启动follower1，验证升级
+ob4.z2.obs0.nstart;
+ob4.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like "%$ob4_z2_ip:$ob4_z2_port%", 0, 120;
+sleep 5;
+
+connection conn_sys4;
+eval select a.tenant_id, a.ls_id, b.role, b.degraded_list from __all_virtual_ls_status as a left join __all_virtual_log_stat as b ON a.tenant_id = b.tenant_id AND a.ls_id = b.ls_id AND b.role = 'LEADER' where ((b.role = 'LEADER' AND b.degraded_list != '') or  b.role IS NULL);
+
+source include/check_schema_sync.inc;
+
+# 测试 replace arbitration service
+ob1.mysql alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where previous_arbitration_service != "", 0, 120;
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip_2:$arb_svr_port_2", 1, 120;
+
+# check ob1 集群信息已删除, 预期结果为0
+let $arb_dir1=deploy_get_value(ob1.asvr1.workdir);
+ob1.asvr1.sh_p cd $arb_dir1; cd ./store/clog; ls | grep cluster_$ob1_cluster_id_clustername | wc -l;
+
+# 测试 remove arbitration service
+ob4.mysql alter tenant sys enable_arbitration_service = false;
+ob4.mysql alter tenant mysql enable_arbitration_service = false;
+ob4.check_until_timeout select count(*) from DBA_OB_TENANTS where arbitration_service_status != "DISABLED", 0, 120;
+
+ob4.mysql alter system remove arbitration service "$arb_svr_ip:$arb_svr_port";
+
+# check ob4 集群信息已删除, 预期结果为0
+let $arb_dir0=deploy_get_value(ob1.asvr0.workdir);
+ob1.asvr0.sh_p cd $arb_dir0; cd ./store/clog; ls | grep cluster_$ob4_cluster_id_clustername | wc -l;
+
+
+# 验证arb server宕机场景下删除仲裁服务
+ob1.asvr0.force_stop;
+
+# 测试 remove arbitration service
+ob3.mysql alter tenant sys enable_arbitration_service = false;
+ob3.mysql alter tenant mysql enable_arbitration_service = false;
+ob3.check_until_timeout select count(*) from DBA_OB_TENANTS where arbitration_service_status != "DISABLED", 0, 120;
+
+ob3.mysql alter system remove arbitration service "$arb_svr_ip:$arb_svr_port";
+
+# 拉起仲裁server
+ob1.asvr0.nstart;
+sleep 5;
+
+# 测试ob3重新接入仲裁, 预期占位时会报错
+--disable_query_log
+connection conn_sys3;
+--echo test add arb service when the old cluster dir has not been deleted on arb server
+--error 4748
+eval alter system add arbitration service "$arb_svr_ip:$arb_svr_port";

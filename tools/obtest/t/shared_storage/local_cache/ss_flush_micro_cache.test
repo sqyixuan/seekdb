@@ -1,0 +1,78 @@
+# owner:sunzhoujia.szj
+# owner group: cloud storage
+# Test Case: test flush ss_micro_cache
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=5);
+ob1.reboot;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_meta;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# generage data
+create table t1(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none';
+--disable_query_log
+let $cnt = 0;
+while($cnt < 1000)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check micro cache used_mem_size and record hold_size
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+
+let $old_hold_size_z1=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port, hold_size, 1);
+let $old_used_mem_size_z1=deploy_get_value(ob1.select select used_mem_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port, used_mem_size, 1);
+let $old_hold_size_z2=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port, hold_size, 1);
+let $old_used_mem_size_z2=deploy_get_value(ob1.select select used_mem_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port, used_mem_size, 1);
+
+# flush micro cache, check hold_size and used_mem_size
+ob1.mysql alter system flush ss_micro_cache tenant = 'obtest';
+sleep 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port and used_mem_size < $old_used_mem_size_z1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port and used_mem_size < $old_used_mem_size_z2, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port and hold_size < $old_hold_size_z1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port and hold_size < $old_hold_size_z2, 1, 60;
+let $old_hold_size_zz1=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port, hold_size, 1);
+let $old_hold_size_zz2=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port, hold_size, 1);
+let $old_used_mem_size_zz1=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port, used_mem_size, 1);
+let $old_used_mem_size_zz2=deploy_get_value(ob1.select select hold_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port, used_mem_size, 1);
+
+# generage data 
+--disable_query_log
+while($cnt < 2000)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check micro cache used_mem_size
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port and used_mem_size > $old_used_mem_size_zz1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port and used_mem_size > $old_used_mem_size_zz2, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z1_ip' and svr_port = $z1_port and hold_size > $old_hold_size_zz1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and svr_ip = '$z2_ip' and svr_port = $z2_port and hold_size > $old_hold_size_zz2, 1, 60;

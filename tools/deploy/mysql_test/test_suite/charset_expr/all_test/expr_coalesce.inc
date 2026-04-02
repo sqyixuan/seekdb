@@ -1,0 +1,1 @@
+SELECT COALESCE(NULL,NULL, '中文测试001') FROM dual;

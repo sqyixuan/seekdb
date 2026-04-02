@@ -1,0 +1,162 @@
+# owner: shenyunlong.syl
+# owner group: shenzhen
+#
+# XXXX
+ 
+ob1=OBI(cluster=1,proxy_num=0);
+ob1.reboot;
+ 
+ob1.mysql alter system set enable_rebalance='false';
+ 
+# build tenant
+let $max_cpu = 4;
+let $min_cpu = 1;
+let $memory_size = 8589934592;
+let $log_disk_size = 3221225472;
+let $max_iops = 100000;
+let $min_iops = 1024;
+ 
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ 
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ 
+ob_connect(sys_conn, ob1.z1.obs0, root,,test,USE_OB_CONNECTOR);
+ob_connect(conn1, ob1.z1.obs0, root@mysql,, test,, USE_OB_CONNECTOR);
+ 
+sleep 3;
+ 
+--echo
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    1. Cancel when Moving
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+### 在 TTL 任务执行到 move 状态的时候执行 cancel，预计 cancel 会失败，任务最终会执行成功
+### todo: 通过查询来捕获 move 状态不稳定，case 有待整改
+ 
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    2. Cancel Speed and Correctness
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+### 测试 TTL cancel 的速度
+### 1. 在 TTL 任务生成的时候 cancel
+### 2. 在 TTL 任务执行的时候 cancel
+
+connection conn1;
+ 
+# sleep for tasks
+--sleep 5
+
+--echo --> Prepare for test 2
+# set system param
+alter system minor freeze;
+alter system set enable_kv_ttl = true;
+ 
+# create table 
+create table ttl_table_cancel_speed(a varchar(1024), b int primary key, c timestamp) TTL(c + INTERVAL 0 SECOND) partition by key(b) partitions 3191;
+ 
+# get tenant_id
+let $tenant_id = query_get_value(select tenant_id from oceanbase.dba_ob_tenants where status = 'NORMAL' and tenant_name = 'mysql', tenant_id, 1);
+ 
+# insert data
+--disable_query_log
+--echo --> insert into ttl_table_cancel_speed 1000 row...
+connection conn1;
+let $cnt=0;
+--disable_all_result_log
+while($cnt < 1000)
+{
+  eval insert into ttl_table_cancel_speed(a, b, c) values (concat('row', cast($cnt as char)), $cnt, now());
+	inc $cnt;
+}
+--enable_all_result_log
+--echo --> insert 1000 rows end
+--echo
+
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo      2.1 Cancel ttl when some tasks haven't generated 
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+# trigger ttl
+alter system trigger ttl;
+--echo --> trigger ttl
+
+# check task is generated
+ob1.check_until_timeout select count(*)>1000 from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL", 1, 600;
+--echo --> check moving completed
+ 
+# cancel ttl
+alter system cancel ttl;
+--echo --> cancel ttl
+
+# waitting util ttl task finished
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+--echo --> check status is finished
+
+# check status
+ob1.check_until_timeout select count(*) from oceanbase.cdb_ob_kv_ttl_task_history where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") and status not in ('FINISHED', 'CANCELED'), 0, 5;
+--echo --> check status
+
+--echo --> 2.1 Test finished
+--echo
+
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo     2.2 Cancel ttl when some tasks is running
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+# trigger ttl
+alter system trigger ttl;
+--echo --> trigger ttl
+
+# check task is generated
+ob1.check_until_timeout select count(*)>3191 from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL", 1, 1200;
+--echo --> check moving completed
+
+--sleep 5
+ 
+# cancel ttl
+alter system cancel ttl;
+--echo --> cancel ttl
+
+# waitting util ttl task finished
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+--echo --> check status is finished
+
+# check status
+ob1.check_until_timeout select count(*) from oceanbase.cdb_ob_kv_ttl_task_history where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") and status not in ('FINISHED', 'CANCELED'), 0, 5;
+--echo --> check status
+
+--echo --> 2.2 Test finished
+--echo
+
+# drop table
+drop table ttl_table_cancel_speed;
+
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+--echo    3. execute TTL with longtext attributes
+--echo >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+# 
+
+# create table 
+create table ttl_table_with_longtext(a varchar(1024), b longtext, c timestamp) TTL(c + INTERVAL 0 SECOND);
+
+# insert values
+insert into ttl_table_with_longtext values("1", "hello world", now());
+
+# exeucte ttl task
+alter system trigger ttl;
+
+# waitting util ttl task finished
+ob1.check_until_timeout select count(*) as task_cnt from oceanbase.cdb_ob_kv_ttl_tasks where task_type = "NORMAL" and tenant_id = $tenant_id, 0, 90;
+
+# check table records
+select * from ttl_table_with_longtext order by a;
+
+# check task result
+SELECT TABLE_NAME, TRIGGER_TYPE, STATUS, TTL_DEL_CNT, MAX_VERSION_DEL_CNT, SCAN_CNT, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL" and task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_type = "NORMAL") order by tablet_id asc;
+
+# drop table
+drop table ttl_table_with_longtext;

@@ -1,0 +1,37 @@
+#package_name:sa_sysdba
+#author: jim.wjh
+
+CREATE OR REPLACE PACKAGE BODY SA_SYSDBA AS
+
+  PROCEDURE ALTER_POLICY (
+    policy_name       IN  VARCHAR,
+    default_options   IN  VARCHAR := NULL
+  );
+  PRAGMA INTERFACE (C, SA_SYSDBA_ALTER_POLICY);
+
+  PROCEDURE CREATE_POLICY (
+    policy_name       IN VARCHAR,
+    column_name       IN VARCHAR := NULL,
+    default_options   IN VARCHAR := NULL
+  ); 
+  PRAGMA INTERFACE (C, SA_SYSDBA_CREATE_POLICY);
+
+  PROCEDURE DISABLE_POLICY (
+    policy_name IN VARCHAR
+  );
+  PRAGMA INTERFACE (C, SA_SYSDBA_DISABLE_POLICY);
+
+  PROCEDURE DROP_POLICY ( 
+    policy_name IN VARCHAR,
+    drop_column IN BOOLEAN := FALSE
+  );
+  PRAGMA INTERFACE (C, SA_SYSDBA_DROP_POLICY);
+
+  PROCEDURE ENABLE_POLICY (
+    policy_name IN VARCHAR
+  );
+  PRAGMA INTERFACE (C, SA_SYSDBA_ENABLE_POLICY);
+
+
+END SA_SYSDBA;
+//

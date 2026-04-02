@@ -1,0 +1,455 @@
+result_format: 3
+explain_protocol: 1
+DROP DATABASE IF EXISTS NL_RIGHT_FULL_SCAN;
+CREATE DATABASE NL_RIGHT_FULL_SCAN;
+USE NL_RIGHT_FULL_SCAN;
+create table T1 (c1 int, c2 int);
+create table T2 (d1 int, d2 int, d3 int, index idx_d3(d3));
+create table T3 (d1 int, d2 int key);
+create table T4 (d1 int key, d2 int);
+create table T5 (d1 int, d2 int, index idx_d1(d1));
+EXPLAIN BASIC insert into T1 values (1, 2);
+Query Plan
+=====================
+|ID|OPERATOR   |NAME|
+---------------------
+|0 |INSERT     |    |
+|1 | EXPRESSION|    |
+=====================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([nextval(1)], [?], [()], [__values.c1], [__values.c2]), filter(nil), 
+      columns([t1.__pk_increment], [t1.__pk_cluster_id], [t1.__pk_partition_id], [t1.c1], [t1.c2]), partitions(p0)
+  1 - output([__values.c1], [__values.c2]), filter(nil)
+      values({1, 2})
+
+insert into T1 values (1, 2);
+# 场景1
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。但是右表是全表扫描
+# 所以禁止NL路径
+explain select /*+ leading(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5;
+Query Plan
+==========================================
+|ID|OPERATOR   |NAME      |EST. ROWS|COST|
+------------------------------------------
+|0 |HASH JOIN  |          |1        |6387|
+|1 | TABLE SCAN|t1        |1        |37  |
+|2 | TABLE SCAN|t2(idx_d3)|1000     |6022|
+==========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      equal_conds([t1.c1 = t2.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) use_nl(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5;
+Query Plan
+===============================================
+|ID|OPERATOR        |NAME      |EST. ROWS|COST|
+-----------------------------------------------
+|0 |NESTED-LOOP JOIN|          |1        |49  |
+|1 | TABLE SCAN     |t1        |1        |37  |
+|2 | TABLE SCAN     |t2(idx_d3)|1000     |6022|
+===============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      conds([t1.c1 = t2.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) use_hash(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5;
+Query Plan
+==========================================
+|ID|OPERATOR   |NAME      |EST. ROWS|COST|
+------------------------------------------
+|0 |HASH JOIN  |          |1        |6387|
+|1 | TABLE SCAN|t1        |1        |37  |
+|2 | TABLE SCAN|t2(idx_d3)|1000     |6022|
+==========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      equal_conds([t1.c1 = t2.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+# 场景1(2)
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。但是右表是全表扫描
+# 所以禁止NL路径
+explain select /*+ leading(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+==========================================
+|ID|OPERATOR   |NAME      |EST. ROWS|COST|
+------------------------------------------
+|0 |HASH JOIN  |          |1        |6291|
+|1 | TABLE SCAN|t1        |1        |37  |
+|2 | TABLE SCAN|t2(idx_d3)|200      |6190|
+==========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      equal_conds([t1.c1 = t2.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter([t2.d2 > 5]), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) use_nl(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+===============================================
+|ID|OPERATOR        |NAME      |EST. ROWS|COST|
+-----------------------------------------------
+|0 |NESTED-LOOP JOIN|          |1        |49  |
+|1 | TABLE SCAN     |t1        |1        |37  |
+|2 | TABLE SCAN     |t2(idx_d3)|200      |6190|
+===============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      conds([t1.c1 = t2.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter([t2.d2 > 5]), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) use_hash(T1 T2) index(T2 idx_d3) */* from T1, T2 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+==========================================
+|ID|OPERATOR   |NAME      |EST. ROWS|COST|
+------------------------------------------
+|0 |HASH JOIN  |          |1        |6291|
+|1 | TABLE SCAN|t1        |1        |37  |
+|2 | TABLE SCAN|t2(idx_d3)|200      |6190|
+==========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      equal_conds([t1.c1 = t2.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter([t2.d2 > 5]), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+# 场景2
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。右表T3带有range
+# 不禁止NL路径
+explain select /*+ leading(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 = 5;
+Query Plan
+====================================
+|ID|OPERATOR   |NAME|EST. ROWS|COST|
+------------------------------------
+|0 |HASH JOIN  |    |1        |89  |
+|1 | TABLE SCAN|t1  |1        |37  |
+|2 | TABLE GET |t3  |1        |52  |
+====================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      equal_conds([t1.c1 = t3.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T3) use_nl(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |37  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE GET      |t3  |1        |52  |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      conds([t1.c1 = t3.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T3) use_hash(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 = 5;
+Query Plan
+====================================
+|ID|OPERATOR   |NAME|EST. ROWS|COST|
+------------------------------------
+|0 |HASH JOIN  |    |1        |89  |
+|1 | TABLE SCAN|t1  |1        |37  |
+|2 | TABLE GET |t3  |1        |52  |
+====================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      equal_conds([t1.c1 = t3.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+# 场景2(2)
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。右表T3带有range
+# 不禁止NL路径
+explain select /*+ leading(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+====================================
+|ID|OPERATOR   |NAME|EST. ROWS|COST|
+------------------------------------
+|0 |HASH JOIN  |    |1        |210 |
+|1 | TABLE SCAN|t1  |1        |37  |
+|2 | TABLE SCAN|t3  |200      |108 |
+====================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      equal_conds([t1.c1 = t3.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T3) use_nl(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |37  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE SCAN     |t3  |200      |108 |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      conds([t1.c1 = t3.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T3) use_hash(T1 T3) */* from T1, T3 where c1 = d1 and c2 = 5 and d2 > 5;
+Query Plan
+====================================
+|ID|OPERATOR   |NAME|EST. ROWS|COST|
+------------------------------------
+|0 |HASH JOIN  |    |1        |210 |
+|1 | TABLE SCAN|t1  |1        |37  |
+|2 | TABLE SCAN|t3  |200      |108 |
+====================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t3.d1], [t3.d2]), filter(nil), 
+      equal_conds([t1.c1 = t3.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t3.d1], [t3.d2]), filter(nil), 
+      access([t3.d1], [t3.d2]), partitions(p0)
+
+# 场景3
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。右表T4带有下推的主键range
+# 不禁止NL路径
+explain select /*+ leading(T1 T4) */* from T1, T4 where c1 = d1 and c2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |37  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE GET      |t4  |2        |37  |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t4.d1], [t4.d2]), filter(nil), 
+      conds(nil), nl_params_([t1.c1])
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t4.d1], [t4.d2]), filter(nil), 
+      access([t4.d1], [t4.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T4) use_nl(T1 T4) */* from T1, T4 where c1 = d1 and c2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |37  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE GET      |t4  |2        |37  |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t4.d1], [t4.d2]), filter(nil), 
+      conds(nil), nl_params_([t1.c1])
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t4.d1], [t4.d2]), filter(nil), 
+      access([t4.d1], [t4.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T4) use_hash(T1 T4) */* from T1, T4 where c1 = d1 and c2 = 5;
+Query Plan
+====================================
+|ID|OPERATOR   |NAME|EST. ROWS|COST|
+------------------------------------
+|0 |HASH JOIN  |    |1        |797 |
+|1 | TABLE SCAN|t1  |1        |37  |
+|2 | TABLE SCAN|t4  |1000     |433 |
+====================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t4.d1], [t4.d2]), filter(nil), 
+      equal_conds([t1.c1 = t4.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t4.d1], [t4.d2]), filter(nil), 
+      access([t4.d1], [t4.d2]), partitions(p0)
+
+# 场景4
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，NL是更优计划。右表T5带有下推的索引range
+# 不禁止NL路径
+explain select /*+ leading(T1 T5) index(T5 idx_d1) */* from T1, T5 where c1 = d1 and c2 = 5;
+Query Plan
+===============================================
+|ID|OPERATOR        |NAME      |EST. ROWS|COST|
+-----------------------------------------------
+|0 |NESTED-LOOP JOIN|          |1        |37  |
+|1 | TABLE SCAN     |t1        |1        |37  |
+|2 | TABLE SCAN     |t5(idx_d1)|2        |94  |
+===============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t5.d1], [t5.d2]), filter(nil), 
+      conds(nil), nl_params_([t1.c1])
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t5.d1], [t5.d2]), filter(nil), 
+      access([t5.d1], [t5.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T5) use_nl(T1 T5) index(T5 idx_d1) */* from T1, T5 where c1 = d1 and c2 = 5;
+Query Plan
+===============================================
+|ID|OPERATOR        |NAME      |EST. ROWS|COST|
+-----------------------------------------------
+|0 |NESTED-LOOP JOIN|          |1        |37  |
+|1 | TABLE SCAN     |t1        |1        |37  |
+|2 | TABLE SCAN     |t5(idx_d1)|2        |94  |
+===============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t5.d1], [t5.d2]), filter(nil), 
+      conds(nil), nl_params_([t1.c1])
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t5.d1], [t5.d2]), filter(nil), 
+      access([t5.d1], [t5.d2]), partitions(p0)
+
+explain select /*+ leading(T1 T5) use_hash(T1 T5) index(T5 idx_d1) */* from T1, T5 where c1 = d1 and c2 = 5;
+Query Plan
+==========================================
+|ID|OPERATOR   |NAME      |EST. ROWS|COST|
+------------------------------------------
+|0 |HASH JOIN  |          |1        |6295|
+|1 | TABLE SCAN|t1        |1        |37  |
+|2 | TABLE SCAN|t5(idx_d1)|1000     |5931|
+==========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t5.d1], [t5.d2]), filter(nil), 
+      equal_conds([t1.c1 = t5.d1]), other_conds(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t5.d1], [t5.d2]), filter(nil), 
+      access([t5.d1], [t5.d2]), partitions(p0)
+
+# 场景5
+# 表T1共1行，且有过滤条件c2 = 5，估计出的行数
+# 远小于1，只能生成NL计划。不禁止NL路径
+explain select /*+ leading(T1 T2) */* from T1, T2 where c1 < d1 and c2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |38  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE SCAN     |t2  |1000     |521 |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      conds([t1.c1 < t2.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) */* from T1, T2 where c1 != d1 and c2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |39  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE SCAN     |t2  |1000     |521 |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      conds([t1.c1 != t2.d1]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+explain select /*+ leading(T1 T2) */* from T1, T2 where c1 + d1 = 6 and c2 = 5;
+Query Plan
+=========================================
+|ID|OPERATOR        |NAME|EST. ROWS|COST|
+-----------------------------------------
+|0 |NESTED-LOOP JOIN|    |1        |38  |
+|1 | TABLE SCAN     |t1  |1        |37  |
+|2 | TABLE SCAN     |t2  |1000     |521 |
+=========================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      conds([t1.c1 + t2.d1 = 6]), nl_params_(nil)
+  1 - output([t1.c1], [t1.c2]), filter([t1.c2 = 5]), 
+      access([t1.c1], [t1.c2]), partitions(p0)
+  2 - output([t2.d1], [t2.d2], [t2.d3]), filter(nil), 
+      access([t2.d1], [t2.d2], [t2.d3]), partitions(p0)
+
+USE NL_RIGHT_FULL_SCAN;
+DROP DATABASE IF EXISTS NL_RIGHT_FULL_SCAN;

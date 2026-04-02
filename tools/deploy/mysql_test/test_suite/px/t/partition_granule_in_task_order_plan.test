@@ -1,0 +1,73 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhouhaiyu.zhy
+#owner group: sql3
+# tags: optimizer
+
+--source mysql_test/include/bigvarchar_64K.inc
+
+--disable_warnings
+drop database if exists muhangtest;
+drop table if exists t1;
+drop table if exists t2;
+create database muhangtest;
+use muhangtest;
+--enable_warnings
+
+--result_format 4
+
+create table t1_sort(c1 int, c2 longtext, c3 double, c4 longtext, c5 char(38), primary key(c1)) COMPRESSION = 'none' partition by range(c1)
+(partition p0 values less than(50),
+partition p1 values less than(100),
+partition p2 values less than(150),
+partition p3 values less than(300),
+partition p4 values less than(450),
+partition p5 values less than(600));
+
+--disable_query_log
+--disable_result_log
+--let $loop=599
+while  ($loop)
+{
+#bug 6626386
+eval insert into t1_sort values($loop, $a, 1.25, $a, 'abcd');
+dec $loop;
+}
+--enable_result_log
+--enable_query_log
+
+--echo merge
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('muhangtest', 'T1_SORT', method_opt=>'for all columns size auto');
+--echo end merge
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name='t1_sort' order by table_id desc limit 1, table_id, 1);
+#let $__macro_count__=query_get_value(select count(*) as macro_count from oceanbase.__all_virtual_partition_sstable_macro_info where table_id=$__table_id__, macro_count, 1);
+#--echo $__macro_count__
+disconnect obsys;
+connection default;
+
+explain select /*+parallel(2)*/ c1 from t1_sort partition(p3, p5) order by c1 desc;
+
+# 单zone 2obs的老版本完美复现bug 19364489
+select /*+parallel(2)*/ c1 from t1_sort partition(p3, p5) order by c1 desc;
+
+create table t1(c1 int, primary key(c1)) COMPRESSION = 'none' partition by range(c1)
+(partition p0 values less than(50),
+partition p1 values less than(100),
+partition p2 values less than(150),
+partition p3 values less than(300),
+partition p4 values less than(450),
+partition p5 values less than(600));
+
+insert into t1 values(1),(51),(101),(151),(301),(451);
+
+create table t2(c1 int);
+insert into t2 select * from t1 order by c1 limit 3;
+select * from t2;
+
+drop table t1;
+drop table t2;

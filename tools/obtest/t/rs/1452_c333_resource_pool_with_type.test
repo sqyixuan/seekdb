@@ -1,0 +1,201 @@
+# owner: rongxuan.lc
+# description: 本case是为了建resource pool的时候指定replica_type;满足一个zone内既有L又有F的需求；
+###本case主要设计到locality变更的检查;宕机；迁移,少副本等问题；
+
+ob1=OBI(cluster=3:3:3,  proxy_num=1, ct_num = 0);
+ob1.reboot;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =50;
+ob1.mysql alter system set server_data_copy_out_concurrency = 50;
+ob1.mysql alter system set data_copy_concurrency = 200;
+#ob1.mysql alter system set enable_rebalance = false;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+
+###检查locality变更：
+###加L副本；
+###减L副本；
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3'),replica_type = 'L';
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2', 'pool_3'), locality='F@z1,F@z2,F@z3,L@z1', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+sleep 3;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 20;
+create table t2(c1 int primary key, c2 int) partition by hash(c1) partitions 20;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 4, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 1, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 1, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,F@z3,L@z1,L@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,F@z3,L@z1,L@z2%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 5, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+
+
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,L@z1,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,L@z1,F@z3%' and job_status = 'SUCCESS', 1, 240;
+###检查结果
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%,%,%,%,%', 0, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 4, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 1, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 1, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+###加L副本；
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,F@z3,L@z2,L@z1';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,F@z3,L@z2,L@z1%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 5, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+
+###减F副本；
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,L@z1,L@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,L@z1,L@z2%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 4, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 2, 2;
+source include/check_partition_placememt.inc;
+
+
+###加F副本；
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z2,L@z1,L@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z2,L@z1,L@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 5, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+
+
+###减F副本；
+ob1.mysql alter tenant tenant_1 locality='F@z1,F@z3,L@z1,L@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,F@z3,L@z1,L@z2%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 4, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 2, 2;
+source include/check_partition_placememt.inc;
+
+
+###加F副本；
+ob1.mysql alter tenant tenant_1 locality='F@z1,L@z1,L@z2,F@z2,F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where sql_text like '%alter tenant tenant_1 locality%F@z1,L@z1,L@z2,F@z2,F@z3%' and job_status = 'SUCCESS', 1, 240;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id group by table_id, partition_id) s, 5, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id) s, 2, 2;
+ob1.check_until_timeout select min(c) from (select count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id) s, 3, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 5 group by table_id, partition_id, 2, 2;
+ob1.check_until_timeout select distinct count(*) c from gv\$partition where tenant_id = $tenant_id and replica_type = 0 group by table_id, partition_id, 3, 2;
+source include/check_partition_placememt.inc;
+
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+###L_UNIT永久下线；
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where zone = 'z2' and replica_type = 5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $dest);
+ob1.mysql alter system set  server_permanent_offline_time='20s';
+$obi.force_stop;
+ob1.check_until_timeout select count(*)>=1 c from oceanbase.__all_unit where migrate_from_svr_ip != "", 1, 120;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 120;
+$obi.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 30; 
+###手动迁移l_unit;
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone = 'z2' and replica_type = 5, unit_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z2' except select concat(svr_ip,":",svr_port) from __all_unit where (resource_pool_id = $tenant_id or unit_id=$unit_id) and zone = 'z2', addr, 1);
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest';
+--enable_query_log
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 600;
+###F——unit永久下线；
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where zone = 'z3' and resource_pool_id = $tenant_id, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $dest);
+ob1.mysql alter system set  server_permanent_offline_time='20s';
+$obi2.force_stop;
+ob1.check_until_timeout select count(*)>=1 c from oceanbase.__all_unit where migrate_from_svr_ip != "", 1, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 600;
+$obi2.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 30;
+###手动迁移F——unit;
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where zone = 'z3' and resource_pool_id = $tenant_id, unit_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) from __all_unit where (resource_pool_id = $tenant_id + 1 or unit_id=$unit_id) and zone = 'z3', addr, 1);
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest';
+--enable_query_log
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 600;
+###检查表的数据都对；
+source include/check_partition_placememt.inc;
+### F/L unit同时下线
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where zone = 'z2' and replica_type = 5, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $dest);
+ob1.mysql alter system set  server_permanent_offline_time='20s';
+$obi.force_stop;
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_unit where zone = 'z3' and resource_pool_id = $tenant_id, addr, 1);
+let $obi2 = deploy_get_value(ob1.get_obs_by_addr $dest);
+ob1.mysql alter system set  server_permanent_offline_time='20s';
+$obi2.force_stop;
+ob1.check_until_timeout select count(*)>=1 c from oceanbase.__all_unit where migrate_from_svr_ip != "", 1, 600;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 600;
+source include/check_partition_placememt.inc;
+
+$obi.start;
+$obi2.start;
+ob1.check_until_timeout select count(*) from __all_server where  start_service_time <= 0, 0, 30;
+
+##drop 一个F副本；
+let $partition_id = 0;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't2', table_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $table_id and partition_id = $partition_id and zone = 'z2' and replica_type = 0, addr, 1);
+ob1.mysql alter system drop replica partition_id = '$partition_id%0@$table_id' server='$dest';
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = $partition_id, 4, 30;
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = $partition_id, 5, 30;
+source include/check_partition_placememt.inc;
+
+##drop 掉一个L副本；
+let $partition_id = 1;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't2', table_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $table_id and partition_id = $partition_id and zone = 'z2' and replica_type = 5, addr, 1);
+ob1.mysql alter system drop replica partition_id = '$partition_id%0@$table_id' server='$dest';
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = $partition_id, 4, 30;
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = $partition_id, 5, 30;
+source include/check_partition_placememt.inc;
+
+##同时drop 掉F和L副本；
+let $partition_id = 2;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't2', table_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $table_id and partition_id = $partition_id and zone = 'z2' and replica_type = 0, addr, 1);
+ob1.mysql alter system drop replica partition_id = '$partition_id%0@$table_id' server='$dest';
+let $partition_id = 3;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't2', table_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $table_id and partition_id = $partition_id and zone = 'z2' and replica_type = 5, addr, 1);
+ob1.mysql alter system drop replica partition_id = '$partition_id%0@$table_id' server='$dest';
+
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = 2, 5, 30;
+ob1.check_until_timeout select count(*) from gv\$partition where table_id = $table_id and partition_id = 3, 5, 30;
+source include/check_partition_placememt.inc;

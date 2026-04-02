@@ -1,0 +1,88 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: peihan.dph
+# owner group: SQL2
+# tags: optimizer
+# description:
+#
+# 测试 单dfo调度core问题
+
+
+connect (syscon, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+--error 0,5157
+drop tenant dump_tenant force;
+--error 0,4650
+drop resource pool new_pool1;
+--error 0,4648
+drop resource unit new_box1;
+--disable_query_log
+#eval create resource unit new_box1 max_cpu 1, memory_size '2G';
+let $zone_name=query_get_value(select zone from oceanbase.__all_zone where zone != '' limit 1, zone, 1);
+let $obs_num = query_get_value(select count(1) as cnt from oceanbase.__all_server group by zone limit 1,cnt, 1);
+#eval create resource pool new_pool1 unit = 'new_box1', unit_num = $obs_num;
+#eval create tenant dump_tenant primary_zone='$zone_name', resource_pool_list('new_pool1') set ob_tcp_invited_nodes='%';
+
+let $t_id = query_get_value(select tenant_id as t_id from oceanbase.__all_tenant where tenant_name = 'sys' limit 1,t_id, 1);
+--enable_result_log
+--enable_query_log
+--source mysql_test/include/check_tenant_sync.inc
+sleep 2;
+
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+set global parallel_servers_target=10;
+alter system set _sort_area_size='2M';
+alter system set _hash_area_size='4M';
+
+sleep 2;
+
+--disable_warnings
+--error 0,1051
+drop table t111_var;
+--error 0,1051
+drop table t333_var;
+--enable_warnings
+
+set  ob_query_timeout=300000000;
+set  ob_trx_timeout=300000000;
+create table t111_var(c0 bigint primary key,c1 varchar(4000), c2 varchar(4000), c3 varchar(4000), c4 varchar(4000), c5 varchar(4000),c6 varchar(4000), c7 longtext)
+partition by hash(c0) partitions 10;
+insert into t111_var values(1,repeat('ab',200),repeat('ab',200),repeat('ab',200),repeat('ab',200),repeat('ab',200),repeat('ab',200),repeat('abcdefghij',400));
+insert into t111_var select c0+1,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+10,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+100,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+1000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+10000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+100000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+1000000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+10000000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+100000000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+1000000000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+insert into t111_var select c0+10000000000,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+commit;
+
+create table t333_var(c0 bigint primary key,c1 varchar(4000), c2 varchar(4000), c3 varchar(4000), c4 varchar(4000), c5 varchar(4000),c6 varchar(4000), c7 longtext)
+partition by hash(c0) partitions 5;
+insert into t333_var select c0+1,c1,c2,c3,c4,c5,c6,c7 from t111_var;
+commit;
+--result_format 4
+--explain_protocol 1
+
+set  ob_query_timeout=200000000;
+set  ob_trx_timeout=200000000;
+
+select /*+ dynamic_sampling(0) use_px parallel(1) leading(a b) use_hash(b) pq_distribute(b hash hash)*/
+count(*),sum(a.c0),sum(b.c0),
+sum(length(a.c1)),sum(length(a.c2)),sum(length(a.c3)),sum(length(a.c4)),sum(length(a.c5)),sum(length(a.c6)),sum(length(a.c7)),
+sum(length(b.c1)),sum(length(b.c2)),sum(length(b.c3)),sum(length(b.c4)),sum(length(b.c5)),sum(length(b.c6)),sum(length(b.c7))
+from (select a.c0 as c00, a.* from t111_var a )a join t333_var b  on a.c00=b.c0 where a.c0 >=b.c0 and  sleep(0.03) +b.c0>0;
+#select /*+ use_px parallel(1)  leading(a b) use_hash(b) pq_distribute(b hash hash)*/ count(*),sum(a.c0),sum(b.c0) from (select a.c0 as c00, a.* from t111_var a )a join t333_var b  on a.c00=b.c0 where a.c0 >=b.c0 and  sleep(0.03) +b.c0>0;
+#select /*+ use_px parallel(1)  leading(a b) use_hash(b) pq_distribute(b hash hash)*/ SQL_CALC_FOUND_ROWS * from (select a.c0 as c00, a.* from t111_var a )a join t333_var b  on a.c00=b.c0 where a.c0 >=b.c0 and  sleep(0.01) +b.c0>0 order by a.c0 limit 1;
+
+connection syscon;
+#drop tenant dump_tenant force;
+#drop resource pool new_pool1;
+#drop resource unit new_box1;
+

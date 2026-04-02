@@ -108,12 +108,12 @@ int ObVecITaskExecutor::load_task_from_inner_table()
     field2.field_name_ = "status";
     field2.data_.uint_ = ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_PREPARE;
     ObVecIndexAsyncTaskOption &task_opt = index_ls_mgr->get_async_task_opt();
-
+    
     if (OB_FAIL(filters.push_back(field1))) {
       LOG_WARN("fail to push back field", K(ret));
     } else if (OB_FAIL(filters.push_back(field2))) {
       LOG_WARN("fail to push back field", K(ret));
-    } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::resume_task_from_inner_table(tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME,
+    } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::resume_task_from_inner_table(tenant_id_, OB_ALL_VECTOR_INDEX_TASK_TNAME, 
         false, filters, ls_, *sql_proxy, task_opt))) {
       LOG_WARN("fail to load task from inner table", K(ret));
     }
@@ -332,7 +332,6 @@ int ObVecITaskExecutor::check_task_result(ObVecIndexAsyncTaskCtx *task_ctx)
         LOG_WARN("vector index async task is finish and not retry anymore", KR(ret), KPC(task_ctx));
       } else {
         task_ctx->task_status_.status_ = ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_PREPARE;
-        task_ctx->task_status_.last_error_code_ = task_ctx->task_status_.ret_code_;
         task_ctx->task_status_.ret_code_ = VEC_ASYNC_TASK_DEFAULT_ERR_CODE; // reset ret_code
         LOG_WARN("vector index async task is finish and will do retry", KR(ret), KPC(task_ctx));
         // check task is canceled
@@ -348,7 +347,6 @@ int ObVecITaskExecutor::check_task_result(ObVecIndexAsyncTaskCtx *task_ctx)
       }
       if (task_ctx->task_status_.ret_code_ == OB_SUCCESS && task_ctx->task_status_.task_type_ == OB_VECTOR_ASYNC_HYBRID_VECTOR_EMBEDDING && !task_ctx->task_status_.all_finished_) {
         task_ctx->task_status_.status_ = ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_PREPARE;
-        task_ctx->task_status_.last_error_code_ = task_ctx->task_status_.ret_code_;
         task_ctx->task_status_.ret_code_ = VEC_ASYNC_TASK_DEFAULT_ERR_CODE; // reset ret_code
       }
       // task need retry or go to end

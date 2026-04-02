@@ -1,0 +1,337 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: link.zt
+# owner group: SQL1
+# tags: optimizer
+--result_format 3
+# description: 验证采样算子的功能
+
+--disable_warnings
+DROP DATABASE IF EXISTS SAMPLE_SCAN;
+--enable_warnings
+CREATE DATABASE SAMPLE_SCAN;
+USE SAMPLE_SCAN;
+# these tables are used to test syntax.
+create table empty_1 (c1 int, c2 int);
+create table empty_2 (c1 int, c2 int);
+
+CREATE TABLE `tpart` (
+    `pk` int(11) DEFAULT NULL,
+    `c1` int(11) DEFAULT NULL,
+    `c2` varchar(10) DEFAULT NULL,
+    KEY `g_c1` (`c1`) GLOBAL,
+    KEY `l_c2` (`c2`) LOCAL);
+
+CREATE TABLE `tt` (
+    `pk` int(11) NOT NULL,
+    `v1` varchar(65536) DEFAULT NULL,
+    `v2` varchar(65536) DEFAULT NULL,
+    `v3` varchar(65536) DEFAULT NULL,
+    `v4` varchar(65536) DEFAULT NULL,
+    `v5` varchar(4096) DEFAULT NULL,
+    PRIMARY KEY (`pk`),
+    KEY `i1` (`v5`) GLOBAL  BLOCK_SIZE 16384,
+    KEY `tt_i1` (`v5`) GLOBAL  BLOCK_SIZE 16384
+    ) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'none' REPLICA_NUM = 3 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 2097152 PCTFREE = 10
+partition by key(pk) partitions 2;
+
+# t1 is a 10000-row table, 5000 in memtable, 5000 in sstable
+create table t1(c1 int, c2 int);
+--disable_query_log
+--disable_result_log
+
+--let $count=1
+while($count < 5000)
+{
+    --let $stmt=INSERT INTO t1 VALUES($count, 3)
+    eval $stmt;
+    inc $count;
+}
+INSERT INTO tpart select c1, c2, c2 from t1;
+
+--let $count=5000
+
+--disable_query_log
+--disable_result_log
+while($count < 10000)
+{
+    --let $stmt=INSERT INTO t1 VALUES($count, 2)
+    eval $stmt;
+    inc $count; 
+}
+INSERT INTO tpart select c1, c2, c2 from t1 where c1 >= 5000;
+--enable_query_log
+--enable_result_log
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+call dbms_stats.gather_table_stats('SAMPLE_SCAN', 'T1');
+call dbms_stats.gather_table_stats('SAMPLE_SCAN', 'TPART');
+
+--result_format 4
+
+select /*+no_use_px*/ * FROM empty_1;
+
+--echo # alias, not SAMPLE SCAN
+select /*+no_use_px*/ * FROM empty_2 SAMPLE;
+
+--echo # sampling scope
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK ALL (3);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (3);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (3);
+
+--echo # table alias, not sampling scope
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (3) BASE;
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (3) INCR;
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (3) whatever;
+
+--echo # valid percentage: [0.000001, 100)
+--error 5730
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (100);
+
+--error 5730
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (0.0000002);
+
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (20) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (40) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (40) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (80) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (80) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE (99) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (20) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (40) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (40) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (80) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (80) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK (99) SEED (23333);
+
+--echo # incremental data
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE INCR (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE INCR (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE INCR (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE INCR (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE INCR (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE INCR (20) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK INCR (20) SEED (23333);
+
+--echo # base data
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BASE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BASE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BASE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BASE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BASE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BASE (20) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE BLOCK BASE (20) SEED (23333);
+
+# sample
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3);
+
+# sample block
+select /*+no_use_px*/ * FROM empty_1 SAMPLE BLOCK (3);
+
+# sample with seed
+select /*+no_use_px*/ * FROM empty_2 SAMPLE (3) SEED(12345);
+
+# sample with seed
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345);
+
+# sample with multi-tables; 
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345), empty_2;
+
+# sample with multi-tables; 
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345), empty_2 SAMPLE BLOCK (6.66) SEED(45678);
+
+select /*+no_use_px*/ COUNT(*) FROM t1 SAMPLE (0.000001) SEED(23);
+select /*+no_use_px*/ * FROM t1 SAMPLE (0.000001) SEED(23);
+select /*+no_use_px*/ COUNT(*) FROM t1 SAMPLE (3.1415926) SEED(233);
+select /*+no_use_px*/ * FROM t1 SAMPLE (3.1415926) SEED(233);
+select /*+no_use_px*/ COUNT(*) FROM t1 SAMPLE (10) SEED(2333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (10) SEED(2333);
+select /*+no_use_px*/ COUNT(*) FROM t1 SAMPLE (99) SEED(23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (99) SEED(23333);
+select /*+no_use_px*/ * FROM t1 SAMPLE (40) SEED(2333) join t1 SAMPLE (20) SEED(2233) t2 where t1.c1 = t2.c1;
+
+select /*+no_use_px*/ COUNT(*) FROM t1 SAMPLE (0.4) SEED(12345);
+select /*+no_use_px*/ * FROM t1 SAMPLE (0.4) SEED(12345);
+select /*+no_use_px*/ * FROM t1 SAMPLE (0.4) SEED(12345);
+
+create table t2(c1 int, c2 int, primary key(c1)) partition by hash(c1) partitions 8;
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+
+--disable_query_log
+--let $count=1
+while($count < 5000)
+{
+    --let $stmt=INSERT INTO t2 VALUES($count, 3)
+    eval $stmt;
+    inc $count; 
+}
+--let $count=5000
+--disable_query_log
+while($count < 10000)
+{
+    --let $stmt=INSERT INTO t2 VALUES($count, 2)
+    eval $stmt;
+    inc $count; 
+}
+--enable_query_log
+
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+call dbms_stats.gather_table_stats('SAMPLE_SCAN', 'T2');
+
+select /*+no_use_px*/ * FROM empty_1;
+
+--echo # alias, not SAMPLE SCAN
+select /*+no_use_px*/ * FROM empty_2 SAMPLE;
+
+--echo # sampling scope
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK ALL (3);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (3);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (3);
+
+--echo # table alias, not sampling scope
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (3) BASE;
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (3) INCR;
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (3) whatever;
+
+--echo # valid percentage: [0.000001, 100)
+--error 5730
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (100);
+
+--error 5730
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (0.0000002);
+
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (20) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (40) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (40) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (80) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (80) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE (99) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (20) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (40) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (40) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (80) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (80) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK (99) SEED (23333);
+
+--echo # incremental data
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE INCR (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE INCR (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE INCR (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE INCR (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE INCR (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE INCR (20) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK INCR (20) SEED (23333);
+
+--echo # base data
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BASE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BASE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BASE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BASE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BASE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BASE (20) SEED (23333);
+
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (3) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (3) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (10) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (10) SEED (23333);
+EXPLAIN select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (20) SEED (23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE BLOCK BASE (20) SEED (23333);
+
+# sample
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3);
+
+# sample block
+select /*+no_use_px*/ * FROM empty_1 SAMPLE BLOCK (3);
+
+# sample with seed
+select /*+no_use_px*/ * FROM empty_2 SAMPLE (3) SEED(12345);
+
+# sample with seed
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345);
+
+# sample with multi-tables; 
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345), empty_2;
+
+# sample with multi-tables; 
+select /*+no_use_px*/ * FROM empty_1 SAMPLE (3.1415926) SEED(12345), empty_2 SAMPLE BLOCK (6.66) SEED(45678);
+
+select /*+no_use_px*/ COUNT(*) FROM t2 SAMPLE (0.000001) SEED(23);
+select /*+no_use_px*/ * FROM t2 SAMPLE (0.000001) SEED(23);
+select /*+no_use_px*/ COUNT(*) FROM t2 SAMPLE (3.1415926) SEED(233);
+select /*+no_use_px*/ * FROM t2 SAMPLE (3.1415926) SEED(233);
+select /*+no_use_px*/ COUNT(*) FROM t2 SAMPLE (10) SEED(2333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (10) SEED(2333);
+select /*+no_use_px*/ COUNT(*) FROM t2 SAMPLE (99) SEED(23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (99) SEED(23333);
+select /*+no_use_px*/ * FROM t2 SAMPLE (40) SEED(2333) join t2 SAMPLE (20) SEED(2233) t3 where t2.c1 = t3.c1;
+
+select /*+no_use_px*/ COUNT(*) FROM t2 SAMPLE (0.4) SEED(12345);
+select /*+no_use_px*/ * FROM t2 SAMPLE (0.4) SEED(12345);
+select /*+no_use_px*/ * FROM t2 SAMPLE (0.4) SEED(12345);
+
+# sample with sample scan on global index
+SELECT /*+NO_USE_PX*/ col0 FROM (SELECT col0, bucket, ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY col0) rn FROM (SELECT col0, NTILE(65) OVER (ORDER BY col0) bucket FROM (SELECT /*+index(tt i1)*/ `pk` AS col0 FROM `tt` SAMPLE BLOCK(10) LIMIT 200000) a) b) c WHERE rn = 1 GROUP BY col0 ORDER BY col0;
+
+select /*+no_use_px,index(tpart g_c1)*/ COUNT(*) FROM tpart SAMPLE (0.4) SEED(12345);
+select /*+no_use_px,index(tpart g_c1)*/ * FROM tpart SAMPLE (0.4) SEED(12345);
+select /*+no_use_px,index(tpart g_c1)*/ * FROM tpart SAMPLE (0.4) SEED(12345);
+
+select /*+no_use_px,index(tpart g_c1)*/ COUNT(*) FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+select /*+no_use_px,index(tpart g_c1)*/ * FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+select /*+no_use_px,index(tpart g_c1)*/ * FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+
+select /*+no_use_px,index(tpart l_c2)*/ COUNT(*) FROM tpart SAMPLE  (0.4) SEED(12345);
+select /*+no_use_px,index(tpart l_c2)*/ * FROM tpart SAMPLE  (0.4) SEED(12345);
+select /*+no_use_px,index(tpart l_c2)*/ * FROM tpart SAMPLE  (0.4) SEED(12345);
+
+select /*+no_use_px,index(tpart l_c2)*/ COUNT(*) FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+select /*+no_use_px,index(tpart l_c2)*/ * FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+select /*+no_use_px,index(tpart l_c2)*/ * FROM tpart SAMPLE BLOCK (0.4) SEED(12345);
+alter system set minor_compact_trigger = 2;
+
+USE SAMPLE_SCAN;
+drop database SAMPLE_SCAN;

@@ -1,0 +1,93 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+# owner: yibo.tyf
+# owner group: SQL1
+# tags: optimizer
+# description: test simple pushdown
+
+--disable_warnings
+drop table if exists t1, t2;
+drop view if exists t1_sum, t1_sum_count, t1_sum_with_limit, t1_sum_with_win_func;
+--enable_warnings
+
+create table t1 (c1 int, c2 int, c3 int);
+create table t2 (c1 int, c2 int, c3 int);
+create view t1_sum as (select c1, c2, sum(c3) as agg, case when c2 >= 0 then '+' else '-' end as sign from t1 where c1 < 10 group by c1,c2);
+create view t1_sum_count as (select c1, c2, count(agg) as agg_count from t1_sum where sign = '+' group by c2);
+create view t1_sum_with_limit as (select c1, c2, sum(c3) as agg, case when c2 >= 0 then '+' else '-' end as sign from t1 where c1 < 10 group by c1,c2 limit 5);
+#create view t1_sum_with_win_func as (select c1, c2, sum(c3) over(ROWS UNBOUNDED PRECEDING) as agg, case when c2 >= 0 then '+' else '-' end as sign from t1 where c1 < 10 group by c1,c2);
+
+--disable_query_log
+insert into t1 values (1,1,1), (2,1,2), (3,3,3), (4,3,4), (5,5,5), (6,5,6), (7,7,7), (8,7,8), (9,9,9), (10,9,10), (11,11,11), (12,11,12);
+insert into t2 values (1,1,1), (2,2,2), (3,3,3), (4,4,4), (5,5,5), (6,6,6), (7,7,7), (8,8,8), (9,9,9), (10,10,10), (11,11,11), (12,12,12);
+--enable_query_log
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('TEST', 't1', method_opt=>'for all columns size auto');
+call dbms_stats.gather_table_stats('TEST', 't2', method_opt=>'for all columns size auto');
+
+--disable_query_log
+--disable_result_log
+select/**/ count(*) from t1;
+select/**/ count(*) from t2;
+--enable_result_log
+--enable_query_log
+
+--explain_protocol 2
+--result_format 4
+
+# generated table not in joined table
+select * from t1_sum where c1 = 2 and c2 < 5 and sign = '+';
+select /*+no_rewrite*/ * from t1_sum where c1 = 2 and c2 < 5 and sign = '+';
+select * from t1_sum where (c1 = 2 or c2 < 5) and sign = '+';
+select /*+no_rewrite*/ * from t1_sum where (c1 = 2 or c2 < 5) and sign = '+';
+select * from t1_sum where c1 = 2 or (c2 < 5 and sign = '+');
+select /*+no_rewrite*/ * from t1_sum where c1 = 2 or (c2 < 5 and sign = '+');
+select * from t1_sum where c1 = 2 and c2 < 5 and agg > 10;
+select /*+no_rewrite*/ * from t1_sum where c1 = 2 and c2 < 5 and agg > 10;
+select * from t1_sum where (c1 = 2 or c2 < 5) and agg > 10;
+select /*+no_rewrite*/ * from t1_sum where (c1 = 2 or c2 < 5) and agg > 10;
+select * from t1_sum where c1 = 2 or (c2 < 5 and agg > 10);
+select /*+no_rewrite*/ * from t1_sum where c1 = 2 or (c2 < 5 and agg > 10);
+
+# generated table in joined table
+select * from t1_sum, t2 where t2.c1 = t1_sum.c1 and t1_sum.c2 < 5 and t1_sum.sign = '+';
+select /*+no_rewrite*/ * from t1_sum, t2 where t2.c1 = t1_sum.c1 and t1_sum.c2 < 5 and t1_sum.sign = '+';
+select * from t1_sum left join t2 on t2.c1 = t1_sum.c1 where t1_sum.c2 < 5;
+select /*+no_rewrite*/ * from t1_sum left join t2 on t2.c1 = t1_sum.c1 where t1_sum.c2 < 5;
+select * from t1_sum right join t2 on t2.c1 = t1_sum.c1 where t1_sum.c1 is null;
+select /*+no_rewrite*/ * from t1_sum right join t2 on t2.c1 = t1_sum.c1 where t1_sum.c1 is null;
+select * from t1_sum full outer join t2 on t2.c1 = t1_sum.c1 where t1_sum.c1 is null;
+select /*+no_rewrite*/ * from t1_sum full outer join t2 on t2.c1 = t1_sum.c1 where t1_sum.c1 is null;
+
+# multi pushdown
+select * from t1_sum_count where c1 = 2 and c2 < 5;
+select /*+no_rewrite*/ * from t1_sum_count where c1 = 2 and c2 < 5;
+select * from t1_sum_count where c1 = 2 or c2 < 5;
+select /*+no_rewrite*/ * from t1_sum_count where c1 = 2 or c2 < 5;
+
+# not pushdown if generated table has limit or window function
+select * from t1_sum_with_limit where c1 = 2 and c2 < 5 and sign = '+';
+select /*+no_rewrite*/ * from t1_sum_with_limit where c1 = 2 and c2 < 5 and sign = '+';
+select * from (select c1, c2, sum(c3) over(ROWS UNBOUNDED PRECEDING) as agg, case when c2 >= 0 then '+' else '-' end as sign from t1 where c1 < 10 group by c1,c2) t1_sum_with_win_func where c1 = 2 and c2 < 5 and sign = '+';
+select /*+no_rewrite*/ * from (select c1, c2, sum(c3) over(ROWS UNBOUNDED PRECEDING) as agg, case when c2 >= 0 then '+' else '-' end as sign from t1 where c1 < 10 group by c1,c2) t1_sum_with_win_func where c1 = 2 and c2 < 5 and sign = '+';
+
+# bug: 
+--explain_protocol 0
+select table_name, table_schema schema_name, table_comment description, substring(table_collation, 1, if(locate('_', table_collation),locate('_', table_collation) - 1,length(table_collation))) encoding, 
+       table_collation as collation, auto_increment,table_rows num_rows,engine 
+from information_schema.tables where table_type='BASE TABLE' and table_schema = 'test' and table_name in ('t1', 't2') order by 1;
+select /*+no_rewrite*/ table_name, table_schema schema_name, table_comment description, substring(table_collation, 1, if(locate('_', table_collation),locate('_', table_collation) - 1,length(table_collation))) encoding, 
+       table_collation as collation, auto_increment,table_rows num_rows,engine 
+from information_schema.tables where table_type='BASE TABLE' and table_schema = 'test' and table_name in ('t1', 't2') order by 1;
+--explain_protocol 2
+# 含有rollup的满足simple pushdown的不做改写
+select * from (select c1,c2,sum(c3) as sum_c from t1 group by c1,c2) t2_sum, t1 where t2_sum.c1=t1.c1; #simplify pushdown的改写
+select /*+no_rewrite*/* from (select c1,c2,sum(c3) as sum_c from t1 group by c1,c2) t2_sum, t1 where t2_sum.c1=t1.c1; #simplify pushdown的不改写
+select * from (select c1,c2,sum(c3) as sum_c from t1 group by c1,c2 with rollup) t2_sum, t1 where t2_sum.c1=t1.c1; #含有rollup的不改写
+
+--disable_warnings
+drop table if exists t1,t2; 
+drop view if exists t1_sum, t1_sum_count, t1_sum_with_limit, t1_sum_with_win_func;
+

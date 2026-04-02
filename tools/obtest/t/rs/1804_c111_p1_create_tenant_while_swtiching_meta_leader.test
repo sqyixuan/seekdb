@@ -1,0 +1,50 @@
+# owner: wangzhennan.wzn
+# owner group: RS
+# description: This case is used to test whether create_tenant can be successfully executed
+#              when switching meta tenant leader
+
+--disable_query_log
+ob1=OBI(cluster=1:1:1,init_unit_cpu=1);
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_auto_leader_switch='false';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 2;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+let $max_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant order by tenant_id desc limit 1, tenant_id, 1);
+let $meta_tenant_id = math($max_tenant_id + 1);
+let $user_tenant_id = math($meta_tenant_id + 1);
+
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+
+eval set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT wait_for signal';
+send CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_id=$meta_tenant_id, 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_ls_meta_table where tenant_id = $meta_tenant_id and ls_id = 1 and role = 1, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_ls_meta_table where tenant_id = $meta_tenant_id and ls_id = 1 and role = 2, 2, 60;
+ob1.check_until_timeout select count(refreshed_schema_version > 2) from oceanbase.__all_virtual_server_schema_info where tenant_id = $meta_tenant_id, 3, 60;
+
+ob_connect(conn_sys1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $follower_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_ls_meta_table where tenant_id = $meta_tenant_id and ls_id = 1 and role = 2, svr_ip, 1);
+let $follower_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_ls_meta_table where tenant_id = $meta_tenant_id and ls_id = 1 and svr_ip = '$follower_ip', svr_port, 1);
+
+eval alter system switch replica leader ls=1 server='$follower_ip:$follower_port' tenant='META_TENANT_FOR_$user_tenant_id';
+ob1.check_until_timeout select svr_ip from oceanbase.__all_ls_meta_table where tenant_id=$meta_tenant_id and ls_id = 1 and role = 1, $follower_ip, 20;
+
+eval set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT clear';
+sleep 2;
+eval set ob_global_debug_sync = 'now signal signal';
+sleep 2;
+ob1.check_until_timeout select status from __all_tenant where tenant_name='mysql', TENANT_STATUS_NORMAL, 300;

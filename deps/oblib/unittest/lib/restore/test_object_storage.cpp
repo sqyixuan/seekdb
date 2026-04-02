@@ -63,6 +63,8 @@ public:
 
   static void SetUpTestCase()
   {
+    ASSERT_EQ(OB_SUCCESS, init_oss_env());
+    ASSERT_EQ(OB_SUCCESS, init_cos_env());
     ASSERT_EQ(OB_SUCCESS, init_s3_env());
     if (enable_test) {
       ASSERT_EQ(OB_SUCCESS, set_storage_info(bucket, endpoint, secretid, secretkey,
@@ -71,6 +73,8 @@ public:
   }
   static void TearDownTestCase()
   {
+    fin_oss_env();
+    fin_cos_env();
     fin_s3_env();
   }
 
@@ -124,6 +128,10 @@ public:
                                   "host=%s&access_id=%s&access_key=%s",
                                   endpoint, secretid, secretkey))) {
         OB_LOG(WARN, "fail to set account", K(ret), K(endpoint), K(secretid), K(secretkey));
+      } else if (ObStorageType::OB_STORAGE_COS == storage_type) {
+        if (OB_FAIL(databuff_printf(account, sizeof(account), pos, "&appid=%s", appid))) {
+          OB_LOG(WARN, "fail to set appid", K(ret), K(pos), K(account), K(appid));
+        }
       } else if (ObStorageType::OB_STORAGE_S3 == storage_type) {
         if (OB_FAIL(databuff_printf(account, sizeof(account), pos, "&s3_region=%s", region))) {
           OB_LOG(WARN, "fail to set region", K(ret), K(pos), K(account), K(region));
@@ -1438,7 +1446,11 @@ TEST_F(TestObjectStorage, test_del_unmerged_parts)
     ASSERT_EQ(content_size, writer.get_length());
 
     ASSERT_EQ(OB_SUCCESS, util.del_unmerged_parts(uri));
-    if (ObStorageType::OB_STORAGE_S3 == info_base.get_type()) {
+    if (info_base.get_type() == ObStorageType::OB_STORAGE_OSS) {
+      ASSERT_EQ(OB_OBJECT_STORAGE_IO_ERROR, writer.close());
+    } else if (ObStorageType::OB_STORAGE_S3 == info_base.get_type()) {
+      ASSERT_EQ(OB_OBJECT_STORAGE_IO_ERROR, writer.close());
+    } else if (info_base.get_type() == ObStorageType::OB_STORAGE_COS) {
       ASSERT_EQ(OB_OBJECT_STORAGE_IO_ERROR, writer.close());
     }
     

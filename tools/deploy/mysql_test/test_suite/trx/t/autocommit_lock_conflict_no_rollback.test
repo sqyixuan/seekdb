@@ -1,0 +1,123 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: yunxing.cyx
+# owner group: Transaction
+# tags: trx
+# description: test autocommit will not rollback transaction when lock conflict and will retry
+#
+connect (sys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, oceanbase, $OBMYSQL_PORT);
+connect (c1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (c2,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (c3,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+--echo prepare table for test
+connection c1;
+set autocommit=on;
+connection c2;
+set autocommit=on;
+--disable_warnings
+drop table if exists ac_6005_test;
+--enable_warnings
+create table ac_6005_test(id int primary key, v int);
+insert into ac_6005_test values(1,1);
+
+--echo test1: isolation level is RC, transaction id will not changed
+connection c1;
+set session transaction isolation level read committed;
+begin;
+update ac_6005_test set v = v + 1;
+connection c2;
+let $session_c2=`select connection_id()`;
+set ob_query_timeout = 300000000; # 5min
+set session transaction isolation level read committed;
+send update ac_6005_test set v = v + 2;
+connection c3;
+let $xid_c2_1=`select TRANS_ID from oceanbase.__all_virtual_session_info where ID = $session_c2`;
+--sleep 2
+let $xid_c2_2=`select TRANS_ID from oceanbase.__all_virtual_session_info  where ID = $session_c2`;
+if ($xid_c2_1 != $xid_c2_2) {
+   --echo txid: $xid_c2_1 != $xid_c2_2
+}
+connection c1;
+rollback;
+connection c2;
+reap;
+if ($xid_c2_1 != $xid_c2_2) {
+   let $traceid=`select last_trace_id()`;
+   --echo the trace id is : $traceid
+}
+select * from ac_6005_test;
+select ob_transaction_id();
+
+--echo test2: isolation level is SERIALIZABLE, snapshot should re-acquired for each retry
+connection c1;
+begin;
+update ac_6005_test set v = v + 1;
+connection c2;
+set ob_query_timeout = 300000000; # 5min
+--let $session_c2=`select connection_id()`
+set session transaction isolation level SERIALIZABLE;
+send update ac_6005_test set v = v + 2;
+connection c3;
+begin;
+insert into ac_6005_test values(2,2);
+commit;
+let $xid_c2_1=`select TRANS_ID from oceanbase.__all_virtual_session_info where ID = $session_c2`;
+--sleep 2
+let $xid_c2_2=`select TRANS_ID from oceanbase.__all_virtual_session_info where ID = $session_c2`;
+if ($xid_c2_1 != $xid_c2_2) {
+   --echo txid: $xid_c2_1 != $xid_c2_2
+}
+connection c1;
+rollback;
+connection c2;
+reap;
+select * from ac_6005_test;
+select ob_transaction_id();
+
+--echo test3: other error will rollback transaction, here use primary key duplicate error (-1062)
+connection c2;
+--error 1062
+insert into ac_6005_test values(1,1);
+select ob_transaction_id();
+
+--echo test4: finally, retry timeout should rollback transaction
+connection c1;
+begin;
+update ac_6005_test set v = v + 1;
+connection c2;
+set ob_query_timeout = 5000000; # 10 seconds
+--error 1205
+update ac_6005_test set v = v + 2;
+select ob_transaction_id();
+select * from ac_6005_test;
+connection c1;
+rollback;
+
+--echo test5: 6005 retry 2 times and then reroute, the transaction should rollbacked
+connection c2;
+let $session_c2=`select connection_id()`;
+connection sys;
+--echo inject EN_LOCK_CONFLICT_RETRY_THEN_REROUTE, 2 times retry
+--disable_query_log
+eval alter system set_tp tp_no=2212,error_code=2,match=$session_c2,frequency=1;
+--enable_query_log
+connection c1;
+begin;
+update ac_6005_test set v = v + 1;
+connection c2;
+set ob_query_timeout = 5000000; # 10 seconds
+--error 5727
+update ac_6005_test set v = v + 2;
+select ob_transaction_id();
+select * from ac_6005_test;
+connection c1;
+rollback;
+
+--echo cleanup
+drop table ac_6005_test;
+disconnect sys;
+disconnect c1;
+disconnect c2;
+disconnect c3;

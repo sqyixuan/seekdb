@@ -94,7 +94,7 @@ private:
   };
   static const int64_t DELAY_TIME = 2 * 1000 * 1000;//2s
   static const int64_t RENEW_TIMEOUT = 2 * 1000 * 1000; //2s
-  static const int64_t REGISTER_TIME_SLEEP = 10 * 1000; //10ms
+  static const int64_t REGISTER_TIME_SLEEP = 2 * 1000 * 1000; //5s
 
 private:
   int start_heartbeat();

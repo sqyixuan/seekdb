@@ -1,0 +1,135 @@
+#owner: xiaoyi.xy
+#owner group: sql1
+# tags: optimizer
+##
+## Test Name: plan_cache_with_global_index.test
+
+--result_format 4
+
+connect (obsys, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+--disable_query_log
+--disable_result_log
+
+
+alter system flush plan cache;
+alter system set large_query_threshold = '1s';
+connect (conn_admin,$OBMYSQL_MS0,admin@sys,admin,*NO-ONE*,$OBMYSQL_PORT);
+
+--enable_query_log
+--enable_result_log
+--sleep 2
+connection default;
+select effective_tenant();
+set ob_trx_timeout = 1000000000;
+
+# --echo
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+create database xy_db;
+use xy_db;
+
+create table gidx_t (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+create index gkey on gidx_t(c2,c3) global;
+insert into gidx_t values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4);
+
+create table part_gidx_t (c1 int, c2 int, c3 int, c4 int, primary key (c1)) partition by hash(c1) partitions 4;
+create index gkey on part_gidx_t(c2,c3) global partition by hash(c2) partitions 5;
+insert into part_gidx_t values (1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4),(5,5,5,5);
+
+create table t(c1 int primary key, c2 int, c3 int, c4 int);
+insert into t values(1,1,1,1),(2,2,2,2),(3,3,3,3),(4,4,4,4);
+--sleep 1
+
+connection conn_admin;
+--source mysql_test/include/check_all_idx_ok.inc
+connection default;
+
+set autocommit = 0;
+--echo
+--echo ******************** remote or local global index plan ************
+--echo ********************select /*+ index(gidx_t gkey)*/ * from gidx_t where c2 = 1;***************
+--echo ********************select /*+ index(gidx_t gkey)*/ * from gidx_t where c2 = 1;***************
+--disable_query_log
+--disable_result_log
+select /*+ index(gidx_t gkey)*/ * from gidx_t where c2 = 1;
+select /*+ index(gidx_t gkey)*/ * from gidx_t where c2 = 1;
+--enable_result_log
+explain basic select/*+ index(gidx_t gkey)*/ * from gidx_t where c2 = 1;
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(gidx_t gkey)*/ * from gidx_t where c2 = ?";
+
+--echo
+--echo ******************** distribute  plan global index************
+--echo ********************select /*+ index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = 1 or c2 = 3;***************
+--echo ********************select /*+ index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = 1 or c2 = 3;***************
+--echo
+--disable_query_log
+--disable_result_log
+select /*+ index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+select /*+ index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+--enable_result_log
+explain basic select /*+index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+--echo // dist plan with global index is not supported for now, expect no record
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(part_gidx_t gkey)*/ * from part_gidx_t where c2 = ? or c2 = ?";
+
+--echo
+--echo ******************** distribute plan primary key************
+--echo ********************select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = 1 or c2 = 3;***************
+--echo ********************select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = 1 or c2 = 3;***************
+--disable_query_log
+--disable_result_log
+select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+--enable_result_log
+explain basic select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = 1 or c2 = 3;
+--echo // plan cache暂时不支持可能包含全局索引的分布式计划
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(part_gidx_t primary)*/ * from part_gidx_t where c2 = ? or c2 = ?";
+
+--echo
+--echo ******************** 既涉及主表也涉及全局索引表的查询************
+--echo ********************select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 = 1;***************
+--echo ********************select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 = 1;***************
+--disable_query_log
+--disable_result_log
+select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 = 1;
+select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 = 1;
+--enable_result_log
+explain basic select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 = 1;
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = ? and part_gidx_t.c2 = ?";
+
+--echo
+--echo ********************同一个表使用全局索引和主键************
+--echo ********************select /*+ index(t1 primary) index(t2 gkey)*/ * from part_gidx_t as t1, part_gidx_t as t2 where t1.c1 = 1 and t2.c2 = 2;***************
+--echo ********************select /*+ index(t1 primary) index(t2 gkey)*/ * from part_gidx_t as t1, part_gidx_t as t2 where t1.c1 = 1 and t2.c2 = 2;***************
+--disable_query_log
+--disable_result_log
+select /*+ index(t1 primary) index(t2 gkey)*/ * from part_gidx_t as t1, part_gidx_t as t2 where t1.c1 = 1 and t2.c2 = 2;
+select /*+ index(t1 primary) index(t2 gkey)*/ * from part_gidx_t as t1, part_gidx_t as t2 where t1.c1 = 1 and t2.c2 = 2;
+--enable_result_log
+explain basic select /*+ index(t1 primary) index(t2 gkey)*/ * from part_gidx_t as t1, part_gidx_t as t2 where t1.c1 = 1 and t2.c2 = 1;
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = ? and part_gidx_t.c2 = ?";
+
+--echo
+--echo ******************** 既涉及主表也涉及全局索引表的分布式查询， 不进cache************
+--echo ********************select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 > 1;***************
+--echo ********************select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 > 1;***************
+--disable_query_log
+--disable_result_log
+select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 > 1;
+select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 > 1;
+--enable_result_log
+explain basic select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = 1 and part_gidx_t.c2 > 1;
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like "select /*+ index(part_gidx_t gkey) */ * from t, part_gidx_t where t.c1 = ? and part_gidx_t.c2 > ?";
+
+commit;
+set autocommit = 1;
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+
+connection conn_admin;
+alter system set large_query_threshold = '100ms';
+
+

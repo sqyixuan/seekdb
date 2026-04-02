@@ -1,0 +1,206 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test the concurrency of transfer and partition splitting/exchange
+#####################
+ob1=OBI(cluster=1:1,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=8,memory_limit='10G',system_memory='3G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+ob1.mysql alter system set _transfer_start_trans_timeout = '10s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+# create mysql tenant
+ob1.mysql set @@session.ob_query_timeout = 1000000000;
+ob1.mysql CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+ob1.mysql CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1, F@z2" set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='mysql', tenant_id, 1);
+
+--echo
+--echo ## prepare data
+connection conn_mysql;
+create table t_split (k int primary key, c1 int, c2 longtext) partition by range(k) (
+  partition p0 values less than (10),
+  partition p1 values less than (20)
+);
+create index t_local_idx_split on t_split(k);
+
+let $t_split_id = deploy_get_value(ob1.select select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name='t_split' and role='LEADER', table_id, 1);
+let $p1_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name='t_split' and role='LEADER' and partition_name='p1', tablet_id, 1);
+let $p1_lob_meta_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name like '%AUX_LOB_META%' and data_table_id = $t_split_id and role = 'LEADER' and partition_name = 'p1', tablet_id, 1);
+connection conn_mysql;
+select table_id, object_id, tablet_id, table_name, partition_name, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER';
+
+--echo
+--echo ##################### 1. split partition when transfer getting related table schema #####################
+--echo
+--echo ## 1.1 block transfer when transfer getting related table schema
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_GET_RELATED_TABLE_SCHEMAS wait_for signal_get_related";
+ob1.mysql alter system set _transfer_process_lock_tx_timeout = '1000s' tenant mysql;
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+# make sure debug sync has tasken effect
+sleep 5;
+--echo
+--echo ## 1.2. split partition
+connection conn_mysql;
+alter table t_split reorganize partition p0 into(
+  partition p0_0 values less than (5),
+  partition p0_1 values less than (10)
+);
+ob1.check_until_timeout select count(*) from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name like '%AUX_LOB_META%' and data_table_id = $t_split_id and role = 'LEADER' and partition_name = 'p0_1', 1, 60;
+--echo
+--echo ## 1.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_get_related";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id=$mysql_tenant_id and tablet_list like "%$p1_tablet_id%$p1_lob_meta_tablet_id%", 1, 1;
+select table_id, object_id, tablet_id, table_name, partition_name, ls_id from oceanbase.DBA_OB_TABLE_LOCATIONS where table_id > 500000 and role = 'LEADER';
+
+--echo
+--echo ##################### 2. split target partition after transfer adding table lock #####################
+--echo
+--echo ## 2.1 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_NORMAL_TABLE wait_for signal_target_split";
+let $p0_1_object_id = deploy_get_value(ob1.select select object_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name='t_split' and partition_name='p0_1' and role='LEADER', object_id, 1);
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p0_1_object_id to LS 1002 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+let $last_task_id = deploy_get_value(ob1.select select task_id from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, task_id, 1);
+# make sure debug sync has tasken effect
+sleep 5;
+--echo
+--echo ## 2.2 split target partition
+connection conn_mysql;
+alter table t_split reorganize partition p0_1 into(
+  partition p0_1_0 values less than (8),
+  partition p0_1_1 values less than (10)
+);
+--echo
+--echo ## 2.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_target_split";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+connection conn_mysql;
+eval select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id = $last_task_id;
+
+--echo
+--echo ##################### 3. split other partition after transfer adding table lock #####################
+--echo
+--echo ## 3.1 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "AFTER_TRANSFER_LOCK_TABLE_FOR_NORMAL_TABLE wait_for signal_other_split";
+let $p0_1_0_object_id = deploy_get_value(ob1.select select object_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name='t_split' and partition_name='p0_1_0' and role='LEADER', object_id, 1);
+let $p0_1_0_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_id=$t_split_id and partition_name='p0_1_0' and role='LEADER', tablet_id, 1);
+let $p0_1_0_lob_meta_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and data_table_id=$t_split_id and partition_name='p0_1_0' and role='LEADER' and table_name like "%lob_meta%", tablet_id, 1);
+let $p0_1_0_lob_piece_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and data_table_id=$t_split_id and partition_name='p0_1_0' and role='LEADER' and table_name like "%lob_piece%", tablet_id, 1);
+let $p0_1_0_local_index_tablet_id = deploy_get_value(ob1.select select tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and data_table_id=$t_split_id and partition_name='p0_1_0' and role='LEADER' and table_name like "%idx%", tablet_id, 1);
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p0_1_0_object_id to LS 1002 tenant mysql;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+let $last_task_id = deploy_get_value(ob1.select select task_id from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, task_id, 1);
+# make sure debug sync has tasken effect
+sleep 5;
+--echo
+--echo ## 3.2 split other partition
+connection conn_mysql;
+alter table t_split reorganize partition p0_0 into(
+  partition p0_0_0 values less than (3),
+  partition p0_0_1 values less than (5)
+);
+--echo
+--echo ## 3.3. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_other_split";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASK_HISTORY where tenant_id=$mysql_tenant_id and task_id = $last_task_id and tablet_list like "%$p0_1_0_tablet_id%$p0_1_0_local_index_tablet_id%$p0_1_0_lob_meta_tablet_id%$p0_1_0_lob_piece_tablet_id%", 1, 1;
+connection conn_mysql;
+eval select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id = $last_task_id;
+
+--echo
+--echo ##################### 4. exchange partition tablet after transfer adding table lock #####################
+--echo
+--echo ## 4.1 prepare data
+connection conn_mysql;
+alter table t_split drop index t_local_idx_split;
+create table t_ex_non_part (k int primary key, c1 int, c2 longtext);
+
+--echo
+--echo ## 4.2 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_transfer";
+let $p1_object_id = deploy_get_value(ob1.select select object_id from CDB_OB_TABLE_LOCATIONS where tenant_id=$mysql_tenant_id and table_name='t_split' and partition_name='p1' and role='LEADER', object_id, 1);
+ob1.mysql alter system transfer partition table_id = $t_split_id, object_id=$p1_object_id to LS 1001 tenant mysql;
+
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+let $last_task_id = deploy_get_value(ob1.select select task_id from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, task_id, 1);
+ob1.mysql set ob_global_debug_sync = "TABLE_LOCK_AFTER_LOCK_TABLE_BEFORE_LOCK_TABLET wait_for signal_exchange";
+ob1.mysql set ob_global_debug_sync = "now signal signal_transfer";
+# make sure debug sync has tasken effect
+sleep 5;
+--echo
+--echo ## 4.3 try exchange target partition
+connection conn_mysql;
+# exchange partition successfully
+alter table t_split exchange partition p1 with table t_ex_non_part WITHOUT VALIDATION;
+
+--echo
+--echo ## 4.4. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_exchange";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+
+connection conn_mysql;
+eval select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id >= $last_task_id;
+
+--echo
+--echo ##################### 5. exchange target tablet after transfer adding table lock #####################
+--echo
+--echo ## 5.1 prepare data
+connection conn_mysql;
+create table t1 (c1 int primary key, c2 int);
+create table t2 (c1 int primary key, c2 int)
+  partition by range(c1)
+  subpartition by hash(c1) subpartitions 2
+  (
+    partition p0 values less than (10),
+    Partition p1 values less than (MAXVALUE)
+  );
+insert into t1 values (1, 10), (2, 20), (11, 110), (12, 120);
+let $t2_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't2', table_id, 1);
+let $t2_sub_part_id_before = query_get_value(select sub_part_id from oceanbase.__all_sub_part where table_id = $t2_table_id and sub_part_name = 'p0sp1', sub_part_id, 1);
+let $t2_sub_part_idx_before = query_get_value(select sub_part_idx from oceanbase.__all_sub_part where table_id = $t2_table_id and sub_part_name = 'p0sp1', sub_part_idx, 1);
+let $t2_tablet_id_before = query_get_value(select tablet_id from oceanbase.__all_sub_part where table_id = $t2_table_id and sub_part_name = 'p0sp1', tablet_id, 1);
+
+--echo
+--echo ## 5.2 block transfer after transfer adding table lock
+ob1.mysql set ob_global_debug_sync = "BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_transfer";
+ob1.mysql alter system transfer partition table_id = $t2_table_id, object_id=$t2_sub_part_id_before to LS 1002 tenant mysql;
+
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 1, 60;
+let $last_task_id = deploy_get_value(ob1.select select task_id from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, task_id, 1);
+ob1.mysql set ob_global_debug_sync = "TABLE_LOCK_AFTER_LOCK_TABLE_BEFORE_LOCK_TABLET wait_for signal_exchange";
+ob1.mysql set ob_global_debug_sync = "now signal signal_transfer";
+# make sure debug sync has tasken effect
+sleep 10;
+--echo
+--echo ## 5.3 try exchange target tablet while part_id not changed
+connection conn_mysql;
+# insert overwrite will exchange tablet failed because the X table level table-lock
+--error 4012
+insert overwrite t2 partition (p0sp1) select * from t1 where c1 = 1;
+# inc-direct-load has partition-level table-lock while no exchange of tablet
+insert /*+ direct(true, 0, 'inc') enable_parallel_dml(2) parallel(2) */ into t2 partition (p0sp1) select * from t1 where c1 = 1;
+
+--echo
+--echo ## 5.4. verify transfer is correct
+ob1.mysql set ob_global_debug_sync = "now signal signal_exchange";
+ob1.check_until_timeout select count(*) from CDB_OB_TRANSFER_TASKS where tenant_id=$mysql_tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id=$mysql_tenant_id, 0, 100;
+
+connection conn_mysql;
+eval select src_ls, dest_ls, part_list, not_exist_part_list, lock_conflict_part_list, tablet_list, status, comment from oceanbase.DBA_OB_TRANSFER_TASK_HISTORY where task_id >= $last_task_id;

@@ -1,0 +1,235 @@
+# owner: houhaojun.hhj
+# tags: storage
+# description: test the functions of string type
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+sleep 1;
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+########## check row size ##########
+
+--disable_warnings
+drop table if exists t_cr_pk1, t_cr_pk2, t_cr_col1, t_cr_col2;
+--enable_warnings
+--enable_query_log
+
+# Primay key has string column, primary key length is '16K'
+--error 1118 
+create table t_cr_pk1 (c1 string, c2 varchar(262144), c3 varchar(126977), primary key(c1));
+create table t_cr_pk1 (c1 string, c2 varchar(262144), c3 varchar(126977));
+
+--source mysql_test/include/show_create_table_old_version.inc
+show create table t_cr_pk1;
+desc t_cr_pk1;
+
+--error 1118
+create table t_cr_pk2 (c1 int, c2 double, c3 string, c4 varchar(262144), c5 varchar(126977), primary key(c1, c2, c3));
+create table t_cr_pk2 (c1 int, c2 double, c3 string, c4 varchar(262144), c5 varchar(126977));
+
+# Normal column is string column, column length is 'string_inrow_threshold(8192)'
+--error 1118
+create table t_cr_col1 (c1 string, c2 varchar(262144), c3 varchar(129025));
+create table t_cr_col1 (c1 string, c2 varchar(262144), c3 varchar(129024));
+create table t_cr_col2 (c1 int, c2 double, c3 string, c4 varchar(262144), c5 varchar(128024));
+
+drop table t_cr_pk1, t_cr_pk2, t_cr_col1, t_cr_col2;
+
+--disable_query_log
+--disable_warnings
+drop table if exists t_col, t_pr1, t_pr2, t_idx1, t_idx2, t_idx3, t_g_idx1, t_g_idx2, t_g_idx3;
+drop table if exists t_src, t_dst, t_dst_full, t_dst_full1, t_dst_full2, t_ld_full, t_dst_heap, t_ld_heap;
+drop table if exists t1, t2;
+--enable_warnings
+--enable_query_log
+
+########## normal column ##########
+create table t_col (c1 string);
+insert into t_col values("abc");
+insert into t_col values(repeat("a", 16777215));
+--error 1406
+insert into t_col values(repeat("b", 16777216));
+select count(*) from t_col;
+select char_length(c1) from t_col;
+
+########## primary key ##########
+create table t_pr1 (c1 string primary key);
+insert into t_pr1 values("ab");
+insert into t_pr1 values("cd");
+insert into t_pr1 values(repeat("a", 8192));
+insert into t_pr1 values(repeat("b", 10000));
+insert into t_pr1 values(repeat("c", 16380));
+--error 1071
+insert into t_pr1 values(repeat("d", 16381));
+update t_pr1 set c1 = "abc" where c1 = "ab";
+update t_pr1 set c1 = repeat("e", 16380) where c1 = "abc";
+--error 1071
+update t_pr1 set c1 = repeat("f", 20000) where c1 = "cd";
+select count(*) from t_pr1;
+select char_length(c1) from t_pr1;
+
+create table t_pr2 (c1 varchar(3840), c2 string, primary key (c1, c2));
+create index idx_c2 on t_pr2(c2);
+insert into t_pr2 values(repeat("a", 3840), repeat("b", 12540));
+update t_pr2 set c2 = "bbbb" where c1 = repeat("a", 3840);
+--error 1071
+insert into t_pr2 values(repeat("a", 3840), repeat("b", 12541));
+select count(*) from t_pr2;
+select char_length(c1), char_length(c2) from t_pr2;
+
+########## create index ##########
+create table t_idx1 (c1 string, c2 string);
+insert into t_idx1 values(null, null);
+insert into t_idx1 values("ab", "cd");
+create index idx_c1 on t_idx1(c1);
+insert into t_idx1 values(repeat("a", 8192), repeat("b", 8192));
+--error 1235
+insert into t_idx1 values(repeat("c", 8193), "ddd");
+insert into t_idx1 values("eee", repeat("f", 8193));
+update t_idx1 set c1 = repeat("g", 8192) where c2 = "cd";
+--error 1235
+update t_idx1 set c1 = repeat("f", 8193) where c2 = "cd";
+--error 1071
+create index idx_c2 on t_idx1(c2);
+select count(*) from t_idx1;
+select char_length(c1), char_length(c2) from t_idx1;
+
+create table t_idx2 (c1 varchar(3840), c2 string, index idx_c1_c2(c1, c2)) lob_inrow_threshold = 12541;
+insert into t_idx2 values(repeat("a", 3832), repeat("b", 12540));
+--error 1071
+insert into t_idx2 values(repeat("a", 3832), repeat("b", 12541));
+select count(*) from t_idx2;
+select char_length(c1), char_length(c2) from t_idx2;
+
+insert into t_idx1 values("ob", "oms");
+create table t_idx3 (c1 string primary key, c2 string, key(c2)) lob_inrow_threshold = 0;
+--error 1235
+insert into t_idx3 select * from t_idx1 where c1 = "ob";
+select count(*) from t_idx3;
+select char_length(c1), char_length(c2) from t_idx3;
+
+########## global index ##########
+create table t_g_idx1 (c1 int primary key, c2 string, c3 string) partition by range(c1) (partition p1 values less than (100), partition p2 values less than maxvalue);
+insert into t_g_idx1 values(1, null, null);
+insert into t_g_idx1 values(2, "ab", "cd");
+create index idx_c2 on t_g_idx1(c2) global;
+insert into t_g_idx1 values(3, repeat("a", 8192), repeat("b", 8192));
+--error 1235
+insert into t_g_idx1 values(101, repeat("c", 8193), "ddd");
+insert into t_g_idx1 values(102, "eee", repeat("f", 8193));
+update t_g_idx1 set c2 = repeat("g", 8192) where c3 = "cd";
+--error 1235
+update t_g_idx1 set c2 = repeat("f", 8193) where c3 = "cd";
+--error 1071
+create index idx_c3 on t_g_idx1(c3) global;
+select count(*) from t_g_idx1;
+select c1, char_length(c2), char_length(c3) from t_g_idx1;
+
+create table t_g_idx2 (c1 int, c2 string, c3 string, primary key(c1, c2)) partition by range(c1) (partition p1 values less than (100), partition p2 values less than maxvalue);
+create index idx_c2 on t_g_idx2(c2) global;
+create index idx_c3 on t_g_idx2(c3) global;
+insert into t_g_idx2 values (1, "hello", null);
+insert into t_g_idx2 values (2, "ab", "cd");
+insert into t_g_idx2 values (101, repeat("e", 8193), "ee");
+--error 1235
+insert into t_g_idx2 values (102, "ff", repeat("f", 8193));
+select count(*) from t_g_idx2;
+select c1, char_length(c2), char_length(c3) from t_g_idx2;
+
+insert into t_g_idx1 values(103, "ob", "oms");
+create table t_g_idx3 (c1 int, c2 string, c3 string, primary key (c1, c2), key(c3) global) lob_inrow_threshold = 0 partition by range(c1) (partition p1 values less than (100), partition p2 values less than maxvalue);
+--error 1235
+insert into t_g_idx3 select * from t_g_idx1 where c1 = 103;
+select count(*) from t_g_idx3;
+select c1, char_length(c2), char_length(c3) from t_g_idx3;
+
+########## insert into select ##########
+create table t_src (c1 string, c2 string) lob_inrow_threshold = 8192;
+create table t_dst (c1 string, key idx_c1(c1)) lob_inrow_threshold = 10000;
+create table t_dst_full (c1 string primary key, c2 string, index idx_c2(c2));
+create table t_dst_full1 (c1 varchar(100), c2 string, primary key(c1, c2));
+create table t_dst_full2 (c1 varchar(100), c2 string, index idx_c1_c2(c1, c2)) lob_inrow_threshold = 16377;
+create table t_dst_heap (c1 string, c2 string) lob_inrow_threshold = 8192;
+
+insert into t_src values("aaa", "bbb");
+insert into t_src values(repeat("c", 8193), "ddd");
+insert into t_src values(repeat("e", 16381), "fff");
+insert into t_src values("ggg", repeat("h", 8193));
+insert into t_src values("hhhh", repeat("i", 16368));
+insert into t_src values("iiii", repeat("j", 16376));
+insert into t_src values("kkkk", repeat("l", 16377));
+
+insert into t_dst select c2 from t_src where c1 = "aaa";
+insert into t_dst select c2 from t_src where c1 = "ggg";
+--error 1235
+insert into t_dst select c1 from t_src where c2 = "fff";
+
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full select c1, c2 from t_src where c1 = "aaa";
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full select c1, c2 from t_src where c2 = "ddd";
+--error 1071
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full select c1, c2 from t_src where c2 = "fff";
+--error 1071
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full select c1, c2 from t_src where c1 = "ggg";
+
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full1 select c1, c2 from t_src where c1 = "iiii";
+--error 1071
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full1 select c1, c2 from t_src where c1 = "kkkk";
+
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full2 select c1, c2 from t_src where c1 = "hhhh";
+--error 1071
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_full2 select c1, c2 from t_src where c1 = "iiii";
+
+insert /*+direct(true, 0, 'full') enable_parallel_dml parallel(4)*/ into t_dst_heap select c1, c2 from t_src;
+
+select count(*) from t_src;
+select char_length(c1), char_length(c2) from t_src;
+select count(*) from t_dst;
+select char_length(c1) from t_dst;
+select count(*) from t_dst_full;
+select char_length(c1), char_length(c2) from t_dst_full;
+select count(*) from t_dst_full1;
+select char_length(c1), char_length(c2) from t_dst_full1;
+select count(*) from t_dst_full2;
+select char_length(c1), char_length(c2) from t_dst_full2;
+select count(*) from t_dst_heap;
+select char_length(c1), char_length(c2) from t_dst_heap order by 1,2;
+
+########## load data ##########
+--source mysql_test/test_suite/string_type/include/prepare_data.inc
+
+create table t_ld_full (c1 string primary key, c2 int, c3 string, index idx_c3(c3));
+create table t_ld_heap (c1 string, c2 string, c3 string); 
+
+--disable_query_log
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_100.csv" into table t_ld_full fields terminated by ',';
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_8193.csv" into table t_ld_full fields terminated by ',';
+--error 1071
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_16373.csv" into table t_ld_full fields terminated by ',';
+--error 1071
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_idx_8193.csv" into table t_ld_full fields terminated by ',';
+
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_100.csv" into table t_ld_heap fields terminated by ',';
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_8193.csv" into table t_ld_heap fields terminated by ',';
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_pk_16373.csv" into table t_ld_heap fields terminated by ',';
+eval load data /*+direct(true, 0, 'full') parallel(4)*/ infile "$OBSERVER_DIR/$DATA_FOLDER_NAME/string_test/data_idx_8193.csv" into table t_ld_heap fields terminated by ',';
+--enable_query_log
+
+select count(*) from t_ld_full;
+select char_length(c1), c2, char_length(c3) from t_ld_full;
+select count(*) from t_ld_heap;
+select char_length(c1), c2, char_length(c3) from t_ld_heap order by 1,2,3;
+
+# to verify the checksum
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+drop table t_col, t_pr1, t_pr2, t_idx1, t_idx2, t_idx3, t_g_idx1, t_g_idx2, t_g_idx3;
+drop table t_src, t_dst, t_dst_full, t_dst_full1, t_dst_full2, t_ld_full, t_dst_heap, t_ld_heap;
+
+--disable_query_log
+set global ob_sql_work_area_percentage=5;
+set @@recyclebin = on;
+--enable_query_log

@@ -1,0 +1,197 @@
+ob1=OBI(cluster=1:1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob3=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2');
+ob1.mysql CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2');
+ob1.mysql CREATE TENANT tt2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob1.mysql create database ym_db;
+ob1.mysql create tablegroup ym_tg;
+ob1.mysql create table ym_db.ym_tb(c1 int primary key, c2 int);
+
+ob1.mysql create database ym_db_2;
+ob1.mysql create tablegroup ym_tg_2;
+ob1.mysql create table ym_db_2.ym_tb_2(c1 int primary key, c2 int);
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+
+# case 1: 有非tenant级别primary_zone/locality时，禁止备库接入
+# database has primary_zone
+alter database ym_db set primary_zone = RANDOM;
+alter database ym_db_2 set primary_zone = RANDOM;
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+# tablegroup has primary_zone
+alter tablegroup ym_tg set primary_zone = RANDOM;
+alter tablegroup ym_tg_2 set primary_zone = RANDOM;
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+alter tablegroup ym_tg set primary_zone = DEFAULT;
+alter tablegroup ym_tg_2 set primary_zone = DEFAULT;
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+# table has primary_zone
+alter table ym_db.ym_tb set primary_zone = RANDOM;
+alter table ym_db_2.ym_tb_2 set primary_zone = RANDOM;
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+alter table ym_db.ym_tb set primary_zone = DEFAULT;
+alter table ym_db_2.ym_tb_2 set primary_zone = DEFAULT;
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+# tablegroup has locality
+alter tablegroup ym_tg set locality = "F{1}@z1,R{1}@z2";
+alter tablegroup ym_tg_2 set locality = "F{1}@z1,R{1}@z2";
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+# table has locality
+alter table ym_db.ym_tb set locality = "F{1}@z1,R{1}@z2";
+alter table ym_db_2.ym_tb_2 set locality = "F{1}@z1,R{1}@z2";
+sleep 5;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+
+#为了避免备库add cluster，备库不走reboot
+ob3.reset;
+ob3.deploy;
+ob3.bootstrap;
+
+ob_connect(conn3, ob3.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn3;
+let $cluster_id = query_get_value(select value from __all_virtual_sys_parameter_stat where name = 'cluster_id', cluster_id, 1);
+let $cluster_name = query_get_value(select value from __all_virtual_sys_parameter_stat where name = 'cluster', cluster_name, 1);
+connection conn1;
+# table has locality,测试不能添加备库
+--disable_query_log
+sleep 5;
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+
+ob1.force_stop;
+ob1.reboot;
+
+#正常主库可以添加备库
+ob1.mysql ALTER SYSTEM ADD CLUSTER VERIFY;
+
+#开启一阶段提交优化不允许接备库，测试add cluster verify命令
+ob1.mysql alter system set enable_one_phase_commit=true;
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+# 为了避免备库add cluster，备库不走reboot
+ob3.force_stop;
+ob3.reset;
+ob3.deploy;
+ob3.bootstrap;
+
+connection conn1;
+#开启一阶段提交优化不允许接备库，测试add cluster命令
+--disable_query_log
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+
+ob1.mysql alter system set enable_one_phase_commit=false;
+ob2.reboot;
+
+sleep 5;
+
+connection conn1;
+#接备库后不允许开启一阶段优化
+--error 4147
+eval alter system set enable_one_phase_commit=true;
+--error 4147
+eval alter system set enable_one_phase_commit = '1';
+--error 4147
+eval alter system set enable_one_phase_commit = 'on';
+
+# 接备库后，可以添加备库
+ob1.mysql ALTER SYSTEM ADD CLUSTER VERIFY;
+ob_connect(conn2, ob2.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn2;
+# 备库不能添加备库
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+ob1.mysql alter system begin upgrade;
+ob1.mysql alter system upgrade virtual schema;
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+
+connection conn1;
+# 升级过程中、有系统表schema变更，不能添加备库，测试add cluster verify命令
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+connection conn1;
+# 升级过程中、有系统表schema变更，不能添加备库，测试add cluster命令
+--disable_query_log
+--error 4709
+eval alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+--enable_query_log
+
+connection conn2;
+
+--error 4709
+# 备库不能添加备库
+eval ALTER SYSTEM ADD CLUSTER VERIFY;
+
+ob1.mysql alter system end upgrade;
+ob1.mysql alter system major freeze;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_zone where name = 'last_merged_version' and value =2, 3, 300;
+
+#The count of standby clusters reaches 31, cannot add standby anymore 
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+
+let $1=29;
+begin;
+while ($1)
+{
+  insert into __all_cluster (cluster_idx, cluster_id, cluster_name, rs_list, cluster_status) select cluster_idx+1, cluster_id, cluster_name, rs_list, 0 from __all_cluster where cluster_idx = (select max(cluster_idx) from __all_cluster );
+  dec $1;
+}
+commit;
+
+ob1.force_stop;
+sleep 10;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,2, 200;
+ob1.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+--error 4709
+eval ALTER SYSTEM ADD CLUSTER VERIFY;

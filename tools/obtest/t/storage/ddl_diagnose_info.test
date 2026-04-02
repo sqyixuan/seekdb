@@ -1,0 +1,143 @@
+# owner: buming.lj
+# owner group: storage
+# Test the case: ddl diagnose
+
+ob1=OBI(cluster=1:1:1, proxy_num=1,init_unit_cpu=4);
+ob1.reboot;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $ip1=deploy_get_value(ob1.z2.obs0.ip);
+let $sql_port1=deploy_get_value(ob1.z2.obs0.mysql_port);
+
+ob1.mysql alter system set resource_hard_limit=800;
+
+connect(conn0,$ip0,root@obtest,,test,$sql_port0);
+connect(conn1,$ip1,root@obproxy,,test,$sql_port0);
+connect(conn2,$ip0,root@sys,,oceanbase,$sql_port0);
+
+
+# test ddl diagnose
+
+connection conn0;
+--disable_query_log
+--disable_result_log
+
+SET SESSION ob_query_timeout=1000000000;
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 5;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1(k bigint, test varchar(1024));
+Insert /* append enable_parallel_dml parallel(5) */ into t1 select uniform(1,1200000,random()), randstr(500, random()) from table(generator(1000000));
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 2;
+create /*+ parallel(2)*/ index i1 on t1(k,test) global PARTITION BY RANGE (k) ( PARTITION p0 VALUES LESS THAN (1000000), PARTITION p1 VALUES LESS THAN (2000000));
+
+connection conn2;
+--enable_query_log
+--enable_result_log
+
+select count(*) from __all_virtual_ddl_diagnose_info where diagnose_info like '%The data skew is significant, with a low sampling rate or uneven sampling.%';
+
+
+connection conn1;
+--disable_query_log
+--disable_result_log
+
+SET SESSION ob_query_timeout=1000000000;
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 5;
+
+--disable_warnings
+drop table if exists t2;
+--enable_warnings
+
+create table t2(k bigint, test varchar(1024));
+Insert /* append enable_parallel_dml parallel(5) */ into t2 select uniform(1,999999,random()), randstr(500, random()) from table(generator(1000000));
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 5;
+create /*+ parallel(5)*/ index i1 on t2(k,test) global PARTITION BY RANGE (k) ( PARTITION p0 VALUES LESS THAN (1000000), PARTITION p1 VALUES LESS THAN (2000000), PARTITION p2 VALUES LESS THAN (3000000), PARTITION p3 VALUES LESS THAN (4000000), PARTITION p4 VALUES LESS THAN (5000000));
+
+connection conn2;
+--enable_query_log
+--enable_result_log
+
+select count(*) from __all_virtual_ddl_diagnose_info where diagnose_info like '%The number of threads with data is less than the dop.%';
+
+
+connection conn0;
+--disable_query_log
+--disable_result_log
+
+set _force_parallel_query_dop = 10;
+--disable_warnings
+drop table if exists t3;
+--enable_warnings
+create table t3(c1 int, c2 int, c3 varchar(20));
+insert into t3 values(1, 1, 'a');
+
+
+let $cnt=0;
+while($cnt < 10000)
+{
+  select /*+ monitor */ 1 from t3 limit 1;
+  inc $cnt;
+}
+
+let $cnt=0;
+while($cnt < 100)
+{
+  eval create index index_$cnt on t3(c1);
+  inc $cnt;
+}
+
+connection conn2;
+
+--enable_query_log
+--enable_result_log
+set ob_query_timeout = 10000000;
+select count(*) from oceanbase.__all_virtual_ddl_diagnose_info;
+
+
+connection conn1;
+--disable_query_log
+--disable_result_log
+
+set _force_parallel_query_dop = 10;
+--disable_warnings
+drop table if exists t4;
+--enable_warnings
+create table t4(c1 int, c2 int, c3 varchar(20));
+insert into t4 values(1, 1, 'a');
+
+let $cnt=0;
+while($cnt < 10000)
+{
+  select /*+ monitor */ 1 from t4 limit 1;
+  inc $cnt;
+}
+
+let $cnt=0;
+while($cnt < 100)
+{
+  eval create index index_$cnt on t4(c1);
+  inc $cnt;
+}
+
+--enable_query_log
+--enable_result_log
+
+connection conn2;
+set ob_query_timeout = 10000000;
+select count(*) from oceanbase.__all_virtual_ddl_diagnose_info;
+
+
+connection conn0;
+drop table t1;
+drop table t3;
+
+connection conn1;
+drop table t2;
+drop table t4;
+
+

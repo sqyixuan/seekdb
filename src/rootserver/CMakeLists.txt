@@ -141,7 +141,6 @@ ob_set_subtarget(ob_rootserver ddl_task
   ddl_task/ob_drop_vec_ivf_index_task.cpp
   ddl_task/ob_rebuild_index_task.cpp
   ddl_task/ob_vec_index_build_task.cpp
-  fork_table/ob_fork_database_service.cpp
   ddl_task/ob_sys_ddl_util.cpp
   ddl_task/ob_vec_ivf_index_build_task.cpp
   ddl_task/ob_drop_lob_task.cpp
@@ -223,13 +222,6 @@ ob_set_subtarget(ob_rootserver mview
 
 ob_set_subtarget(ob_rootserver direct_load
   direct_load/ob_direct_load_partition_exchange.cpp
-)
-
-ob_set_subtarget(ob_rootserver fork_table
-  fork_table/ob_fork_table_info_builder.cpp
-  fork_table/ob_fork_table_helper.cpp
-  fork_table/ob_fork_table_service.cpp
-  fork_table/ob_fork_table_task.cpp
 )
 
 ob_set_subtarget(ob_rootserver standby

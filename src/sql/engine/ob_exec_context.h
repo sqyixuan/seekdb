@@ -462,14 +462,8 @@ public:
 
   char **get_frames() const { return frames_; }
   void set_frames(char **frames) { frames_ = frames; }
-  char **get_ori_frames() const { return ori_frames_; }
-  void set_ori_frames(char **frames) { ori_frames_ = frames; }
   uint64_t get_frame_cnt() const { return frame_cnt_; }
   void set_frame_cnt(uint64_t frame_cnt) { frame_cnt_ = frame_cnt; }
-  uint64_t get_ori_frame_cnt() const { return ori_frame_cnt_; }
-  void set_ori_frame_cnt(uint64_t frame_cnt) { ori_frame_cnt_ = frame_cnt; }
-  uint64_t get_ori_expr_op_size() const { return ori_expr_op_size_; }
-  void set_ori_expr_op_size(uint64_t expr_op_size) { ori_expr_op_size_ = expr_op_size; }
 
   ObOperatorKit *get_operator_kit(const uint64_t id) const
   {
@@ -720,10 +714,6 @@ protected:
   char **frames_;
   uint64_t frame_cnt_;
 
-  char **ori_frames_;
-  uint64_t ori_frame_cnt_;
-  uint64_t ori_expr_op_size_;
-
   ObOpKitStore op_kit_store_;
 
   // expression evaluating allocator
@@ -800,7 +790,7 @@ protected:
   bool force_local_plan_;
   ObDiagnosisManager diagnosis_manager_;
   common::ObArenaAllocator deterministic_udf_cache_allocator_;
-
+  
   // Granule type for current GI task
   ObGranuleType current_granule_type_;
 

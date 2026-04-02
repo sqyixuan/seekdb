@@ -1,0 +1,84 @@
+#owner: shenyunlong.syl
+#owner group: shenzhen
+
+# 测试 TTL 模块是否有内存泄漏
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+sleep 5;
+connection default;
+alter system minor freeze;
+alter system set enable_kv_ttl = true;
+sleep 5;
+
+--disable_warnings
+drop table if exists ttl_table_mem;
+drop table if exists ttl_htable_mem;
+--enable_warnings
+create table ttl_table_mem(a varchar(1024) primary key, b varchar(1024), c timestamp) TTL(c + INTERVAL 0 SECOND);
+create table ttl_htable_mem (
+  K varbinary(1024), Q varbinary(256), T bigint, V varbinary(1024),
+  primary key(K, Q, T))
+  kv_attributes ='{"Hbase": {"TimeToLive": 5, "MaxVersions": 2}}';
+
+drop procedure if exists insert_table_data;
+delimiter |;
+create PROCEDURE insert_table_data(del int, no_del int)
+BEGIN
+  DECLARE i INT DEFAULT 0;
+	WHILE i < del do
+    insert into ttl_table_mem(a, b, c) values (concat('big_table_rowekeyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy', cast(i as char)), 'hello world', now());
+		set i = i + 1;
+	end while;
+  while i < del + no_del do
+    insert into ttl_table_mem(a, b, c) values (concat('row', cast(i as char)), 'hello world', date_add(now(), interval + 1 HOUR));
+		set i = i + 1;
+  end while;
+END |
+delimiter ;|
+
+drop procedure if exists insert_htable_data;
+delimiter |;
+create PROCEDURE insert_htable_data(cnt int)
+BEGIN
+  DECLARE i INT DEFAULT 0;
+	WHILE i < cnt do
+    insert into ttl_htable_mem(K, Q, T, V) values (concat('big_htable_rowekeyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy', cast(i as char)), concat("cq", cast(i as char)), 0, 'hello world');
+    insert into ttl_htable_mem(K, Q, T, V) values (concat('big_htable_rowekeyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy', cast(i as char)), concat("cq", cast((i+1) as char)), 0, 'hello world');
+		set i = i + 1;
+	end while;
+END |
+delimiter ;|
+
+call insert_table_data(200001, 100001);
+call insert_htable_data(100001);
+
+connection conn_admin;
+select tenant_id, ctx_id, label, ctx_name, mod_type, mod_id, mod_name, zone, hold, used, count from oceanbase.__all_virtual_memory_info where (mod_name like '%ttl%' or mod_name like 'ttl%' )and mod_name != 'PurgeThrottle' and tenant_id = 1002 order by tenant_id, label, zone;
+
+connection default;
+alter system trigger ttl;
+sleep 20;
+
+let $tenant_id = query_get_value(select effective_tenant_id() X from DUAL, X, 1);
+connection conn_admin;
+let $tid = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'ttl_table_mem', table_id, 1);
+let $tb_ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $tid, ls_id, 1);
+let $tb_follower_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table where ls_id = $tb_ls_id and role = 2 and tenant_id = $tenant_id, svr_ip, 1);
+let $tb_follower_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table where ls_id = $tb_ls_id and role = 2 and tenant_id = $tenant_id, svr_port, 1);
+--disable_query_log
+eval alter system switch replica leader ls=$tb_ls_id server='$tb_follower_ip:$tb_follower_port' tenant='mysql';
+--enable_query_log
+
+connection default;
+select TABLE_NAME, TRIGGER_TYPE, STATUS, RET_CODE from oceanbase.DBA_OB_KV_TTL_TASKS ORDER BY TABLE_NAME;
+sleep 210;
+select count(*) from ttl_table_mem;
+select TABLE_NAME, TRIGGER_TYPE, STATUS, RET_CODE, count(*) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY where task_id = (select max(task_id) from oceanbase.DBA_OB_KV_TTL_TASK_HISTORY) and (table_name = "ttl_table_mem" or table_name is NULL or table_name = "ttl_htable_mem") group by table_name, trigger_type, ret_code, status order by table_name;
+
+connection conn_admin;
+select tenant_id, ctx_id, label, ctx_name, mod_type, mod_id, mod_name, zone, hold, used, count from oceanbase.__all_virtual_memory_info where (mod_name like '%ttl%' or mod_name like 'ttl%' )and mod_name != 'PurgeThrottle' and tenant_id = 1002 order by tenant_id, label, zone;
+
+connection default;
+drop table ttl_table_mem;
+drop table if exists ttl_htable_mem;

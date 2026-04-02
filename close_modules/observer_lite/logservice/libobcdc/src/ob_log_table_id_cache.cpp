@@ -1,0 +1,76 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX OBLOG
+
+#include "ob_log_table_id_cache.h"
+
+namespace oceanbase
+{
+using namespace common;
+
+namespace libobcdc
+{
+/////////////////////////////////////////////////////////////////////////////
+void TableInfo::reset()
+{
+  table_id_ = OB_INVALID_ID;
+}
+
+int TableInfo::init(const uint64_t table_id)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_UNLIKELY(OB_INVALID_ID == table_id)) {
+    LOG_ERROR("invalid argument", K(table_id));
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    table_id_ = table_id;
+  }
+
+  return ret;
+}
+
+bool TableInfoEraserByTenant::operator()(
+    const TableID &table_id_key,
+    TableInfo &tb_info)
+{
+  // TODO set tenant_id
+  uint64_t target_tenant_id = 0;
+  const char *cache_type = NULL;
+  if (is_global_normal_index_) {
+    cache_type = "GLOBAL_NORMAL_INDEX_TBALE";
+  } else {
+    cache_type = "SERVED_TABLE_ID_CACHE";
+  }
+
+  if (tenant_id_ == target_tenant_id) {
+    _LOG_INFO("[DDL] [%s] [REMOVE_BY_TENANT] TENANT_ID=%lu TABLE_ID_INFO=(%lu.%lu)",
+        cache_type, tenant_id_, table_id_key.table_id_, tb_info.table_id_);
+    // reset value
+    tb_info.reset();
+  }
+
+  return (tenant_id_ == target_tenant_id);
+}
+
+bool TableInfoEraserByDatabase::operator()(const TableID &table_id_key, uint64_t &val)
+{
+  return (val == database_id_);
+}
+
+}
+}

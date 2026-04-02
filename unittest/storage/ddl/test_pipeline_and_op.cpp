@@ -185,7 +185,7 @@ void TestCGMicroMacroWriteOp::prepare_table_schema(const ObObjType *col_obj_type
     name_str.assign_fmt("tese%ld", i);
     EXPECT_EQ(OB_SUCCESS, column.set_column_name(name_str.ptr()));
     column.set_data_type(obj_type);
-
+  
     if (ObVarcharType == obj_type || ObCharType == obj_type || ObHexStringType == obj_type
         || ObTextType == obj_type) {
       column.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
@@ -307,7 +307,7 @@ int TestCGMicroMacroWriteOp::initialize_args_and_env(const ObObjType *col_types,
                                      tablet_id_,
                                      ddl_thread_count,
                                      snapshot_version,
-                                     ddl_dag_.direct_load_type_,
+                                     ddl_dag_.direct_load_type_, 
                                      ddl_dag_.ddl_table_schema_))) {
       LOG_WARN("fail to initilize tablet context",
           K(ret), K(ls_id_), K(tablet_id_));
@@ -523,7 +523,7 @@ int TestCGMicroMacroWriteOp::write_bdrs_into_cg_row_temp_files(const blocksstabl
   cg_rows.mvcc_row_flag_ = bdrs.mvcc_row_flag_;
   cg_rows.row_count_ = bdrs.row_count_;
   cg_rows.trans_id_ = bdrs.trans_id_;
-
+  
   for (int64_t cg_idx = 0; OB_SUCC(ret) && cg_idx < cg_schemas.count(); ++cg_idx) {
     ObCGRowFile *cg_row_file = nullptr;
     const ObStorageColumnGroupSchema &cg_schema = cg_schemas.at(cg_idx);
@@ -591,7 +591,7 @@ int TestCGMicroMacroWriteOp::try_generate_output_chunk(bool scan_end)
       }
     }
   }
-
+  
   if (OB_SUCC(ret)) {
     ObChunk output_chunk;
     if (!output_cg_row_files_data_->empty()) { // has output data
@@ -608,10 +608,6 @@ int TestCGMicroMacroWriteOp::try_generate_output_chunk(bool scan_end)
 
 TEST_F(TestCGMicroMacroWriteOp, test_direct_load_mem_friend_pipeline)
 {
-#ifdef __APPLE__
-  // DDL pipeline tests involve complex file I/O and memory operations that behave differently on macOS
-  GTEST_SKIP() << "DDL pipeline tests are skipped on macOS due to platform-specific differences";
-#endif
   ObMockIters row_iters;
   ObITabletSliceRowIterator *row_iter = nullptr;
   ObBatchDatumRows batch_rows;
@@ -643,9 +639,6 @@ TEST_F(TestCGMicroMacroWriteOp, test_direct_load_mem_friend_pipeline)
 
 TEST_F(TestCGMicroMacroWriteOp, test_cg_micro_and_macro_write_op)
 {
-#ifdef __APPLE__
-  GTEST_SKIP() << "DDL pipeline tests are skipped on macOS due to platform-specific differences";
-#endif
   ObBatchRowsGen batch_rows_gen;
   ObBatchDatumRows batch_rows;
   const int64_t rowkey_count = 2;
@@ -660,7 +653,7 @@ TEST_F(TestCGMicroMacroWriteOp, test_cg_micro_and_macro_write_op)
                                                     ObIntType, ObIntType,
                                                     ObVarcharType, ObVarcharType,
                                                     ObVarcharType, ObVarcharType};
-
+  
   tablet_id_ = 2000001;
   ops_type_ = WRITE_MICRO_AND_MACRO_OP;
   EXPECT_EQ(OB_SUCCESS, batch_rows_gen.init(storage_col_types, storage_col_count, rowkey_count));
@@ -679,9 +672,6 @@ TEST_F(TestCGMicroMacroWriteOp, test_cg_micro_and_macro_write_op)
 
 TEST_F(TestCGMicroMacroWriteOp, test_cg_row_files_generater)
 {
-#ifdef __APPLE__
-  GTEST_SKIP() << "DDL pipeline tests are skipped on macOS due to platform-specific differences";
-#endif
   bool is_slice_end = false;
   ObDDLChunk output_chunk;
   ObBatchRowsGen batch_rows_gen;
@@ -700,7 +690,7 @@ TEST_F(TestCGMicroMacroWriteOp, test_cg_row_files_generater)
                                                     ObIntType, ObIntType,
                                                     ObVarcharType, ObVarcharType,
                                                     ObVarcharType, ObVarcharType};
-
+  
   tablet_id_ = 2000002;
   ops_type_ = WRITE_MICRO_AND_MACRO_OP;
   EXPECT_EQ(OB_SUCCESS, batch_rows_gen.init(storage_col_types, storage_col_count, rowkey_count));

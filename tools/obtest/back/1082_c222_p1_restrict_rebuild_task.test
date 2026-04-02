@@ -1,0 +1,57 @@
+# owner: wenduo.swd
+# owner group: STORAGE
+#
+# Restrict rebuild task:
+# 1. rebuild leader.
+# 2. rebuild replica not in member list and member enough.
+#
+#   
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set resource_soft_limit = 800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+sleep 2;
+ob1.mysql create resource pool xx1  unit = 'sys_unit_config',unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant xx1 replica_num 3, primary_zone 'z1', resource_pool_list ('xx1') set ob_tcp_invited_nodes='%';
+
+ob1.create_client tenant=xx1,user=root,passwd=,database=test;
+
+create table t1 (k int primary key, v int);
+
+ob1.create_client; 
+
+let $table_id =deploy_get_value(ob1.select select table_id v from oceanbase.__all_virtual_meta_table limit 1 , v, 1);
+let $unit_id=deploy_get_value(ob1.select select unit_id v from oceanbase.__all_unit where zone = 'z2' and resource_pool_id > 1000, v, 1);
+let $ip = deploy_get_value(ob1.z2.obs1.ip);
+let $port = deploy_get_value(ob1.z2.obs1.port);
+let $in_z1 = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_unit where zone = 'z2' and unit_id=$unit_id and svr_ip="$ip" and svr_port=$port, c, 1);
+if ($in_z1 == 0)
+{
+--disable_query_log
+ob1.mysql alter system migrate unit $unit_id destination '$ip:$port';
+--enable_query_log
+}
+if ($in_z1 == 1)
+{
+let $ip = deploy_get_value(ob1.z2.obs0.ip);
+let $port = deploy_get_value(ob1.z2.obs0.port);
+--disable_query_log
+ob1.mysql alter system migrate unit $unit_id destination '$ip:$port';
+--enable_query_log
+}
+sleep 15;
+ob1.check_rebalance_task;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_REBALANCE_TASK_EXECUTE wait_for x';
+--disable_query_log
+ob1.mysql update oceanbase.__all_virtual_meta_table set rebuild = 1 where tenant_id = 1001 and zone = 'z2' and (svr_ip != '$ip' or svr_port != $port);
+ob1.mysql update oceanbase.__all_virtual_meta_table set rebuild = 1 where tenant_id = 1001 and zone = 'z1';
+--enable_query_log
+sleep 20;
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where rebuild = 1;
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_rebalance_task_stat;
+

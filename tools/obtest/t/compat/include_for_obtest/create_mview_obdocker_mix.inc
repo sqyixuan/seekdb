@@ -1,0 +1,8 @@
+connection tentsql_conn;
+use test_mview;
+select OWNER,MVIEW_NAME,QUERY,REFRESH_MODE,REFRESH_METHOD,BUILD_MODE,LAST_REFRESH_DATE IS NULL,LAST_REFRESH_END_TIME IS NULL,TIMESTAMPDIFF(SECOND, LAST_REFRESH_DATE, LAST_REFRESH_END_TIME) < 10 from oceanbase.DBA_MVIEWS where OWNER = 'test_mview' AND MVIEW_NAME IN ('mv1', 'mv2') ORDER BY MVIEW_NAME;
+insert into t1 select s1.nextval, s1.nextval, s1.nextval, s1.nextval from table(generator(100000));
+call dbms_mview.refresh('mv1');
+--error 4179,1235
+call dbms_mview.refresh('mv2');
+select OWNER,MVIEW_NAME,QUERY,REFRESH_MODE,REFRESH_METHOD,BUILD_MODE,LAST_REFRESH_DATE IS NULL,LAST_REFRESH_END_TIME IS NULL,TIMESTAMPDIFF(SECOND, LAST_REFRESH_DATE, LAST_REFRESH_END_TIME) < 10 from oceanbase.DBA_MVIEWS where OWNER = 'test_mview' AND MVIEW_NAME IN ('mv1', 'mv2') ORDER BY MVIEW_NAME;

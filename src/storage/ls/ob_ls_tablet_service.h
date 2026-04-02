@@ -182,8 +182,7 @@ public:
       const bool has_cs_replica,
       const ObTabletID &split_src_tablet_id,
       const uint64_t data_format_version,
-      ObTabletHandle &tablet_handle,
-      const share::ObForkTabletInfo &fork_info = share::ObForkTabletInfo());
+      ObTabletHandle &tablet_handle);
   int create_transfer_in_tablet(
       const share::ObLSID &ls_id,
       const ObMigrationTabletParam &tablet_meta,

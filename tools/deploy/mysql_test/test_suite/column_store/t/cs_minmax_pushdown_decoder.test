@@ -1,0 +1,124 @@
+# owner: houhaojun.houhaojun
+# owner group: storage
+# description: pushdown aggregation(min/max) to decoder layer
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+connection default;
+sleep 1;
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+alter system set _enable_skip_index=false;
+alter system set _rowsets_max_rows=64;
+sleep 1;
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+ 
+create table t1(a int primary key, b smallint, c int unsigned, d float, e date, f varchar(10)) row_format = compressed block_size = 2048 with column group (all columns, each column);
+--let $count = 1
+while($count < 101)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,-32768,(100000000+$count),-2.33,'1993-01-01',"abcd");
+  eval $stmt;
+  inc $count;
+}
+while($count < 201)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,0,(100000000+$count),2.33, '1994-01-01',"abcd");
+  eval $stmt;
+  inc $count;
+}
+while($count < 301)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,32767,(100000000+$count),NULL, '1995-01-01',"abcd");
+  eval $stmt;
+  inc $count;
+}
+
+while($count < 311)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,11111,(100000000+$count),2.33, '1996-01-01',"efgh");
+  eval $stmt;
+  inc $count;
+}
+
+while($count < 321)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,22222,(100000000+$count),-2.33, '1997-01-01',NULL);
+  eval $stmt;
+  inc $count;
+}
+
+while($count < 325)
+{
+  --let $stmt=insert into t1(a,b,c,d,e,f) values ($count,22222,NULL,-2.33, '1998-01-01',"ijkl");
+  eval $stmt;
+  inc $count;
+}
+
+# test for int encoding with null bitmap
+create table t2(a int auto_increment primary key, b tinyint) with column group (all columns, each column);
+
+insert into t2(b) values (NULL);
+insert into t2(b) values (NULL);
+
+--let $count=-128
+while($count < 128)
+{
+  --let $stmt=insert into t2(b) values ($count);
+  eval $stmt;
+  inc $count;
+}
+
+insert into t2(b) values (NULL);
+
+create table t3 (c1 int, c2 int) with column group (each column);
+
+insert into t3 values(NULL, NULL);
+insert into t3 values(7, NULL);
+insert into t3 values(NULL, NULL);
+
+--let $count=0
+while($count < 128)
+{
+  --let $stmt=insert into t3 values ($count, $count);
+  eval $stmt;
+  inc $count;
+}
+
+--enable_query_log
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+select min(b), max(b), min(c), max(c), min(d), max(d), min(e), max(e), min(f), max(f) from t1;
+select min(b), max(b), min(c), max(c), min(d), max(d), min(e), max(e), min(f), max(f) from t1 where a < 300;
+select min(b), max(b), min(c), max(c), min(d), max(d), min(e), max(e), min(f), max(f) from t1 where a > 300;
+select min(b), max(b), min(c), max(c), min(d), max(d), min(e), max(e), min(f), max(f) from t1 where a > 310;
+select min(b), max(b), min(c), max(c), min(d), max(d), min(e), max(e), min(f), max(f) from t1 where a > 320;
+
+select min(a), max(a), min(b), max(b) from t2;
+select min(a), max(a), min(b), max(b) from t2 where a < 3;
+
+select min(c1), max(c1) from t3;
+select min(c2), max(c2) from t3;
+
+drop table t1;
+drop table t2;
+drop table t3;
+
+--disable_query_log
+set global ob_sql_work_area_percentage=5;
+set @@recyclebin = on;
+alter system set _enable_skip_index=true;
+alter system set _rowsets_max_rows=256;
+connection obsys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 0;
+connection default;
+--enable_query_log

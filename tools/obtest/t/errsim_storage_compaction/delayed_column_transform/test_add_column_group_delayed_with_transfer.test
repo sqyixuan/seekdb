@@ -1,0 +1,172 @@
+# owner: zhanghuidong.zhd
+# owner group: storage
+# Testing Case: alter cg delayed with transfer update storage schema, write medium info clog first
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+let $transfer_tenant = transfer_tenant;
+
+--echo ===============================================================
+--echo ====================     bootstrap   ==========================
+--echo ===============================================================
+--echo test case for bootstrap begin
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn_sys, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+--echo test case for bootstrap finish
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU = 1, MEMORY_SIZE = '2G', MAX_IOPS = 1024, LOG_DISK_SIZE = '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = "unit_1", UNIT_NUM = 1, ZONE_LIST = ('z1','z2');
+ob1.mysql CREATE TENANT transfer_tenant resource_pool_list=('pool_1'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+source include/check_schema_sync.inc;
+connection conn_sys;
+let $sys_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'transfer_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+--echo create tenant finished
+
+--echo ===============================================================
+--echo ==================     create table    ========================
+--echo ===============================================================
+
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$transfer_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+ob_connect(backup_oracle_conn, ob1.z1.obs0,TEST@$transfer_tenant,test,test,,USE_OB_CONNECTOR);
+connection backup_oracle_conn;
+
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A"));
+insert into t1(a, b) values (1, 1), (2, 2);
+create table t2(a int, b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A"));
+create unique index i2 on t2(b, c);
+insert into t2(a, b) values (1, 1), (2, 2);
+create table t3(a int, b int, c int, CONSTRAINT "c3" PRIMARY KEY ("A"));
+insert into t3(a, b) values (1, 1), (2, 2);
+create table t4(a int, b int, c int, CONSTRAINT "c4" PRIMARY KEY ("A"));
+insert into t4(a, b) values (1, 1), (2, 2);
+create table t5(a int, b int, c int, CONSTRAINT "c5" PRIMARY KEY ("A")) with column group (all columns);
+insert into t5(a, b) values (1, 1), (2, 2);
+create table t6(a int, b int, c int, CONSTRAINT "c6" PRIMARY KEY ("A")) with column group (all columns);
+insert into t6(a, b) values (1, 1), (2, 2);
+--echo create table finished
+
+let $tablet_id1 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't1' and tenant_id = $tenant_id, tablet_id, 1);
+let $tablet_id2 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't2' and tenant_id = $tenant_id, tablet_id, 1);
+let $tablet_id3 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't3' and tenant_id = $tenant_id, tablet_id, 1);
+let $tablet_id4 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't4' and tenant_id = $tenant_id, tablet_id, 1);
+let $tablet_id5 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't5' and tenant_id = $tenant_id, tablet_id, 1);
+let $tablet_id6 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = 't6' and tenant_id = $tenant_id, tablet_id, 1);
+
+--echo ===============================================================
+--echo ==================  create medium info  =======================
+--echo ===============================================================
+alter table t1 add column group (each column) delayed;
+alter table t3 add column group (each column, all columns) delayed;
+alter table t5 add column group (each column) delayed;
+ob1.mysql alter system set_tp tp_no = 706, error_code = 4016, frequency = 1;
+ob1.mysql alter system major freeze tenant transfer_tenant;
+ob1.z1.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id1";
+ob1.z2.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id2";
+ob1.z1.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id3";
+ob1.z2.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id4";
+ob1.z1.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id5";
+ob1.z2.obs0.check_log_until_success "success to submit medium compaction clog.*tablet_id:{id:$tablet_id6";
+sleep 5;
+
+alter table t2 add column group (each column) delayed;
+alter table t4 add column group (each column, all columns) delayed;
+alter table t6 add column group (each column) delayed;
+alter table t1 add (d int);
+alter table t2 add (d int);
+alter table t3 add (d int);
+alter table t4 add (d int);
+alter table t5 add (d int);
+alter table t6 add (d int);
+
+--echo ===============================================================
+--echo ==================  transfer  ========================
+--echo ===============================================================
+
+connection conn_sys;
+let $task_id = 111;
+let $src_ls_id = 1001;
+let $dest_ls_id = 1002;
+let $part_list = '500004:500004,500009:500009,500013:500013';
+let $transfer_status = 'INIT';
+let $trace_id = 'YCDC56458724D-0005EBECD3F9DB9D-0-0';
+let $data_version = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name = 'compatible', value, 1);
+eval alter system change tenant tenant_id = $tenant_id;
+
+--disable_query_log 
+--disable_result_log
+eval INSERT INTO oceanbase.__all_transfer_task (task_id, src_ls, dest_ls, part_list, status, trace_id, balance_task_id, data_version) VALUES ($task_id, $src_ls_id, $dest_ls_id, $part_list, $transfer_status, $trace_id, $task_id, '$data_version');
+--enable_query_log
+--enable_result_log
+
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where task_id = 111, 0, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task_history where task_id = 111 and status = 'COMPLETED', 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id1, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id3, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id5, 1, 30;
+
+let $task_id = 222;
+let $src_ls_id = 1002;
+let $dest_ls_id = 1001;
+let $part_list = '500006:500006,500011:500011,500015:500015';
+let $transfer_status = 'INIT';
+let $trace_id = 'YCDC56458724D-0005EBECD3F9DB9D-0-1';
+let $data_version = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_tenant_parameter_stat where tenant_id = $tenant_id and name = 'compatible', value, 1);
+eval alter system change tenant tenant_id = $tenant_id;
+
+--disable_query_log 
+--disable_result_log
+eval INSERT INTO oceanbase.__all_transfer_task (task_id, src_ls, dest_ls, part_list, status, trace_id, balance_task_id, data_version) VALUES ($task_id, $src_ls_id, $dest_ls_id, $part_list, $transfer_status, $trace_id, $task_id, '$data_version');
+--enable_query_log
+--enable_result_log
+
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where task_id = $task_id, 0, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task_history where task_id = $task_id and status = 'COMPLETED', 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id2, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id4, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_to_ls where tenant_id = $tenant_id and ls_id = $dest_ls_id and tablet_id = $tablet_id6, 1, 30;
+
+--echo ===============================================================
+--echo ===================  wait merge finish  =======================
+--echo ===============================================================
+
+sleep 10;
+ob1.mysql alter system set_tp tp_no = 706, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'IDLE', 1, 600;
+let $end_log_scn = deploy_get_value(ob1.select select last_scn from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, last_scn, 1);
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id1 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id2 and tenant_id = $tenant_id and table_type = 'MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id3 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id4 and tenant_id = $tenant_id and table_type = 'MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id5 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id6 and tenant_id = $tenant_id and table_type = 'MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+
+--echo ===============================================================
+--echo ======================== co merge  ============================
+--echo ===============================================================
+
+ob1.mysql alter system major freeze tenant transfer_tenant;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'COMPACTING', 1, 600;
+ob1.check_until_timeout select count(*) from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and status = 'IDLE', 1, 600;
+let $end_log_scn = deploy_get_value(ob1.select select last_scn from CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, last_scn, 1);
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id1 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id2 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id3 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id4 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id5 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;
+ob1.check_until_timeout select count(*) from oceanbase.GV\$OB_SSTABLES where tablet_id = $tablet_id6 and tenant_id = $tenant_id and table_type = 'CO_MAJOR' and end_log_scn = $end_log_scn, 2, 600;

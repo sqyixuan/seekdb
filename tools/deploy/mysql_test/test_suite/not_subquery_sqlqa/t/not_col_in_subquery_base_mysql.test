@@ -1,0 +1,903 @@
+#owner: yibo.tyf
+#owner group: sql1
+#description: subquery pullup supports not (column in subquery)
+#tags: optimizer
+#author:wb-zc01071363
+
+--echo #删除用户、释放空间
+--echo #Environmental cleaning
+--disable_warnings
+--error 0,1396
+drop user zhe123@'%';
+--enable_warnings
+--error 0,1008
+drop database zhe123;
+create database zhe123;
+create user zhe123 identified by 'zhe123';
+grant all on *.* to zhe123 WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn,$OBMYSQL_MS0,zhe123,zhe123,test,$OBMYSQL_PORT);
+connection conn;
+
+
+--echo # 测试数据，c1为主键
+--error 0,1051
+drop table t1;
+create table t1 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date)
+partition by range (c1) (partition p0 values less than (3),partition p1 values less than (6));
+
+insert into t1 values(0,'cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t1 values(1,null,0.01,str_to_date('20210101','%Y%m%d'));
+insert into t1 values(2,'yellow cat',100,str_to_date('20211212','%Y%m%d'));
+insert into t1 values(3,'',8888.88,str_to_date('20210323','%Y%m%d'));
+
+--error 0,1051
+drop table t2;
+
+create table t2 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date);
+
+insert into t2 values(1,null,4444.44,str_to_date('20211212','%Y%m%d'));
+insert into t2 values(2,'yellow cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t2 values(3,'',2.22,str_to_date('20210303','%Y%m%d'));
+insert into t2 values(4,'white cat',100,str_to_date('20210101','%Y%m%d'));
+
+--error 0,1051
+drop table t3;
+
+create table t3 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date);
+
+insert into t3 values(1,null,4444.44,str_to_date('20211212','%Y%m%d'));
+insert into t3 values(5,'yellow cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t3 values(6,'',2.22,str_to_date('20210303','%Y%m%d'));
+insert into t3 values(7,'white cat',100,str_to_date('20210101','%Y%m%d'));
+
+
+--echo # not col 比较运算符 (subquery)
+--result_format 4
+--explain_protocol 2
+SELECT a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 != (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+SELECT /*+ NO_REWRITE */ a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 != (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+SELECT a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 > (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+SELECT /*+ NO_REWRITE */ a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 > (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+
+SELECT a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 = (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+SELECT /*+ NO_REWRITE */ a.c1 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE  NOT a.c1 = (SELECT MAX(a.c1) FROM t2 a ) ORDER BY a.c1;
+SELECT a.c3 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE NOT a.c3 = (SELECT MAX(a.c3) FROM t2 a INNER JOIN t2 b on a.c1=b.c1 where exists (SELECT c1 from t1 where not c3 =any(SELECT c3 from t2))) ORDER BY a.c1;
+SELECT /*+ NO_REWRITE */ a.c3 FROM t1 a INNER JOIN t2 b on a.c1=b.c1 WHERE NOT a.c3 = (SELECT MAX(a.c3) FROM t2 a INNER JOIN t2 b on a.c1=b.c1 where exists (SELECT c1 from t1 where not c3 =any(SELECT c3 from t2))) ORDER BY a.c1;
+
+SELECT a.c4 FROM t1 a WHERE not c4 = any(SELECT c4 from t2);
+SELECT /*+ NO_REWRITE */ a.c4 FROM t1 a WHERE not c4 = any(SELECT c4 from t2);
+SELECT a.c4 FROM t1 a WHERE not c4 = (SELECT max(c4) from t2);
+SELECT /*+ NO_REWRITE */ a.c4 FROM t1 a WHERE not c4 = (SELECT max(c4) from t2);
+SELECT a.c4 FROM t1 a WHERE not c4 > (SELECT max(c4) from t2);
+SELECT /*+ NO_REWRITE */ a.c4 FROM t1 a WHERE not c4 > (SELECT max(c4) from t2);
+
+SELECT a.c3 FROM t1 a WHERE not c2 = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT /*+ NO_REWRITE */ a.c3 FROM t1 a WHERE not c2 = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT a.c3 FROM t1 a WHERE not (SELECT min(c2) from t1 where c2 is null) = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT /*+ NO_REWRITE */ a.c3 FROM t1 a WHERE not (SELECT min(c2) from t1 where c2 is null) = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT a.c2 FROM t1 a WHERE not (SELECT min(c2) from t1 where c2 is not null) = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT /*+ NO_REWRITE */ a.c2 FROM t1 a WHERE not (SELECT min(c2) from t1 where c2 is not null) = (SELECT min(c2) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT a.c2 FROM t1 a WHERE not c3*2+1 = (SELECT min(c3) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT /*+ NO_REWRITE */ a.c2 FROM t1 a WHERE not c3*2+1 = (SELECT min(c3) from t2 where not c3 =(SELECT min(c3) from t1));
+SELECT a.c2 from t1 a where not a.c4 <> all (SELECT a.c4 from t1 a where a.c2 is not null) and a.c1 != any (SELECT a.c1 from t1 a where a.c2 is not null) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c2 from t1 a where not a.c4 <> all (SELECT a.c4 from t1 a where a.c2 is not null) and a.c1 != any (SELECT a.c1 from t1 a where a.c2 is not null) order by a.c1;
+SELECT a.c2 from t1 a where not a.c4 <> some (SELECT a.c4 from t1 a where a.c1 is null) and a.c1 != all (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c2 from t1 a where not a.c4 <> some (SELECT a.c4 from t1 a where a.c1 is null) and a.c1 != all (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+
+
+--echo # not col 比较运算符 any/all/some(subquery) ,c1主键判断
+SELECT * from t1 where not c1 > all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 > all (SELECT c1 from t2);
+SELECT * from t1 where not c1 < all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 < all (SELECT c1 from t2);
+SELECT * from t1 where not c1 = all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 = all (SELECT c1 from t2);
+SELECT * from t1 where not c1 >= all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >= all (SELECT c1 from t2);
+SELECT * from t1 where not c1 <= all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <= all (SELECT c1 from t2);
+SELECT * from t1 where not c1 <> all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <> all (SELECT c1 from t2);
+SELECT * from t1 where not c1 != all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 != all (SELECT c1 from t2);
+SELECT * from t1 where not c1 > any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 > any (SELECT c1 from t2);
+SELECT * from t1 where not c1 < any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 < any (SELECT c1 from t2);
+SELECT * from t1 where not c1 = any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 = any (SELECT c1 from t2);
+SELECT * from t1 where not c1 >= any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >= any (SELECT c1 from t2);
+SELECT * from t1 where not c1 <= any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <= any (SELECT c1 from t2);
+SELECT * from t1 where not c1 <> any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <> any (SELECT c1 from t2);
+SELECT * from t1 where not c1 != any (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 != any (SELECT c1 from t2);
+SELECT * from t1 where not c1 > some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 > some (SELECT c1 from t2);
+SELECT * from t1 where not c1 < some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 < some (SELECT c1 from t2);
+SELECT * from t1 where not c1 = some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 = some (SELECT c1 from t2);
+SELECT * from t1 where not c1 >= some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >= some (SELECT c1 from t2);
+SELECT * from t1 where not c1 <= some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <= some (SELECT c1 from t2);
+SELECT * from t1 where not c1 <> some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 <> some (SELECT c1 from t2);
+SELECT * from t1 where not c1 != some (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 != some (SELECT c1 from t2);
+
+--echo # 子查询里包含group by having
+SELECT c1 from t1 where not c1 != some (SELECT count(c1) from t2 group by c1);
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 != some (SELECT count(c1) from t2 group by c1);
+SELECT c1 from t1 where not c1 = some (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 = some (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT c2 from t1 where not c2 = some (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT /*+ NO_REWRITE */ c2 from t1 where not c2 = some (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT c3 from t1 where not c3 = some (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c3 from t1 where not c3 = some (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT c4 from t1 where not c4 = some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4 = some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 = some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 = some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 != some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 != some (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+
+
+SELECT c1 from t1 where not c1 != any (SELECT count(c1) from t2 group by c1);
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 != any (SELECT count(c1) from t2 group by c1);
+SELECT c1 from t1 where not c1 = any (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 = any (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT c2 from t1 where not c2 = any (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT /*+ NO_REWRITE */ c2 from t1 where not c2 = any (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT c3 from t1 where not c3 = any (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c3 from t1 where not c3 = any (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT c4 from t1 where not c4 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 != any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 != any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+
+
+SELECT c1 from t1 where not c1 != all (SELECT count(c1) from t2 group by c1);
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 != all (SELECT count(c1) from t2 group by c1);
+SELECT c1 from t1 where not c1 = all (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c1 = all (SELECT min(c1) from t2 group by c1 having (min(c1)>1));
+SELECT c2 from t1 where not c2 = all (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT /*+ NO_REWRITE */ c2 from t1 where not c2 = all (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11));
+SELECT c3 from t1 where not c3 = all (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c3 from t1 where not c3 = all (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT c4 from t1 where not c4 = all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4 = all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 = all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 = all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT c4 from t1 where not c4+1 != all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE */ c4 from t1 where not c4+1 != all (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+
+--echo # 子查询里包含limit
+SELECT * from t1 where not c1 != any (SELECT c1 from t2 limit 5);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 != any (SELECT c1 from t2 limit 5);
+SELECT * from t1 where not c1 = any (SELECT c1 from t2 limit 5 offset 1);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 = any (SELECT c1 from t2 limit 5 offset 1);
+
+
+
+
+--echo # col 包含null和空值，子查询返回值包含null
+SELECT * from t1 where not c2 > all (SELECT c2 from t2 where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 > all (SELECT c2 from t2 where c2 is null);
+SELECT * from t1 where not c2 < all (SELECT c2 from t2 where c2 ='');
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 < all (SELECT c2 from t2 where c2 ='');
+SELECT * from t1 where not c2 = all (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 = all (SELECT c2 from t2  where c2 is null);
+SELECT * from t1 where not c2 >= all (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 >= all (SELECT c2 from t2);
+SELECT * from t1 where not c2 <= all (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <= all (SELECT c2 from t2);
+SELECT * from t1 where not c2 <> all (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <> all (SELECT c2 from t2);
+SELECT * from t1 where not c2 != all (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != all (SELECT c2 from t2);
+SELECT * from t1 where not c2 != all (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != all (SELECT c2 from t2);
+SELECT * from t1 where not c2 > any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 > any (SELECT c2 from t2);
+SELECT * from t1 where not c2 < any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 < any (SELECT c2 from t2);
+SELECT * from t1 where not c2 = any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 = any (SELECT c2 from t2);
+SELECT * from t1 where not c2 >= any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 >= any (SELECT c2 from t2);
+SELECT * from t1 where not c2 <= any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <= any (SELECT c2 from t2);
+SELECT * from t1 where not c2 <> any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <> any (SELECT c2 from t2);
+SELECT * from t1 where not c2 != any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != any (SELECT c2 from t2);
+SELECT * from t1 where not c2 != any (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != any (SELECT c2 from t2);
+SELECT * from t1 where not c2 > some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 > some (SELECT c2 from t2);
+SELECT * from t1 where not c2 < some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 < some (SELECT c2 from t2);
+SELECT * from t1 where not c2 = some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 = some (SELECT c2 from t2);
+SELECT * from t1 where not c2 >= some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 >= some (SELECT c2 from t2);
+SELECT * from t1 where not c2 <= some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <= some (SELECT c2 from t2);
+SELECT * from t1 where not c2 <> some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 <> some (SELECT c2 from t2);
+SELECT * from t1 where not c2 != some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != some (SELECT c2 from t2);
+SELECT * from t1 where not c2 != some (SELECT c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != some (SELECT c2 from t2);
+
+SELECT * from t1 where not c1 in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+SELECT * from t1 where not null*c1 not in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not null*c1 not in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+
+SELECT * from t1 where not null*c2 not in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not null*c2 not in(SELECT ((SELECT max(c1) from t1)*null) from t2);
+
+--echo # having中包含not 子查询
+SELECT c1 from t1 group by c1 having (not c1 in (SELECT min(c1) from t1));
+SELECT /*+ NO_REWRITE */ c1 from t1 group by c1 having (not c1 in (SELECT min(c1) from t1));
+SELECT c2 from t1 group by c2 having (not c2 in (SELECT c2 from t1));
+SELECT /*+ NO_REWRITE */ c2 from t1 group by c2 having (not c2 in (SELECT c2 from t1));
+SELECT c2 from t1 group by c2 having (not c2 = all (SELECT c2 from t1));
+SELECT /*+ NO_REWRITE */ c2 from t1 group by c2 having (not c2 = all (SELECT c2 from t1));
+SELECT (c2) from t1 group by c2 having (not c2 <> all (SELECT c2 from t1)) order by 1;
+SELECT /*+ NO_REWRITE */ (c2) from t1 group by c2 having (not c2 <> all (SELECT c2 from t1)) order by 1;
+SELECT c2 from t1 group by c2,c1 having (not c2 <> all (SELECT c2 from t1) and not c1 in (SELECT c1 from t3)) order by 1;
+SELECT /*+ NO_REWRITE */ c2 from t1 group by c2,c1 having (not c2 <> all (SELECT c2 from t1) and not c1 in (SELECT c1 from t3)) order by 1;
+SELECT (c2) from t1 group by c2 having (not c2 = all (SELECT c2 from t1)) order by 1;
+SELECT /*+ NO_REWRITE */ (c2) from t1 group by c2 having (not c2 = all (SELECT c2 from t1)) order by 1;
+SELECT (c2) from t1 group by c2 having (not c2 = any (SELECT c2 from t1)) order by 1;
+SELECT /*+ NO_REWRITE */ (c2) from t1 group by c2 having (not c2 = any (SELECT c2 from t1)) order by 1;
+SELECT max(c3) from t1 group by c1 having (not c1 = some (SELECT max(c1) from t1 group by c1 )) order by 1;
+SELECT /*+ NO_REWRITE */ max(c3) from t1 group by c1 having (not c1 = some (SELECT max(c1) from t1 group by c1 )) order by 1;
+SELECT max(c3) from t1 group by c1 having (not max(c1) = all(SELECT count(c2) from t1 where not c3 in (SELECT c3 from t3 where c2 is null) )) order by 1;
+SELECT /*+ NO_REWRITE */ max(c3) from t1 group by c1 having (not max(c1) = all(SELECT count(c2) from t1 where not c3 in (SELECT c3 from t3 where c2 is null) )) order by 1;
+
+
+
+--echo # 子查询中嵌套not
+SELECT * from t1 where not c2 != some (SELECT c2 from t1 where not c2 != some (SELECT c2 from t2));
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 != some (SELECT c2 from t1 where not c2 != some (SELECT c2 from t2));
+
+
+
+SELECT * from t1 where not c1 >= all (SELECT t2.c1 from t2 left join t1 on t2.c1=t1.c1);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >= all (SELECT t2.c1 from t2 left join t1 on t2.c1=t1.c1);
+
+
+--echo # not (col in/not in  (subquery))
+SELECT * from t1 where not c2 in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT c2 from t2  where c2 is null);
+SELECT c1 from t1 where not c2 in (SELECT c2 from t2 where c2 is not null);
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c2 in (SELECT c2 from t2 where c2 is not null);
+SELECT c1 from t1 where not c2 in (SELECT c2 from t2 where c2 != null);
+SELECT /*+ NO_REWRITE */ c1 from t1 where not c2 in (SELECT c2 from t2 where c2 != null);
+SELECT * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null);
+
+SELECT * from t1 where not c1 in (SELECT count(c2) from t2 group by c1);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in (SELECT count(c2) from t2 group by c1);
+SELECT * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null);
+
+SELECT * from t1 where not c1 in (SELECT case c1 when 1 then 1 when 2 then 1 else  1 end from t2) order by c1 ;
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in (SELECT case c1 when 1 then 1 when 2 then 1 else  1 end from t2) order by c1 ;
+SELECT * from t1 where not c1 not in (SELECT case c1 when 1 then 1 when 2 then 1 else  1 end from t2) order by c1 ;
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 not in (SELECT case c1 when 1 then 1 when 2 then 1 else  1 end from t2) order by c1 ;
+
+SELECT * from t1 where not c2 in (SELECT case c2 when 'white cat' then 'cat' when 'cat' then 'cat' else  null end from t2) order by c1 ;
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT case c2 when 'white cat' then 'cat' when 'cat' then 'cat' else  null end from t2) order by c1 ;
+SELECT * from t1 where not c2 not in (SELECT case c2 when 'white cat' then 'cat' when 'cat' then 'cat' else  null end from t2) order by c1 ;
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 not in (SELECT case c2 when 'white cat' then 'cat' when 'cat' then 'cat' else  null end from t2) order by c1 ;
+
+
+SELECT * from t1 where not c3 in (SELECT c3*2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c3 in (SELECT c3*2 from t2);
+SELECT * from t1 where not c3*2 in (SELECT c3*2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c3*2 in (SELECT c3*2 from t2);
+
+
+
+--echo # not (col1,col2…) in/not in (subquery)
+SELECT * from t1 where not (c1,c2,c3,c4) in (SELECT * from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2,c3,c4) in (SELECT * from t2);
+
+SELECT * from t1 where not (c1,c2,c3,c4) in (SELECT * from t2 limit 2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2,c3,c4) in (SELECT * from t2 limit 2);
+
+SELECT * from t1 where not (c1,c2) in (SELECT c1,c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) in (SELECT c1,c2 from t2);
+SELECT * from t1 where not (c1,c2,c3,c4) not in (SELECT * from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2,c3,c4) not in (SELECT * from t2);
+SELECT * from t1 where not (c1,c2) not in (SELECT c1,c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) not in (SELECT c1,c2 from t2);
+SELECT * from t1 where not (c1,c2) in (SELECT c1,c2 from t2 );
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) in (SELECT c1,c2 from t2 );
+SELECT * from t1 where not (c1,c2) in (SELECT t1.c1,t1.c2 from t2 inner join t1 on t2.c1=t1.c1 where t1.c1 is not null);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) in (SELECT t1.c1,t1.c2 from t2 inner join t1 on t2.c1=t1.c1 where t1.c1 is not null);
+SELECT * from t1 where not (c1,c2) in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 group by t1.c1);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 group by t1.c1);
+SELECT * from t1 where not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT a.c3 from t1 a where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t3 a ) and not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c3 from t1 a where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t3 a ) and not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a) order by a.c1;
+SELECT a.c3 from t1 a where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a where a.c1 is null) and not  (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a where a.c4 is null) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c3 from t1 a where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a where a.c1 is null) and not  (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 a where a.c4 is null) order by a.c1;
+
+
+
+--echo # and 拼接多个not表达式
+SELECT * from t1 where not c2 in (SELECT c2 from t2  where c2 is null) and not c2 in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT c2 from t2  where c2 is null) and not c2 in (SELECT c2 from t2  where c2 is null);
+SELECT * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null) and c2 in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 not in (SELECT c2 from t2  where c2 is null) and c2 in (SELECT c2 from t2  where c2 is null);
+SELECT * from t1 where not c2 in (SELECT c2 from t2  where c2 is null) and not c2 not in (SELECT c2 from t2  where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT c2 from t2  where c2 is null) and not c2 not in (SELECT c2 from t2  where c2 is null);
+
+
+
+--echo # not表达式 and/or 其他过滤谓词表达式
+SELECT c2 from t1 where not (c1,c2) in (SELECT c1,c2 from t2 ) and exists (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE*/ c2 from t1 where not (c1,c2) in (SELECT c1,c2 from t2 ) and exists (SELECT c1 from t2);
+
+
+SELECT c1 from t1 where not c1 = any (SELECT min(c1) from t2 group by c1 having (min(c1)>1)) and not (c1,c2) in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 group by t1.c1);
+SELECT /*+ NO_REWRITE*/ c1 from t1 where not c1 = any (SELECT min(c1) from t2 group by c1 having (min(c1)>1)) and not (c1,c2) in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 group by t1.c1);
+SELECT c2 from t1 where not c2 != any (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11)) ;
+SELECT /*+ NO_REWRITE*/ c2 from t1 where not c2 != any (SELECT min(c2) from t2 group by c3 having (min(c3)>1.11)) ;
+SELECT c3 from t1 where not c3 = any (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT /*+ NO_REWRITE*/ c3 from t1 where not c3 = any (SELECT min(c3) from t2 group by c3 having (min(c1)>1));
+SELECT c4 from t1 where not c4 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1)) and not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT /*+ NO_REWRITE*/ c4 from t1 where not c4 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1)) and not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT c4 from t1 where not c4+1 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1)) and not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT /*+ NO_REWRITE*/ c4 from t1 where not c4+1 = any (SELECT min(c4) from t2 group by c4 having (min(c1)>1)) and not (c1,c2) not in (SELECT max(t1.c1),min(t1.c2) from t2 inner join t1 on t2.c1=t1.c1 where t1.c1>0 and not (t1.c1,t1.c2) not in (SELECT c1,c2 from t2 where c2 is not null)group by t1.c1);
+SELECT c4 from t1 where not c4+1 != any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+SELECT /*+ NO_REWRITE*/ c4 from t1 where not c4+1 != any (SELECT min(c4) from t2 group by c4 having (min(c1)>1));
+
+SELECT * from t1 where not (c1,c2) in (SELECT c1,c2 from t2) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+SELECT /*+ NO_REWRITE*/ * from t1 where not (c1,c2) in (SELECT c1,c2 from t2) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+SELECT * from t1 where not (c1,c2) in (SELECT c1,c2 from t2 where not c1 between 1 and 3) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+SELECT /*+ NO_REWRITE*/ * from t1 where not (c1,c2) in (SELECT c1,c2 from t2 where not c1 between 1 and 3) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+
+
+--echo # col 为子查询
+SELECT * from t1 where not (SELECT c2 from t1 where not (c1,c2) in (SELECT c1,c2 from t2 ) and  exists (SELECT c2 from t2)) in (SELECT c2 from t3);
+SELECT /*+ NO_REWRITE */ * from t1 where not (SELECT c2 from t1 where not (c1,c2) in (SELECT c1,c2 from t2 ) and  exists (SELECT c2 from t2)) in (SELECT c2 from t3);
+
+SELECT * from t1 where not (SELECT max(c1) from t1 ) not in (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (SELECT max(c1) from t1 ) not in (SELECT c1 from t2);
+SELECT * from t1 where not (SELECT avg(c1) from t1 ) in (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not (SELECT avg(c1) from t1 ) in (SELECT c1 from t2);
+SELECT * from t1 where not (SELECT max(c1) from t1 ) not in (SELECT c1 from t1);
+SELECT /*+ NO_REWRITE */ * from t1 where not (SELECT max(c1) from t1 ) not in (SELECT c1 from t1);
+SELECT * from t1 where not (SELECT max(c1) from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m ) not in (SELECT c1 from t1);
+SELECT /*+ NO_REWRITE */ * from t1 where not (SELECT max(c1) from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m ) not in (SELECT c1 from t1);
+
+
+--echo # 子查询中结合函数
+SELECT * from t1 where not c1 in (SELECT concat('1','2') from dual);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in (SELECT concat('1','2') from dual);
+SELECT * from t1 where not c2 in (SELECT concat(t1.c2,t2.c2) from t2 ,t3 where t1.c1=t2.c1) order by 1,2,3,4;
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT concat(t1.c2,t2.c2) from t2 ,t3 where t1.c1=t2.c1);
+
+SELECT * from t1 where not c1 in (SELECT substr('2323231',2,1) from dual);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in (SELECT substr('2323231',2,1) from dual);
+SELECT * from t1 where not c2 in (SELECT trim(c2) from t3);
+SELECT /*+ NO_REWRITE */ * from t1 where not c2 in (SELECT trim(c2) from t3);
+
+
+SELECT a.c1 from t1 a where not a.c2 in (SELECT concat(c2,c2) from t2) and a.c2 in (SELECT a.c2 from t3 where a.c2 is null) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c1 from t1 a where not a.c2 in (SELECT concat(c2,c2) from t2) and a.c2 in (SELECT a.c2 from t3 where a.c2 is null) order by a.c1;
+SELECT a.c1 from t1 a where not a.c2 in (SELECT concat(c2,c2) from t2) and a.c2 in (SELECT a.c2 from t3 where a.c2 is null) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c1 from t1 a where not a.c2 in (SELECT concat(c2,c2) from t2) and a.c2 in (SELECT a.c2 from t3 where a.c2 is null) order by a.c1;
+
+SELECT a.c3 from t3 a where not a.c3 < any (SELECT a.c3 from t3 where a.c1 is null) and a.c2 not in (SELECT substr(c2,0,100) from t2) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c3 from t3 a where not a.c3 < any (SELECT a.c3 from t3 where a.c1 is null) and a.c2 not in (SELECT substr(c2,0,100) from t2) order by a.c1;
+SELECT a.c3 from t3 a where not a.c3 < any (SELECT a.c3 from t3 where a.c1 is null) and a.c2 not in (SELECT substr(c2,0,100) from t2) order by a.c1;
+SELECT /*+ NO_REWRITE */ a.c3 from t3 a where not a.c3 < any (SELECT a.c3 from t3 where a.c1 is null) and a.c2 not in (SELECT substr(c2,0,100) from t2) order by a.c1;
+
+--echo # subquery中嵌套not表达式
+SELECT a.c1 from (SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2) ) a where not (c1,c2) not in (SELECT c1,c2 from t2);
+SELECT /*+ NO_REWRITE */ a.c1 from (SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2) ) a where not (c1,c2) not in (SELECT c1,c2 from t2);
+SELECT c1,c2 from (SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2) ) a NATURAL JOIN t2  where not (c1,c2) not in (SELECT c1,c2 from t2);
+SELECT /*+ NO_REWRITE */ c1,c2 from (SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2) ) a NATURAL JOIN t2  where not (c1,c2) not in (SELECT c1,c2 from t2);
+
+SELECT * from t1 where not (c1,c2) not in ((SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2)));
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) not in ((SELECT c1,c2 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2)));
+SELECT * from t1 where not c1 >some(SELECT c1 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2));
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >some(SELECT c1 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2));
+SELECT * from t1 where not c1 in (SELECT c1 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2));
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 in (SELECT c1 from t1 where not (c1,c2) not in (SELECT c1,c2 from t2));
+
+
+--echo # from子查询中可以用order by
+SELECT * from (SELECT c1,c2 from t1 order by c2)tmp where not c1 >= any (SELECT c1 from t2) ;
+SELECT /*+ NO_REWRITE*/ * from (SELECT c1,c2 from t1 order by c2)tmp where not c1 >= any (SELECT c1 from t2) ;
+SELECT * from t1 where not c1 >= any (SELECT count(c1) from t2 group by c1 having (c1>1));
+SELECT /*+ NO_REWRITE*/ * from t1 where not c1 >= any (SELECT count(c1) from t2 group by c1 having (c1>1));
+SELECT * from t1 where not c1 >= any (SELECT count(c1) from t2 group by c1 having (c1>1));
+SELECT /*+ NO_REWRITE*/ * from t1 where not c1 >= any (SELECT count(c1) from t2 group by c1 having (c1>1));
+
+SELECT * from t1 where not c1 >= any (SELECT case c1 when 0 then 1 when 1 then 1 else 2 end from t2 );
+SELECT /*+ NO_REWRITE*/ * from t1 where not c1 >= any (SELECT case c1 when 0 then 1 when 1 then 1 else 2 end from t2 );
+
+SELECT a.c2 from t2 a where not a.c2 in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t3) and a.c1 in (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t2 a where not a.c2 in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t3) and a.c1 in (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT a.c2 from t2 a where not a.c2 in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t3) and a.c1 in (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t2 a where not a.c2 in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t3) and a.c1 in (SELECT a.c3 from t1 where a.c1 is null) order by a.c1;
+
+SELECT a.c2 from t3 a where not a.c3 not in (SELECT a.c1 from t2 where a.c1 is null) and a.c3 in (SELECT case c3 when 1 then 1 when 2 then 2 else null end from t2) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a where not a.c3 not in (SELECT a.c1 from t2 where a.c1 is null) and a.c3 in (SELECT case c3 when 1 then 1 when 2 then 2 else null end from t2) order by a.c1;
+SELECT a.c2 from t3 a where not a.c3 not in (SELECT a.c1 from t2 where a.c1 is not null) and a.c3 in (SELECT case c3 when 1 then 1 when 2 then 2 else null end from t2) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a where not a.c3 not in (SELECT a.c1 from t2 where a.c1 is not null) and a.c3 in (SELECT case c3 when 1 then 1 when 2 then 2 else null end from t2) order by a.c1;
+
+SELECT a.c2 from t1 a where not a.c2 not in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t1) and (a.c1,a.c2,a.c3,a.c4) not in (SELECT a.c1,a.c2,a.c4,a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t1 a where not a.c2 not in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t1) and (a.c1,a.c2,a.c3,a.c4) not in (SELECT a.c1,a.c2,a.c4,a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT a.c2 from t1 a where not a.c2 not in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t1) and (a.c1,a.c2,a.c3,a.c4) not in (SELECT a.c1,a.c2,a.c4,a.c3 from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t1 a where not a.c2 not in (SELECT case c2 when 'a' then 'aa' when 'b' then 'bb' else null end from t1) and (a.c1,a.c2,a.c3,a.c4) not in (SELECT a.c1,a.c2,a.c4,a.c3 from t1 where a.c1 is null) order by a.c1;
+
+
+--echo # not c1 +比较运算符 +(subquery)
+SELECT * from t1 where not c1 >=  (SELECT max(c1) from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 >=  (SELECT max(c1) from t2);
+SELECT * from t1 where  not (c1,c2) in  (SELECT c1,c2 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where  not (c1,c2) in  (SELECT c1,c2 from t2);
+SELECT * from t1 where  not (c1,c2,c3,c4) in  (SELECT * from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where  not (c1,c2,c3,c4) in  (SELECT * from t2);
+SELECT * from t1 where  not (c2,c2) in  (SELECT '2015-06-19 10:00:00.000001',33 from dual);
+SELECT /*+ NO_REWRITE */ * from t1 where  not (c2,c2) in  (SELECT '2015-06-19 10:00:00.000001',33 from dual);
+SELECT * from t1 where  not (c1,c2) in  (SELECT t3.c1,t2.c2 from t3,t2 where t3.c1=t2.c1);
+SELECT /*+ NO_REWRITE */ * from t1 where  not (c1,c2) in  (SELECT t3.c1,t2.c2 from t3,t2 where t3.c1=t2.c1);
+
+--echo # EXISTS/NOT EXISTS 中嵌套 not (col in subquery)
+SELECT * from t1 where exists (SELECT c1 from t2 where not c1 in (SELECT c1 from t1));
+SELECT /*+ NO_REWRITE */ * from t1 where exists (SELECT c1 from t2 where not c1 in (SELECT c1 from t1));
+SELECT * from t1 where not exists (SELECT c1 from t2 where not c1 in (SELECT c1 from t1));
+SELECT /*+ NO_REWRITE */ * from t1 where not exists (SELECT c1 from t2 where not c1 in (SELECT c1 from t1));
+
+
+SELECT * from (SELECT * from t1 where not c1 >= all (SELECT c1 from t2)) where not  c1 >= all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from (SELECT * from t1 where not c1 >= all (SELECT c1 from t2)) where not  c1 >= all (SELECT c1 from t2);
+SELECT (SELECT max(c1) from t1 where not c1 >= all (SELECT c1 from t2)) from t1 where not  c1 >= all (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ (SELECT max(c1) from t1 where not c1 >= all (SELECT c1 from t2)) from t1 where not  c1 >= all (SELECT c1 from t2);
+SELECT * from t1 where not  c1 >= all (SELECT c1 from t1 where not c1 >= all (SELECT c1 from t2));
+SELECT /*+ NO_REWRITE */ * from t1 where not  c1 >= all (SELECT c1 from t1 where not c1 >= all (SELECT c1 from t2));
+
+SELECT * from t1 where not c1 between 1 and 100;
+SELECT /*+ NO_REWRITE */ * from t1 where not c1 between 1 and 100;
+SELECT * from t1 where  c1 not between 1 and 100;
+SELECT /*+ NO_REWRITE */ * from t1 where  c1 not between 1 and 100;
+SELECT * from t1 where  not c1 in ((SELECT max(c1) from t2),(SELECT min(c1) from t2));
+SELECT /*+ NO_REWRITE */ * from t1 where  not c1 in ((SELECT max(c1) from t2),(SELECT min(c1) from t2));
+
+SELECT * from t1 where  not c1 in ((SELECT max(c1) from t2),(SELECT min(c1) from t2)) and not c1 in (SELECT c1 from t2);
+SELECT /*+ NO_REWRITE */ * from t1 where  not c1 in ((SELECT max(c1) from t2),(SELECT min(c1) from t2)) and not c1 in (SELECT c1 from t2);
+
+SELECT c1 from t1 where  not c1 = (SELECT max(c1) from t2)*(SELECT min(c1) from t2);
+SELECT /*+ NO_REWRITE */ c1 from t1 where  not c1 = (SELECT max(c1) from t2)*(SELECT min(c1) from t2);
+SELECT c3 from t1 where  not c3 = (SELECT max(c3) from t2 where not c3 in (SELECT c3 from t3))*(SELECT min(c3) from t3 where not c3 <> some (SELECT c3 from t2 where c2 is not null ) );
+SELECT /*+ NO_REWRITE */ c3 from t1 where  not c3 = (SELECT max(c3) from t2 where not c3 in (SELECT c3 from t3))*(SELECT min(c3) from t3 where not c3 <> some (SELECT c3 from t2 where c2 is not null ) );
+
+SELECT * from t1 where not (c1,c2) in (SELECT c1,c2 from t2) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+SELECT /*+ NO_REWRITE */ * from t1 where not (c1,c2) in (SELECT c1,c2 from t2) and c3 <> (SELECT sum(c3) from t3 where c2 is null);
+
+--echo # 多表关联查询
+SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 and b.c1=c.c1 and not (a.c1,b.c2,c.c3,c.c4) in (SELECT a.c1,b.c2,c.c3,c.c4 from  t1 c, t2 a,t3 b ) and not a.c3 =any (SELECT max(c3) from t3  group by c1 having max(c1)>3);
+SELECT /*+ NO_REWRITE*/ a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 and b.c1=c.c1 and not (a.c1,b.c2,c.c3,c.c4) in (SELECT a.c1,b.c2,c.c3,c.c4 from  t1 c, t2 a,t3 b ) and not a.c3 =any (SELECT max(c3) from t3  group by c1 having max(c1)>3);
+
+SELECT c1 from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m where not m.c1 in (SELECT c1 from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m  where c1 is null) order by c1;
+SELECT /*+ NO_REWRITE*/ c1 from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m where not m.c1 in (SELECT c1 from (SELECT a.c1,b.c2,c.c3,c.c4 from t1 a, t2 b,t3 c where a.c1=b.c1 ) m  where c1 is null) order by c1;
+
+SELECT * from (SELECT a.c2,b.c3 from t1 a left join t2 b on a.c2=b.c2) m where not m.c2 not in (SELECT n.c2 from (SELECT a.c2,b.c3 from t2 a left join t3 b on a.c2=b.c2) n);
+SELECT /*+ NO_REWRITE*/ * from (SELECT a.c2,b.c3 from t1 a left join t2 b on a.c2=b.c2) m where not m.c2 not in (SELECT n.c2 from (SELECT a.c2,b.c3 from t2 a left join t3 b on a.c2=b.c2) n);
+
+SELECT a.c2 from t3 a right join t1 b on a.c1=b.c1 where not a.c2 in (SELECT concat(c2,c2) from t2) and (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a right join t1 b on a.c1=b.c1 where not a.c2 in (SELECT concat(c2,c2) from t2) and (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 where a.c1 is null) order by a.c1;
+SELECT a.c2 from t3 a right join t1 b on a.c1=b.c1 where not a.c2 in (SELECT concat(c2,c2) from t2) and (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a right join t1 b on a.c1=b.c1 where not a.c2 in (SELECT concat(c2,c2) from t2) and (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c2,a.c4,a.c3 from t2 where a.c1 is null) order by a.c1;
+
+SELECT a.c2 from t3 a inner join t1 b on a.c1=b.c1 where not a.c3 in (SELECT case c1 when 1 then 1 when 2 then 2 else null end from t3) and a.c2 in (SELECT substr(c2,0,0) from t3) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a inner join t1 b on a.c1=b.c1 where not a.c3 in (SELECT case c1 when 1 then 1 when 2 then 2 else null end from t3) and a.c2 in (SELECT substr(c2,0,0) from t3) order by a.c1;
+SELECT a.c2 from t3 a inner join t1 b on a.c1=b.c1 where not a.c3 in (SELECT case c1 when 1 then 1 when 2 then 2 else null end from t3) and a.c2 in (SELECT substr(c2,0,0) from t3) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a inner join t1 b on a.c1=b.c1 where not a.c3 in (SELECT case c1 when 1 then 1 when 2 then 2 else null end from t3) and a.c2 in (SELECT substr(c2,0,0) from t3) order by a.c1;
+
+SELECT a.c2 from t3 a left join t1 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c3,a.c4,a.c1 from t1 where a.c2 is null) and a.c2 in (SELECT a.c2 from t1 a left join t2 b on a.c1=b.c1) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a left join t1 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c3,a.c4,a.c1 from t1 where a.c2 is null) and a.c2 in (SELECT a.c2 from t1 a left join t2 b on a.c1=b.c1) order by a.c1;
+SELECT a.c2 from t3 a left join t1 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c3,a.c4,a.c1 from t1 where a.c2 is null) and a.c2 in (SELECT a.c2 from t1 a left join t2 b on a.c1=b.c1) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a left join t1 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c3,a.c4,a.c1 from t1 where a.c2 is null) and a.c2 in (SELECT a.c2 from t1 a left join t2 b on a.c1=b.c1) order by a.c1;
+SELECT a.c3 from t1 a where not a.c2 in (SELECT a.c2 from t1 a inner join t3 b on a.c1=b.c1) and a.c3 > (SELECT avg(a.c1) from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c3 from t1 a where not a.c2 in (SELECT a.c2 from t1 a inner join t3 b on a.c1=b.c1) and a.c3 > (SELECT avg(a.c1) from t1 where a.c1 is null) order by a.c1;
+SELECT a.c3 from t1 a where not a.c2 in (SELECT a.c2 from t1 a inner join t3 b on a.c1=b.c1) and a.c3 > (SELECT avg(a.c1) from t1 where a.c1 is null) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c3 from t1 a where not a.c2 in (SELECT a.c2 from t1 a inner join t3 b on a.c1=b.c1) and a.c3 > (SELECT avg(a.c1) from t1 where a.c1 is null) order by a.c1;
+
+SELECT a.c2 from t3 a inner join t3 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c1,a.c2,a.c3 from t2 where a.c4 is null) and a.c2 not in (SELECT concat(c2,c2) from t2) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a inner join t3 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c1,a.c2,a.c3 from t2 where a.c4 is null) and a.c2 not in (SELECT concat(c2,c2) from t2) order by a.c1;
+SELECT a.c2 from t3 a inner join t3 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c1,a.c2,a.c3 from t2 where a.c4 is null) and a.c2 not in (SELECT concat(c2,c2) from t2) order by a.c1;
+SELECT /*+ NO_REWRITE*/ a.c2 from t3 a inner join t3 b on a.c1=b.c1 where not (a.c1,a.c2,a.c4,a.c3) in (SELECT a.c1,a.c1,a.c2,a.c3 from t2 where a.c4 is null) and a.c2 not in (SELECT concat(c2,c2) from t2) order by a.c1;
+
+
+--explain_protocol 0
+--error 0,1051
+drop table t1;
+create table t1 (c1 int primary key, c2 varchar(50),c3 DECIMAL(8,2),c4 date)
+partition by range (c1) (partition p0 values less than (3),partition p1 values less than (maxvalue));
+
+insert into t1 values(0,'cat',1.11,str_to_date('20210202','%Y%m%d'));
+insert into t1 values(1,null,0.01,str_to_date('20210101','%Y%m%d'));
+insert into t1 values(2,'yellow cat',100,str_to_date('20211212','%Y%m%d'));
+insert into t1 values(3,'',8888.88,str_to_date('20210323','%Y%m%d'));
+insert into t1 values(4,'blue cat',222.88,str_to_date('20240323','%Y%m%d'));
+insert into t1 values(5,'green cat',333.88,str_to_date('20220323','%Y%m%d'));
+
+
+ 
+--echo # CTE中嵌套not (col in subquery)表达式
+--echo # 层次查询
+--error 0,1051
+DROP TABLE t_category;
+CREATE TABLE
+	t_category ( cat_id int(5) PRIMARY KEY ,
+	name varchar(50) ,
+	parent_cid DECIMAL(5),
+	cat_level DECIMAL(5) ,
+	product_count DECIMAL(5))
+partition by range (cat_id) (partition p0 values less than (10),partition p1 values less than (30));
+
+INSERT INTO t_category VALUES(1,'Clothes',0,1,1000);
+INSERT INTO t_category VALUES(2,'skin care',0,1,2000);
+INSERT INTO t_category VALUES(3,'Phone',0,1,300);
+INSERT INTO t_category VALUES(4,'Household Electric Appliances',0,1,400);
+INSERT INTO t_category VALUES(5,'Kitchenware',0,1,400);
+INSERT INTO t_category VALUES(6,'Dress',1,2,100);
+INSERT INTO t_category VALUES(7,'Jacket',1,2,100);
+INSERT INTO t_category VALUES(8,'Lower garment',1,2,100);
+INSERT INTO t_category VALUES(9,'one-piece dress',6,3,40);
+INSERT INTO t_category VALUES(10,'Half skirt',6,3,20);
+INSERT INTO t_category VALUES(11,'longuette',6,3,10);
+INSERT INTO t_category VALUES(12,'T-shirt',7,3,20);
+INSERT INTO t_category VALUES(13,'shirt',7,3,30);
+INSERT INTO t_category VALUES(14,'Eye cream',2,2,20);
+INSERT INTO t_category VALUES(15,'Water emulsion',2,2,40);
+INSERT INTO t_category VALUES(16,'Face cream',2,2,40);
+INSERT INTO t_category VALUES(17,'cosmetics',2,2,100);
+INSERT INTO t_category VALUES(18,'Lipstick',17,3,50);
+INSERT INTO t_category VALUES(19,'DIOR',18,4,10);
+INSERT INTO t_category VALUES(20,'Armani',18,4,10);
+INSERT INTO t_category VALUES(21,'Lancome',18,4,10);
+INSERT INTO t_category VALUES(22,'Lancome 888',21,5,10);
+INSERT INTO t_category VALUES(23,null,21,5,10);
+
+
+--explain_protocol 2
+--echo # not in subquery 在外层查询位置
+WITH 
+temp AS (SELECT e.cat_id,e.name,e.parent_cid FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name,p.parent_cid  FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE p.parent_cid = e.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where e.cat_id =7) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name,e.parent_cid FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name,p.parent_cid  FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE p.parent_cid = e.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where e.cat_id =7) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where e.cat_id =7) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where e.cat_id =7) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where not e.cat_id =7) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and not e.cat_id in (SELECT e.cat_id from temp e where not e.cat_id =7) ORDER BY 1,2;
+
+
+
+
+--echo # mysql 递归查询多表关联查询， not in subquery 在各个位置
+WITH RECURSIVE temp AS
+(
+SELECT cat_id,parent_cid,cast(name as char(1000)) as name FROM t_category WHERE not cat_id in (SELECT 63 from dual)
+UNION ALL
+SELECT c.cat_id,c.parent_cid,CONCAT(r.name, '>', c.name) as name FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not (r.parent_cid,r.name) in (SELECT 55,'skirt' )
+) SELECT * FROM temp order by 1,2,3;
+
+
+WITH RECURSIVE temp AS
+(
+SELECT cat_id,parent_cid,cast(name as char(1000)) as name FROM t_category WHERE not cat_id in (SELECT 63 from dual)
+UNION ALL
+SELECT c.cat_id,c.parent_cid,CONCAT(r.name, '>', c.name) as name FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not (r.parent_cid,r.name) in (SELECT 55,'skirt' )
+) SELECT /*+ NO_REWRITE */* FROM temp order by cat_id ;
+
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT * FROM temp where not name in (SELECT t.name from t_category t where t.cat_id in (SELECT c1 from t1 )) ;
+
+
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT /*+ NO_REWRITE */* FROM temp where not name in (SELECT t.name from t_category t where t.cat_id in (SELECT c1 from t1 )) ;
+
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT * FROM temp where not name in (SELECT t.name from t_category t where t.cat_id in (SELECT c1 from t1 )) ;
+
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT /*+ NO_REWRITE */* FROM temp where not name in (SELECT t.name from t_category t where t.cat_id in (SELECT c1 from t1 )) ;
+
+
+
+--echo # mysql 递归查询分区表关联查询， not in subquery 在各个位置
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category PARTITION(p0) t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category PARTITION(p1) c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT * FROM temp where not name in (SELECT t.name from t_category PARTITION(p1) t where t.cat_id in (SELECT c1 from t1 )) ;
+
+WITH RECURSIVE temp AS
+(
+SELECT count(t.cat_id),t.name,t.parent_cid,t.product_count FROM t_category PARTITION(p0) t where not t.cat_id in (SELECT c1 from t1 where not c1 = (SELECT max(c1) from t2 where c2 is not null)) GROUP BY cat_level HAVING (sum(product_count)<500)
+UNION ALL
+SELECT c.cat_id,c.name,c.parent_cid,c.product_count FROM t_category PARTITION(p1) c,temp r WHERE c.cat_id=r.parent_cid and not r.parent_cid in (SELECT c1 from t3 where not c3 in (SELECT c3 from t1 where c2 is null ) )
+) SELECT /*+ NO_REWRITE */* FROM temp where not name in (SELECT t.name from t_category PARTITION(p1) t where t.cat_id in (SELECT c1 from t1 )) ;
+
+
+WITH RECURSIVE temp AS
+(
+SELECT cat_id,parent_cid,cast(name as char(1000)) as name FROM t_category WHERE not cat_id in (SELECT 63 from dual)
+UNION ALL
+SELECT c.cat_id,c.parent_cid,CONCAT(r.name, '>', c.name) as name FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not (r.parent_cid,r.name) in (SELECT 55,'skirt' )
+) SELECT * FROM temp order by cat_id ;
+
+WITH RECURSIVE temp AS
+(
+SELECT cat_id,parent_cid,cast(name as char(1000)) as name FROM t_category WHERE not cat_id in (SELECT 63 from dual)
+UNION ALL
+SELECT c.cat_id,c.parent_cid,CONCAT(r.name, '>', c.name) as name FROM t_category c,temp r WHERE c.cat_id=r.parent_cid and not (r.parent_cid,r.name) in (SELECT 55,'skirt' )
+) SELECT /*+ NO_REWRITE */* FROM temp order by cat_id ;
+
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT p.cat_id from test1 p where not p.cat_id = any (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT p.cat_id from test1 p where not p.cat_id = any (SELECT c1 from t1)) ORDER BY 1,2;
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from test1 p where not p.cat_id = any  (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from test1 p where not p.cat_id = any  (SELECT c1 from t1)) ORDER BY 1,2;
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = all (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = all (SELECT c1 from t1)) ORDER BY 1,2;
+
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id not in (SELECT e.cat_id from temp e where not e.cat_id = all (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id not in (SELECT e.cat_id from temp e where not e.cat_id = all (SELECT c1 from t1)) ORDER BY 1,2;
+
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id not in (SELECT e.cat_id from temp e where not e.cat_id != all (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id not in (SELECT e.cat_id from temp e where not e.cat_id != all (SELECT c1 from t1)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not (e.cat_id,p.name) not in (SELECT * from temp e where not e.cat_id != all (SELECT c1 from t1 where c2 is not null )) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not (e.cat_id,p.name) not in (SELECT * from temp e where not e.cat_id != all (SELECT c1 from t1 where c2 is not null )) ORDER BY 1,2;
+
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not (e.cat_id,p.name) not in (SELECT e.cat_id,e.name FROM temp e,test1 p where not e.cat_id != all (SELECT c1 from t1)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not (e.cat_id,p.name) not in (SELECT e.cat_id,e.name FROM temp e,test1 p where not e.cat_id != all (SELECT c1 from t1)) ORDER BY 1,2;
+
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id < all (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id < all (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+--echo # not in subquery 不在递归表temp位置
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (1,2) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+
+--echo # not in subquery 在递归表temp位置
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT e.cat_id from t_category e where not e.cat_id = some (SELECT e.cat_id from t_category e)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT e.cat_id from t_category e where not e.cat_id = some (SELECT e.cat_id from t_category e)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT e.cat_id from t_category e where not e.cat_id = some (SELECT e.cat_id from t_category e)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT e.cat_id from t_category e where not e.cat_id = some (SELECT e.cat_id from t_category e)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any (SELECT e.cat_id from t_category e where not  e.cat_id IN (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any (SELECT e.cat_id from t_category e where not  e.cat_id IN (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+
+ 
+--echo # 每个位置都有
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id IN (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id <> any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id <> any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  IN ('Kitchenware','Household Electric Appliances') and  not p.product_count > any (SELECT sum (product_count ) from t_category e group by parent_cid having sum (product_count )>100) ORDER BY p.cat_id)
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id and  not e.cat_id  in (SELECT e.cat_id from temp e where not e.cat_id = some (SELECT e.cat_id from temp e)) ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  = all (SELECT p.name from temp where cat_id in (3,4)) )
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id = any(SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.name  = all (SELECT p.name from temp where cat_id in (3,4)) )
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+
+
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id in (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not null*p.name  = all (SELECT p.name from temp where cat_id  in (3,4)) )
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+--disable_warnings
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id in (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not null*p.name  = all (SELECT p.name from temp where cat_id  in (3,4)) )
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+--enable_warnings
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id in (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.cat_id*2  in (SELECT e.cat_id*2 from temp e  where cat_id in (1,2) ))
+SELECT e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+WITH 
+temp AS (SELECT e.cat_id,e.name FROM t_category e WHERE  not e.cat_id in (SELECT cat_id from t_category where cat_id in (1,2)) ORDER BY e.cat_id),
+test1 AS (SELECT p.cat_id,p.name FROM t_category p WHERE not p.cat_id*2  in (SELECT e.cat_id*2 from temp e  where cat_id in (1,2) ))
+SELECT /*+ NO_REWRITE */ e.cat_id,e.name  FROM temp e,test1 p WHERE e.cat_id = p.cat_id  ORDER BY 1,2;
+
+
+
+
+--echo #end释放空间、断开连接、删除库、删除用户
+purge recyclebin;
+connection default;
+drop database  zhe123;
+drop user zhe123@'%';
+
+
+

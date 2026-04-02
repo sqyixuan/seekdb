@@ -20,7 +20,6 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
-#include <sys/types.h> // For pid_t
 
 namespace oceanbase
 {
@@ -40,6 +39,7 @@ private:
 private:
   int64_t min_interval_;
 };
+extern int minicoredump(int sig, int64_t tid, pid_t& pid);
 extern int faststack();
 } // namespace common
 } // namespace oceanbase

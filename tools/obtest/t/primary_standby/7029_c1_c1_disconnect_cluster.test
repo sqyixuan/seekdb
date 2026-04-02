@@ -1,0 +1,346 @@
+# owner: shouju.zyp
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob2=OBI(cluster=1:1:1,leaderob=ob1,proxy_num=0);
+ob3=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+ob2.reboot;
+ob3.reboot;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1,f@z2,f@z3';
+let $zone_list = 'z1','z2','z3';
+source include/create_tenant_1.inc;
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 char(10), c3 int);
+create table t1(c1 int primary key, c2 int, c3 int);
+create tablegroup pg binding = true;
+create tablegroup pg1 binding = true;
+create table t2(c1 int primary key, c2 int, c3 int) tablegroup = 'pg1';
+insert into t values (1,1,1);
+select * from t;
+
+
+let $cluster_id_ob1 = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+let $cluster_id_ob2 = deploy_get_value(ob2.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+let $cluster_id_ob3 = deploy_get_value(ob3.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+source include/standby_sync_ddl.inc;
+
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 200;
+ob1.check_until_timeout select synchronization_status from oceanbase.__all_virtual_standby_status where cluster_id=$cluster_id_ob2, OK, 200;
+ob1.check_until_timeout select synchronization_status from oceanbase.__all_virtual_standby_status where cluster_id=$cluster_id_ob3, OK, 200;
+let $cluster_name = deploy_get_value(ob2.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+
+# set maximum protection mode
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id_ob2 set redo_transport_options='SYNC';
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id_ob1 set redo_transport_options='SYNC';
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_info = 'SYNCED STANDBY CLUSTERS: 2,3', 1, 360;
+ob1.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PROTECTION;
+ob1.check_until_timeout select protection_level from oceanbase.__all_cluster where cluster_id = $cluster_id_ob2, MAXIMUM PROTECTION, 100;
+
+#create another ob2 connection, to check whether disconnect cluster can kill it
+ob_connect(tt2_conn_2, ob2.z2.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn_2;
+
+alter system set debug_sync_timeout = '1000s';
+
+--disable_query_log
+--error 4179
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf';
+--enable_query_log
+
+--disable_query_log
+--error 4179
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' VERIFY;
+--enable_query_log
+
+--disable_query_log
+--error 4179
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE VERIFY;
+--enable_query_log
+
+# stop primary to do force disconnect cluster in max protection mode
+ob1.force_stop;
+
+#disconnect cluster 2
+ob_connect(tt2_conn_z2, ob2.z2.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn_z2;
+
+ob_connect(tt2_conn_z3, ob2.z3.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn_z3;
+
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_processlist, 5, 20;
+ob2.mysql set ob_global_debug_sync = 'BEFORE_SET_CLUSTER_NAME_CONFIGURL wait_for set_cluster_name';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.z1.force_stop;
+ob2.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z1.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'AFTER_SET_CLUSTER_NAME_CONFIGURL wait_for after_set_cluster_name';
+ob2.mysql set ob_global_debug_sync = 'now signal set_cluster_name';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.z2.force_stop;
+ob2.z3.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z2.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'AFTER_REMOVE_OTHER_CLUSTER wait_for remove_other_cluster';
+ob2.mysql set ob_global_debug_sync = 'now signal after_set_cluster_name';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.z3.force_stop;
+ob2.z1.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z3.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'AFTER_SET_ALL_CLUSTER_CLUSTER_NAME wait_for set_all_cluster';
+ob2.mysql set ob_global_debug_sync = 'now signal remove_other_cluster';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.z1.force_stop;
+ob2.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z1.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'AFTER_SET_ALL_ZONE_CLUSTER_NAME wait_for set_all_zone';
+ob2.mysql set ob_global_debug_sync = 'now signal set_all_cluster';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'switchover_status';
+ob2.mysql_p select switchover_status, switchover_info from oceanbase.__all_virtual_cluster;
+
+ob2.z2.force_stop;
+ob2.z3.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z2.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'SENDING_OBS_DISCONNECT_CLUSTER wait_for sending_obs_disconnect';
+ob2.mysql set ob_global_debug_sync = 'now signal set_all_zone';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+
+ob2.z3.force_stop;
+ob2.z1.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z3.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'AFTER_OBS_DISCONNECT_CLUSTER wait_for after_obs_disconnect';
+ob2.mysql set ob_global_debug_sync = 'now signal sending_obs_disconnect';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+--error 4012
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.z1.force_stop;
+ob2.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_server where status = 'inactive', 1, 360;
+ob2.z1.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 200;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql set ob_global_debug_sync = 'now signal after_obs_disconnect';
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+--disable_query_log
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob2 SET CLUSTER_NAME 'newcluster_name' OBCONFIG_URL 'asdf' FORCE;
+--enable_query_log
+
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_processlist, 2, 20;
+
+ob1.nstart;
+ob1.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+# downgrade from max protection to max performance
+ob1.mysql alter system set standby cluster to maximize performance;
+ob1.mysql alter system remove cluster '$cluster_name' cluster_id = $cluster_id_ob2;
+
+ob2.mysql_p select value from oceanbase.__all_sys_parameter where name = "cluster";
+ob2.mysql_p select value from oceanbase.__all_sys_parameter where name = "obconfig_url";
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObRegion\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObCluster\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 200;
+ob2.mysql_p select cluster_idx, cluster_name, cluster_status, redo_transport_options, protection_level from oceanbase.__all_cluster;
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_status';
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_type';
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'switchover_status';
+ob2.mysql_p select zone, name, value, info from oceanbase.__all_zone where name = 'cluster';
+ob2.mysql_p select switchover_status, switchover_info from oceanbase.__all_virtual_cluster;
+
+#check cluster status after restart cluster
+ob2.force_stop;
+sleep 10;
+ob2.nstart;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where with_rootserver=1 and zone='z1', 1, 200;
+ob2.check_until_timeout select count(*) from oceanbase.__all_server where status = 'active' and start_service_time > 0,3, 300;
+ob2.check_until_timeout select count(*) from (select count(*)c from oceanbase.__all_virtual_core_meta_table)s where s.c > 0, 1, 200;
+ob2.mysql_p select value from oceanbase.__all_sys_parameter where name = "cluster";
+ob2.mysql_p select value from oceanbase.__all_sys_parameter where name = "obconfig_url";
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObRegion\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObCluster\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 200;
+ob2.mysql_p select cluster_idx, cluster_name, cluster_status, redo_transport_options, protection_level from oceanbase.__all_cluster;
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_status';
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_type';
+ob2.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'switchover_status';
+ob2.mysql_p select zone, name, value, info from oceanbase.__all_zone where name = 'cluster';
+ob2.mysql_p select switchover_status, switchover_info from oceanbase.__all_virtual_cluster;
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+set ob_query_timeout = 100000000;
+alter system set _mini_merge_concurrency = 16;
+alter system set _ob_minor_merge_schedule_interval = '3s';
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+alter system set _mini_merge_concurrency = 3;
+alter system set _ob_minor_merge_schedule_interval = '20s';
+
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObRegion\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 200;
+ob2.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObCluster\":\"newcluster_name\"%" and cluster_id = $cluster_id_ob2, 1, 200;
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+update t set c2 = 'ob1' where c1 = 1;
+commit;
+
+ob_connect(tt2_conn, ob2.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+update t set c2 = 'ob2' where c1 = 1;
+commit;
+
+connection tt1_conn;
+select * from t;
+
+connection tt2_conn;
+select * from t;
+
+# add new standby cluster to disconnected ob2
+ob4=OBI(cluster=1:1:1,leaderob=ob2,proxy_num=0);
+ob4.set cname=newcluster_name;
+ob4.set cid=4;
+ob4.reboot;
+
+ob_connect(tt4_conn_sys, ob4.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt4_conn_sys;
+source include/standby_sync_ddl.inc;
+ob2.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 200;
+ob_connect(tt4_conn, ob4.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt4_conn;
+select /*+ read_consistency(weak)*/ * from t;
+
+ob5=OBI(cluster=1,leaderob=ob2,proxy_num=0);
+ob5.set cname=newcluster_name;
+ob5.set cid=5;
+ob5.reboot;
+ob_connect(tt5_conn_sys, ob5.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt5_conn_sys;
+source include/standby_sync_ddl.inc;
+ob2.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 200;
+ob2.check_until_timeout select synchronization_status from oceanbase.__all_virtual_standby_status where cluster_id=5, OK, 200;
+ob_connect(tt5_conn, ob5.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt5_conn;
+select /*+ read_consistency(weak)*/ * from t;
+
+
+ob6=OBI(cluster=1,leaderob=ob2,proxy_num=0);
+ob6.set cname=newcluster_name;
+ob6.set cid=6;
+ob6.reboot;
+ob_connect(tt6_conn_sys, ob6.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt6_conn_sys;
+source include/standby_sync_ddl.inc;
+ob2.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 200;
+ob2.check_until_timeout select synchronization_status from oceanbase.__all_virtual_standby_status where cluster_id=6, OK, 200;
+ob_connect(tt6_conn, ob6.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt6_conn;
+select /*+ read_consistency(weak)*/ * from t;
+
+
+#disconnect cluster 3
+ob_connect(tt3_conn, ob3.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt3_conn;
+--disable_query_log
+eval ALTER SYSTEM DISCONNECT STANDBY CLUSTER '$cluster_name' CLUSTER_ID $cluster_id_ob3 SET CLUSTER_NAME 'newcluster_name_ob3' OBCONFIG_URL 'asdf';
+--enable_query_log
+
+set global  ob_query_timeout=30000000;
+
+ob1.mysql alter system remove cluster '$cluster_name' cluster_id = $cluster_id_ob3;
+
+ob3.mysql_p select value from oceanbase.__all_sys_parameter where name = "cluster";
+ob3.mysql_p select value from oceanbase.__all_sys_parameter where name = "obconfig_url";
+ob3.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObRegion\":\"newcluster_name_ob3\"%" and cluster_id = $cluster_id_ob3, 1, 200;
+ob3.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObCluster\":\"newcluster_name_ob3\"%" and cluster_id = $cluster_id_ob3, 1, 200;
+ob3.mysql_p select cluster_idx, cluster_name, cluster_status, redo_transport_options, protection_level from oceanbase.__all_cluster;
+ob3.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_status';
+ob3.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'cluster_type';
+ob3.mysql_p select column_name, column_value from oceanbase.__all_core_table where table_name ='__all_cluster' and column_name = 'switchover_status';
+ob3.mysql_p select zone, name, value, info from oceanbase.__all_zone where name = 'cluster';
+
+ob_connect(tt3_conn, ob3.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt3_conn;
+set ob_query_timeout = 100000000;
+alter system set _mini_merge_concurrency = 16;
+alter system set _ob_minor_merge_schedule_interval = '3s';
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+alter system set _mini_merge_concurrency = 3;
+alter system set _ob_minor_merge_schedule_interval = '20s';
+
+ob3.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObRegion\":\"newcluster_name_ob3\"%" and cluster_id = $cluster_id_ob3, 1, 200;
+ob3.check_until_timeout select count(*) from oceanbase.__all_cluster where rs_list like "%\"ObCluster\":\"newcluster_name_ob3\"%" and cluster_id = $cluster_id_ob3, 1, 200;
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+update t set c2 = 'ob1_2' where c1 = 1;
+commit;
+
+ob_connect(tt3_conn, ob3.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt3_conn;
+update t set c2 = 'ob3_2' where c1 = 1;
+commit;
+
+connection tt1_conn;
+select * from t;
+
+connection tt3_conn;
+select * from t;
+
+ob_connect(tt2_conn, ob2.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+select * from t;
+
+ob3.check_until_timeout  select value from oceanbase.__all_zone where name='last_merged_version' and zone = '', 2, 600;

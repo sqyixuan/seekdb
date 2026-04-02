@@ -7547,17 +7547,7 @@ CAST_FUNC_NAME(bit, text)
       // if cast mode is column convert, using bit as int64 to do cast.
       ObFastFormatInt ffi(in_val);
       ObString res_str(ffi.length(), ffi.ptr());
-      // When convert binary bit to other charset, need to align to mbminlen of destination charset
-      // by add '\0' prefix in mysql mode. (see mysql String::copy)
-      const ObCharsetInfo *cs = NULL;
-      int64_t align_offset = 0;
-      if (CS_TYPE_BINARY == expr.args_[0]->datum_meta_.cs_type_
-          && (NULL != (cs = ObCharset::get_charset(expr.datum_meta_.cs_type_)))) {
-        if (cs->mbminlen > 0 && res_str.length() % cs->mbminlen != 0) {
-          align_offset = cs->mbminlen - res_str.length() % cs->mbminlen;
-        }
-      }
-      if (OB_FAIL(common_copy_string_zf_to_text_result(expr, res_str, ctx, res_datum, align_offset))) {
+      if (OB_FAIL(common_copy_string_zf_to_text_result(expr, res_str, ctx, res_datum))) {
         LOG_WARN("common_copy_string_zf_to_text_result failed", K(ret), K(res_str));
       }
     } else {
@@ -10696,7 +10686,7 @@ int string_to_set(ObIAllocator &alloc,
           LOG_WARN("fail to find type", K(str_values), K(cs_type), K(in_str), K(pos), K(ret));
         }
       } else {
-        val_str.assign_ptr(remain, static_cast<ObString::obstr_size_t>(sep_loc - remain));
+        val_str.assign_ptr(remain, sep_loc - remain);
         remain_len = remain_len - (sep_loc - remain + sep.length());
         remain = sep_loc + sep.length();
         if (OB_FAIL(find_type(str_values, cs_type, val_str, pos))) {

@@ -1,0 +1,73 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点：测试liboblog处理org_cluster_id的正确性
+##
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_tenant_multiple_zone.inc;
+--disable_warnings
+drop database if exists oblog_db;
+create database oblog_db;
+use oblog_db;
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.oblog_test skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建表
+--disable_warnings
+drop table if exists oblog_test;
+create table oblog_test (pk int primary key, c1 varchar(100));
+
+# 插入数据，保证收到
+replace into oblog_test values (1, 1), (2,2), (3,3);
+ob1.oblog.next_dml;
+
+# 设置ob_org_cluster_id变量
+set ob_org_cluster_id=1234;
+replace into oblog_test values (1, 1), (2,2), (3,3);
+ob1.oblog.next_dml;
+
+# ob_org_cluster_id = 2^32 - 1
+# set ob_org_cluster_id=4294967295;
+# 最大有效值为4294901759
+set ob_org_cluster_id=4294901759;
+replace into oblog_test values (1, 1), (2,2), (3,3);
+ob1.oblog.next_dml;
+
+####################### 下面验证远程执行计划cluster id的有效性 #######################
+connection oblog_conn_sys;
+use oceanbase;
+# 获取表ID
+let $tenant_id=`select tenant_id from __all_tenant where tenant_name='oblog_tt'`;
+let $tid=`select table_id from __all_virtual_table where tenant_id=$tenant_id and table_name='oblog_test'`;
+let $ls_id=`select ls_id from __all_virtual_tablet_to_ls where tenant_id=$tenant_id and table_id=$tid`;
+
+# 获取备observer
+let $slave_ip=query_get_value(select svr_ip from __all_virtual_ls_meta_table where tenant_id=$tenant_id and ls_id=$ls_id and role=2 limit 1, slave_ip, 1);
+let $slave_port=query_get_value(select sql_port from __all_virtual_ls_meta_table where tenant_id=$tenant_id and ls_id=$ls_id and role=2 limit 1, slave_port, 1);
+
+# 连接到备observer上
+connect (oblog_conn_sys_slave,$slave_ip,root@oblog_tt,,oceanbase,$slave_port);
+connection oblog_conn_sys_slave;
+use oblog_db;
+
+# 执行autocommit=0的事务，保证参与者与协调者分离，验证远程执行计划cluster id有效
+set ob_org_cluster_id=123987;
+begin;
+replace into oblog_test values (1, 1), (2,2), (3,3);
+commit;
+
+ob1.oblog.next_dml;
+
+# 执行autocommit=1的事务
+set ob_org_cluster_id=98765;
+replace into oblog_test values (1, 1), (2,2), (3,3);
+
+ob1.oblog.next_dml;
+ob1.oblog.stop;

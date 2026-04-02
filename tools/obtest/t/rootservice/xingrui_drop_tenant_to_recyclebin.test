@@ -1,0 +1,246 @@
+# CASE_OWNER:
+#    @xingrui.cwh
+# CASE_DESC:
+#    验证drop tenant时放入回收站
+#    case 1：
+#    打开回收站开关：drop tenant              tenant放入回收站
+#    关闭回收站开关：drop tenant              tenant不放入回收站，直接删除
+#    drop tenant force / drop tenant purge    tenant不放入回收站，直接删除
+#    进入回收站中的tenant不允许建立连接
+#    case 2：
+#    flashback tenant original_name to before drop  使用原始的名字（名字重复时，恢复最后进入回收站的tenant）将回收站中的tenant恢复
+#    flashback tenant object_name  to before drop   使用回收站中的名字将回收站中的tenant恢复
+#    flashback tenant original_name/object_name to before drop rename to new_t_1  对恢复的tenant进行重命名
+#     全部检查对普通租户的影响，普通租户不允许进行以上操作
+
+ob1=OBI(cluster=1, proxy_num = 0, init_unit_cpu = 0);
+let $extra_conf = "cpu_count=16,memory_limit='30G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false";
+ob1.z1.obs0.set extra_config=$extra_conf;
+
+ob1.reboot;
+
+let $obs0_ip= deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port= deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $obs0_ip, root@sys,,test, $obs0_port);
+
+source include/create_unit_config.inc;
+
+#case 0 show recyclebin in sys tenant
+set @@recyclebin = on;
+
+create table t1 (c1 int primary key, c2 int, c3 longtext, index i1(c2));
+drop table t1;
+
+create database db_to_drop;
+drop database db_to_drop;
+
+--replace_column 1 object_name 2 original_name 4 drop_time
+show recyclebin;
+
+purge recyclebin;
+
+show recyclebin;
+
+#case 1.1 打开回收站开关，drop tenant
+echo "[CASE 1.1] [drop tenant to recyclebin & purge recyclebin]";
+create resource pool pool1 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t1 resource_pool_list = ("pool1") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t1_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 't1', tenant_id, 1);
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t1_id or tenant_id = $t1_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t1_id or tenant_id = $t1_id - 1) order by tenant_id, schema_version;
+
+#用原始的名字建立连接
+connect(t1_conn_1, $obs0_ip, root@t1,,test, $obs0_port);
+
+connection sys_conn;
+set @@recyclebin = on;
+DROP TENANT t1;
+let $recycle_tenant = deploy_get_value(ob1.select select OBJECT_NAME from oceanbase.DBA_RECYCLEBIN where ORIGINAL_NAME = 't1' and TYPE = 'TENANT', OBJECT_NAME, 1);
+
+--replace_column 1 object_name 2 original_name 4 drop_time
+show recyclebin;
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t1_id or tenant_id = $t1_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t1_id or tenant_id = $t1_id - 1) order by tenant_id, schema_version;
+
+--disable_query_log
+# 回收站名字建连失败
+--error 1045
+connect(recycle_tenant_conn, $obs0_ip, root@$recycle_tenant,,test, $obs0_port);
+# 原始租户名建连失败
+--error 1045
+connect(t1_conn_2, $obs0_ip, root@t1,,test, $obs0_port);
+--enable_query_log
+
+# 清空回收站
+connection sys_conn;
+purge recyclebin;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where (tenant_id = $t1_id or tenant_id = $t1_id - 1), 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_RECYCLEBIN where type = 'TENANT', 0, 1;
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t1_id or tenant_id = $t1_id - 1) order by tenant_id, schema_version;
+drop resource pool pool1;
+
+#case 1.2 关闭回收站开关 drop tenant
+echo "[CASE 1.2] [drop tenant]";
+connection sys_conn;
+set @@recyclebin = off;
+create resource pool pool2 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t2 resource_pool_list = ("pool2") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t2_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 't2', tenant_id, 1);
+
+DROP TENANT t2;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t2_id or tenant_id = $t2_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t2_id or tenant_id = $t2_id - 1) order by tenant_id, schema_version;
+drop resource pool pool2;
+#case 1.3 drop tenant purge不进入回收站
+echo "[CASE 1.3] [drop tenant purge]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool3 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t3 resource_pool_list = ("pool3") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t3_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't3', tenant_id, 1);
+
+DROP TENANT t3 PURGE;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t3_id or tenant_id = $t3_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t3_id or tenant_id = $t3_id - 1) order by tenant_id, schema_version;
+drop resource pool pool3;
+
+# case 1.4 drop tenant force
+echo "[CASE 1.3] [drop tenant force]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool4 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t4 resource_pool_list = ("pool4") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t4_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't4', tenant_id, 1);
+
+DROP TENANT t4 FORCE;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t4_id or tenant_id = $t4_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t4_id or tenant_id = $t4_id - 1) order by tenant_id, schema_version;
+
+drop resource pool pool4;
+
+#case 2.1 non rename: flashback tenant original_name to before drop
+echo "[CASE 2.1] [flashback with original_name & no rename]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool5 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t5 resource_pool_list = ("pool5") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t5_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't5', tenant_id, 1);
+
+DROP TENANT t5;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t5_id or tenant_id = $t5_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t5_id or tenant_id = $t5_id - 1) order by tenant_id, schema_version;
+
+create resource pool pool6 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t5 resource_pool_list = ("pool6") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t6_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't5', tenant_id, 1);
+
+DROP TENANT t5;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t6_id or tenant_id = $t6_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t6_id or tenant_id = $t6_id - 1) order by tenant_id, schema_version;
+
+# flashback最近进入回收站的租户
+FLASHBACK TENANT t5 to before drop;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id >= $t5_id - 1 and tenant_id <= $t6_id) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id >= $t5_id - 1 and tenant_id <= $t6_id) order by tenant_id, schema_version;
+
+PURGE RECYCLEBIN;
+DROP TENANT t5 FORCE;
+drop resource pool pool6;
+
+#case 2.2 non rename: flashback tenant object_name  to before drop
+echo "[CASE 2.2] [flashback with object_name & no rename]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool7 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t7 resource_pool_list = ("pool7") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t7_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't7', tenant_id, 1);
+
+DROP TENANT t7;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t7_id or tenant_id = $t7_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t7_id or tenant_id = $t7_id - 1) order by tenant_id, schema_version;
+
+let $new_tenant_name = deploy_get_value(ob1.select select object_name from oceanbase.DBA_RECYCLEBIN where type = 'TENANT' and original_name = 't7', object_name, 1);
+
+--disable_query_log
+eval FLASHBACK TENANT $new_tenant_name to before drop;
+--enable_query_log
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t7_id or tenant_id = $t7_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t7_id or tenant_id = $t7_id - 1) order by tenant_id, schema_version;
+
+DROP TENANT t7 FORCE;
+drop resource pool pool7;
+
+#case 2.3 rename: flashback tenant object_name to before drop rename to new_tenant
+echo "[CASE 2.3] [flashback with object_name & rename]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool8 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t8 resource_pool_list = ("pool8") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t8_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't8', tenant_id, 1);
+
+DROP TENANT t8;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t8_id or tenant_id = $t8_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t8_id or tenant_id = $t8_id - 1) order by tenant_id, schema_version;
+select count(*) from oceanbase.DBA_OB_TENANTS where tenant_name = 'new_tenant';
+
+let $new_tenant_name = deploy_get_value(ob1.select select object_name from oceanbase.DBA_RECYCLEBIN where type = 'TENANT' and original_name = 't8', object_name, 1);
+
+--disable_query_log
+eval FLASHBACK TENANT $new_tenant_name to before drop rename to new_tenant;
+--enable_query_log
+
+select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where tenant_name = 'new_tenant';
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t8_id or tenant_id = $t8_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t8_id or tenant_id = $t8_id - 1) order by tenant_id, schema_version;
+
+DROP TENANT new_tenant FORCE;
+drop resource pool pool8;
+
+#case 2.4 rename: flashback tenant original_name to before drop rename to new_tenant
+echo "[CASE 2.4] [flashback with original & rename]";
+connection sys_conn;
+set @@recyclebin = on;
+create resource pool pool9 zone_list = ("z1"), unit = "1c2g", unit_num = 1;
+create tenant t9 resource_pool_list = ("pool9") set ob_compatibility_mode = 'mysql' , ob_tcp_invited_nodes='%';
+let $t9_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 't9', tenant_id, 1);
+
+DROP TENANT t9;
+
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t9_id or tenant_id = $t9_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t9_id or tenant_id = $t9_id - 1) order by tenant_id, schema_version;
+select count(*) from oceanbase.DBA_OB_TENANTS where tenant_name = 'new_tenant';
+
+let $new_tenant_name = deploy_get_value(ob1.select select object_name from oceanbase.DBA_RECYCLEBIN where type = 'TENANT' and original_name = 't9', object_name, 1);
+
+eval FLASHBACK TENANT t9 to before drop rename to new_tenant;
+
+select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where tenant_name = 'new_tenant';
+eval select tenant_id, tenant_type, in_recyclebin from oceanbase.DBA_OB_TENANTS where (tenant_id = $t9_id or tenant_id = $t9_id - 1) order by tenant_id;
+select original_name, type from oceanbase.DBA_RECYCLEBIN where type = 'TENANT';
+eval select tenant_id, is_deleted, status from oceanbase.__all_tenant_history where (tenant_id = $t9_id or tenant_id = $t9_id - 1) order by tenant_id, schema_version;
+
+DROP TENANT new_tenant FORCE;
+drop resource pool pool9;

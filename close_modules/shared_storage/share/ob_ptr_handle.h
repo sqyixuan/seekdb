@@ -1,0 +1,99 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#ifndef OCEANBASE_SHARED_STORAGE_SHARE_OB_PTR_HANDLE_H_
+#define OCEANBASE_SHARED_STORAGE_SHARE_OB_PTR_HANDLE_H_
+
+#include "share/ob_define.h"
+
+namespace oceanbase 
+{
+namespace storage 
+{
+/*
+ * T must support 'inc_ref_count' & 'dec_ref_count'
+ *
+ * ObPtrHandle is used to decrease ptr's ref_cnt when destroyed.
+ */
+template <typename T>
+struct ObPtrHandle {
+public:
+  T *ptr_;
+
+  ObPtrHandle() : ptr_(nullptr) {}
+  ObPtrHandle(const ObPtrHandle &other) : ptr_(nullptr)
+  {
+    if (other.is_valid()) {
+      ptr_ = other.ptr_;
+      ptr_->inc_ref_count();
+    }
+  }
+  ~ObPtrHandle() { destroy(); }
+
+  OB_INLINE bool is_valid() const { return nullptr != ptr_; }
+  OB_INLINE T *get_ptr() const { return ptr_; }
+  OB_INLINE T *operator()() const { return ptr_; }
+  void destroy() { reset(); }
+
+  TO_STRING_KV(KP_(ptr));
+  
+  void set_ptr(T *ptr)
+  {
+    if (nullptr != ptr && ptr_ != ptr) {
+      ptr->inc_ref_count();
+      reset();
+      ptr_ = ptr;
+    }
+  }
+
+  void reset()
+  {
+    if (nullptr != ptr_) {
+      ptr_->dec_ref_count();
+    }
+    ptr_ = nullptr;
+  }
+
+  int assign(const ObPtrHandle<T> &other)
+  {
+    int ret = OB_SUCCESS;
+    if (this != &other) {
+      if (OB_UNLIKELY(this->is_valid())) {
+        ret = common::OB_ERR_UNEXPECTED;
+        OB_LOG(WARN, "can not assign a valid handle", KR(ret), KP_(ptr));
+      } else if (OB_LIKELY(other.is_valid())) {
+        ptr_ = other.ptr_;
+        ptr_->inc_ref_count();
+      }
+    }
+    return ret;
+  }
+
+  ObPtrHandle<T> &operator=(const ObPtrHandle<T> &other)
+  {
+    if (this != &other) {
+      if (!this->is_valid() && other.is_valid()) {
+        ptr_ = other.ptr_;
+        ptr_->inc_ref_count();
+      }
+    }
+    return *this;
+  }
+};
+
+} /* namespace storage */
+} /* namespace oceanbase */
+
+#endif /* OCEANBASE_SHARED_STORAGE_SHARE_OB_PTR_HANDLE_H_ */

@@ -1,0 +1,193 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# pg内table过滤
+# 1. 创建PG, 包含多张表，测试过滤单/多张表
+# 2. 创建table, 包含普通索引，唯一索引，测试过滤普通索引，保留唯一索引
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant.inc;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+alter session set current_schema = oblog_db;
+sleep 1;
+
+################### 1. create PG, 默认不过滤table数据
+create tablegroup tg1 binding true;
+ob1.oblog.next;
+create table tant1 (c1 int primary key ,c2 int) tablegroup = tg1;
+ob1.oblog.next;
+create table tant2 (c1 int primary key ,c2 int) tablegroup = tg1;
+ob1.oblog.next;
+create table tant3 (c1 int primary key ,c2 int) tablegroup = tg1;
+ob1.oblog.next;
+create table tant4 (c1 int primary key ,c2 int) tablegroup = tg1;
+ob1.oblog.next;
+
+begin;
+insert into tant1 values(1, 1);
+insert into tant2 values(2, 2);
+insert into tant3 values(3, 3);
+insert into tant4 values(4, 4);
+commit;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+#################### 2. 过滤1个表的数据
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.tant1|oracle.oblog_db.tant2|oracle.oblog_db.tant3 sort_trans_participants=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;
+
+#################### 3. 过滤2个表的数据
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.tant1|oracle.oblog_db.tant2 sort_trans_participants=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;
+
+#################### 4. 过滤3个表的数据
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.tant2 sort_trans_participants=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oracle.oblog_db.t1 sort_trans_participants=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+############ 创建表：带有普通索引, 唯一索引, 创建唯一索引，全局索引
+create tablegroup tg2 binding true;
+ob1.oblog.next;
+create table t1(c1 int primary key, c2 int, c3 int, c4 int, c5 int, unique(c4)) tablegroup = tg2;
+ob1.oblog.next;
+create index idx_c2 on t1(c2);
+ob1.oblog.next;
+create index idx_c2_c3 on t1(c2, c3);
+ob1.oblog.next;
+
+# sys-mysql租户
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+use oceanbase;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oracle", tenant_id, 1);
+# ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+# alter system change tenant oracle;
+use oceanbase;
+## 主表
+let $t1_pure_id = deploy_get_value(ob1.select select table_id & 0xffffffffff as table_id from __all_virtual_table where tenant_id = $tenant_id and table_name="T1", table_id, 1);
+## index(c2)
+let $idx1_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20, table_id, 1);
+## index(c2, c3)
+let $idx2_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20, table_id, 2);
+## unqiue index(c4)
+let $unique_idx1_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20, table_id, 3);
+
+let $t1_id = query_get_value(select (($tenant_id << 40) | $t1_pure_id) as table_id, table_id, 1);
+let $idx1_table_id=query_get_value(select (($tenant_id << 40) | $idx1_table_id) as table_id, table_id, 1);
+let $idx2_table_id=query_get_value(select (($tenant_id << 40) | $idx2_table_id) as table_id, table_id, 1);
+let $unique_idx1_table_id=query_get_value(select (($tenant_id << 40) | $unique_idx1_table_id) as table_id, table_id, 1);
+
+#echo $t1_pure_id;
+#echo $t1_id;
+#echo $idx1_table_id;
+#echo $idx2_table_id;
+#echo $unique_idx1_table_id;
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+
+insert into t1 values(1, 2, 3, 4, 5);
+ob1.oblog.next;
+
+# 主表数据不会过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$t1_id, need_filter_row=false";
+# 普通索引过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$idx1_table_id, need_filter_row=true";
+# 普通索引过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$idx2_table_id, need_filter_row=true";
+# 唯一索引不过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$unique_idx1_table_id, need_filter_row=false";
+
+# 创建普通索引
+create index idx_3 on t1(c3);
+ob1.oblog.next;
+
+# 创建唯一索引
+create unique index uidx_1 on t1(c5);
+ob1.oblog.next;
+create unique index uidx_2 on t1(c4, c5);
+ob1.oblog.next;
+
+# 目前PG: 全局索引不支持
+# 报错：-4007, create global index on binding table after creating table not supported
+# TODO 之后支持再打开
+# 创建全局唯一索引
+#create unique index g_unique_gkey on t1(c2,c3,c4) global partition by hash(c2) partitions 5;
+#ob1.oblog.next;
+# 创建全局普通索引
+#create index g_normal_gkey on t1(c3,c4) global partition by hash(c3) partitions 5;
+#ob1.oblog.next;
+
+# sys-mysql租户
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# alter system change tenant oracle;
+use oceanbase;
+
+let $uidx2_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20 order by schema_version desc limit 3, table_id, 1);
+let $uidx1_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20 order by schema_version desc limit 3, table_id, 2);
+let $idx3_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=20 order by schema_version desc limit 3, table_id, 3);
+#let $guidx_table_id = query_get_value(select table_id from __all_ddl_operation where operation_type=40 order by schema_version desc limit 2, table_id, 2);
+
+let $idx3_table_id = query_get_value(select (($tenant_id << 40) | $idx3_table_id) as table_id, table_id, 1);
+let $uidx1_table_id= query_get_value(select (($tenant_id << 40) | $uidx1_table_id) as table_id, table_id, 1);
+let $uidx2_table_id= query_get_value(select (($tenant_id << 40) | $uidx2_table_id) as table_id, table_id, 1);
+#let $guidx_table_id= query_get_value(select (($tenant_id << 40) | $guidx_table_id) as table_id, table_id, 1);
+
+#echo $idx3_table_id;
+#echo $uidx1_table_id;
+#echo $uidx2_table_id;
+#echo $guidx_table_id;
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+insert into t1 values(10, 2, 3, 40, 50);
+ob1.oblog.next;
+
+# 普通索引过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$idx3_table_id, need_filter_row=true";
+# 唯一索引不过滤
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$uidx1_table_id, need_filter_row=false";
+# ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$uidx2_table_id, need_filter_row=false";
+# 全局唯一索引不过滤
+#ob1.oblog.check_log "[FILTER_ROW](tenant_id=$tenant_id, table_id=$guidx_table_id, need_filter_row=false";
+
+# stop liboblog
+ob1.oblog.stop;

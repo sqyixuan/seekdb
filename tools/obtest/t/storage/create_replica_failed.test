@@ -1,0 +1,48 @@
+# owner: yongle.xh
+# owner group: storage
+# description:this case is use for test create replica fail
+#
+--disable_query_log
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_auto_leader_switch=true;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter tenant obtest primary_zone='z1';
+sleep 2;
+
+ob1.z3.obs0.force_stop;
+sleep 2;
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+
+connection conn1;
+use test;
+set ob_create_table_strict_mode = false;
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(1024), f2 varchar(4096), primary key(pk1,pk2,pk3));
+let $cnt =1;
+while ($cnt < 10)
+{
+	eval insert into test01 values($cnt, $cnt, $cnt, 'abc', 'def');
+	inc $cnt;
+}
+
+ob1.z3.obs0.restart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone='z3', active, 60; 
+
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+
+ob1.check_until_timeout select count(*) > 0 from __all_rootservice_event_history where module='balancer' and event like '%finish%' and value1 like "%$table_id%", 1, 60;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+select /*+ index(test01 i1) */ * from test01;

@@ -1,0 +1,280 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test replicate/permanent offline/migrate replica with duplicate table
+#
+#    1. create tenant with locality = "FFF" and unit_num = 2
+#    2. create normal table and duplicate table
+#    3. shut down server with F-replica in z1, and migrate this unit to empty server
+#    4. shut down server with F-replica in z2, wait permanent offline
+#    5. shut down server with F-replica in z3, wait permanent offline
+#
+
+ob1=OBI(cluster=3:2:3,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set server_permanent_offline_time = '3600s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+# get servers' addr in z1, z2 and z3
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_ip1 = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_dst_ip2 = deploy_get_value(ob1.z1.obs2.ip);
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_ip1 = deploy_get_value(ob1.z2.obs1.ip);
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_ip2 = deploy_get_value(ob1.z3.obs2.ip);
+
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst_port1 = deploy_get_value(ob1.z1.obs1.port);
+let $z1_dst_port2 = deploy_get_value(ob1.z1.obs2.port);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst_port1 = deploy_get_value(ob1.z2.obs1.port);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst_port2 = deploy_get_value(ob1.z3.obs2.port);
+
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z1_dst1 = $z1_dst_ip1:$z1_dst_port1;
+let $z1_dst2 = $z1_dst_ip2:$z1_dst_port2;
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z2_dst1 = $z2_dst_ip1:$z2_dst_port1;
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+let $z3_dst2 = $z3_dst_ip2:$z3_dst_port2;
+
+--echo ===================================================================
+--echo                     create initial objects
+--echo ===================================================================
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+# create tenant with unit_num = 2, construct $z1/z3_cur_1, $z1/z3_cur_2, $z1/z3_cur_free
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_permanent RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_permanent", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_permanent", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+let $z1_unit_id_1 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z1' order by unit_id desc limit 1, unit_id, 1);
+let $z1_cur_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z1_unit_id_1, svr_ip, 1);
+let $z1_cur_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z1_unit_id_1, svr_port, 1);
+let $z1_cur_1 = $z1_cur_ip_1:$z1_cur_port_1;
+let $z1_unit_id_2 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z1' order by unit_id asc limit 1, unit_id, 1);
+let $z1_cur_ip_2 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z1_unit_id_2, svr_ip, 1);
+let $z1_cur_port_2 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z1_unit_id_2, svr_port, 1);
+let $z1_cur_2 = $z1_cur_ip_2:$z1_cur_port_2;
+let $z1_cur_ip_free = deploy_get_value(ob1.select select svr_ip from oceanbase.GV\$OB_SERVERS where zone = 'z1' and (svr_ip != '$z1_cur_ip_1' or svr_port != $z1_cur_port_1) and (svr_ip != '$z1_cur_ip_2' or svr_port != $z1_cur_port_2), svr_ip, 1);
+let $z1_cur_port_free = deploy_get_value(ob1.select select svr_port from oceanbase.GV\$OB_SERVERS where zone = 'z1' and (svr_ip != '$z1_cur_ip_1' or svr_port != $z1_cur_port_1) and (svr_ip != '$z1_cur_ip_2' or svr_port != $z1_cur_port_2), svr_port, 1);
+let $z1_cur_free = $z1_cur_ip_free:$z1_cur_port_free;
+
+let $z3_unit_id_1 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z3' order by unit_id desc limit 1, unit_id, 1);
+let $z3_cur_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z3_unit_id_1, svr_ip, 1);
+let $z3_cur_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z3_unit_id_1, svr_port, 1);
+let $z3_cur_1 = $z3_cur_ip_1:$z3_cur_port_1;
+let $z3_unit_id_2 = deploy_get_value(ob1.select SELECT unit_id FROM oceanbase.DBA_OB_UNITS WHERE resource_pool_id = $resource_pool_id AND zone = 'z3' order by unit_id asc limit 1, unit_id, 1);
+let $z3_cur_ip_2 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z3_unit_id_2, svr_ip, 1);
+let $z3_cur_port_2 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $z3_unit_id_2, svr_port, 1);
+let $z3_cur_2 = $z3_cur_ip_2:$z3_cur_port_2;
+let $z3_cur_ip_free = deploy_get_value(ob1.select select svr_ip from oceanbase.GV\$OB_SERVERS where zone = 'z3' and (svr_ip != '$z3_cur_ip_1' or svr_port != $z3_cur_port_1) and (svr_ip != '$z3_cur_ip_2' or svr_port != $z3_cur_port_2), svr_ip, 1);
+let $z3_cur_port_free = deploy_get_value(ob1.select select svr_port from oceanbase.GV\$OB_SERVERS where zone = 'z3' and (svr_ip != '$z3_cur_ip_1' or svr_port != $z3_cur_port_1) and (svr_ip != '$z3_cur_ip_2' or svr_port != $z3_cur_port_2), svr_port, 1);
+let $z3_cur_free = $z3_cur_ip_free:$z3_cur_port_free;
+
+# create table and insert data
+ob_connect(conn_mysql, ob1.z1.obs1, root@tenant_for_permanent, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table t1_no_pk (c1 int);
+create table t1_dup_no_pk (c1 int) duplicate_scope = 'CLUSTER';
+insert into t1_no_pk values (1), (2), (3);
+insert into t1_dup_no_pk values (1), (2), (3);
+select * from t1_no_pk;
+select * from t1_dup_no_pk;
+update t1_no_pk set c1=c1+10;
+update t1_dup_no_pk set c1=c1+10;
+select * from t1_no_pk;
+select * from t1_dup_no_pk;
+
+create table t1_pk (c1 int primary key);
+create table t1_dup_pk (c1 int primary key) duplicate_scope = 'CLUSTER';
+insert into t1_pk values (1), (2), (3);
+insert into t1_dup_pk values (1), (2), (3);
+select * from t1_pk order by c1 asc;
+select * from t1_dup_pk order by c1 asc;
+update t1_pk set c1=c1+10;
+update t1_dup_pk set c1=c1+10;
+select * from t1_pk order by c1 asc;
+select * from t1_dup_pk order by c1 asc;
+
+create table t1_part (c1 int primary key) partition by hash(c1) partitions 4;
+create table t1_dup_part (c1 int primary key) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+insert into t1_part values (1), (2), (3), (4);
+insert into t1_dup_part values (1), (2), (3), (4);
+select * from t1_part order by c1 asc;
+select * from t1_dup_part order by c1 asc;
+update t1_part set c1=c1+10;
+update t1_dup_part set c1=c1+10;
+select * from t1_part order by c1 asc;
+select * from t1_dup_part order by c1 asc;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+alter system minor freeze tenant tenant_for_permanent;
+ob1.z1.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+connection conn_mysql;
+insert into t1_no_pk values (4), (5), (6);
+insert into t1_no_pk values (7), (8), (9);
+insert into t1_no_pk values (10), (11), (12);
+insert into t1_dup_no_pk values (4), (5), (6);
+insert into t1_dup_no_pk values (7), (8), (9);
+insert into t1_dup_no_pk values (10), (11), (12);
+insert into t1_pk values (4), (5), (6);
+insert into t1_pk values (7), (8), (9);
+insert into t1_pk values (10);
+insert into t1_dup_pk values (4), (5), (6);
+insert into t1_dup_pk values (7), (8), (9);
+insert into t1_dup_pk values (10);
+insert into t1_part values (5), (6), (7), (8);
+insert into t1_part values (9), (10), (21), (22);
+insert into t1_dup_part values (5), (6), (7), (8);
+insert into t1_dup_part values (9), (10), (21), (22);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+alter system minor freeze tenant tenant_for_permanent;
+ob1.z1.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z2.obs1.check_log_until_success -c "succeed to release head data memtable";
+ob1.z3.obs1.check_log_until_success -c "succeed to release head data memtable";
+sleep 10;
+
+--echo ===================================================================
+--echo                     operation in zone1
+--echo ===================================================================
+connection sys_conn;
+let $sys_ls_id = 1;
+let $duplicate_ls_id = deploy_get_value(ob1.select select distinct ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = "T1_DUP_NO_PK", ls_id, 1);
+ob1.check_until_timeout select count(*) as ls_cnt from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and flag like "%DUPLICATE%", 1, 5;
+ob1.check_until_timeout select ls_id from oceanbase.CDB_OB_LS where tenant_id = $tenant_id and flag like "%DUPLICATE%", $duplicate_ls_id, 5;
+
+let $unit_id_with_duplicate_f_in_z1 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role = 1, unit_id, 1);
+let $z1_full_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z1, svr_ip, 1);
+let $z1_full_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z1, svr_port, 1);
+let $z1_full_dst = $z1_full_ip_1:$z1_full_port_1;
+
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z2;z3;z1";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z1', 0, 60;
+
+# shut down server with F-replica in zone1
+--disable_all_result_log
+if ($z1_full_dst == $z1_dst0)
+{
+  ob1.z1.obs0.force_stop;
+}
+if ($z1_full_dst == $z1_dst1)
+{
+  ob1.z1.obs1.force_stop;
+}
+if ($z1_full_dst == $z1_dst2)
+{
+  ob1.z1.obs2.force_stop;
+}
+--enable_all_result_log
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where status like "%INACTIVE%", 1, 30;
+
+# migrate this unit to empty server
+--disable_query_log
+eval alter system migrate unit $unit_id_with_duplicate_f_in_z1 destination "$z1_cur_free";
+--enable_query_log
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_UNITS where unit_id = $unit_id_with_duplicate_f_in_z1 and migrate_from_svr_ip is NULL, 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_migrate_ls_replica%" and value5 like "%$z1_cur_free%" and value6 like "%ret:0%" and extra_info like "%replicate to unit task%", 1, 10;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z1_cur_free%" and member_list not like "%$z1_full_dst%", 1, 10;
+
+--echo ===================================================================
+--echo                     operation in zone2
+--echo ===================================================================
+connection sys_conn;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+
+# shut down server with F-replica and wait permanent offline
+let $unit_id_with_duplicate_f_in_z2 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and zone = "z2" and replica_type = 0, unit_id, 1);
+let $z2_full_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z2, svr_ip, 1);
+let $z2_full_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z2, svr_port, 1);
+let $z2_full_dst = $z2_full_ip_1:$z2_full_port_1;
+
+let $z2_cur_ip_free = deploy_get_value(ob1.select select svr_ip from oceanbase.GV\$OB_SERVERS where zone = 'z2' and (svr_ip != '$z2_full_ip_1' or svr_port != $z2_full_port_1), svr_ip, 1);
+let $z2_cur_port_free = deploy_get_value(ob1.select select svr_port from oceanbase.GV\$OB_SERVERS where zone = 'z2' and (svr_ip != '$z2_full_ip_1' or svr_port != $z2_full_port_1), svr_port, 1);
+let $z2_cur_free = $z2_cur_ip_free:$z2_cur_port_free;
+
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z1;z3;z2";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z2', 0, 60;
+
+--disable_all_result_log
+if ($z2_full_dst == $z2_dst0)
+{
+  ob1.z2.obs0.force_stop;
+}
+if ($z2_full_dst == $z2_dst1)
+{
+  ob1.z2.obs1.force_stop;
+}
+--enable_all_result_log
+
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where status like "%INACTIVE%", 2, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_remove_ls_paxos_replica%" and value5 like "%$z2_full_dst%" and value6 like "%ret:0%" and extra_info like "%remove permanent offline replica%", 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_type_transform_ls_replica%" and value4 like "%$z2_cur_free%" and value6 like "%ret:0%" and extra_info like "%type transform according to locality%", 1, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and role like "%LEADER%" and member_list like "%$z2_cur_free%" and member_list not like "%$z2_full_dst%" and learner_list not like "%$z2_cur_free%", 1, 10;
+
+--disable_all_result_log
+if ($z2_full_dst == $z2_dst0)
+{
+  ob1.z2.obs0.start;
+}
+if ($z2_full_dst == $z2_dst1)
+{
+  ob1.z2.obs1.start;
+}
+--enable_all_result_log
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_SERVERS where zone like "%z2%" and start_service_time > 0, 2, 200;
+let $ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) + 1 as ls_cnt from CDB_OB_LS where tenant_id = $tenant_id, ls_cnt, 1);
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id in ($tenant_id, $meta_tenant_id) and role like "%LEADER%" and (member_list like "%$z2_cur_free%" or member_list like "%$z2_full_dst%"), $ls_cnt, 120;
+
+--echo ===================================================================
+--echo                     operation in zone3
+--echo ===================================================================
+connection sys_conn;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+# shut down server with F-replica in z3, wait permanent
+let $unit_id_with_duplicate_f_in_z3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and zone = "z3" and replica_type = 0, unit_id, 1);
+let $unit_id_with_duplicate_r_in_z3 = deploy_get_value(ob1.select select unit_id from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $duplicate_ls_id and zone = "z3" and replica_type = 16, unit_id, 1);
+let $z3_full_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z3, svr_ip, 1);
+let $z3_full_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_f_in_z3, svr_port, 1);
+let $z3_full_dst = $z3_full_ip_1:$z3_full_port_1;
+let $z3_readonly_ip_1 = deploy_get_value(ob1.select SELECT svr_ip FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_r_in_z3, svr_ip, 1);
+let $z3_readonly_port_1 = deploy_get_value(ob1.select SELECT svr_port FROM oceanbase.DBA_OB_UNITS WHERE unit_id = $unit_id_with_duplicate_r_in_z3, svr_port, 1);
+let $z3_readonly_dst = $z3_readonly_ip_1:$z3_readonly_port_1;
+
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z1;z2;z3";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and tenant_id in ($tenant_id, $meta_tenant_id) and zone = 'z3', 0, 60;
+
+--disable_all_result_log
+if ($z3_full_dst == $z3_dst0)
+{
+  ob1.z3.obs0.force_stop;
+}
+if ($z3_full_dst == $z3_dst1)
+{
+  ob1.z3.obs1.force_stop;
+}
+if ($z3_full_dst == $z3_dst2)
+{
+  ob1.z3.obs2.force_stop;
+}
+--enable_all_result_log
+ob1.check_until_timeout select count(*) as server_cnt from oceanbase.DBA_OB_SERVERS where zone like "%z3%" and status like "%INACTIVE%", 1, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY where module like "%disaster%" and value1 = $tenant_id and value2 = $duplicate_ls_id and event like "%finish_type_transform_ls_replica%" and value5 like "%$z3_readonly_dst%" and value5 like "%replica_type:16%" and value6 like "%ret:0%" and extra_info like "%type transform according to locality%", 1, 120;
+

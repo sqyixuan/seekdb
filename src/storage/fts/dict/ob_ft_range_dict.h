@@ -68,8 +68,6 @@ public:
                             ObFTCacheRangeContainer &range_container);
   static int build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container);
 
-  static int build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container);
-
 private:
   // build cache
   static int build_ranges(const ObFTDictDesc &desc,
@@ -82,10 +80,6 @@ private:
                              ObIFTDictIterator &iter,
                              ObFTCacheRangeContainer &container,
                              bool &build_next_range);
-
-  static int build_ranges_concurrently_thread_pool(const ObFTDictDesc &desc,
-                                                   ObIFTDictIterator &iter,
-                                                   ObFTCacheRangeContainer &range_container);
 
 private:
   void destroy()

@@ -797,7 +797,7 @@ public:
   int get_directory_schemas_in_tenant(const uint64_t tenant_id,
                                       common::ObIArray<const ObDirectorySchema *> &directory_schemas);
   // directory function end
-
+  
   // location function begin
   int get_location_schema_by_name(const uint64_t tenant_id,
                                   const common::ObString &name,
@@ -896,10 +896,6 @@ public:
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(package, ObSimplePackageSchema);
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(routine, ObSimpleRoutineSchema);
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(mock_fk_parent_table, ObSimpleMockFKParentTableSchema);
-
-  int get_vector_info_index_ids_in_tenant(const uint64_t tenant_id,
-                                          bool &has_ivf_index,
-                                          ObIArray<uint64_t> &table_ids);
 
   int check_routine_priv(const ObSessionPrivInfo &session_priv,
                          const common::ObIArray<uint64_t> &enable_role_id_array,

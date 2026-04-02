@@ -870,7 +870,6 @@ inline void ObIndexTreeMultiPassPrefetcher<DATA_PREFETCH_DEPTH, INDEX_PREFETCH_D
   micro_data_prefetch_idx_ = 0;
   row_lock_check_version_ = transaction::ObTransVersion::INVALID_TRANS_VERSION;
   agg_store_ = nullptr;
-  skip_scanner_ = nullptr;
   prefetch_depth_ = 1;
   total_micro_data_cnt_ = 0;
   query_range_ = nullptr;
@@ -1311,7 +1310,7 @@ inline int ObIndexTreeMultiPassPrefetcher<DATA_PREFETCH_DEPTH, INDEX_PREFETCH_DE
                 K(access_ctx_->micro_block_handle_mgr_));
             prefetch_depth = prefetched_cnt;
             break;
-          } else if (OB_FAIL(tree_handles_[cur_level_].get_next_data_row(is_multi_check(), block_info, skip_scanner_))) {
+          } else if (OB_FAIL(tree_handles_[cur_level_].get_next_data_row(is_multi_check(), block_info))) {
             if (OB_UNLIKELY(OB_ITER_END != ret)) {
               LOG_WARN("fail to get next", K(ret), K(cur_level_), K(tree_handles_[cur_level_]));
             } else {

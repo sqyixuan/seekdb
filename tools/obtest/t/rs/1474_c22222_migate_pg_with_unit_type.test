@@ -1,0 +1,46 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试带LOGONLY UNIT的情况下下，FFFLL的locality, 不会进行pg balance
+# 原因是由于has_leader_while_member_chang检查的时候，filter掉了两个L，导致条件不满足；
+
+ob1=OBI(cluster=2:2:2:2:2,proxy_num=0, ct_num = 0);
+ob1.reboot;
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =50;
+ob1.mysql alter system set server_data_copy_out_concurrency = 50;
+ob1.mysql alter system set data_copy_concurrency = 200;
+
+let $cpu = 1;
+let $memory = 6073741824;
+let $min_memory = 6073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $case_index = 2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z4', 'z5'), replica_type= 'L';
+
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 100;
+create table t2(c1 int primary key, c2 int) partition by hash(c1) partitions 100;
+
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+#select count(*) zero_count from (select count(*) replica_count from __all_virtual_tenant_meta_table group by svr_ip having replica_count = 0) group by replica_count;
+eval select count(*) from ( select count(*) c from gv\$partition where tenant_id = 1001 group by svr_ip,svr_port having c > 0);
+alter tenant tenant_1 set resource_pool_list = ('pool_1', 'pool_2');
+alter tenant tenant_1 set resource_pool_list = ('pool_1', 'pool_2'), locality='F@z1,F@z2,F@z3,L@z4,L@z5';
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality = '', 2, 60;
+alter resource pool pool_1 unit_num = 2;
+eval select count(*) from ( select count(*) c from gv\$partition where tenant_id = 1001 group by svr_ip,svr_port having c > 0);
+ob1.check_until_timeout select count(*) from (select count(*) c from gv\$partition where tenant_id = 1001 group by svr_ip,svr_port having c > 0), 8, 120;
+  
+

@@ -1,0 +1,282 @@
+#owner: luofan.zp
+#owner group: sql1
+##
+## Test Name: plan_cache_variable
+##
+## Scope: Test plan cache match for user's session variable
+##
+## INFO:  if you want to add case; you should read ../README.md;
+#         don't use sys tenant, because when parallel run on obfarm, the hit_count can't be expected;
+#         so we use new tenant, new plan cache will be  used for this case only;
+##
+##
+## Date: 2018-8-14
+##
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+--disable_info
+--disable_metadata
+--disable_abort_on_error
+
+--disable_query_log
+--disable_result_log
+
+--sleep 10
+
+alter system flush plan cache global;
+alter system set large_query_threshold = '1s';
+--sleep 3
+--enable_query_log
+--enable_result_log
+
+connection default;
+select effective_tenant();
+--disable_query_log
+--disable_result_log
+
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+create database xy_db;
+use xy_db;
+
+## case #0
+## 单独的session变量，类型变化后执行不同的计划
+--echo
+--echo ******************select @a0;**********************
+--disable_query_log
+--disable_result_log
+set @a0 = 1;
+select @a0;
+set @a0 = '1';
+select @a0;
+--sleep 3
+--enable_result_log
+--echo
+--echo // expect result to be 1
+select count(hit_count) = 2 as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a0';
+--echo // expect 2 rows of 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a0';
+
+## case #1
+## session没有设置相关的用户变量，plan cache拒绝缓存相关计划
+--echo
+--echo ******************select @a1 union select @b1;**********************
+--disable_query_log
+--disable_result_log
+select @a1 union select @b1;
+--echo
+--enable_result_log
+--echo // expect result to be 1
+select count(hit_count) = 0 as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a1 union select @b1';
+
+--sleep 3
+## case #2
+## 用户变量类型变化，plan cache命中不同的计划
+--echo
+--echo ******************select @a2 union select @b2;**********************
+--disable_query_log
+--disable_result_log
+set @a2 := 1;
+set @b2 := @a2;
+select @a2 union select @b2;
+select @a2 union select @b2;
+set @b2 := '1';
+--sleep 3
+select @a2 union select @b2;
+select @a2 union select @b2;
+--enable_result_log
+--echo
+--echo // expect result to be 1
+select count(hit_count) = 2 as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a2 union select @b2';
+--echo // expect 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a2 union select @b2';
+
+## case #3
+## plan cache 只缓存sql中使用的session变量类型
+--echo
+--echo ******************select @a3 := (select @b3);**********************
+--disable_query_log
+--disable_result_log
+set @b3 := 1;
+--enable_result_log
+select @a3 := (select @b3);
+select @a3 := (select @b3);
+set @a3 := '1';
+select @a3 := (select @b3);
+--echo
+--echo // result = 1
+select count(hit_count) = 1 as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a3 := (select @b3)';
+--echo // expect 2
+select hit_count as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a3 := (select @b3)';
+
+## case #4
+## plan cache只缓存用户变量类型，数值不同也能命中同样的计划
+--echo
+--echo ******************select @a4 + @b4 from dual where @c4 = 1;**********************
+--disable_query_log
+--disable_result_log
+--enable_result_log
+set @a4 := 1;
+set @b4 := 1;
+set @c4 := 1;
+select @a4 + @b4 from dual where @c4 = 1;
+select @a4 + @b4 from dual where @c4 = 1;
+set @a4 := 2;
+select @a4 + @b4 from dual where @c4 = 1;
+set @b4 := 3;
+select @a4 + @b4 from dual where @c4 = 1;
+set @c4 = 2;
+select @a4 + @b4 from dual where @c4 = 1;
+--echo
+--echo // result = 1
+select count(hit_count) = 2 as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a4 + @b4 from dual where @c4 = ?';
+--echo // expect 3,0
+select hit_count as result from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @a4 + @b4 from dual where @c4 = ?';
+
+## case #5
+## 测试全部类型的用户变量
+--disable_query_log
+--disable_result_log
+--disable_warnings
+drop table if exists user_var_test;
+--enable_warnings
+
+create table user_var_test (
+    c_bit BIT,
+    c_tiny TINYINT,
+    c_bool BOOL,
+    c_small SMALLINT,
+    c_medium MEDIUMINT,
+    c_int INT,
+    c_big BIGINT,
+    c_dec DEC(65, 0),
+    c_float FLOAT,
+    c_double DOUBLE,
+    c_datetime DATETIME,
+    c_date DATE,
+    c_time TIME,
+    c_timestamp TIMESTAMP,
+    c_year YEAR,
+    c_char char(10),
+    c_varchar VARCHAR(55),
+    c_binary BINARY(10),
+    c_varbinary VARBINARY(10),
+    c_unsigned_tiny tinyint unsigned,
+    c_unsigned_small smallint unsigned,
+    c_unsigned_medium mediumint unsigned,
+    c_unsigned_int int unsigned,
+    c_unsigned_big bigint unsigned,
+    c_unsigned_dec decimal(65, 0) unsigned,
+    c_unsigned_float float unsigned,
+    c_unsigned_double double unsigned
+);
+
+insert into user_var_test values (
+    1,
+    2,
+    true,
+    3,
+    4,
+    5,
+    6,
+    7,
+    7.1,
+    7.2,
+    "2018-07-09 10:00:01",
+    "2018-07-09",
+    "10:00:01",
+    "2018-07-09 10:00:11",
+    "2018",
+    "hello",
+    "hi there",
+    "10",
+    "10",
+    2,
+    4,
+    5,
+    6,
+    7,
+    7.1,
+    7.2,
+    7.3
+);
+
+--echo
+--echo ******************select @var := (c_bit ... c_unsigned_doubel) from user_var_test; select @var;**********************
+--disable_query_log
+--disable_result_log
+select @var := c_bit from user_var_test;
+select @var;
+select @var := c_bool from user_var_test;
+select @var;
+select @var := c_tiny from user_var_test;
+select @var;
+select @var := c_small from user_var_test;
+select @var;
+select @var := c_medium from user_var_test;
+select @var;
+select @var := c_int from user_var_test;
+select @var;
+select @var := c_big from user_var_test;
+select @var;
+select @var := c_dec from user_var_test;
+select @var;
+select @var := c_float from user_var_test;
+select @var;
+select @var := c_double from user_var_test;
+select @var;
+select @var := c_datetime from user_var_test;
+select @var;
+select @var := c_date from user_var_test;
+select @var;
+select @var := c_date from user_var_test;
+select @var;
+select @var := c_time from user_var_test;
+select @var;
+select @var := c_timestamp from user_var_test;
+select @var;
+select @var := c_year from user_var_test;
+select @var;
+select @var := c_char from user_var_test;
+select @var;
+select @var := c_varchar from user_var_test;
+select @var;
+select @var := c_binary from user_var_test;
+select @var;
+select @var := c_varbinary from user_var_test;
+select @var;
+select @var := c_unsigned_tiny from user_var_test;
+select @var;
+select @var := c_unsigned_small from user_var_test;
+select @var;
+select @var := c_unsigned_medium from user_var_test;
+select @var;
+select @var := c_unsigned_int from user_var_test;
+select @var;
+select @var := c_unsigned_big from user_var_test;
+select @var;
+select @var := c_unsigned_dec from user_var_test;
+select @var;
+select @var := c_unsigned_float from user_var_test;
+select @var;
+select @var := c_unsigned_double from user_var_test;
+select @var;
+--enable_result_log
+--echo // expect 20
+select count(hit_count) from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @var';
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like'select @var';
+
+--disable_query_log
+--disable_result_log
+
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+
+# login using admin acount
+connection obsys;
+
+alter system set large_query_threshold = '100ms';

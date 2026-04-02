@@ -1,0 +1,323 @@
+# owner:lixia.yq
+# owner group:storage
+# test diagnose related func
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ob_compaction_schedule_interval = '3s' tenant obtest;
+ob1.mysql alter system set minor_compact_trigger = 3 tenant obtest;
+ob1.mysql alter system set undo_retention = 1 tenant all;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+
+--disable_warnings
+drop table if exists test01;
+--enable_warnings
+create table test01(c1 int, c2 int, c3 varchar(4096));
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+
+--disable_query_log
+# generate 3 mini sstable
+let $cnt=1;
+while($cnt < 5)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant = all;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant = all;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+
+#########################################################################
+# TEST_1: make task execute fail
+#########################################################################
+
+--enable_query_log
+# EN_COMPACTION_MERGE_TASK = 4002
+ob1.mysql alter system set_tp tp_no = 702, error_code = 4002, frequency = 1;
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_COMPACTION_MERGE_TASK.*4002";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and status = "FAILED" and diagnose_info like "%4002%", 1, 300;
+ob1.check_until_timeout select count(1) > 0 as c from oceanbase.__all_virtual_dag_warning_history where tenant_id = $tenant_id limit 1, 1, 300;
+
+# remove EN_COMPACTION_MERGE_TASK
+ob1.mysql alter system set_tp tp_no = 702, error_code = 4002, frequency = 0;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+#########################################################################
+# TEST_2: diagnose sstable cnt(SUSPECT_SSTABLE_COUNT_NOT_SAFE)
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant = "obtest";
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tablet_id =$tablet_id , 0, 300;
+
+while($cnt < 4)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+--enable_query_log
+# EN_COMPACTION_DIAGNOSE_TABLE_STORE_UNSAFE_FAILED = 4023
+ob1.mysql alter system set_tp tp_no = 700, error_code = 4023, frequency = 1;
+
+connection conn1;
+send alter system minor freeze;
+
+sleep 20;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_COMPACTION_DIAGNOSE_TABLE_STORE_UNSAFE_FAILED.*4023";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%sstable count is not safe%" limit 1, 1, 300;
+
+# remove EN_COMPACTION_DIAGNOSE_TABLE_STORE_UNSAFE_FAILED
+ob1.mysql alter system set_tp tp_no = 700, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+#########################################################################
+# TEST_3: diagnose task process abnormal
+# TEST_3_1: diagnose may hang with suspect info
+#########################################################################
+# let the first mini merge dag hang
+ob1.mysql set ob_global_debug_sync = 'MERGE_TASK_PROCESS wait_for signal1';
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant = all;
+sleep 20;
+# the second mini merge will not create dag successfully
+while($cnt < 4)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# thus there are diagnose tablet from suspect info
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%hang%", 1, 300;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+sleep 20;
+ob1.mysql alter system minor freeze tenant = all;
+sleep 20;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+
+#########################################################################
+# TEST_3_2: diagnose may hang without suspect info
+#########################################################################
+ob1.mysql set ob_global_debug_sync = 'MERGE_TASK_PROCESS wait_for signal1';
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant = all;
+
+sleep 20;
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%hang%" , 1, 300;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type = 0 and is_active = 0 and tenant_id=$tenant_id and tablet_id =$tablet_id, 0, 300;
+
+#########################################################################
+# TEST_4: diagnose suspend merge
+#########################################################################
+#source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.mysql alter system major freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.mysql alter system suspend merge tenant obtest;
+sleep 20;
+
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%paused%", 1, 300;
+ob1.mysql alter system resume merge tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+#########################################################################
+# TEST_5: diagnose RS progress checker failed
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# EN_RS_CHECK_MERGE_PROGRESS = 4016
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4016, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%rs check%" , 1, 300;
+
+# remove EN_RS_CHECK_MERGE_PROGRESS
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+#########################################################################
+# TEST_6: diagnose compaction report task warning
+# TEST_6_1: diagnose compaction report task add failed
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# EN_COMPACTION_REPORT_ADD_TASK_FAILED = 4016
+ob1.mysql alter system set_tp tp_no = 727, error_code = 4016, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_COMPACTION_REPORT_ADD_TASK_FAILED.*4016";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%task add failed%" , 1, 300;
+
+# remove EN_COMPACTION_REPORT_ADD_TASK_FAILED
+ob1.mysql alter system set_tp tp_no = 727, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+########################################################################
+# TEST_6_2: diagnose compaction report task process failed
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# EN_COMPACTION_REPORT_PROCESS_TASK_FAILED = 4016
+ob1.mysql alter system set_tp tp_no = 728, error_code = 4016, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_COMPACTION_REPORT_PROCESS_TASK_FAILED.*4016";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%task process failed%" , 1, 300;
+
+# remove EN_COMPACTION_REPORT_PROCESS_TASK_FAILED
+ob1.mysql alter system set_tp tp_no = 728, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+########################################################################
+# TEST_6_3: diagnose compaction report task hang
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+
+ob1.mysql set ob_global_debug_sync = 'COMPACTION_REPORT_PROCESS wait_for signal1';
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%report task%long time%" , 1, 300;
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+########################################################################
+# TEST_7: diagnose schedule medium failed
+#########################################################################
+let $cnt=1;
+while($cnt < 2)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# EN_SCHEDULE_MEDIUM_FAILED = 4016
+ob1.mysql alter system set_tp tp_no = 731, error_code = 4016, frequency = 1;
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_SCHEDULE_MEDIUM_FAILED.*4016";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%schedule medium failed%" , 1, 300;
+
+# remove EN_SCHEDULE_MEDIUM_FAILED
+ob1.mysql alter system set_tp tp_no = 731, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+########################################################################
+# TEST_8: diagnose schedule minor failed
+#########################################################################
+insert into test01 values(1, 1, 'oceanbase');
+ob1.mysql alter system minor freeze tenant = all;
+sleep 20;
+
+insert into test01 values(1, 1, 'oceanbase');
+ob1.mysql alter system minor freeze tenant = all;
+sleep 20;
+
+# EN_CAN_NOT_SCHEDULE_MINOR = 4677
+ob1.mysql alter system set_tp tp_no = 730, error_code = 4677, frequency = 1;
+
+insert into test01 values(1, 1, 'oceanbase');
+ob1.mysql alter system minor freeze tenant = all;
+sleep 20;
+
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_CAN_NOT_SCHEDULE_MINOR.*4677";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%minor merge%" , 1, 300;
+
+# remove EN_CAN_NOT_SCHEDULE_MINOR
+ob1.mysql alter system set_tp tp_no = 730, error_code = 4677, frequency = 0;
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 300;
+
+########################################################################
+# TEST_9: diagnose can not schedule major
+#########################################################################
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+# EN_COMPACTION_DIAGNOSE_CANNOT_MAJOR = 4016
+ob1.mysql alter system set_tp tp_no = 701, error_code = 4016, frequency = 1;
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.z1.obs0.check_log_until_success -c "ERRSIM EN_COMPACTION_DIAGNOSE_CANNOT_MAJOR.*4016";
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where tenant_id=$tenant_id and diagnose_info like "%need major merge but%" , 1, 300;
+
+# remove EN_COMPACTION_DIAGNOSE_CANNOT_MAJOR
+ob1.mysql alter system set_tp tp_no = 701, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+########################################################################
+# TEST_10: test finish dag failure
+#########################################################################
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+ob1.mysql alter system set_tp tp_name = EN_FINISH_DAG_FAILURE, error_code = 4016, frequency = 1;
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+
+ob1.mysql alter system set_tp tp_name = EN_FINISH_DAG_FAILURE, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+# TODO(@jingshui) add diagnose case for every suspect info

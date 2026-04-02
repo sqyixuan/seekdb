@@ -1,0 +1,89 @@
+# owner: jingyan.kfy
+# owner group: storage
+# description:
+#
+
+--disable_query_log
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+connection conn1;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_MIGRATE_PROCESS wait_for later';
+
+sleep 5;
+create table test01 (pk1 int, pk2 int, pk3 int, f1 varchar(1024), f2 varchar(262144), primary key(pk1,pk2,pk3)) COMPRESSION='none';
+
+let $leader = deploy_get_value(ob1.get_leader sys:test:test01:0);
+let $leader_ip = deploy_get_value($leader.ip);
+let $leader_port = deploy_get_value($leader.port);
+let $leader_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$leader_ip' and svr_port='$leader_port', zone, 1);
+let $follower = deploy_get_value(ob1.get_follower sys:test:test01:0,1);
+let $follower_ip = deploy_get_value($follower.ip);
+let $follower_port = deploy_get_value($follower.port);
+let $follower_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$follower_ip' and svr_port='$follower_port', zone, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='sys', tenant_id, 1);
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+
+let $cnt =1;
+while ($cnt < 40)
+{
+    eval insert into test01 values($cnt, $cnt, $cnt, 'abc', repeat('1', 262144));
+    inc $cnt;
+}
+ob1.mysql alter system minor freeze tenant sys;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where svr_ip='$leader_ip' and svr_port='$leader_port' and table_id=$table_id and table_type=2, 1, 60;
+
+while ($cnt < 50)
+{
+    eval insert into test01 values($cnt, $cnt, $cnt, 'xyz', 'minor value');
+    inc $cnt;
+}
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout select count(*) from oceanbase.__all_freeze_info as a, oceanbase.__all_virtual_table_mgr as b where a.frozen_version=2 and a.snapshot_ts=b.snapshot_version and b.svr_ip='$leader_ip' and b.svr_port='$leader_port' and b.table_id=$table_id, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_freeze_info as a, oceanbase.__all_virtual_table_mgr as b where a.frozen_version=2 and a.snapshot_ts=b.snapshot_version and b.svr_ip='$follower_ip' and b.svr_port='$follower_port' and b.table_id=$table_id, 1, 30;
+
+ob1.mysql alter system start merge zone='$leader_zone';
+ob1.check_until_timeout select count(*) from oceanbase.__all_freeze_info as a, oceanbase.__all_virtual_table_mgr as b where a.frozen_version=2 and a.snapshot_ts=b.snapshot_version and b.svr_ip='$leader_ip' and b.svr_port='$leader_port' and b.table_id=$table_id and table_type=1, 1, 30;
+ob1.mysql alter system minor freeze tenant sys;
+sleep 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_id=$table_id and table_type=0, 0, 120;
+
+# 设置follower的rebuild标记
+eval update oceanbase.__all_tenant_meta_table set rebuild=1 where tenant_id=$tenant_id and table_id=$table_id and svr_ip='$follower_ip' and svr_port='$follower_port';
+
+# 确认任务触发
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module='balancer' and event='start_rebuild_replica' and value2 like '%$follower_ip:$follower_port%', 1, 360;
+
+# 切主
+ob1.mysql alter system switch replica leader partition_id='0%1@$table_id' server='$follower_ip:$follower_port';
+#ob1.check_until_timeout select partition_state from __all_virtual_partition_info where svr_ip='$follower_ip' and svr_port='$follower_port' and table_id=$table_id, L_WORKING, 20;
+
+# 开始rebuild
+ob1.mysql set ob_global_debug_sync = 'NOW signal later';
+
+# 等待完成rebuild
+ob1.check_until_timeout select rebuild from oceanbase.__all_tenant_meta_table where tenant_id=$tenant_id and table_id=$table_id and svr_ip='$follower_ip' and svr_port='$follower_port', 0, 60;
+ob1.check_until_timeout select value4 from oceanbase.__all_rootservice_event_history where module='balancer' and event='finish_rebuild_replica' and value2 like '%$leader_ip:$leader_port%', 0, 10;
+select pk1,pk2,pk3 from test01;
+
+# 发起合并，等待合并完成
+while ($cnt < 70)
+{
+    eval insert into test01 values($cnt, $cnt, $cnt, 'xyz', 'minor value');
+    inc $cnt;
+}
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+select pk1,pk2,pk3 from test01;

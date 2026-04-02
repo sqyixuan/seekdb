@@ -1,0 +1,41 @@
+# CASE_OWNER:
+#    @wenyu.ffz
+# CASE_DESC:
+#    校验创建唯一索引在rs切主的场景不会缺失校验
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+#create tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '4G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1;z2' set ob_tcp_invited_nodes='%';
+alter system set debug_sync_timeout = '10000s';
+ob1.check_until_timeout select value from gv\$ob_parameters where name = 'debug_sync_timeout', 10000s, 10;
+alter tenant sys set primary_zone='z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and with_rootserver=1, 1, 60;
+sleep 2;
+
+set ob_global_debug_sync = 'BEFORE_INDEX_SSTABLE_BUILD_TASK_SEND_SQL wait_for signal execute 1';
+
+ob_connect(conn_mysql1, ob1.z1.obs0, root@mysql, ,test, , USE_OB_CONNECTOR);
+ob_connect(conn_mysql2, ob1.z1.obs0, root@mysql, ,test, , USE_OB_CONNECTOR);
+
+create table t1(col1 int, col2 int);
+
+insert into t1 values (1, 1);
+
+send create unique index i1 on t1(col2);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where tenant_id = 1002 and table_name like '__idx_5%_i1', 1, 60;
+ob1.z2.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and status="INACTIVE" or start_service_time<=0, 1, 60;
+connection conn_mysql1;
+insert into t1 values (2, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+
+connection conn_mysql2;
+--error 1062
+reap;

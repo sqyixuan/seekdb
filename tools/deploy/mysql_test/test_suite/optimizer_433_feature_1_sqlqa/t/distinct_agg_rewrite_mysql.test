@@ -1,0 +1,223 @@
+#owner: guohanyun.ghy
+#owner group: 技术部-SQL-优化器
+#description: 435优化器技改 distinct 聚合改写
+#tags:
+#author: wb-lyq858317
+
+--result_format 4
+purge recyclebin;
+
+--error 0,1051
+drop table lyqtest1;
+CREATE TABLE lyqtest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, null, '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+
+--error 0,1051
+drop table lyqtest2;
+CREATE TABLE lyqtest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(null, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+
+--error 0,1051
+drop table lyqtest3;
+CREATE TABLE lyqtest3 AS SELECT * FROM lyqtest2;
+
+--echo 只有一个聚合函数有 distinct 或者 distinct 聚合函数 distinct 的都是同一列的情况下，是不需要 dup 数据的，可以去掉一个阶段
+
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */  count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+
+--echo group by 多列
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2,c3 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2,c3 order by 1,2;
+
+--echo distinct 聚合函数 distinct 的不是同一列的情况  不会改写
+
+select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+
+--echo 所有非 distinct 聚合函数都是可以预聚合的
+select count(distinct c1), sum(distinct c1), sum(c4),avg(c4),max(c1),min(c1) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4),avg(c4),max(c1),min(c1) from lyqtest1 group by c2 order by 1,2;
+
+--echo group_concat  不会改写
+select count(distinct c1), sum(distinct c1), sum(c4),group_concat(c3) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4),group_concat(c3) from lyqtest1 group by c2 order by 1,2;
+
+--echo 所有 distinct 聚合函数的 distinct expr 都是相同的
+select count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1),count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1),count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1) from lyqtest1 group by c2 order by 1,2;
+
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 order by 1,2;
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 order by 1,2;
+
+select count(distinct abs(c1)), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct abs(c1)), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+--echo count(distinct c1), sum(distinct c1), max(distinct c4)    max ,min distinct 不影响， 会改写
+select count(distinct c1), sum(distinct c1), max(distinct c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), max(distinct c4) from lyqtest1 group by c2 order by 1,2;
+
+select count(distinct c1), sum(distinct c1), max(distinct c4),upper(c2) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), max(distinct c4),upper(c2) from lyqtest1 group by c2 order by 1,2;
+
+--echo count(distinct c1), sum(distinct abs(c1))   不会改写
+select count(distinct c1), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+--echo count(distinct c1), sum(distinct c4)     不会改写
+select count(distinct c1), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+--echo count(distinct 1), sum(distinct 1)     不会改写
+select count(distinct 1), sum(distinct 1) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct 1), sum(distinct 1) from lyqtest1 group by c2 order by 1,2;
+--echo count(distinct c4), sum(distinct c4)    c4在被sum时会被cast， 不会改写
+select count(distinct c4), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+explain basic select count(distinct c4), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+
+--echo 层次查询    
+WITH RECURSIVE cte1 AS (
+    SELECT t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, 1 AS level
+    FROM lyqtest1 t1
+    WHERE t1.c1 IS NOT NULL
+    UNION ALL
+    SELECT t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, t2.c6, h.level + 1
+    FROM lyqtest2 t2
+    INNER JOIN cte1 h ON t2.c1 = h.c1
+    WHERE h.level < 10 
+)
+SELECT count(distinct c1) FROM cte1 group by c2 order by 1 ;
+
+explain basic  WITH RECURSIVE cte1 AS (
+    SELECT t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, 1 AS level
+    FROM lyqtest1 t1
+    WHERE t1.c1 IS NOT NULL
+    UNION ALL
+    SELECT t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, t2.c6, h.level + 1
+    FROM lyqtest2 t2
+    INNER JOIN cte1 h ON t2.c1 = h.c1
+    WHERE h.level < 10 
+)
+SELECT /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1) FROM cte1 group by c2 order by 1 ;
+
+--echo 不能包含变量赋值
+
+SELECT c1 INTO @var_name FROM lyqtest1 where c1 = 1;
+
+select count(distinct @var_name), sum(@var_name) from lyqtest1 t1 group by c2 order by 1,2;
+explain basic select count(distinct @var_name), sum(@var_name) from lyqtest1 t1 group by c2 order by 1,2;
+
+--echo 会改写
+select count(distinct c1), sum(distinct @var_name) from lyqtest1 t1 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct @var_name) from lyqtest1 t1 group by c2 order by 1,2;
+
+--echo 包含 rollup  不会改写
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 with rollup order by 1,2;
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 with rollup order by 1,2;
+--echo 包含 having  会改写
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 having c2 like '%x%' order by 1,2;
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 having c2 like '%x%' order by 1,2;
+
+--echo 包含 join  会改写
+select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+explain basic select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+--echo 包含 join  会改写
+select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+explain basic select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+--echo 包含 join  会改写
+select count(distinct t2.c1), sum(distinct t2.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+explain basic select count(distinct t2.c1), sum(distinct t2.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+
+--echo 子查询
+select * from (select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2);
+explain basic select * from (select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2);
+
+select count(distinct t1.c1), sum(c4)from lyqtest2 t1,(select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 group by t1.c2 order by 1,2;
+explain basic select count(distinct t1.c1), sum(c4)from lyqtest2 t1,(select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 group by t1.c2 order by 1,2;
+
+select count(distinct t2.c1), sum(c4) from lyqtest2 t1 inner join (select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+explain basic select count(distinct t2.c1), sum(c4) from lyqtest2 t1 inner join (select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+
+--echo 拆分sum中const表达式改写 + GroupBy 下推 union 改写
+select sum(c1), sum(c1 + 1) + sum(c1 + 2),sum(c1 + 3) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1;
+explain basic select sum(c1), sum(c1 + 1) + sum(c1 + 2),sum(c1 + 3) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1;
+--echo Distinct 聚合改写 + GroupBy 下推 union 改写   不会改写
+select count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
+explain basic select count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */ count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
+
+--echo union 会改写
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION all
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION all
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+
+select count(distinct c2), max(distinct c2), sum(c4) from lyqtest1 group by c5
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2,3;
+explain basic select count(distinct c2), max(distinct c2), sum(c4) from lyqtest1 group by c5
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2,3;
+
+--error 0,1051
+drop table lyqtest1;
+--error 0,1051
+drop table lyqtest2;
+--error 0,1051
+drop table lyqtest3;
+
+

@@ -1,0 +1,73 @@
+# owner: gjw228474
+# group: transaction
+# test_no: 1002
+# description: this case is used to test xa gc invalid record
+
+	
+ob2=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=0, locality=HZ:HZ:HZ);
+
+let $extra_conf = "cpu_count=16,memory_limit='100G',system_memory='20G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='150G'";
+ob2.z1.obs0.set extra_config=$extra_conf;
+ob2.z2.obs0.set extra_config=$extra_conf;
+ob2.z3.obs0.set extra_config=$extra_conf;
+sleep 3;
+ob2.reboot;
+sleep 10;
+
+ob_connect(sys_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection sys_conn;
+## set gc interval
+ob2.mysql alter system set _xa_gc_interval='30s';
+ob2.mysql alter system set _xa_gc_timeout = '30s';
+sleep 30;
+
+## create oracle tenant
+ob2.mysql create resource unit box1 max_cpu 2, min_cpu 1, memory_size '10G', log_disk_size '10G';
+ob2.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+## primary_zone='random'
+ob2.mysql create tenant tt1 replica_num = 3, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob2.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time <= 0 or status = "inactive", 0, 120;
+
+## create connect to zone1
+ob_connect(cli1_z1_conn, ob2.z1.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+## create connect to zone2
+ob_connect(cli1_z2_conn, ob2.z2.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+
+## create prepared xa trans
+connection cli1_z1_conn;
+create table xa_tt01(x int, y int);
+create table xa_tt02(x int, y int);
+set autocommit = 'OFF';
+# xa start
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01002Z1'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_START(xid => l_xid, flag => DBMS_XA.TMNOFLAGS); insert into xa_tt01 values (1, 1); insert into xa_tt02 values (2, 2); END;
+# xa end
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01002Z1'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_END(xid => l_xid, flag => DBMS_XA.TMSUSPEND); END;
+# xa prepare
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01002Z1'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_PREPARE(xid => l_xid); END;
+
+
+connection cli1_z2_conn;
+
+set autocommit = 'OFF';
+# xa start
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01002Z2'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_START(xid => l_xid, flag => DBMS_XA.TMNOFLAGS); insert into xa_tt01 values (1, 1); insert into xa_tt02 values (2, 2); END;
+# xa end
+declare l_xid DBMS_XA_XID; l_ret PLS_INTEGER; BEGIN l_xid := DBMS_XA_XID(0, '', ''); l_xid.formatid := 123; l_xid.gtrid := UTL_RAW.cast_to_raw('gtrid01002Z2'); l_xid.bqual := UTL_RAW.cast_to_raw('bqual001'); l_ret := DBMS_XA.XA_END(xid => l_xid, flag => DBMS_XA.TMSUSPEND); END;
+
+connection cli1_z1_conn;
+select FLAG, FORMATID, GLOBALID, BRANCHID, COORD_LS_ID, STATE from gv$ob_global_transaction;
+
+disconnect cli1_z2_conn;
+
+## kill server zone2
+sleep 10;
+ob2.z2.obs0.force_stop;
+
+sleep 100;
+connection cli1_z1_conn;
+select FLAG, FORMATID, GLOBALID, BRANCHID, COORD_LS_ID, STATE from gv$ob_global_transaction;
+
+
+
+

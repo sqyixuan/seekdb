@@ -1,0 +1,253 @@
+# owner: wenyue.zxl
+# owner group: libobcdc
+# test point: test the correctness of libobcdc when enable_output_by_table_def is enabled,
+#             output md5 and extend_type_info for lob/enum/set.
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+
+source include/liboblog/create_tenant.inc;
+
+alter system set dump_data_dictionary_to_log_interval = '3s';
+sleep 4;
+
+set global max_allowed_packet=1073741824;
+
+ob_connect(conn_t_mysql, ob1.z1.obs0, root@oblog_tt, , oceanbase, , USE_OB_CONNECTOR);
+
+set ob_query_timeout=100000000;
+set ob_trx_timeout=100000000;
+
+create database obcdc_db1;
+use obcdc_db1;
+
+let $start_timestamp_usec=query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_output_by_table_def=1 enable_output_hidden_primary_key=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m -i;
+ob1.oblog.restart;
+
+echo "#################### [CASE_BEGIN] Lob Column ####################";
+
+let $dml_cnt=0;
+
+create table lob_tbl (id int primary key, c1 varchar(10) generated always as ('OceanBase') virtual);
+
+insert into lob_tbl(id) values (1);
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl add column c2 tinytext before c1;
+
+# id c2 (c1)
+
+insert into lob_tbl(id, c2) values (2, 'aaaaa');
+select md5(c2) from lob_tbl where id=2;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl modify column c2 text;
+
+insert into lob_tbl(id, c2) values (3, 'bbbbb');
+select md5(c2) from lob_tbl where id=3;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl drop column c2, add column c3 longblob after c1;
+
+# id (c1) c3
+
+insert into lob_tbl(id, c3) values (4, repeat('a', 50331647));
+select md5(c3) from lob_tbl where id=4;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+update lob_tbl set c3='c3longblob' where id=1;
+select md5(c3) from lob_tbl where id=1;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from lob_tbl where id=1;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+create index lob_idx on lob_tbl (c3(10));
+
+insert into lob_tbl(id, c3) values (5, 'bbbbbbb');
+select md5(c3) from lob_tbl where id=5;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl add column c4 blob before c1;
+
+# id c4 (c1) c3;
+
+insert into lob_tbl(id, c3, c4) values (6, repeat('c', 50331647), repeat('a', 65535));
+select md5(c3), md5(c4) from lob_tbl where id=6;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from lob_tbl where id=3;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl modify column c4 mediumblob;
+
+# out->in
+update lob_tbl set c3='ccccc', c4 = repeat('a', 16777215) where id=6;
+select md5(c3), md5(c4) from lob_tbl where id=6;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+# in->in out->out
+update lob_tbl set c3='ddddd', c4 = repeat('b', 16777215) where id=6;
+select md5(c3), md5(c4) from lob_tbl where id=6;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+# in->out
+update lob_tbl set c3=repeat('a', 5242880) where id=6;
+select md5(c3), md5(c4) from lob_tbl where id=6;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from lob_tbl where id = 5;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table lob_tbl drop primary key;
+
+# id c4 (c1) c3 __pk_increment
+
+insert into lob_tbl(id, c3, c4) values (7, 'eee', 'ddd');
+select md5(c3), md5(c4) from lob_tbl where id=7;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+# (c1) c3 c4 id __pk_increment
+
+alter table lob_tbl modify column c1 varchar(10) generated always as ('OceanBase') virtual first, modify column c3 longblob after c1, modify column c4 mediumblob after c3, modify column id int after c4;
+
+insert into lob_tbl(id, c3, c4) values (8, 'fff', repeat('e', 16777215));
+select md5(c3), md5(c4) from lob_tbl where id=8;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+# (c1) c3 c4 c5 id __pk_increment
+
+alter table lob_tbl add column c5 int generated always as (id+1) stored before id;
+
+insert into lob_tbl(id, c3, c4) values (9, repeat('g', 16777215) , repeat('f', 16777215));
+select md5(c3), md5(c4) from lob_tbl where id=9;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+update lob_tbl set c3='hhhhhhh' where id=2;
+select md5(c3) from lob_tbl where id=2;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from lob_tbl where id=4;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+echo "#################### [CASE_END] Lob Column ####################";
+
+echo "#################### [CASE_BEGIN] Enum Set Column ####################";
+
+create table enum_set_tbl(id int, c1 enum('e', 'n', 'u', 'm'));
+
+# id c1 __pk_increment
+insert into enum_set_tbl(id, c1) values (1, 1);
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table enum_set_tbl add column c2 set('s', 'e', 't') default 's';
+
+# id c1 c2 __pk_increment
+
+insert into enum_set_tbl(id, c1, c2) values (2, 'n', 's');
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table enum_set_tbl add primary key (c1);
+
+# id c1 c2
+
+insert into enum_set_tbl(id, c1, c2) values (3, 'u', 'e');
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table enum_set_tbl drop primary key, add primary key (id);
+
+insert into enum_set_tbl(id, c1, c2) values (4, 'm', 't');
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from enum_set_tbl where id=2;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+# id c1 c2 (c3)
+
+alter table enum_set_tbl add column c3 varchar(20) generated always as (concat(c1, c2)) virtual;
+
+insert into enum_set_tbl(id, c1, c2) values (5, 'e','s,t');
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+update enum_set_tbl set c2 = 's,e' where id=1;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+delete from enum_set_tbl where id=1;
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+alter table enum_set_tbl modify column c2 set('s', 'e', 't') after id, modify column c1 enum('e', 'n', 'u', 'm') after c2;
+
+# id c2 c1 (c3)
+
+insert into enum_set_tbl(id, c1, c2) values (6, 'n', 's,e,t');
+inc $dml_cnt;
+ob1.oblog.next_dml;
+
+echo "#################### [CASE_END] Enum Set Column ####################";
+
+ob1.oblog.stop;
+
+echo "#################### [CASE_BEGIN] Fetch History ####################";
+ob1.oblog.set_start_tstamp_usec $start_timestamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_output_by_table_def=1 enable_output_hidden_primary_key=1 log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m -i;
+ob1.oblog.restart;
+
+let $cnt=0;
+
+while ($cnt < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $cnt;
+}
+
+ob1.oblog.stop;
+
+echo "#################### [CASE_END] Fetch History ####################";
+
+echo "#################### [CASE_BEGIN] Fetch History Using Data Dict ####################";
+ob1.oblog.set_start_tstamp_usec $start_timestamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_output_by_table_def=1 enable_output_hidden_primary_key=1 meta_data_refresh_mode=data_dict log_level=DEBUG;
+ob1.oblog.set_extra_argument -m -i;
+ob1.oblog.restart;
+
+let $cnt=0;
+
+while ($cnt < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $cnt;
+}
+
+ob1.oblog.stop;
+
+echo "#################### [CASE_END] Fetch History Using Data Dict ####################";

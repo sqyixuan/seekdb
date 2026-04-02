@@ -1,0 +1,247 @@
+result_format: 4
+explain_protocol: 1
+drop table if exists t1, t2;
+create table t1(c1 int, c2 int, c3 int, c4 int, unique index idx(c1));
+create table t2(c1 int, c2 int, c3 int, c4 int);
+
+## 1. index hint
+EXPLAIN BASIC select /*+index(v idx)*/ * from (select * from t1) v;
+Query Plan
+============================
+|ID|OPERATOR       |NAME   |
+----------------------------
+|0 |TABLE FULL SCAN|t1(idx)|
+============================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      access([t1.__pk_increment], [t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c1], [t1.shadow_pk_0]), range(MIN,MIN ; MAX,MAX)always true
+select /*+index(v idx)*/ * from (select * from t1) v;
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+EXPLAIN BASIC select /*+index(v idx)*/ * from (select c2, min(c1) from t1 group by c2) v;
+Query Plan
+==============================
+|ID|OPERATOR         |NAME   |
+------------------------------
+|0 |HASH GROUP BY    |       |
+|1 |└─TABLE FULL SCAN|t1(idx)|
+==============================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c2], [T_FUN_MIN(t1.c1)]), filter(nil), rowset=16
+      group([t1.c2]), agg_func([T_FUN_MIN(t1.c1)])
+  1 - output([t1.c2], [t1.c1]), filter(nil), rowset=16
+      access([t1.__pk_increment], [t1.c2], [t1.c1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c1], [t1.shadow_pk_0]), range(MIN,MIN ; MAX,MAX)always true
+select /*+index(v idx)*/ * from (select c2, min(c1) from t1 group by c2) v;
++------+---------+
+| c2   | min(c1) |
++------+---------+
++------+---------+
+EXPLAIN BASIC select /*+index(view1 idx)*/ * from t2 where c1 in (select c1 from t1);
+Query Plan
+================================
+|ID|OPERATOR           |NAME   |
+--------------------------------
+|0 |MERGE JOIN         |       |
+|1 |├─TABLE FULL SCAN  |t1(idx)|
+|2 |└─SORT             |       |
+|3 |  └─TABLE FULL SCAN|t2     |
+================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      equal_conds([t2.c1 = t1.c1]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.shadow_pk_0]), range(MIN,MIN ; MAX,MAX)always true
+  2 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      sort_keys([t2.c1, ASC])
+  3 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2], [t2.c3], [t2.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+index(view1 idx)*/ * from t2 where c1 in (select c1 from t1);
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+
+## 2. parallel hint for table
+EXPLAIN BASIC select /*+parallel(v 10)*/ * from (select * from t1) v;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |PX COORDINATOR       |        |
+|1 |└─EXCHANGE OUT DISTR |:EX10000|
+|2 |  └─PX BLOCK ITERATOR|        |
+|3 |    └─TABLE FULL SCAN|t1      |
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t1.c3, t1.c4)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t1.c3, t1.c4)]), filter(nil), rowset=16
+      dop=10
+  2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+  3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+parallel(v 10)*/ * from (select * from t1) v;
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+EXPLAIN BASIC select /*+parallel(v 10)*/ * from (select c2, min(c1) from t1 group by c2) v;
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |PX COORDINATOR                   |        |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|
+|2 |  └─HASH GROUP BY                |        |
+|3 |    └─EXCHANGE IN DISTR          |        |
+|4 |      └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|5 |        └─HASH GROUP BY          |        |
+|6 |          └─PX BLOCK ITERATOR    |        |
+|7 |            └─TABLE FULL SCAN    |t1      |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c2, T_FUN_MIN(T_FUN_MIN(t1.c1)))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c2, T_FUN_MIN(T_FUN_MIN(t1.c1)))]), filter(nil), rowset=16
+      dop=10
+  2 - output([t1.c2], [T_FUN_MIN(T_FUN_MIN(t1.c1))]), filter(nil), rowset=16
+      group([t1.c2]), agg_func([T_FUN_MIN(T_FUN_MIN(t1.c1))])
+  3 - output([t1.c2], [T_FUN_MIN(t1.c1)]), filter(nil), rowset=16
+  4 - output([t1.c2], [T_FUN_MIN(t1.c1)]), filter(nil), rowset=16
+      (#keys=1, [t1.c2]), dop=10
+  5 - output([t1.c2], [T_FUN_MIN(t1.c1)]), filter(nil), rowset=16
+      group([t1.c2]), agg_func([T_FUN_MIN(t1.c1)])
+  6 - output([t1.c2], [t1.c1]), filter(nil), rowset=16
+  7 - output([t1.c2], [t1.c1]), filter(nil), rowset=16
+      access([t1.c2], [t1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+parallel(v 10)*/ * from (select c2, min(c1) from t1 group by c2) v;
++------+---------+
+| c2   | min(c1) |
++------+---------+
++------+---------+
+EXPLAIN BASIC select /*+parallel(view1 10)*/ * from t2 where c1 in (select c1 from t1);
+Query Plan
+==================================================
+|ID|OPERATOR                            |NAME    |
+--------------------------------------------------
+|0 |PX COORDINATOR                      |        |
+|1 |└─EXCHANGE OUT DISTR                |:EX10001|
+|2 |  └─SHARED HASH JOIN                |        |
+|3 |    ├─EXCHANGE IN DISTR             |        |
+|4 |    │ └─EXCHANGE OUT DISTR (BC2HOST)|:EX10000|
+|5 |    │   └─TABLE FULL SCAN           |t2      |
+|6 |    └─PX BLOCK ITERATOR             |        |
+|7 |      └─TABLE FULL SCAN             |t1(idx) |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.c1, t2.c2, t2.c3, t2.c4)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.c1, t2.c2, t2.c3, t2.c4)]), filter(nil), rowset=16
+      dop=10
+  2 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      equal_conds([t2.c1 = t1.c1]), other_conds(nil)
+  3 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+  4 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      is_single, dop=1
+  5 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2], [t2.c3], [t2.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1.c1]), filter(nil), rowset=16
+  7 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.shadow_pk_0]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(view1 10)*/ * from t2 where c1 in (select c1 from t1);
++------+------+------+------+
+| c1   | c2   | c3   | c4   |
++------+------+------+------+
++------+------+------+------+
+
+## 3. leading and use join
+EXPLAIN BASIC select /*+leading(t2 v) use_merge(v)*/ * from (select * from t1) v, t2 where v.c2 = t2.c2;
+Query Plan
+=============================
+|ID|OPERATOR           |NAME|
+-----------------------------
+|0 |MERGE JOIN         |    |
+|1 |├─SORT             |    |
+|2 |│ └─TABLE FULL SCAN|t2  |
+|3 |└─SORT             |    |
+|4 |  └─TABLE FULL SCAN|t1  |
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      equal_conds([t1.c2 = t2.c2]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      sort_keys([t2.c2, ASC])
+  2 - output([t2.c2], [t2.c1], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      access([t2.c2], [t2.c1], [t2.c3], [t2.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      sort_keys([t1.c2, ASC])
+  4 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+leading(t2 v) use_merge(v)*/ * from (select * from t1) v, t2 where v.c2 = t2.c2;
++------+------+------+------+------+------+------+------+
+| c1   | c2   | c3   | c4   | c1   | c2   | c3   | c4   |
++------+------+------+------+------+------+------+------+
++------+------+------+------+------+------+------+------+
+EXPLAIN BASIC select /*+leading(v) use_merge(t2)*/ * from (select * from t1) v, t2 where v.c2 = t2.c2;
+Query Plan
+=============================
+|ID|OPERATOR           |NAME|
+-----------------------------
+|0 |MERGE JOIN         |    |
+|1 |├─SORT             |    |
+|2 |│ └─TABLE FULL SCAN|t1  |
+|3 |└─SORT             |    |
+|4 |  └─TABLE FULL SCAN|t2  |
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      equal_conds([t1.c2 = t2.c2]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      sort_keys([t1.c2, ASC])
+  2 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2], [t1.c3], [t1.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  3 - output([t2.c1], [t2.c2], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      sort_keys([t2.c2, ASC])
+  4 - output([t2.c2], [t2.c1], [t2.c3], [t2.c4]), filter(nil), rowset=16
+      access([t2.c2], [t2.c1], [t2.c3], [t2.c4]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+leading(v) use_merge(t2)*/ * from (select * from t1) v, t2 where v.c2 = t2.c2;
++------+------+------+------+------+------+------+------+
+| c1   | c2   | c3   | c4   | c1   | c2   | c3   | c4   |
++------+------+------+------+------+------+------+------+
++------+------+------+------+------+------+------+------+
+
+drop table t1,t2;

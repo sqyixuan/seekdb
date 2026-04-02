@@ -1,0 +1,41 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证系统租户走process_only_in_member_list的批量减成员操作
+ob1=OBI(cluster=1:1:1:1:1, init_unit_cpu=0, proxy_num=1, ct_num=0, locality=hz:hz:hz:hz:hz);
+
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = 'true';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,root,,oceanbase,$rs_mysql_port);
+
+ob1.mysql_p alter tenant sys set primary_zone = "z1;z2;z3;z4;z5";
+
+# __all_core_table的leader在z1
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 5, 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where zone = "z1" and role = 1, 1, 1;
+
+# 宕机+切主，构造__all_core_table的replica only in member_list逻辑
+ob1.z1.obs0.force_stop;
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1, 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table, 3, 60;
+
+ob1.mysql_p alter tenant sys set locality = "F{1}@z3,F{1}@z4,F{1}@z5";
+ob1.check_until_timeout select count(*) from __all_tenant where tenant_id = 1 and previous_locality != "",0, 120;

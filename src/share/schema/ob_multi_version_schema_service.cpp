@@ -18,9 +18,6 @@
 // for materialized view
 #include "ob_multi_version_schema_service.h"
 #include "observer/ob_server.h"
-#ifdef __APPLE__
-#include <unistd.h> // For useconds_t on macOS
-#endif
 
 namespace oceanbase
 {
@@ -135,11 +132,16 @@ void ObSchemaConstructTask::unlock()
 
 void ObSchemaConstructTask::wait(const int64_t version)
 {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec += 1;
   if (dbg_construct_task) {
     LOG_WARN_RET(OB_SUCCESS, "task: waiting", K(version), K(count()));
   }
-  // Use portable timed wait with relative timeout (1 second) to avoid clock drift issues on macOS
-  int rc = ob_pthread_cond_timedwait_us(&schema_cond_, &schema_mutex_, 1000000 /* 1 second */);
+  int rc = 0;
+  do {
+    rc = ob_pthread_cond_timedwait(&schema_cond_, &schema_mutex_, &ts);
+  } while (0);
   (void) rc; // make compiler happy
 }
 
@@ -2279,11 +2281,7 @@ int ObMultiVersionSchemaService::async_refresh_schema(
     // do nothing
   } else {
     int64_t retry_cnt = 0;
-#ifdef __APPLE__
-    const useconds_t RETRY_IDLE_TIME = 10 * 1000L; // 10ms
-#else
     const __useconds_t RETRY_IDLE_TIME = 10 * 1000L; // 10ms
-#endif
     const int64_t MAX_RETRY_CNT = 100 * 1000 * 1000L / RETRY_IDLE_TIME; // 100s at most
     const int64_t SUBMIT_TASK_FREQUENCE = 2 * 1000 * 1000L / RETRY_IDLE_TIME; // each 2s
     while (OB_SUCC(ret)) {

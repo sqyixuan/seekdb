@@ -1,0 +1,137 @@
+# owner: rongxuan.lc
+# description: 本case是为了如果发生了成员变更，那么location cache刷新过程中get_member_list_and_leader能否返回错误；
+ob1=OBI(cluster=2:2:2:2:2, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:sh:sh:sz);
+
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+ob1.mysql alter system set partition_table_check_interval = "1m";
+ob1.mysql alter system set enable_monotonic_weak_read = 'true';
+
+ob1.mysql alter tenant sys set primary_zone='z1';
+# 创建新租户
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1','z2','z3','z4','z5');
+#ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_sys_z1,$z1_obs0_ip,admin@sys,admin,oceanbase,$z1_obs0_mysql_port);
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_mysql_port = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_sys_z3,$z3_obs0_ip,admin@sys,admin,oceanbase,$z3_obs0_mysql_port);
+
+let $z5_obs0_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $z5_obs0_mysql_port = deploy_get_value(ob1.z5.obs0.mysql_port);
+connect (conn_sys_z5,$z5_obs0_ip,admin@sys,admin,oceanbase,$z5_obs0_mysql_port);
+
+## 初始化租户
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z3,z4',locality='F{1}@z1,F{1}@z2,F{1}@z3,F{1}@z4,F{1}@z5' set ob_tcp_invited_nodes='%';
+connect (conn_tenant_1_z1,$z1_obs0_ip,root@tenant_1,,test,$z1_obs0_mysql_port);
+connection conn_tenant_1_z1;
+use test;
+create table t1(c1 int, c2 int);
+insert into t1(c1, c2) values(1,1);
+insert into t1(c1, c2) values(2,2);
+--disable_result_log
+select * from test.t1 where c1 = 1;
+select * from test.t1 where c1 = 2;
+--enable_result_log
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+let $t1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = "$tenant_id" and table_name = "t1", table_id, 1);
+
+###等待obs找到本region的parent
+######找到z2的R副本；
+#let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $t1_id and replica_type = 16 and zone = 'z2' and partition_id = 0, addr, 1);
+#####验证R挂在本region的机器上；
+#ob1.check_until_timeout select count(*) c from __all_server where svr_ip in (select svr_ip from __all_virtual_clog_stat where table_id = 1100611139453777 and partition_idx = 0 and children_list like '%$addr%') and svr_port in (select svr_port from __all_virtual_clog_stat where table_id = 1100611139453777 and partition_idx = 0 and children_list like '%$addr%') and zone in ('z1', 'z2'), 1, 15;
+#####找到z3的r副本；
+#let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from gv\$partition where table_id = $t1_id and replica_type = 16 and zone = 'z3' and partition_id = 0, addr, 1);
+#####验证R挂在本region的机器上；
+#ob1.check_until_timeout select count(*) c from __all_server where svr_ip in (select svr_ip from __all_virtual_clog_stat where table_id = 1100611139453777 and partition_idx = 0 and children_list like '%$addr%') and svr_port in (select svr_port from __all_virtual_clog_stat where table_id = 1100611139453777 and partition_idx = 0 and children_list like '%$addr%') and zone in ('z3', 'z4'), 1, 15;
+
+## 变更前检查
+connection conn_sys_z1;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z3;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+connection conn_sys_z5;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0;
+eval select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16;
+
+##在z1/z2分别进行副本迁移；
+###在z4加副本
+#ob1.mysql alter tenant tenant_1 set locality = 'F{1}@z1,F{1}@z2,F{1}@z3,F{1}@z4,F{1}@z5';
+#let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+#ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+#
+###找到z1的目的端
+let $source = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and zone= 'z1', addr, 1);
+let $destination = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_server where zone = 'z1' except select concat(svr_ip,":",svr_port) from __all_virtual_meta_table where tenant_id = $tenant_id and zone ='z1', addr, 1);
+let $sql_destination = deploy_get_value(ob1.select select concat(svr_ip,":",inner_port) addr from __all_server where zone= 'z1' and concat(svr_ip,":",svr_port)!='$source', addr, 1);
+###找到z2的目的端
+let $destination2 = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_server where zone = 'z2' except select concat(svr_ip,":",svr_port) from __all_virtual_meta_table where tenant_id = $tenant_id and zone ='z2', addr, 1);
+let $source2 = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and zone= 'z2', addr, 1);
+let $sql_destination2 = deploy_get_value(ob1.select select concat(svr_ip,":",inner_port) addr from __all_server where zone= 'z2' and concat(svr_ip,":",svr_port)!='$source2', addr, 1);
+ob1.mysql alter system move replica partition_id '0%1@$t1_id' source '$source' destination '$destination';
+sleep 10;
+ob1.mysql alter system move replica partition_id '0%1@$t1_id' source '$source2' destination '$destination2';
+
+##等待迁移做完；
+ob1.check_until_timeout select count(*) from  __all_rootservice_event_history where event like '%finish_mig%', 2, 60;
+## 变更后检查
+connection conn_sys_z1;
+#let $z1_readonly_count = `select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16`;
+let $count = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and (concat(svr_ip, ":", sql_port) = '$sql_destination' or  concat(svr_ip,":", sql_port) = '$sql_destination2'), c, 1);
+if ($count == 2)
+{
+echo 'z1 sql renew success;';
+}
+connection conn_sys_z3;
+#let $z3_full_count2 = `select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0`;
+#let $z3_readonly_count2 = `select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16`;
+let $count = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and (concat(svr_ip, ":", sql_port) = '$sql_destination' or  concat(svr_ip,":",sql_port) = '$sql_destination2'), c, 1);
+if ($count == 2)
+{
+echo 'z3 sql renew success;';
+}
+sleep 4;
+connection conn_sys_z5;
+let $count = deploy_get_value(ob1.select select count(*) c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and (concat(svr_ip, ":", sql_port) = '$sql_destination' or  concat(svr_ip,":",sql_port) = '$sql_destination2'), c, 1);
+if ($count == 2)
+{
+echo 'z5 sql renew success;';
+}
+#let $z5_full_count2 = `select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 0`;
+#let $z5_readonly_count2 = `select count(*) as c from oceanbase.__all_virtual_proxy_schema where tenant_name = "tenant_1" and database_name = "test" and table_name = "t1" and partition_id = 0 and spare1 = 16`;
+
+#if ($z1_readonly_count == 1)
+#{
+#  echo "z1 refresh location cache by sql success";
+#}
+#if ($z3_readonly_count2 == 0)
+#{
+#  echo "z3 refresh location cache by rpc success";
+#}
+#if ($z5_readonly_count2 == 1) 
+#{
+#   echo "z5 refresh location cache by sql success";
+#}
+
+

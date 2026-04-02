@@ -257,17 +257,6 @@ private:
 
 };
 
-class ObForkTableStmt;
-class ObForkTableExecutor
-{
-public:
-  ObForkTableExecutor();
-  virtual ~ObForkTableExecutor();
-  int execute(ObExecContext &ctx, ObForkTableStmt &stmt);
-private:
-
-};
-
 class ObFlashBackTableFromRecyclebinStmt;
 class ObFlashBackTableFromRecyclebinExecutor
 {

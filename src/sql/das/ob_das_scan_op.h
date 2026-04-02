@@ -26,7 +26,6 @@
 #include "share/domain_id/ob_domain_id.h"
 #include "share/external_table/ob_external_table_part_info.h"
 #include "share/external_table/ob_external_object_ctx.h"
-#include "share/vector_index/ob_vector_index_util.h"
 
 namespace oceanbase
 {
@@ -122,8 +121,7 @@ public:
       domain_id_idxs_(alloc),
       domain_types_(alloc),
       domain_tids_(alloc),
-      pre_range_graph_(alloc),
-      semantic_index_info_()
+      pre_range_graph_(alloc)
   { }
   //in das scan op, column described with column expr
   virtual bool has_expr() const override { return true; }
@@ -212,7 +210,6 @@ public:
   ObFixedArray<int64_t, common::ObIAllocator> domain_types_;
   ObFixedArray<uint64_t, common::ObIAllocator> domain_tids_;
   ObPreRangeGraph pre_range_graph_;
-  share::ObDasSemanticIndexInfo semantic_index_info_;
 };
 
 struct ObDASScanRtDef : ObDASBaseRtDef

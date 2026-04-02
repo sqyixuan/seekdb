@@ -1,0 +1,68 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+#    更新rslist的功能
+#    用例场景：
+#    1. follower RS宕机
+#    2. 主RS宕机
+
+# setup
+ob1=OBI(cluster=1:1:1, proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter tenant sys set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1 and zone ='z1', 1, 30;
+# check
+let $first_rs = deploy_get_value(ob1.select select substring_index(substring_index(value, ';', 1), ':', 2) str1 from oceanbase.__all_sys_parameter where name = 'rootservice_list', str1, 1);
+
+let $rs_leader_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_core_meta_table where role = 1, svr_ip, 1);
+let $rs_leader_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_core_meta_table where role = 1, svr_port,1);
+let $rs_leader_addr = ${rs_leader_ip}:${rs_leader_port};
+
+# 1. follower RS宕机 & 恢复
+echo "CASE 1";
+ob1.z2.obs0.force_stop;
+let $tmp_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $tmp_port = deploy_get_value(ob1.z2.obs0.port);
+let $rs2_addr = ${tmp_ip}:${tmp_port};
+# wait lease expired
+sleep 11;
+ob1.mysql_p select count(*) from oceanbase.__all_server where status='active';
+# wait update rslist async task
+sleep 3;
+# ob1.mysql_p select value from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+# rs_leader should be in the rslist
+ob1.mysql_p select value like '%${rs_leader_addr}%' as in_list from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+# rs2_addr should not be in the rslist
+ob1.mysql_p select value like '%${rs2_addr}%' as in_list from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+# 恢复
+ob1.z2.obs0.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status='active', 3, 100;
+sleep 3;
+# ob1.mysql_p select value from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+ob1.mysql_p select value like '%${rs2_addr}%' as in_list from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+
+# 2. leader RS宕机 & 恢复
+echo "CASE 2";
+ob1.z1.obs0.force_stop;
+let $tmp_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $tmp_port = deploy_get_value(ob1.z1.obs0.port);
+let $rs2_addr = ${tmp_ip}:${tmp_port};
+# wait lease expired
+sleep 30;
+ob1.z2.obs0.mysql_p select count(*) from oceanbase.__all_server where status='active';
+let $rs_leader2_ip = deploy_get_value(ob1.z2.obs0.select select svr_ip from oceanbase.__all_virtual_core_meta_table where role = 1, svr_ip, 1);
+let $rs_leader2_port = deploy_get_value(ob1.z2.obs0.select select svr_port from oceanbase.__all_virtual_core_meta_table where role = 1, svr_port,1);
+let $rs_leader2_addr = ${rs_leader2_ip}:${rs_leader2_port};
+if ($rs_leader2_addr != $rs_leader_addr)
+{
+	echo "rs leader changed";
+}
+#ob1.mysql_p select value from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+# rs2_addr should not be in the rslist
+#ob1.mysql_p select value like '%${rs2_addr}%' as in_list from oceanbase.__all_sys_parameter where name = 'rootservice_list';
+# 恢复
+ob1.z1.obs0.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1 and zone ='z1', 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where status='active', 3, 100;
+sleep 3;
+ob1.z2.obs0.mysql_p select value like '%${rs2_addr}%' as in_list from oceanbase.__all_sys_parameter where name = 'rootservice_list';

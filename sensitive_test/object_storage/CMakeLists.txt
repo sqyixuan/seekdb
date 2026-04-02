@@ -1,0 +1,6 @@
+function(sensitive_object_storage_unittest case)
+  sensitive_unittest(${ARGV})
+  if (case MATCHES "^test_.*")
+    set_tests_properties(${case} PROPERTIES TIMEOUT 7200)
+  endif()
+endfunction()

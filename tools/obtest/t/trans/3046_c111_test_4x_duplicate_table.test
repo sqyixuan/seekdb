@@ -1,0 +1,290 @@
+# owner: weixiaoxian.wxx
+# owner group: transaction
+# description: basic obtest for 4.x dup table
+# 测试点：复制表的相关测试
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=0, locality=HZ:HZ:HZ);
+
+let $extra_conf = "cpu_count=4,memory_limit='100G',system_memory='10G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='150G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+sleep 3;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+
+ob1.mysql create resource unit box1 max_cpu 2, min_cpu 1, memory_size '10G', log_disk_size '30G';
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant tt1 replica_num = 3, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time <= 0 or status = "inactive", 0, 120;
+
+## get ob1 z1 ip1 and port1
+let $ip1 = deploy_get_value(ob1.z1.obs0.ip);
+let $port1 = deploy_get_value(ob1.z1.obs0.port);
+
+## get ob1 z2 ip2 and port2
+let $ip2 = deploy_get_value(ob1.z2.obs0.ip);
+let $port2 = deploy_get_value(ob1.z2.obs0.port);
+
+## get ob1 z3 ip3 and port3
+let $ip3 = deploy_get_value(ob1.z3.obs0.ip);
+let $port3 = deploy_get_value(ob1.z3.obs0.port);
+
+ob_connect(conn1, ob1.z1.obs0, root@tt1, , test, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob1.z2.obs0, root@tt1, , test, , USE_OB_CONNECTOR);
+ob_connect(conn3, ob1.z3.obs0, root@tt1, , test, , USE_OB_CONNECTOR);
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn1;
+use test;
+
+## clear old table
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t1_dup;
+drop table if exists t2_dup;
+--enable_warnings
+
+create table t1 (x int, y int);
+create table t2 (x int, y int);
+create table t1_dup (x int, y int) duplicate_scope = 'cluster';
+create table t2_dup (x int, y int) duplicate_scope = 'cluster';
+
+sleep 3;
+
+connection conn_sys;
+use oceanbase;
+## get tenant_id
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt1', tenant_id, 1);
+## get table id , ls id
+let $t1_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+let $t1_ls_id = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$t1_table_id', ls_id, 1);
+
+let $t2_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t2', table_id, 1);
+let $t2_ls_id = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$t2_table_id', ls_id, 1);
+
+let $t1_dup_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1_dup', table_id, 1);
+let $t1_dup_ls_id = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$t1_dup_table_id', ls_id, 1);
+
+let $t2_dup_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t2_dup', table_id, 1);
+let $t2_dup_ls_id = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$t2_dup_table_id', ls_id, 1);
+
+##  switch all leader to zone1
+ob1.mysql alter system switch replica leader ls = $t1_ls_id server = '$ip1:$port1' tenant = 'tt1';
+ob1.mysql alter system switch replica leader ls = $t2_ls_id server = '$ip1:$port1' tenant = 'tt1';
+ob1.mysql alter system switch replica leader ls = $t1_dup_ls_id server = '$ip1:$port1' tenant = 'tt1';
+ob1.mysql alter system switch replica leader ls = $t2_dup_ls_id server = '$ip1:$port1' tenant = 'tt1';
+
+sleep 5;
+
+## check leader in zone1
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t2_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t2_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+
+connection conn1;
+
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4);
+insert into t2 values(5, 5), (6, 6), (7, 7), (8, 8);
+insert into t1_dup select * from t1;
+insert into t2_dup select * from t2;
+
+select * from t1;
+select * from t2;
+select * from t1_dup;
+select * from t2_dup;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+select * from t2, t2_dup where t2.x = t2_dup.x;
+
+connection conn2;
+select * from t1;
+select * from t2;
+select * from t1_dup;
+select * from t2_dup;
+select * from t1, t1_dup where t1.x = t1_dup.x;
+select * from t2, t2_dup where t2.x = t2_dup.x;
+
+## 1. 检验复制表的正确性
+## 场景：
+## 对于复制表的更新事务来说，执行写入事务，事务提交返回客户端成功后，
+## 在备机上的读取，要求必须能够读到最新的写入，如果没有读到就是正确性问题
+
+let $test_count = 100;
+
+while ($test_count > 0)
+{
+  ## 首先事务更新数据
+  eval connection conn1;
+  eval update t1_dup set y = y + 1 where x = 1;
+  ## 接着在备机上读取最新update
+  eval connection conn2;
+  eval select * from t1_dup where x = 1;
+  eval connection conn3;
+  eval select * from t1_dup where x = 1;
+  dec $test_count;
+}
+
+connection conn1;
+update t1_dup set y = 1 where x = 1;
+
+let $test_count = 100;
+let $update_count = 10;
+
+while ($test_count > 0)
+{
+  ## 首先事务更新数据，加1加10次
+  eval connection conn1;
+  eval begin;
+  while ($update_count > 0)
+  {
+    eval update t1_dup set y = y + 1 where x = 1;
+    dec $update_count;
+  }
+  let $update_count = 10;
+  eval commit;
+  ## 接着在备机上读取最新update
+  eval connection conn2;
+  eval select * from t1_dup where x = 1;
+  eval connection conn3;
+  eval select * from t1_dup where x = 1;
+  dec $test_count;
+}
+
+connection conn1;
+update t1_dup set y = 1 where x = 1;
+
+## 2。验证备机上复制表读取，在遇到leader切主时的服务能力
+## 在有主改选的情况下，复制表的leader出现切主后，备机上的location cache如果
+## 没有及时更新，会导致lease申请不成功，从而导致副本不可提供读服务。这里验证
+## 服务能力
+## 验证方法：
+## t1表切主到z3，join t1和t1_dup，读取请求执行正常
+## 复制表t1_dup切主，从z1 <-> z2，与此同时，join t1和t1_dup的读取不能受影响，默认语句超时是10s
+## 测试时，join t1和t1_dup的读取分两种场景，分别是本地执行和远程执行
+
+## ob1.z3.obs0.switch_partition tt1:test:t1;
+ob1.mysql alter system switch replica leader ls = $t1_ls_id server = '$ip3:$port3' tenant = 'tt1';
+## ob1.z3.obs0.check_leader tt1:test:t1;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_ls_id and SVR_IP = '$ip3' and SVR_PORT = '$port3' and tenant_id = $tenant_id and ls_state = 'leader', 1, 30;
+
+# 测5次
+let $test_count = 5;
+
+while ($test_count > 0)
+{
+  ## 本地执行
+  connection conn3;
+  select * from t1, t1_dup where t1.x = t1_dup.x;
+  
+  ## ob1.z2.obs0.switch_partition tt1:test:t1_dup; 
+  ob1.mysql alter system switch replica leader ls=$t1_dup_ls_id server='$ip2:$port2' tenant='tt1';
+  ## ob1.z2.obs0.check_leader tt1:test:t1_dup;
+  ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip2' and SVR_PORT = '$port2' and tenant_id = $tenant_id and ls_state = 'leader', 1, 30;
+
+  connection conn3;
+  select * from t1, t1_dup where t1.x = t1_dup.x;
+
+  ## 远程执行
+  connection conn2;
+  select * from t1, t1_dup where t1.x = t1_dup.x;
+  ## ob1.z1.obs0.switch_partition tt1:test:t1_dup;
+  ob1.mysql alter system switch replica leader ls=$t1_dup_ls_id server='$ip1:$port1' tenant='tt1';
+  ## ob1.z1.obs0.check_leader tt1:test:t1_dup;#
+  ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader', 1, 30;
+  connection conn2;
+  select * from t1, t1_dup where t1.x = t1_dup.x;
+
+  dec $test_count;
+}
+
+## leader复原
+## ob1.z1.obs0.switch_partition tt1:test:t1;
+## ob1.z1.obs0.switch_partition tt1:test:t2;
+## ob1.z1.obs0.switch_partition tt1:test:t1_dup;
+## ob1.z1.obs0.switch_partition tt1:test:t2_dup;
+
+ob1.mysql alter system switch replica leader ls=$t1_ls_id server='$ip1:$port1' tenant='tt1';
+ob1.mysql alter system switch replica leader ls=$t2_ls_id server='$ip1:$port1' tenant='tt1';
+ob1.mysql alter system switch replica leader ls=$t1_dup_ls_id server='$ip1:$port1' tenant='tt1';
+ob1.mysql alter system switch replica leader ls=$t2_dup_ls_id server='$ip1:$port1' tenant='tt1';
+
+## ob1.z1.obs0.check_leader tt1:test:t1;
+## ob1.z1.obs0.check_leader tt1:test:t2;
+## ob1.z1.obs0.check_leader tt1:test:t1_dup;
+## ob1.z1.obs0.check_leader tt1:test:t2_dup;
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t2_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t2_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+
+
+
+## 3. 测试复制表leader切主后的写入服务恢复能力
+## 测试方式：
+## 做有主改选，然后在新主上执行写入
+
+## ob1.z2.obs0.switch_partition tt1:test:t1_dup;
+ob1.mysql alter system switch replica leader ls = $t1_dup_ls_id server = '$ip2:$port2' tenant = 'tt1';
+## ob1.z2.obs0.check_leader tt1:test:t1_dup;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip2' and SVR_PORT = '$port2' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+
+sleep 5;
+connection conn1;
+begin;
+update t1_dup set y = y + 1 where x = 1;
+update t1_dup set y = y + 1 where x = 1;
+commit;
+select * from t1_dup;
+
+connection conn2;
+begin;
+update t1_dup set y = y - 1 where x = 1;
+update t1_dup set y = y - 1 where x = 1;
+commit;
+select * from t1_dup;
+
+## ob1.z1.obs0.switch_partition tt1:test:t1_dup;
+ob1.mysql alter system switch replica leader ls = $t1_dup_ls_id server = '$ip1:$port1' tenant = 'tt1';
+## ob1.z1.obs0.check_leader tt1:test:t1_dup;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t1_dup_ls_id and SVR_IP = '$ip1' and SVR_PORT = '$port1' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+sleep 5;
+connection conn1;
+begin;
+update t1_dup set y = y + 1 where x = 1;
+update t1_dup set y = y + 1 where x = 1;
+commit;
+select * from t1_dup;
+
+connection conn2;
+begin;
+update t1_dup set y = y - 1 where x = 1;
+update t1_dup set y = y - 1 where x = 1;
+commit;
+select * from t1_dup;
+
+## 4. 测试sql在做普通表和复制表的联合查询的时候的执行计划
+## 测试方法：
+## explain不同场景下的执行计划情况
+### NB: need sql recheck 
+connection conn1;
+# explain select * from t1, t1_dup where t1.x = t1_dup.x;
+
+## switch t2 leader to z2
+ob1.mysql alter system switch replica leader ls = $t2_ls_id server = '$ip2:$port2' tenant = 'tt1';
+## ob1.z2.obs0.check_leader tt1:test:t2;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where ls_id = $t2_ls_id and SVR_IP = '$ip2' and SVR_PORT = '$port2' and tenant_id = $tenant_id and ls_state = 'leader' , 1, 30;
+## explain select * from t2, t2_dup where t2.x = t2_dup.x;
+
+### 清理环境
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t1_dup;
+drop table if exists t2_dup;
+--enable_warnings

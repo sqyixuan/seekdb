@@ -1,0 +1,345 @@
+drop database if exists px;
+create database px;
+use px;
+result_format: 4
+####################### join condition覆盖全部分区键 ##########################
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`, subpartition `p1`, subpartition `p2`, subpartition `p3`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9);
+insert into t1 select c1 + 9, c2 + 9 from t1;
+insert into t1 select c1 + 18, c2 + 18 from t1;
+insert into t1 select c1 + 36, c2 + 36 from t1;
+insert into t1 select c1 + 72, c2 + 72 from t1;
+insert into t1 select c1 + 144, c2 + 144 from t1;
+可以共享，transmit和join filter都是CALC_NORMAL. 从计划中exchange是否输出了calc_part_id可以判断是否共享了。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and a.c1 = b.c2;
+Query Plan
+=====================================================
+|ID|OPERATOR                               |NAME    |
+-----------------------------------------------------
+|0 |SCALAR GROUP BY                        |        |
+|1 |└─PX COORDINATOR                       |        |
+|2 |  └─EXCHANGE OUT DISTR                 |:EX10001|
+|3 |    └─MERGE GROUP BY                   |        |
+|4 |      └─HASH JOIN                      |        |
+|5 |        ├─PART JOIN FILTER CREATE      |:RF0000 |
+|6 |        │ └─EXCHANGE IN DISTR          |        |
+|7 |        │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|8 |        │     └─PX BLOCK ITERATOR      |        |
+|9 |        │       └─TABLE FULL SCAN      |a       |
+|10|        └─PX PARTITION HASH JOIN-FILTER|:RF0000 |
+|11|          └─TABLE FULL SCAN            |b       |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  2 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      dop=2
+  3 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  4 - output(nil), filter(nil), rowset=256
+      equal_conds([a.c2 = b.c1], [a.c1 = b.c2]), other_conds(nil)
+  5 - output([a.c2], [a.c1]), filter(nil), rowset=256
+      RF_TYPE(bloom), RF_EXPR[calc_tablet_id(a.c2, partition_key(a.c1))]
+  6 - output([a.c2], [a.c1], [calc_tablet_id(a.c2, partition_key(a.c1))]), filter(nil), rowset=256
+  7 - output([a.c2], [a.c1], [calc_tablet_id(a.c2, partition_key(a.c1))]), filter(nil), rowset=256
+      (#keys=2, [a.c2], [a.c1]), dop=2
+  8 - output([a.c1], [a.c2]), filter(nil), rowset=256
+  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
+      access([a.c1], [a.c2]), partitions(p0sp[0-3], p1sp[0-3], p2sp[0-3], p3sp[0-3], p4sp[0-3], p5sp[0-3], p6sp[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([b.c1], [b.c2]), filter(nil), rowset=256
+      affinitize
+ 11 - output([b.c1], [b.c2]), filter(nil), rowset=256
+      access([b.c1], [b.c2]), partitions(p0sp[0-3], p1sp[0-3], p2sp[0-3], p3sp[0-3], p4sp[0-3], p5sp[0-3], p6sp[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and a.c1 = b.c2;
++----------+
+| count(*) |
++----------+
+|      288 |
++----------+
+
+
+####################### join condition覆盖部分分区键 ##########################
+## 二级分区固定。
+### 二级分区数 = 1
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+可以共享，transmit和join filter都是CALC_IGNORE_SUB_PART。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+Query Plan
+=====================================================
+|ID|OPERATOR                               |NAME    |
+-----------------------------------------------------
+|0 |SCALAR GROUP BY                        |        |
+|1 |└─PX COORDINATOR                       |        |
+|2 |  └─EXCHANGE OUT DISTR                 |:EX10001|
+|3 |    └─MERGE GROUP BY                   |        |
+|4 |      └─HASH JOIN                      |        |
+|5 |        ├─PART JOIN FILTER CREATE      |:RF0000 |
+|6 |        │ └─EXCHANGE IN DISTR          |        |
+|7 |        │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|8 |        │     └─PX BLOCK ITERATOR      |        |
+|9 |        │       └─TABLE FULL SCAN      |a       |
+|10|        └─PX PARTITION HASH JOIN-FILTER|:RF0000 |
+|11|          └─TABLE FULL SCAN            |b       |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  2 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      dop=2
+  3 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  4 - output(nil), filter(nil), rowset=256
+      equal_conds([a.c2 = b.c1]), other_conds(nil)
+  5 - output([a.c2]), filter(nil), rowset=256
+      RF_TYPE(bloom), RF_EXPR[calc_tablet_id(a.c2, 1)]
+  6 - output([a.c2], [calc_tablet_id(a.c2, 1)]), filter(nil), rowset=256
+  7 - output([a.c2], [calc_tablet_id(a.c2, 1)]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=2
+  8 - output([a.c2]), filter(nil), rowset=256
+  9 - output([a.c2]), filter([a.c2 > 10]), rowset=256
+      access([a.c2]), partitions(p0sp0, p1sp0, p2sp0, p3sp0, p4sp0, p5sp0, p6sp0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([b.c1]), filter(nil), rowset=256
+      affinitize
+ 11 - output([b.c1]), filter([b.c1 > 10]), rowset=256
+      access([b.c1]), partitions(p1sp0, p2sp0, p3sp0, p4sp0, p5sp0, p6sp0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
++----------+
+| count(*) |
++----------+
+|      139 |
++----------+
+
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c1) subpartition template (subpartition `p0`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+不可以共享，transmit是CALC_IGNORE_SUB_PART，而join filter是CALC_NORMAL，理论上join filter也可以是CALC_IGNORE_SUB_PART
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+Query Plan
+=====================================================
+|ID|OPERATOR                               |NAME    |
+-----------------------------------------------------
+|0 |SCALAR GROUP BY                        |        |
+|1 |└─PX COORDINATOR                       |        |
+|2 |  └─EXCHANGE OUT DISTR                 |:EX10001|
+|3 |    └─MERGE GROUP BY                   |        |
+|4 |      └─HASH JOIN                      |        |
+|5 |        ├─PART JOIN FILTER CREATE      |:RF0000 |
+|6 |        │ └─EXCHANGE IN DISTR          |        |
+|7 |        │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|8 |        │     └─PX BLOCK ITERATOR      |        |
+|9 |        │       └─TABLE FULL SCAN      |a       |
+|10|        └─PX PARTITION HASH JOIN-FILTER|:RF0000 |
+|11|          └─TABLE FULL SCAN            |b       |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+  2 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      dop=2
+  3 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_COUNT(*)])
+  4 - output(nil), filter(nil), rowset=256
+      equal_conds([a.c2 = b.c1]), other_conds(nil)
+  5 - output([a.c2]), filter(nil), rowset=256
+      RF_TYPE(bloom), RF_EXPR[calc_tablet_id(a.c2, partition_key(a.c2))]
+  6 - output([a.c2]), filter(nil), rowset=256
+  7 - output([a.c2]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=2
+  8 - output([a.c2]), filter(nil), rowset=256
+  9 - output([a.c2]), filter([a.c2 > 10]), rowset=256
+      access([a.c2]), partitions(p0sp0, p1sp0, p2sp0, p3sp0, p4sp0, p5sp0, p6sp0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([b.c1]), filter(nil), rowset=256
+      affinitize
+ 11 - output([b.c1]), filter([b.c1 > 10]), rowset=256
+      access([b.c1]), partitions(p1sp0, p2sp0, p3sp0, p4sp0, p5sp0, p6sp0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
++----------+
+| count(*) |
++----------+
+|      139 |
++----------+
+
+### 二级分区数 > 1
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`, subpartition `p1`, subpartition `p3`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+可以共享，transmit和join filter都是CALC_IGNORE_SUB_PART。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |PX COORDINATOR                     |        |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|
+|2 |  └─HASH JOIN                      |        |
+|3 |    ├─PART JOIN FILTER CREATE      |:RF0000 |
+|4 |    │ └─EXCHANGE IN DISTR          |        |
+|5 |    │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|6 |    │     └─PX BLOCK ITERATOR      |        |
+|7 |    │       └─TABLE FULL SCAN      |a       |
+|8 |    └─PX PARTITION HASH JOIN-FILTER|:RF0000 |
+|9 |      └─TABLE FULL SCAN            |b       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(a.c1, a.c2, b.c1, b.c2)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(a.c1, a.c2, b.c1, b.c2)]), filter(nil), rowset=256
+      dop=2
+  2 - output([a.c2], [b.c1], [a.c1], [b.c2]), filter(nil), rowset=256
+      equal_conds([a.c2 = b.c1]), other_conds(nil)
+  3 - output([a.c2], [a.c1]), filter(nil), rowset=256
+      RF_TYPE(bloom), RF_EXPR[calc_tablet_id(a.c2, 1)]
+  4 - output([a.c2], [calc_tablet_id(a.c2, 1)], [a.c1]), filter(nil), rowset=256
+  5 - output([a.c2], [calc_tablet_id(a.c2, 1)], [a.c1]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=2
+  6 - output([a.c1], [a.c2]), filter(nil), rowset=256
+  7 - output([a.c1], [a.c2]), filter([a.c2 > 10]), rowset=256
+      access([a.c1], [a.c2]), partitions(p0sp[0-2], p1sp[0-2], p2sp[0-2], p3sp[0-2], p4sp[0-2], p5sp[0-2], p6sp[0-2])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([b.c1], [b.c2]), filter(nil), rowset=256
+      affinitize
+  9 - output([b.c1], [b.c2]), filter([b.c2 = 100], [b.c1 > 10]), rowset=256
+      access([b.c1], [b.c2]), partitions(p1sp0, p2sp0, p3sp0, p4sp0, p5sp0, p6sp0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
++------+------+------+------+
+| c1   | c2   | c1   | c2   |
++------+------+------+------+
+|   25 |   50 |   50 |  100 |
++------+------+------+------+
+
+## 一级分区固定。
+drop table t1;
+create table t1(c1 int, c2 int) partition by key(c2) subpartition by range(c1)
+subpartition template
+(
+  subpartition `p0` values less than (10),
+  subpartition `p1` values less than (30),
+  subpartition `p2` values less than (100),
+  subpartition `p3` values less than (150),
+  subpartition `p4` values less than (200),
+  subpartition `p5` values less than (250),
+  subpartition `p6` values less than (300)
+)
+partitions 8;
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+当join condition只覆盖一级分区键时可以生成join filter，只覆盖二级分区键时不会生成，因此不存在共享。
+explain select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |1       |249         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|1       |248         |
+|2 |  └─HASH JOIN                    |        |1       |247         |
+|3 |    ├─EXCHANGE IN DISTR          |        |283     |212         |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|283     |168         |
+|5 |    │   └─PX BLOCK ITERATOR      |        |283     |72          |
+|6 |    │     └─TABLE FULL SCAN      |a       |283     |72          |
+|7 |    └─PX PARTITION ITERATOR      |        |1       |8           |
+|8 |      └─TABLE FULL SCAN          |b       |1       |8           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(a.c1, a.c2, b.c1, b.c2)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(a.c1, a.c2, b.c1, b.c2)]), filter(nil), rowset=256
+      dop=2
+  2 - output([a.c2], [b.c1], [a.c1], [b.c2]), filter(nil), rowset=256
+      equal_conds([a.c2 = b.c1]), other_conds(nil)
+  3 - output([a.c2], [a.c1]), filter(nil), rowset=256
+  4 - output([a.c2], [a.c1]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=2
+  5 - output([a.c2], [a.c1]), filter(nil), rowset=256
+  6 - output([a.c2], [a.c1]), filter([a.c2 > 10]), rowset=256
+      access([a.c2], [a.c1]), partitions(p0sp[0-6], p1sp[0-6], p2sp[0-6], p3sp[0-6], p4sp[0-6], p5sp[0-6], p6sp[0-6], p7sp[0-6])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([b.c2], [b.c1]), filter(nil), rowset=256
+      affinitize
+  8 - output([b.c2], [b.c1]), filter([b.c2 = 100], [b.c1 > 10]), rowset=256
+      access([b.c2], [b.c1]), partitions(p0sp[1-6])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
++------+------+------+------+
+| c1   | c2   | c1   | c2   |
++------+------+------+------+
+|   25 |   50 |   50 |  100 |
++------+------+------+------+
+use test;
+drop database if exists px;

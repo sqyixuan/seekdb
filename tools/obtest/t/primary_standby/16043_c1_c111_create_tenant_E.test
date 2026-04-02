@@ -1,0 +1,86 @@
+# rs
+# msy164651
+# 测试点：带有E副本的主备库部署基础测试
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1:1:1,proxy_num=0,leaderob=ob1);
+
+ob1.reboot;
+
+ob1.mysql set global ob_query_timeout = 30000000;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1';
+let $zone_list = 'z1';
+source include/create_tenant_1.inc;
+ob_connect(conn1, ob1.z1.obs0, root@tenant_1, ,test, , USE_OB_CONNECTOR);
+connection conn1;
+create table t1(c1 int primary key);
+insert into t1 values(1);
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+
+# 为了避免备库add cluster，备库不走reboot
+ob2.z3.obs0.set status=disable;
+ob2.reboot;
+ob2.check_until_timeout select count(*) from oceanbase.__all_tenant, 2, 100;
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(sys2_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection sys2_conn;
+alter system set debug_sync_timeout = '100000s';
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+set ob_query_timeout = 30000000;
+--disable_query_log
+alter system set tde_method='internal';
+sleep 10;
+--enable_query_log
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 15;
+# add encryption zone
+alter system add zone 'z3' zone_type = "encryption";
+alter system start zone 'z3';
+# add server
+ob2.z3.obs0.set status=enable;
+ob2.z3.obs0.start;
+sleep 30;
+ob2.z3.obs0.add;
+sleep 60;
+ob2.mysql create resource pool pool_1001 zone_list=('z3'), unit_num = 1, unit= '__unit_config_1001';
+ob2.mysql alter tenant tenant_1 set resource_pool_list = ('__resource_pool_1001', 'pool_1001'), locality = "F@z1,F@z2,E@z3";
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+
+let $case_index = 2;
+source include/create_tenant_1.inc;
+
+connection sys2_conn;
+
+ob_connect(conn2, ob1.z1.obs0, root@tenant_2, ,test, , USE_OB_CONNECTOR);
+connection conn2;
+create table t1(c1 int primary key);
+insert into t1 values(1);
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+ob2.mysql_p select tenant_id, locality from oceanbase.__all_tenant;
+ob2.mysql_p select distinct replica_type from oceanbase.__all_virtual_meta_table where zone = 'z3';
+ob2.mysql_p select distinct replica_type from oceanbase.__all_root_table where zone = 'z3' and tenant_id = 1001;
+ob2.mysql_p select distinct replica_type from oceanbase.__all_root_table where zone = 'z3' and tenant_id = 1002;
+
+
+# 将原主库切成备
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+ob1.mysql alter system commit to switchover to physical standby;
+
+# 将原备库切成主
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;
+connection conn2;
+set ob_read_consistency='weak';
+select * from t1;
+
+connection conn1;
+set ob_read_consistency='weak';
+select * from t1;

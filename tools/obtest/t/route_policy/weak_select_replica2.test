@@ -1,0 +1,73 @@
+ob1=OBI(cluster=2:2:2:2:2, proxy_num=0, init_unit_cpu=4,locality=HZ:HZ:SH:SH:SZ);
+ob1.reboot;
+
+##新建租户
+ob1.mysql create resource pool rp1 unit = 'sys_unit_config', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 replica_num 5, primary_zone 'z2', resource_pool_list ('rp1'), locality="F@z1,F@z2,F@z3,R@z4,R@z5" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 10;
+ob1.mysql alter system set server_data_copy_out_concurrency = 10;
+ob1.mysql alter system set server_permanent_offline_time='20s';
+ob1.mysql alter system set server_temporary_offline_time='15s';
+ob1.mysql alter system modify zone 'z1' idc 'idc1';
+ob1.mysql alter system modify zone 'z2' idc 'idc2';
+ob1.mysql alter system modify zone 'z3' idc 'idc3';
+ob1.mysql alter system modify zone 'z4' idc 'idc4';
+ob1.mysql alter system modify zone 'z5' idc 'idc5';
+
+sleep 2;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tt1", tenant_id, 1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z5' and resource_pool_id = $tenant_id limit 1, svr_ip, 1);
+let $port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z5' and resource_pool_id = $tenant_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port = $port, inner_port, 1);
+
+##########################################################
+## CASE 1 : test for normal weak select
+sleep 20;
+ob1.select select * zone from oceanbase.__all_zone;
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+select * from __all_zone;
+ob1.destroy_client;
+
+connect(tt1_conn, $tt1ip, root@tt1,,test, $tt1port);
+connection tt1_conn;
+eval create table test(c1 int primary key, c2 int) locality="F@z1,F@z2,F@z3,R@z4,R@z5";
+eval insert into test values(1,2);
+sleep 20;
+set @@ob_route_policy='READONLY_REPLICA_FIRST';
+eval select /*+ read_consistency(weak)*/c1, host_ip()='$tt1ip', 'case 1.1' from test;
+
+set @@ob_route_policy='ONLY_READONLY_REPLICA';
+eval select /*+ read_consistency(weak)*/c1, host_ip()='$tt1ip', 'case 1.2' from test;
+
+##########################################################
+## CASE 2 : test for connect FULL replica
+
+let $tt1ip_z3 = deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z3' and resource_pool_id = $tenant_id limit 1, svr_ip, 1);
+let $port_z3 = deploy_get_value(ob1.select select svr_port from __all_unit where zone='z3' and resource_pool_id = $tenant_id limit 1, svr_port, 1);
+let $tt1port_z3 = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip_z3' and svr_port = $port_z3, inner_port, 1);
+
+let $tt1ip_z4 = deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z4' and resource_pool_id = $tenant_id limit 1, svr_ip, 1);
+connect(tt1_conn_z3, $tt1ip_z3, root@tt1,,test, $tt1port_z3);
+connection tt1_conn_z3;
+set @@ob_route_policy='READONLY_REPLICA_FIRST';
+eval select /*+ read_consistency(weak)*/c1, host_ip(), host_ip()='$tt1ip_z4', 'case 2.1' from test;
+
+##########################################################
+## CASE 3 : test for ONLY_READONLY_REPLIA
+
+
+##########################################################
+## CASE 4 : test for merge status
+
+
+##########################################################
+## CASE 5 : test for filter stop zone
+
+ob1.mysql alter system stop zone 'z4';
+sleep 20;
+ob1.mysql_p select * from __all_zone;
+
+connection tt1_conn_z3;
+set @@ob_route_policy='READONLY_REPLICA_FIRST';
+eval select /*+ read_consistency(weak)*/c1, 'case 5.1' from test;

@@ -1,0 +1,534 @@
+##########################
+#owner :  bohou.ws
+#owner group: liboblog
+#description:
+# 测试点：
+# 测试liboblog对非模版化二级分区动态增删的支持
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_oracle_tenant.inc;
+source include/liboblog/enable_oracle_archive.inc;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection conn_sys;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'oracle', tenant_id, 1);
+let $database_id = query_get_value(select database_id from __all_virtual_database where database_name = 'oblog_db' and tenant_id = $tenant_id, database_id, 1);
+# echo $tenant_id;
+# echo $database_id;
+connection conn_oracle_obtest;
+
+####################################################################
+#################  1. hash-hash   ##################################
+
+# 一二级均为hash，不支持动态增删
+
+#create table t_hash_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1)
+#subpartition by hash(c2)
+#(
+#  partition p0
+#  (
+#    subpartition p0_1,
+#    subpartition p0_2,
+#    subpartition p0_3
+#  ),
+#  partition p1
+#  (
+#    subpartition p1_1,
+#    subpartition p1_2,
+#    subpartition p1_3
+#  ),
+#  partition p2
+#  (
+#    subpartition p2_1,
+#    subpartition p2_2
+#  )
+#);
+
+create table t_hash_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1) subpartition by hash(c2) (partition p0 (subpartition p0_1, subpartition p0_2, subpartition p0_3), partition p1 (subpartition p1_1, subpartition p1_2, subpartition p1_3), partition p2 (subpartition p2_1, subpartition p2_2));
+ob1.oblog.next;
+let $idx=0;
+while ($idx < 3)
+{
+  eval insert into t_hash_hash1 values ($idx, $idx, $idx);
+  ob1.oblog.next;
+  eval insert into t_hash_hash1 values ($idx, $idx+1, $idx);
+  ob1.oblog.next;
+  eval insert into t_hash_hash1 values ($idx, $idx+2, $idx);
+  ob1.oblog.next;
+  inc $idx;
+}
+
+####################################################################
+#################  2. hash-range   ##################################
+#create table t_hash_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1)
+#subpartition by range(c2)
+#(
+#  partition p0
+#  (
+#    subpartition p0_r1 values less than (100),
+#    subpartition p0_r2 values less than (200),
+#    subpartition p0_r3 values less than (300)
+#  ),
+#  partition p1
+#  (
+#    subpartition p1_r1 values less than (100),
+#    subpartition p1_r2 values less than (200),
+#    subpartition p1_r3 values less than (300)
+#  ),
+#  partition p2
+#  (
+#    subpartition p2_r1 values less than (100),
+#    subpartition p2_r2 values less than (200),
+#    subpartition p2_r3 values less than (300)
+#  )
+#);
+
+create table t_hash_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1) subpartition by range(c2)(partition p0(subpartition p0_r1 values less than (100),subpartition p0_r2 values less than (200),subpartition p0_r3 values less than (300)),partition p1(subpartition p1_r1 values less than (100),subpartition p1_r2 values less than (200),subpartition p1_r3 values less than (300)),partition p2(subpartition p2_r1 values less than (100),subpartition p2_r2 values less than (200),subpartition p2_r3 values less than (300)));
+ob1.oblog.next;
+
+alter table t_hash_range1 drop subpartition p2_r1;
+ob1.oblog.next;
+
+# add subpartition
+alter table t_hash_range1 modify partition p1 add subpartition p1_r4 values less than (400);
+ob1.oblog.next;
+insert into t_hash_range1 values (0, 399, 0);
+ob1.oblog.next;
+
+# 连续在不同一级分区增删二级分区
+alter table t_hash_range1 modify partition p0 add subpartition p0_r4 values less than (500);
+alter table t_hash_range1 modify partition p2 add subpartition p2_r4 values less than (600);
+ob1.oblog.next;
+ob1.oblog.next;
+insert into t_hash_range1 values (2, 499, 1);
+ob1.oblog.next;
+insert into t_hash_range1 values (3, 599, 2);
+ob1.oblog.next;
+
+alter table t_hash_range1 drop subpartition p0_r4;
+alter table t_hash_range1 drop subpartition p2_r4;
+ob1.oblog.next;
+ob1.oblog.next;
+
+# 构造覆盖所有分区的事务
+insert into t_hash_range1 values (1, 99, 1);
+ob1.oblog.next;
+insert into t_hash_range1 values (1, 199, 1);
+ob1.oblog.next;
+insert into t_hash_range1 values (1, 299, 1);
+ob1.oblog.next;
+insert into t_hash_range1 values (2, 199, 2);
+ob1.oblog.next;
+insert into t_hash_range1 values (2, 99, 2);
+ob1.oblog.next;
+insert into t_hash_range1 values (2, 299, 2);
+ob1.oblog.next;
+insert into t_hash_range1 values (3, 99, 3);
+ob1.oblog.next;
+insert into t_hash_range1 values (3, 199, 3);
+ob1.oblog.next;
+insert into t_hash_range1 values (3, 299, 3);
+ob1.oblog.next;
+
+# drop subpartition 删除多个分区
+alter table t_hash_range1 drop subpartition p0_r1, p0_r2;
+ob1.oblog.next;
+
+####################################################################
+#################  3. hash-list   ##################################
+#create table t_hash_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1)
+#subpartition by list (c2)
+#(
+#  partition p0
+#  (
+#    subpartition p0_l0 values (1,2,3,4,5),
+#    subpartition p0_l1 values (6,7,8,9,10)
+#  ),
+#  partition p1
+#  (
+#    subpartition p1_l0 values (1,2,3,4,5),
+#    subpartition p1_l1 values (6,7,8,9,10)
+#  )
+#);
+
+create table t_hash_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by hash(c1) subpartition by list (c2) (partition p0 (subpartition p0_l0 values (1,2,3,4,5),subpartition p0_l1 values (6,7,8,9,10)), partition p1 (subpartition p1_l0 values (1,2,3,4,5),subpartition p1_l1 values (6,7,8,9,10)));
+ob1.oblog.next;
+alter table t_hash_list1 modify partition p1 add subpartition p1_l4 values (11,12,13,14,15);
+ob1.oblog.next;
+insert into t_hash_list1 values (1, 11, 2);
+ob1.oblog.next;
+alter table t_hash_list1 drop subpartition p1_l1;
+ob1.oblog.next;
+
+
+# 覆盖所有分区的数据
+insert into t_hash_list1 values (2, 1, 1);
+ob1.oblog.next;
+insert into t_hash_list1 values (2, 6, 3);
+ob1.oblog.next;
+insert into t_hash_list1 values (3, 2, 2);
+ob1.oblog.next;
+
+####################################################################
+#################  4. range-hash   ##################################
+#create table t_range_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range(c1)
+#subpartition by hash(c2)
+#(
+#  partition p0 values less than (100)
+#  (
+#    subpartition p0_h1,
+#    subpartition p0_h2,
+#    subpartition p0_h3
+#  ),
+#  partition p1 values less than (200)(
+#    subpartition p1_h1,
+#    subpartition p1_h2,
+#    subpartition p1_h3
+#  ),
+#  partition p2 values less than (300)
+#  (
+#    subpartition p2_h1,
+#    subpartition p2_h2
+#  )
+#);
+
+create table t_range_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range(c1) subpartition by hash(c2)(partition p0 values less than (100)(subpartition p0_h1,subpartition p0_h2,subpartition p0_h3),partition p1 values less than (200)(subpartition p1_h1,subpartition p1_h2,subpartition p1_h3), partition p2 values less than (300)(subpartition p2_h1,subpartition p2_h2));
+ob1.oblog.next;
+alter table t_range_hash1 add partition p4 values less than (500) (subpartition p4_h1,subpartition p4_h2,subpartition p4_h3);
+ob1.oblog.next;
+alter table t_range_hash1 drop partition p0;
+ob1.oblog.next;
+
+# 覆盖所有分区的数据
+insert into t_range_hash1 values (99, 1, 1);
+ob1.oblog.next;
+insert into t_range_hash1 values (199, 2, 1);
+ob1.oblog.next;
+insert into t_range_hash1 values (240, 1, 1);
+ob1.oblog.next;
+insert into t_range_hash1 values (270, 2, 1);
+ob1.oblog.next;
+insert into t_range_hash1 values (360, 1, 1);
+ob1.oblog.next;
+insert into t_range_hash1 values (490, 2, 1);
+ob1.oblog.next;
+
+####################################################################
+#################  5. range-range   ##################################
+#create table t_range_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range(c1)
+#subpartition by range (c2)
+#(
+#  partition p0 values less than (100)
+#  (
+#    subpartition p0_r1 values less than (100),
+#    subpartition p0_r2 values less than (200)
+#  ),
+#  partition p1 values less than (200)
+#  (
+#    subpartition p1_r1 values less than (100),
+#    subpartition p1_r2 values less than (200)
+#  )
+#);
+
+create table t_range_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range(c1) subpartition by range (c2) (partition p0 values less than (100)(subpartition p0_r1 values less than (100),subpartition p0_r2 values less than (200)),partition p1 values less than (200) (subpartition p1_r1 values less than (100),subpartition p1_r2 values less than (200)));
+ob1.oblog.next;
+alter table t_range_range1 add partition p4 values less than (400) (subpartition p4_r1 values less than (100),subpartition p4_r2 values less than (200));
+ob1.oblog.next;
+alter table t_range_range1 drop partition p0;
+ob1.oblog.next;
+alter table t_range_range1 modify partition p1 add subpartition p1_r4 values less than (400);
+ob1.oblog.next;
+insert into t_range_range1 values (80, 365, 99);
+ob1.oblog.next;
+alter table t_range_range1 drop subpartition p1_r1;
+ob1.oblog.next;
+
+# 覆盖所有分区的数据
+insert into t_range_range1 values (150, 190, 150);
+ob1.oblog.next;
+insert into t_range_range1 values (240, 88, 240);
+ob1.oblog.next;
+insert into t_range_range1 values (360, 199, 360);
+ob1.oblog.next;
+
+alter table t_range_range1 modify partition p1 add subpartition p1_r5 values less than (500);
+ob1.oblog.next;
+insert into t_range_range1 values (150, 499, 1);
+ob1.oblog.next;
+alter table t_range_range1 modify partition p4 add subpartition p4_r3 values less than (300);
+ob1.oblog.next;
+insert into t_range_range1 values (399, 299, 399);
+ob1.oblog.next;
+alter table t_range_range1 drop subpartition p1_r5;
+ob1.oblog.next;
+alter table t_range_range1 drop subpartition p4_r3;
+ob1.oblog.next;
+
+####################################################################
+#################  6. range-list   ##################################
+# create table t_range_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range (c1)
+# subpartition by list(c2)
+# (
+#   partition p0 values less than (100)
+#   (
+#     subpartition p0_l1 values (1,2,3,4,5),
+#     subpartition p0_l2 values (6,7,8,9,10)
+#   ),
+#   partition p1 values less than (200)
+#   (
+#     subpartition p1_l1 values (1,2,3,4,5),
+#     subpartition p1_l2 values (6,7,8,9,10)
+#     )
+# );
+
+create table t_range_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by range (c1) subpartition by list(c2) (partition p0 values less than (100) (subpartition p0_l1 values (1,2,3,4,5),subpartition p0_l2 values (6,7,8,9,10)),partition p1 values less than (200)(subpartition p1_l1 values (1,2,3,4,5),subpartition p1_l2 values (6,7,8,9,10)));
+ob1.oblog.next;
+alter table t_range_list1 add partition p2 values less than (300) (subpartition p2_l1 values (1,2,3,4,5), subpartition p2_l2 values (6,7,8,9,10));
+ob1.oblog.next;
+alter table t_range_list1 drop subpartition P2_L2;
+ob1.oblog.next;
+alter table t_range_list1 modify partition P2 add subpartition P2_L3 values (11,12,13,14);
+ob1.oblog.next;
+insert into t_range_list1 values (240, 12, 240);
+ob1.oblog.next;
+alter table t_range_list1 drop partition p0;
+ob1.oblog.next;
+
+# 覆盖所有分区的数据
+insert into t_range_list1 values (99, 1, 240);
+ob1.oblog.next;
+insert into t_range_list1 values (140, 3, 240);
+ob1.oblog.next;
+insert into t_range_list1 values (160, 6, 240);
+ob1.oblog.next;
+insert into t_range_list1 values (210, 4, 210);
+ob1.oblog.next;
+insert into t_range_list1 values (270, 14, 270);
+ob1.oblog.next;
+
+alter table t_range_list1 modify partition p1 add subpartition p1_l3 values (11,12,13);
+ob1.oblog.next;
+insert into t_range_list1 values (101, 12, 1);
+ob1.oblog.next;
+alter table t_range_list1 modify partition p2 add subpartition p2_l4 values (6,7,8,9,10);
+ob1.oblog.next;
+insert into t_range_list1 values (270, 9, 270);
+ob1.oblog.next;
+alter table t_range_list1 drop subpartition p1_l3;
+ob1.oblog.next;
+alter table t_range_list1 drop subpartition p2_l4;
+ob1.oblog.next;
+
+####################################################################
+#################  7. list-hash   ##################################
+#create table t_list_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1)
+#subpartition by hash(c2)
+#(
+#  partition p0 values (1,2,3,4,5)
+#  (
+#    subpartition p0_h1,
+#    subpartition p0_h2
+#  ),
+#  partition p1 values (6,7,8,9,10)
+#  (
+#    subpartition p1_h1,
+#    subpartition p1_h2
+#  )
+#);
+create table t_list_hash1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1) subpartition by hash(c2) (partition p0 values (1,2,3,4,5)(subpartition p0_h1,subpartition p0_h2),partition p1 values (6,7,8,9,10)(subpartition p1_h1,subpartition p1_h2));
+ob1.oblog.next;
+alter table t_list_hash1 add partition p4 values (21,22,23,24,25) (subpartition p4_h1,subpartition p4_h2,subpartition p4_h3);
+ob1.oblog.next;
+alter table t_list_hash1 drop partition p0;
+ob1.oblog.next;
+
+# 覆盖所有分区的数据
+
+insert into t_list_hash1 values (6, 1, 1);
+ob1.oblog.next;
+insert into t_list_hash1 values (7, 2, 1);
+ob1.oblog.next;
+insert into t_list_hash1 values (21, 1, 1);
+ob1.oblog.next;
+insert into t_list_hash1 values (22, 2, 1);
+ob1.oblog.next;
+insert into t_list_hash1 values (25, 3, 1);
+ob1.oblog.next;
+
+####################################################################
+#################  8. list-range   ##################################
+#create table t_list_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1)
+#subpartition by range(c2)
+#(
+#  partition p0 values (1,2,3,4,5)
+#  (
+#    subpartition p0_r1 values less than (100),
+#    subpartition p0_r2 values less than (200)
+#  ),
+#  partition p1 values (6,7,8,9,10)
+#  (
+#    subpartition p1_r1 values less than (100),
+#    subpartition p1_r2 values less than (200)
+#  )
+#);
+
+create table t_list_range1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1) subpartition by range(c2) (partition p0 values (1,2,3,4,5)(subpartition p0_r1 values less than (100),subpartition p0_r2 values less than (200)),partition p1 values (6,7,8,9,10)(subpartition p1_r1 values less than (100),subpartition p1_r2 values less than (200)));
+ob1.oblog.next;
+# 添加一级分区，效果在后面验证
+alter table t_list_range1 add partition p4 values (21,22,23,24,25) (subpartition p4_r1 values less than (100),subpartition p4_r2 values less than (200),subpartition p4_r3 values less than (300));
+ob1.oblog.next;
+alter table t_list_range1 drop partition p0;
+ob1.oblog.next;
+alter table t_list_range1 modify partition p1 add subpartition p1_r4 values less than(400);
+ob1.oblog.next;
+insert into t_list_range1 values (6, 365, 6);
+ob1.oblog.next;
+alter table t_list_range1 drop subpartition p1_r1;
+ob1.oblog.next;
+
+# 覆盖所有分区的数据
+insert into t_list_range1 values (6, 99, 6);
+ob1.oblog.next;
+insert into t_list_range1 values (8, 199, 8);
+ob1.oblog.next;
+insert into t_list_range1 values (10, 399, 10);
+ob1.oblog.next;
+insert into t_list_range1 values (21, 99, 21);
+ob1.oblog.next;
+insert into t_list_range1 values (23, 199, 23);
+ob1.oblog.next;
+insert into t_list_range1 values (25, 299, 25);
+ob1.oblog.next;
+
+alter table t_list_range1 modify partition p1 add subpartition p1_r3 values less than (500);
+ob1.oblog.next;
+insert into t_list_range1 values (8, 499, 1);
+ob1.oblog.next;
+alter table t_list_range1 modify partition p4 add subpartition p4_r4 values less than (400);
+ob1.oblog.next;
+insert into t_list_range1 values (23, 399, 270);
+ob1.oblog.next;
+alter table t_list_range1 drop subpartition p1_r3;
+ob1.oblog.next;
+alter table t_list_range1 drop subpartition p4_r4;
+ob1.oblog.next;
+
+####################################################################
+#################  9. list-list   ##################################
+#create table t_list_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1)
+#subpartition by list(c2)
+#(
+#  partition p0 values (1,2,3,4,5)
+#  (
+#    subpartition p0_l1 values (1,2,3,4,5),
+#    subpartition p0_l2 values (6,7,8,9,10),
+#    subpartition p0_l3 values (11,12,13,14,15)
+#  ),
+#  partition p1 values (6,7,8,9,10)
+#  (
+#    subpartition p1_l1 values (1,2,3,4,5),
+#    subpartition p1_l2 values (6,7,8,9,10),
+#    subpartition p1_l3 values (11,12,13,14,15)
+#  ),
+#  partition p2 values (11,12,13,14,15)
+#  (
+#    subpartition p2_l1 values (1,2,3,4,5),
+#    subpartition p2_l2 values (6,7,8,9,10),
+#    subpartition p2_l3 values (11,12,13,14,15)
+#  )
+#);
+create table t_list_list1 (c1 int, c2 int, c3 int, primary key (c1, c2)) partition by list (c1) subpartition by list(c2) (partition p0 values (1,2,3,4,5)(subpartition p0_l1 values (1,2,3,4,5),subpartition p0_l2 values (6,7,8,9,10),subpartition p0_l3 values (11,12,13,14,15)),partition p1 values (6,7,8,9,10)(subpartition p1_l1 values (1,2,3,4,5),subpartition p1_l2 values (6,7,8,9,10),subpartition p1_l3 values (11,12,13,14,15)),partition p2 values (11,12,13,14,15)(subpartition p2_l1 values (1,2,3,4,5),subpartition p2_l2 values (6,7,8,9,10),subpartition p2_l3 values (11,12,13,14,15)));
+ob1.oblog.next;
+
+connection conn_sys;
+let $table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't_list_list1' and tenant_id=$tenant_id and database_id=$database_id, table_id, 1);
+# echo $table_id;
+
+# drop subpartition 删除一个分区
+# 物理分区id的生成规则：(((uint64_t)part_idx << OB_PART_ID_SHIFT) | sub_part_idx) | OB_TWOPART_BEGIN_MASK
+# OB_TWOPART_BEGIN_MASK：1152921504875282432 为 (((uint64_t)0x1) << 28 |((uint64_t) 0x1 << 60))
+let $partition_id = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p2_l1'), partition_id, 1);
+connection conn_oracle_obtest;
+alter table t_list_list1 drop subpartition p2_l1;
+ob1.oblog.next;
+
+# add subpartition
+alter table t_list_list1 modify partition p1 add subpartition p1_l4 values (16,17,18,19,20);
+ob1.oblog.next;
+insert into t_list_list1 values (6, 16, 6);
+ob1.oblog.next;
+
+# 连续在不同一级分区增删二级分区
+alter table t_list_list1 modify partition p0 add subpartition p0_l4 values (16,17,18,19,20);
+alter table t_list_list1 modify partition p2 add subpartition p2_l4 values (16,17,18,19,20);
+ob1.oblog.next;
+ob1.oblog.next;
+insert into t_list_list1 values (1, 17, 1);
+ob1.oblog.next;
+insert into t_list_list1 values (11, 20, 11);
+ob1.oblog.next;
+
+connection conn_sys;
+let $partition_id_1 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p0_l4'), partition_id, 1);
+let $partition_id_2 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p2_l4'), partition_id, 1);
+connection conn_oracle_obtest;
+alter table t_list_list1 drop subpartition p0_l4;
+alter table t_list_list1 drop subpartition p2_l4;
+ob1.oblog.next;
+ob1.oblog.next;
+alter table t_list_list1 modify partition p0 add subpartition p0_l4 values (16,17,18,19,20);
+ob1.oblog.next;
+insert into t_list_list1 values (1, 17, 1);
+ob1.oblog.next;
+
+alter table t_list_list1 add partition p4 values (21,22,23,24,25) (subpartition p4_l1 values (1,2,3,4,5),subpartition p4_l2 values (6,7,8,9,10),subpartition p4_l3 values (11,12,13,14,15));
+ob1.oblog.next;
+
+# drop subpartition 删除多个分区
+connection conn_sys;
+let $partition_id_3 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p0_l1'), partition_id, 1);
+let $partition_id_4 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p0_l2'), partition_id, 1);
+let $partition_id_5 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p0_l3'), partition_id, 1);
+let $partition_id_6 = query_get_value(select part_id << 32 | sub_part_id | 1152921504875282432 as partition_id from (select part_id, sub_part_id from __all_virtual_sub_part where table_id = $table_id and sub_part_name = 'p0_l4'), partition_id, 1);
+connection conn_oracle_obtest;
+alter table t_list_list1 drop subpartition p0_l1, p0_l2;
+ob1.oblog.next;
+
+#echo $partition_id_3;
+#echo $partition_id_4;
+
+
+alter table t_list_list1 drop partition p0;
+ob1.oblog.next;
+
+# 构造覆盖所有分区的事务
+insert into t_list_list1 values (6, 1, 6);
+ob1.oblog.next;
+insert into t_list_list1 values (7, 7, 7);
+ob1.oblog.next;
+insert into t_list_list1 values (8, 13, 8);
+ob1.oblog.next;
+insert into t_list_list1 values (9, 15, 9);
+ob1.oblog.next;
+insert into t_list_list1 values (12, 9, 6);
+ob1.oblog.next;
+insert into t_list_list1 values (15, 14, 6);
+ob1.oblog.next;
+insert into t_list_list1 values (21, 3, 6);
+ob1.oblog.next;
+insert into t_list_list1 values (23, 6, 6);
+ob1.oblog.next;
+insert into t_list_list1 values (25, 11, 6);
+ob1.oblog.next;
+
+ob1.oblog.stop;

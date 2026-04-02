@@ -24,6 +24,7 @@
 #include "common/row/ob_row_iterator.h"
 #include "storage/access/ob_dml_param.h"
 #include "common/storage/ob_io_device.h"
+#include "share/external_table/ob_hdfs_storage_info.h"
 #include "sql/ob_sql_context.h"
 
 namespace oceanbase
@@ -67,6 +68,7 @@ public:
 private:
   common::ObStorageType storage_type_;
   share::ObBackupStorageInfo backup_storage_info_;
+  share::ObHDFSStorageInfo hdfs_storage_info_;
   common::ObObjectStorageInfo *access_info_;
   ObIODevice* device_handle_;
   ObIOFd fd_;

@@ -1,0 +1,70 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试
+#(1)failover过程中，如果用户租户回滚点回滚到索引创建点之前，则需要将索引先drop掉，然后进行failover;
+#(2)failover的flashback过程中，能执行fo的DDL，不能执行其他DDL；
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+sleep 3;
+ob2.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set debug_sync_timeout = '100000s';
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 12;
+create index t_index on t(c2) global partition by hash(c2) partitions 3;
+let $data_table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't', table_id, 1);
+let $table_id1 = deploy_get_value(ob1.select select table_id from __all_virtual_table where data_table_id = $data_table_id, table_id, 1); 
+create index t_index2 on t(c2) local;
+let $table_id2 = deploy_get_value(ob1.select select table_id from __all_virtual_table where data_table_id = $data_table_id and table_id != $table_id1, table_id, 1); 
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 360;
+
+ob2.mysql alter system set debug_sync_timeout = '100000s';
+ob2.mysql set ob_global_debug_sync = 'END_SEND_FLASHBACK_INNER_RPC wait_for signal';
+ob1.force_stop;
+sleep 3;
+connection tt2_conn;
+set ob_query_timeout = 300000000;
+alter system set _mini_merge_concurrency = 16;
+alter system set _ob_minor_merge_schedule_interval = '3s';
+send alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+ob2.check_until_timeout select column_value from __all_core_table where table_name like "%cluster%" and column_name like "%switchover_status%", 8, 100;
+##修改索引的创建时间：
+sleep 3;
+ob_connect(sys2_conn, ob2.z1.obs0, root,,oceanbase,,USE_OB_CONNECTOR);
+connection sys2_conn;
+alter system set _mini_merge_concurrency = 4;
+alter system set _ob_minor_merge_schedule_interval = '20s';
+sleep 10;
+alter system change tenant tenant_id = 1001;
+select effective_tenant_id();
+let $now = deploy_get_value(ob2.select select time_to_usec(now()) as now, now, 1);
+--disable_query_log
+eval update __all_ori_schema_version set building_snapshot = $now where table_id = ($table_id1 <<40>>40); 
+eval update __all_ori_schema_version set building_snapshot = $now where table_id = ($table_id2 <<40>>40); 
+--enable_query_log
+select count(*) from __all_ori_schema_version where building_snapshot = 0;
+ob2.mysql set ob_global_debug_sync = 'now signal signal';
+##验证结果
+ob2.check_until_timeout select count(*) from __all_virtual_table where data_table_id = $data_table_id, 0, 10;

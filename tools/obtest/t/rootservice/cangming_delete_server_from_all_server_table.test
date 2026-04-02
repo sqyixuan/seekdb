@@ -1,0 +1,66 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    test cancel delete server
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot;
+
+
+let $ip = deploy_get_value(ob1.z1.obs1.ip);
+let $mysql_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+
+# case1: delete z3.obs0
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port', unit_id, 1); 
+ob1.mysql alter system delete server '$z3_obs0_ip:$z3_obs0_port'; 
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+# z3.obs0 is in deleting status
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port' and status = 'deleting', 1, 30;
+# unit has been migrated
+ob1.check_until_timeout select count(*)> 0 from oceanbase.__all_unit where unit_id = '$unit_id' and migrate_from_svr_port != '0', 1, 60;
+# wait for migrating all partitions in z3.obs0
+ob1.check_until_timeout select migrate_from_svr_port from oceanbase.__all_unit where unit_id = '$unit_id', 0, 500; 
+# z3.obs0 is empty and its heartbeat will be stopped by rs
+# z3.obs0 is kicked off from __all_server
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port', 0, 100;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="SUCCESS" ,1,30;
+
+#TODO: need support cancel DR task when cancel delete server in 4.0
+#case2: delete z2.obs0 and cancel delete before all units are migrated
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port', unit_id, 1); 
+ob1.mysql alter system delete server '$z2_obs0_ip:$z2_obs0_port'; 
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+# z2.obs0 is in deleting status
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port' and status = 'deleting', 1, 10;
+# unit is in migration
+ob1.check_until_timeout select count(*) >= 1 from oceanbase.__all_unit where unit_id = '$unit_id' and migrate_from_svr_ip != '', 1, 30;
+# cancel delete server
+ob1.mysql alter system cancel delete server '$z2_obs0_ip:$z2_obs0_port';
+# z2.obs0 is in active status
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port' and status = 'active', 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="FAILED", 1, 30;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_unit where unit_id = '$unit_id' and migrate_from_svr_ip = '', 1, 30;
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_ls_replica_task, 0, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port', 1, 120;
+ob1.check_until_timeout select count(*) = 1 from oceanbase.__all_unit where unit_id = '$unit_id' and svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port', 1, 120;
+
+#case3: delete z2.obs0 and cancel delete after all units are migrated
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port', unit_id, 1); 
+ob1.mysql alter system delete server '$z2_obs0_ip:$z2_obs0_port'; 
+let $job_id = deploy_get_value(ob1.select select job_id from oceanbase.__all_rootservice_job where job_type="DELETE_SERVER" and job_status="INPROGRESS",job_id,1);
+# z2.obs0 is in deleting status
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port' and status = 'deleting', 1, 10;
+# wait for migrating all ls
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where unit_id = '$unit_id' and migrate_from_svr_ip = '', 1, 500; 
+# cancel delete server
+ob1.mysql alter system cancel delete server '$z2_obs0_ip:$z2_obs0_port';
+# z2.obs0 is in active status
+ob1.mysql_p select count(*) from oceanbase.__all_server where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port' and status = 'active';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_rootservice_job where job_id = $job_id and job_status="FAILED" ,1,30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.CDB_OB_LS_LOCATIONS where svr_ip = '$z2_obs0_ip' and svr_port = '$z2_obs0_port', 1, 120;

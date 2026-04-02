@@ -1,0 +1,65 @@
+# owner: rongxuan.lc
+# description: 本case是为了……
+##case4
+##fo过程中，索引在主库上生效，并且随着主表数据一起拷贝到备库上来了。 但是备库还没来得及同步到这个生效动作就发生了切换；
+#要求底层能把这个索引删掉，不影响切换；
+##卡住备库的拷贝；
+#在主库上建表等备库回放出来；卡住备库schema回放；
+#在主库上建索引；等生效后，松开备库副本拷贝；
+#
+
+ob1=OBI(cluster=1,proxy_num=0);
+ob2=OBI(cluster=1,leaderob=ob1,proxy_num=0);
+ob1.reboot;
+sleep 3;
+ob2.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 3;
+
+ob_connect(tt2_conn, ob2.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+ob2.mysql alter system set debug_sync_timeout = '100000s';
+ob1.check_until_timeout select count(*) from v\$ob_cluster where switchover_status='TO STANDBY', 1, 360;
+##在主库建表
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+##验证备库schema回放成功；
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) schema_version from __all_virtual_ddl_operation where tenant_id = 1001, schema_version, 1);
+ob2.check_until_timeout select max(schema_version) from __all_virtual_ddl_operation where tenant_id = 1001, $schema_version, 30;
+##卡住备库回放；
+ob2.mysql set ob_global_debug_sync = 'END_PROCESS_USER_SCHEMA wait_for continue_signal';
+sleep 4;
+##在主库上创建索引
+create index t_index on t(c2) local;
+ob2.check_until_timeout select count(*) from __all_virtual_clog_stat where table_id = $table_id, 0, 4;
+##验证主表复制成功；
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't', table_id, 1);
+ob2.check_until_timeout select count(*) from __all_virtual_clog_stat where table_id = $table_id and is_in_sync = 1, 10, 60;
+ob1.force_stop;
+##flashback
+
+ob2.mysql set ob_global_debug_sync = 'now signal continue_signal';
+connection tt2_conn;
+set ob_query_timeout = 30000000;
+alter system ACTIVATE PHYSICAL STANDBY CLUSTER;
+
+#ob2.z1.obs0.check_log_until_success -c "need to drop index(index_id=1100611139453778";

@@ -1,0 +1,86 @@
+#
+#owner: 千溪
+#owner group: liboblog
+# 测试点:
+# 提前解行锁场景：
+# (1) 单机单分区事务
+# (2) 单机多分区事务[TODO]
+##
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+#在zone1上建立连接
+let $l_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+connection conn1;
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+## case:检查表结构
+set ob_query_timeout = 100000000;
+set ob_trx_timeout = 100000000;
+## create table
+create table elr_trans_test(a int primary key, b int);
+desc elr_trans_test;
+insert into elr_trans_test values(1, 1);
+sleep 2;
+## 打开提前解行锁
+set global ob_early_lock_release = 1;
+disconnect conn1;
+
+## 事务模块错误注入
+ob1.mysql alter system set_tp tp_no = 114, error_code = 4012, frequency = 1;
+
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+connect (conn2,$l_ip,root@obtest,,test,$l_port);
+connect (conn3,$l_ip,root@sys,,oceanbase,$l_port);
+
+### 第一个session写入T1
+connection conn1;
+rollback;
+set autocommit = 0;
+update elr_trans_test set b = b + 10 where a = 1;
+## 发送commit，但是mytest.jar不等待
+send commit;
+
+### 第二个session写入T2，且T2的前驱为T1, T2是提前解行锁单机单分区事务
+connection conn2;
+show variables like 'ob_early_lock_release';
+rollback;
+set autocommit = 0;
+sleep 1;
+update elr_trans_test set b = b - 7 where a = 1;
+select * from elr_trans_test;
+
+connection conn3;
+# 检查前驱
+select count(1) from oceanbase.__all_virtual_trans_stat where prev_trans_count > 0;
+
+## 关闭事务模块错误注入
+ob1.mysql alter system set_tp tp_no = 114, error_code = 4012, frequency = 0;
+
+connection conn2;
+commit;
+
+connection conn1;
+## send commit
+reap;
+select * from elr_trans_test;
+
+ob1.z1.obs0.count_log 'elr trans success';
+
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=obtest.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+ob1.oblog.next_dml;
+ob1.oblog.next_dml;
+ob1.oblog.next_dml;
+
+ob1.oblog.check_log "commit_elr_trans";
+#drop table elr_trans_test;
+
+ob1.oblog.stop;

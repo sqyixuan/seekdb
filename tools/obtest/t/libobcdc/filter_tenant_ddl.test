@@ -1,0 +1,228 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  1.配置白名单，测试是否可以过滤不位于白名单ddl语句
+#  2.配置租户白名单oblog_tt1，构建oblog_tt1, oblog_tt2的ddl语句，预期oblog_tt2的ddl语句均被过滤掉
+#
+##
+
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+--disable_warnings
+drop tenant if exists oblog_tt1;
+--disable_warnings
+drop tenant if exists oblog_tt2;
+--disable_warnings
+drop resource pool if exists oblog_pool1;
+--disable_warnings
+drop resource pool if exists oblog_pool2;
+--disable_warnings
+drop resource unit if exists oblog_box;
+--disable_warnings
+drop database if exists oblog_db1;
+--disable_warnings
+drop database if exists oblog_db2;
+
+create resource unit oblog_box max_cpu=2, memory_size='10G';
+create resource pool oblog_pool1 unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+create resource pool oblog_pool2 unit = 'oblog_box', unit_num = 1, zone_list = ('z1');
+# create tenant, 创建oblog_tt1、oblog_tt2租户
+create tenant oblog_tt1 replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool1') set ob_tcp_invited_nodes='%';
+create tenant oblog_tt2 replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool2') set ob_tcp_invited_nodes='%';
+
+# sleep 1秒，保证越过当前秒
+sleep 1;
+let $start_tstamp_1 = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 启动liboblog
+ob1.oblog.set_start_tstamp $start_tstamp_1;
+ob1.oblog.gen_conf tb_white_list=sys.*.*|oblog_tt1.*.*|oblog_tt2.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# sleep 1秒，保证越过当前秒
+# 记录创建租户的某个时间戳
+let $start_tstamp_2 = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+################### 租户oblog_tt1 ###################
+# 在oblog_tt1租户下操作
+connect (oblog_conn_tt1,$ip,root@oblog_tt1,,oceanbase,$port);
+connection oblog_conn_tt1;
+
+let $TT1_DDL_COUNT=0;
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+
+# 创建表t1
+use oblog_db1;
+create table oblog_db1.t1 (pk int primary key);
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+
+# alter table t2: 增加列、删除列，rename
+alter table oblog_db1.t1  ADD COLUMN c1 int;
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+alter table oblog_db1.t1  ADD COLUMN c2 int;
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+alter table oblog_db1.t1 drop COLUMN c2;
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+
+################### 租户oblog_tt2 ###################
+# 在oblog_tt2租户下操作
+connect (oblog_conn_tt2,$ip,root@oblog_tt2,,oceanbase,$port);
+connection oblog_conn_tt2;
+
+# 创建database 2
+create database oblog_db2;
+ob1.oblog.next;
+
+# 创建表t2
+use oblog_db2;
+create table oblog_db2.t2 (pk int primary key);
+ob1.oblog.next;
+
+################### 租户oblog_tt1 ###################
+# 在oblog_tt1租户下操作
+connect (oblog_conn_tt1,$ip,root@oblog_tt1,,oceanbase,$port);
+connection oblog_conn_tt1;
+
+# drop表t1
+drop table oblog_db1.t1;
+ob1.oblog.next;
+inc $TT1_DDL_COUNT;
+
+################### 租户oblog_tt2 ###################
+# 在oblog_tt2租户下操作
+connect (oblog_conn_tt2,$ip,root@oblog_tt2,,oceanbase,$port);
+connection oblog_conn_tt2;
+
+# alter table t2: 增加列、删除列，rename
+alter table oblog_db2.t2  ADD COLUMN c1 int;
+ob1.oblog.next;
+alter table oblog_db2.t2  ADD COLUMN c2 int;
+ob1.oblog.next;
+alter table oblog_db2.t2 drop COLUMN c2;
+ob1.oblog.next;
+
+# drop表t2
+drop table oblog_db2.t2;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+################### 下面验证liboblog DDL白名单###################
+
+# 从历史位置启动，租户oblog_tt2不在白名单
+ob1.oblog.set_start_tstamp $start_tstamp_1;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt1.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $count = $TT1_DDL_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next;
+  dec $count;
+}
+# stop liboblog
+ob1.oblog.stop;
+
+################### 下面验证liboblog 启动位点在创建租户之后###################
+ob1.oblog.set_start_tstamp $start_tstamp_2;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt1.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# create teannt tt1这条DDL在启动位点之前，所以忽略
+# 因为DDL白名单，tt1的所有ddl均输出（除create tenant tt1)
+# tt2 DDL语句均被过滤掉
+echo $TT1_DDL_COUNT;
+let $count = $TT1_DDL_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next;
+  dec $count;
+}
+# stop liboblog
+ob1.oblog.stop;
+
+###################    Filter sys tenant ####################
+ob1.oblog.set_start_tstamp $start_tstamp_2;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt1.database1.table* enable_filter_sys_tenant=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 配置完整的白名单，验证匹配租户信息
+echo $TT1_DDL_COUNT;
+let $count = $TT1_DDL_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next;
+  dec $count;
+}
+ob1.oblog.check_log "REASON: enable_filter_sys_tenant=true";
+
+###################    配置白名单   ####################
+ob1.oblog.set_start_tstamp $start_tstamp_2;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt1.database1.table* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 配置完整的白名单，验证匹配租户信息
+echo $TT1_DDL_COUNT;
+let $count = $TT1_DDL_COUNT;
+while ($count>0)
+{
+  ob1.oblog.next;
+  dec $count;
+}
+
+################### 下面验证删除租户###################
+# drop tenant DDL属于sys租户的DDL，
+# 如果白名单没有sys租户，则drop tenant不会输出，
+# 如果白名单有sys租户，会输出所有的drop tenant DDL
+#
+connection oblog_conn_sys;
+set @@recyclebin = off;
+
+drop tenant oblog_tt2 force;
+# 删除oblog_tt1租户
+drop tenant oblog_tt1 force;
+# 输出所有drop tenant DDL
+ob1.oblog.next;
+ob1.oblog.next;
+
+# create oblog_tt1
+create tenant oblog_tt1 replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool1') set ob_tcp_invited_nodes='%';
+ob1.oblog.next;
+
+sleep 3;
+drop tenant oblog_tt1 force;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 清理数据
+--disable_warnings
+drop resource pool if exists oblog_pool1;
+--disable_warnings
+drop resource pool if exists oblog_pool2;
+--disable_warnings
+drop resource unit if exists oblog_box;
+--disable_warnings
+drop database if exists oblog_db1;
+--disable_warnings
+drop database if exists oblog_db2;

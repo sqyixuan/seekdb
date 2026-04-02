@@ -2384,8 +2384,7 @@ int ObLSTabletService::create_tablet(
     const bool has_cs_replica,
     const ObTabletID &split_src_tablet_id,
     const uint64_t data_format_version,
-    ObTabletHandle &tablet_handle,
-    const share::ObForkTabletInfo &fork_info)
+    ObTabletHandle &tablet_handle)
 {
   int ret = OB_SUCCESS;
   UNUSED(data_format_version);
@@ -2415,7 +2414,7 @@ int ObLSTabletService::create_tablet(
       LOG_ERROR("new tablet is null", K(ret), KP(tablet), KP(allocator), K(tablet_handle));
     } else if (OB_FAIL(tablet->init_for_first_time_creation(*allocator, ls_id, tablet_id, data_tablet_id,
         create_scn, snapshot_version, create_tablet_schema, need_create_empty_major_sstable, clog_checkpoint_scn, mds_checkpoint_scn,
-        is_split_dest_tablet, split_src_tablet_id, micro_index_clustered, need_generate_cs_replica_cg_array, has_cs_replica, freezer, fork_info))) {
+        is_split_dest_tablet, split_src_tablet_id, micro_index_clustered, need_generate_cs_replica_cg_array, has_cs_replica, freezer))) {
       LOG_WARN("failed to init tablet", K(ret), K(ls_id), K(tablet_id), K(data_tablet_id),
           K(create_scn), K(snapshot_version), K(create_tablet_schema));
     } else if (OB_FAIL(tablet->get_updating_tablet_pointer_param(param))) {
@@ -4966,42 +4965,39 @@ int ObLSTabletService::insert_vector_index_rows(
     }
   } else if (table_param.is_hybrid_vector_index_log()) {
     const blocksstable::ObDmlFlag dml_flag = run_ctx.dml_flag_;
-    ObString vec_idx_param = run_ctx.dml_param_.table_param_->get_data_table().get_vec_index_param();
-    int64_t vec_dim = run_ctx.dml_param_.table_param_->get_data_table().get_vec_dim();
-    ObPluginVectorIndexAdapterGuard adaptor_guard;
-    ObPluginVectorIndexService *vec_index_service = MTL(ObPluginVectorIndexService *);
-    if (OB_FAIL(vec_index_service->acquire_adapter_guard(run_ctx.store_ctx_.ls_id_,
-                                                        run_ctx.relative_table_.get_tablet_id(),
-                                                        ObIndexType::INDEX_TYPE_HYBRID_INDEX_LOG_LOCAL,
-                                                        adaptor_guard,
-                                                        &vec_idx_param,
-                                                        vec_dim))) {
-      LOG_WARN("fail to get ObPluginVectorIndexAdapter", K(ret), K(run_ctx.store_ctx_), K(run_ctx.relative_table_));
-    } else {
-      if (dml_flag == ObDmlFlag::DF_DELETE) {
-        const uint64_t vec_id_col_id = run_ctx.dml_param_.table_param_->get_data_table().get_vec_id_col_id();
-        const uint64_t vec_vector_col_id = run_ctx.dml_param_.table_param_->get_data_table().get_vec_vector_col_id();
-        // get vector col idx
-        int64_t vec_id_idx = OB_INVALID_INDEX;
-        int64_t vector_idx = OB_INVALID_INDEX;
-        for (int64_t i = 0; OB_SUCC(ret) && i < run_ctx.dml_param_.table_param_->get_col_descs().count(); i++) {
-          uint64_t col_id = run_ctx.dml_param_.table_param_->get_col_descs().at(i).col_id_;
-          if (col_id == vec_id_col_id) {
-            vec_id_idx = i;
-          } else if (col_id == vec_vector_col_id) {
-            vector_idx = i;
-          }
-        }
-        if (vec_id_idx == OB_INVALID_INDEX || vector_idx == OB_INVALID_INDEX) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("fail to get vec index column idxs", K(ret), K(vec_id_col_id), K(vec_vector_col_id),
-              K(vec_id_idx), K(vector_idx));
-        } else if (OB_FAIL(adaptor_guard.get_adatper()->handle_insert_incr_table_rows(rows, vec_id_idx, vector_idx, row_count))) {
-            LOG_WARN("fail to handle delete hybrid vec index log table rows", K(ret), KP(rows), K(row_count));
+    if (dml_flag == ObDmlFlag::DF_DELETE) {
+      ObString vec_idx_param = run_ctx.dml_param_.table_param_->get_data_table().get_vec_index_param();
+      int64_t vec_dim = run_ctx.dml_param_.table_param_->get_data_table().get_vec_dim();
+      const uint64_t vec_id_col_id = run_ctx.dml_param_.table_param_->get_data_table().get_vec_id_col_id();
+      const uint64_t vec_vector_col_id = run_ctx.dml_param_.table_param_->get_data_table().get_vec_vector_col_id();
+      // get vector col idx
+      int64_t vec_id_idx = OB_INVALID_INDEX;
+      int64_t vector_idx = OB_INVALID_INDEX;
+      for (int64_t i = 0; OB_SUCC(ret) && i < run_ctx.dml_param_.table_param_->get_col_descs().count(); i++) {
+        uint64_t col_id = run_ctx.dml_param_.table_param_->get_col_descs().at(i).col_id_;
+        if (col_id == vec_id_col_id) {
+          vec_id_idx = i;
+        } else if (col_id == vec_vector_col_id) {
+          vector_idx = i;
         }
       }
-      if (OB_SUCC(ret)) {
-        adaptor_guard.get_adatper()->update_can_skip(NOT_SKIP);
+      if (vec_id_idx == OB_INVALID_INDEX || vector_idx == OB_INVALID_INDEX) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("fail to get vec index column idxs", K(ret), K(vec_id_col_id), K(vec_vector_col_id),
+            K(vec_id_idx), K(vector_idx));
+      } else {
+        ObPluginVectorIndexService *vec_index_service = MTL(ObPluginVectorIndexService *);
+        ObPluginVectorIndexAdapterGuard adaptor_guard;
+        if (OB_FAIL(vec_index_service->acquire_adapter_guard(run_ctx.store_ctx_.ls_id_,
+                                                            run_ctx.relative_table_.get_tablet_id(),
+                                                            ObIndexType::INDEX_TYPE_HYBRID_INDEX_LOG_LOCAL,
+                                                            adaptor_guard,
+                                                            &vec_idx_param,
+                                                            vec_dim))) {
+          LOG_WARN("fail to get ObPluginVectorIndexAdapter", K(ret), K(run_ctx.store_ctx_), K(run_ctx.relative_table_));
+        } else if (OB_FAIL(adaptor_guard.get_adatper()->handle_insert_incr_table_rows(rows, vec_id_idx, vector_idx, row_count))) {
+          LOG_WARN("fail to handle delete hybrid vec index log table rows", K(ret), KP(rows), K(row_count));
+        }
       }
     }
   } else if (table_param.is_hybrid_vector_index_embedded()) {
@@ -6585,10 +6581,11 @@ int ObLSTabletService::get_multi_ranges_cost(
       LOG_WARN("fail to split ranges", K(ret), K(ranges));
     } else {
       ObPartitionMultiRangeSpliter spliter;
-      if (OB_FAIL(spliter.get_multi_range_size(is_splited_range ? new_ranges : ranges,
-                                               iter.get_tablet()->get_rowkey_read_info(),
-                                               *iter.table_iter(),
-                                               total_size))) {
+      if (OB_FAIL(spliter.get_multi_range_size(
+          is_splited_range ? new_ranges : ranges,
+          iter.get_tablet()->get_rowkey_read_info(),
+          *iter.table_iter(),
+          total_size))) {
         LOG_WARN("fail to get multi ranges cost", K(ret), K(ranges));
       }
     }
@@ -6605,43 +6602,36 @@ int ObLSTabletService::split_multi_ranges(
     ObArrayArray<ObStoreRange> &multi_range_split_array)
 {
   int ret = OB_SUCCESS;
-
   ObTabletTableIterator iter;
   const int64_t max_snapshot_version = INT64_MAX;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
-  } else if (OB_FAIL(get_read_tables(tablet_id,
-                                     timeout_us,
-                                     max_snapshot_version,
-                                     max_snapshot_version,
-                                     iter,
-                                     false /*allow_no_ready_read*/,
-                                     true /*need_split_src_table*/,
-                                     true /*need_split_dst_table*/))) {
+  } else if (OB_FAIL(get_read_tables(tablet_id, timeout_us, max_snapshot_version, max_snapshot_version, iter, false/*allow_no_ready_read*/, true/*need_split_src_table*/, true/*need_split_dst_table*/))) {
     LOG_WARN("fail to get all read tables", K(ret), K(tablet_id), K(max_snapshot_version));
   } else {
     ObPartitionSplitQuery split_query;
     ObSEArray<ObStoreRange, 16> new_ranges;
     const ObTabletHandle &tablet_handle = iter.get_tablet_handle();
     bool is_splited_range = false;
-    if (OB_FAIL(split_query.split_multi_ranges_if_need(
-            ranges, new_ranges, allocator, tablet_handle, is_splited_range))) {
+    if (OB_FAIL(split_query.split_multi_ranges_if_need(ranges, new_ranges,
+        allocator,
+        tablet_handle,
+        is_splited_range))) {
       LOG_WARN("fail to split ranges", K(ret), K(ranges));
     } else {
       ObPartitionMultiRangeSpliter spliter;
-      if (OB_FAIL(spliter.get_split_multi_ranges(is_splited_range ? new_ranges : ranges,
-                                                 expected_task_count,
-                                                 iter.get_tablet()->get_rowkey_read_info(),
-                                                 *iter.table_iter(),
-                                                 allocator,
-                                                 multi_range_split_array,
-                                                 /* for compaction */ false))) {
+      if (OB_FAIL(spliter.get_split_multi_ranges(
+          is_splited_range ? new_ranges : ranges,
+          expected_task_count,
+          iter.get_tablet()->get_rowkey_read_info(),
+          *iter.table_iter(),
+          allocator,
+          multi_range_split_array))) {
         LOG_WARN("fail to get splitted ranges", K(ret), K(ranges), K(expected_task_count));
       }
     }
   }
-
   return ret;
 }
 

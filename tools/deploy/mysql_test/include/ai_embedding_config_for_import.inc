@@ -1,0 +1,6 @@
+if ($OB_API_HOST == '') {
+let $OB_API_HOST = #OB_API_HOST#;
+let $OB_API_KEY = #OB_API_KEY#;
+let $OB_MODEL_NAME = #OB_MODEL_NAME#;
+let $OB_MODEL_PROVIDER = #OB_MODEL_PROVIDER#;
+}

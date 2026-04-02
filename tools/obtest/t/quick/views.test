@@ -1,0 +1,183 @@
+##########################
+#owner : wanhong.wwh
+#owner group: share
+#description:
+# 测试点：测试OB对外提供的视图，保证视图兼容性
+##########################
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+let $extra_conf = "cpu_count=16,memory_limit='20G',system_memory='5G',cache_wash_threshold='1G'";
+ob1.z1.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z2.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z3.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+
+ob1.reboot;
+
+# 连接系统租户
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+
+# 创建mysql租户
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '1G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+# 创建mysql租户连接
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# 创建oracle租户
+connection conn_sys;
+eval CREATE RESOURCE UNIT unit_2 MAX_CPU 1, MEMORY_SIZE '1G';
+eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_2', UNIT_NUM = 1;
+eval CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%', ob_compatibility_mode = 'oracle';
+source include/check_schema_sync.inc;
+
+# 创建oracle连接
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+################## 1. SYS租户特有视图 ##################
+connection conn_sys;
+
+# 1.1 检查视图schema，要求列是完整的，全部大写
+desc oceanbase.DBA_OB_TENANTS;
+desc oceanbase.DBA_OB_UNITS;
+desc oceanbase.DBA_OB_UNIT_CONFIGS;
+desc oceanbase.DBA_OB_RESOURCE_POOLS;
+desc oceanbase.DBA_OB_SERVERS;
+desc oceanbase.DBA_OB_ZONES;
+desc oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY;
+desc oceanbase.DBA_OB_TENANT_JOBS;
+desc oceanbase.DBA_OB_UNIT_JOBS;
+desc oceanbase.DBA_OB_SERVER_JOBS;
+
+# 1.2 只在系统租户可见，验证其他租户不可见
+connection conn_mysql;
+
+--error 1146
+desc oceanbase.DBA_OB_TENANTS;
+--error 1146
+desc oceanbase.DBA_OB_UNITS;
+--error 1146
+desc oceanbase.DBA_OB_UNIT_CONFIGS;
+--error 1146
+desc oceanbase.DBA_OB_RESOURCE_POOLS;
+--error 1146
+desc oceanbase.DBA_OB_SERVERS;
+--error 1146
+desc oceanbase.DBA_OB_ZONES;
+--error 1146
+desc oceanbase.DBA_OB_ROOTSERVICE_EVENT_HISTORY;
+--error 1146
+desc oceanbase.DBA_OB_TENANT_JOBS;
+--error 1146
+desc oceanbase.DBA_OB_UNIT_JOBS;
+--error 1146
+desc oceanbase.DBA_OB_SERVER_JOBS;
+
+connection conn_oracle;
+
+--error 00942
+select * from SYS.DBA_OB_TENANTS;
+--error 00942
+select * from SYS.DBA_OB_UNITS;
+--error 00942
+select * from SYS.DBA_OB_UNIT_CONFIGS;
+--error 00942
+select * from SYS.DBA_OB_RESOURCE_POOLS;
+--error 00942
+select * from SYS.DBA_OB_SERVERS;
+--error 00942
+select * from SYS.DBA_OB_ZONES;
+--error 00942
+select * from SYS.DBA_OB_ROOTSERVICE_EVENT_HISTORY;
+--error 00942
+select * from SYS.DBA_OB_TENANT_JOBS;
+--error 00942
+select * from SYS.DBA_OB_UNIT_JOBS;
+--error 00942
+select * from SYS.DBA_OB_SERVER_JOBS;
+
+# 1.3 验证各个视图语义，从用户角度出发，尽可能验证所有场景的所有输出，特别是CASE WHEN实现的列
+connection conn_sys;
+
+# 不验证CREATE_TIME列
+SELECT TENANT_ID, TENANT_NAME, TENANT_TYPE, PRIMARY_ZONE, LOCALITY, PREVIOUS_LOCALITY, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED FROM DBA_OB_TENANTS;
+
+# 不验证：CREATE_TIME、SVR_IP、SVR_PORT 列
+SELECT UNIT_ID, TENANT_ID, STATUS, RESOURCE_POOL_ID, UNIT_GROUP_ID, ZONE, MIGRATE_FROM_SVR_IP, MIGRATE_FROM_SVR_PORT, MANUAL_MIGRATE FROM DBA_OB_UNITS;
+
+SELECT * FROM DBA_OB_UNIT_CONFIGS WHERE UNIT_CONFIG_ID > 1;
+
+# 不验证CREATE_TIME、MODIFY_TIME
+SELECT RESOURCE_POOL_ID, NAME, TENANT_ID, UNIT_COUNT, UNIT_CONFIG_ID, ZONE_LIST, REPLICA_TYPE FROM DBA_OB_RESOURCE_POOLS;
+
+# 通过__all_server表验证DBA_OB_SERVERS
+SELECT count(*) FROM DBA_OB_SERVERS WHERE (SVR_IP, SVR_PORT, ID, ZONE, SQL_PORT, STATUS, START_SERVICE_TIME, BUILD_VERSION) in (SELECT SVR_IP, SVR_PORT, ID, ZONE, SQL_PORT, STATUS, usec_to_time(START_SERVICE_TIME), BUILD_VERSION FROM __all_server);
+# 期望是列值为NULL
+SELECT STOP_TIME, BLOCK_MIGRATE_IN_TIME FROM DBA_OB_SERVERS;
+
+SELECT * FROM DBA_OB_ZONES;
+
+# 通过__all_rootservice_event_history验证DBA_OB_ROOTSERVICE_EVENT_HISTORY
+SELECT view_row_cnt = table_row_cnt
+FROM
+    (SELECT count(*) as view_row_cnt FROM DBA_OB_ROOTSERVICE_EVENT_HISTORY WHERE (`TIMESTAMP`, MODULE, EVENT, NAME1, VALUE1, NAME2, VALUE2, NAME3, VALUE3, NAME4, VALUE4, NAME5, VALUE5, NAME6, EXTRA_INFO, RS_SVR_IP, RS_SVR_PORT) in (select gmt_create, MODULE, EVENT, NAME1, VALUE1, NAME2, VALUE2, NAME3, VALUE3, NAME4, VALUE4, NAME5, VALUE5, NAME6, EXTRA_INFO, RS_SVR_IP, RS_SVR_PORT from __all_rootservice_event_history)) as V,
+    (SELECT count(*) as table_row_cnt FROM __all_rootservice_event_history) as T;
+
+# 通过__all_rootservice_job来验证DBA_OB_xxx_JOBS
+insert into __all_rootservice_job (job_id, job_type, job_status, result_code, progress, tenant_id, unit_id, svr_ip, svr_port, sql_text, extra_info, rs_svr_ip, rs_svr_port) values
+(1, 'ALTER_TENANT_LOCALITY', 'INPROGRESS', 0, 0, 1, 0, '', 0, 'sql_text', 'extra_info', '127.0.0.1', 1000),
+(2, 'MIGRATE_UNIT', 'INPROGRESS', 0, 0, -1, 1001,  '', 0, 'sql_text', 'extra_info', '127.0.0.1', 1000),
+(3, 'MIGRATE_UNIT', 'FAILED', 4002, 0, 1002, 1003,  '', 0, 'sql_text', 'extra_info', '127.0.0.1', 1000),
+(4, 'DELETE_SERVER', 'SUCCESS', 0, 100, -1, 0, '192.168.1.1', 2000,  'sql_text', 'extra_info', '127.0.0.1', 1000);
+
+SELECT JOB_ID, JOB_TYPE, JOB_STATUS, RESULT_CODE, PROGRESS, TENANT_ID, SQL_TEXT, EXTRA_INFO, RS_SVR_IP, RS_SVR_PORT FROM DBA_OB_TENANT_JOBS;
+
+SELECT JOB_ID, JOB_TYPE, JOB_STATUS, RESULT_CODE, PROGRESS, TENANT_ID, UNIT_ID, SQL_TEXT, EXTRA_INFO, RS_SVR_IP, RS_SVR_PORT FROM DBA_OB_UNIT_JOBS;
+
+SELECT JOB_ID, JOB_TYPE, JOB_STATUS, RESULT_CODE, PROGRESS, SVR_IP, SVR_PORT, SQL_TEXT, EXTRA_INFO, RS_SVR_IP, RS_SVR_PORT FROM DBA_OB_SERVER_JOBS;
+
+# 1.4 验证连接Follower也可以查询视图
+# NOTE: conn_sys 采用ob1.z1.obs0 连接，下面采用ob1.z1.obs1连接，这两个里面一定有一个是follower
+ob_connect(conn_sys_follower, ob1.z2.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+# 验证视图实现依赖的虚拟表join是OK的，保证CTE / Temp table执行计划是可行的
+connection conn_sys;
+select IF(count(*) >= 0, 1, 0) from oceanbase.CDB_SUBPART_KEY_COLUMNS;
+SELECT  CAST(D.TENANT_ID AS SIGNED) AS CON_ID, CAST(D.DATABASE_NAME AS CHAR(128)) AS OWNER,    CAST(T.TABLE_NAME AS CHAR(128)) AS NAME,    CAST('TABLE' AS CHAR(5)) AS OBJECT_TYPE,    CAST(C.COLUMN_NAME AS CHAR(4000)) AS COLUMN_NAME,    CAST((C.PARTITION_KEY_POSITION & 65280)/256 AS SIGNED) AS COLUMN_POSITION,    CAST(NULL AS SIGNED) AS COLLATED_COLUMN_ID     FROM OCEANBASE.__ALL_VIRTUAL_COLUMN C, OCEANBASE.__ALL_VIRTUAL_TABLE T, OCEANBASE.__ALL_VIRTUAL_DATABASE D     WHERE C.TENANT_ID = T.TENANT_ID  AND T.TENANT_ID = D.TENANT_ID  AND C.TABLE_ID = T.TABLE_ID  AND T.DATABASE_ID = D.DATABASE_ID  AND (C.PARTITION_KEY_POSITION & 65280) > 0  AND T.TABLE_TYPE IN (3, 6, 8, 9)     UNION ALL SELECT  CAST(D.TENANT_ID AS SIGNED) AS CON_ID,    CAST(D.DATABASE_NAME AS CHAR(128)) AS OWNER,    CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN T.TABLE_NAME        ELSE SUBSTR(T.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(T.TABLE_NAME, 7))) END AS CHAR(128)) AS NAME,    CAST('INDEX' AS CHAR(5)) AS OBJECT_TYPE,    CAST(C.COLUMN_NAME AS CHAR(4000)) AS COLUMN_NAME,    CAST((C.PARTITION_KEY_POSITION & 65280)/256 AS SIGNED) AS COLUMN_POSITION,    CAST(NULL AS SIGNED) AS COLLATED_COLUMN_ID     FROM OCEANBASE.__ALL_VIRTUAL_COLUMN C, OCEANBASE.__ALL_VIRTUAL_TABLE T, OCEANBASE.__ALL_VIRTUAL_DATABASE D     WHERE C.TENANT_ID = T.TENANT_ID  AND T.TENANT_ID = D.TENANT_ID  AND T.DATABASE_ID = D.DATABASE_ID  AND C.TABLE_ID = T.TABLE_ID  AND T.TABLE_TYPE = 5  AND (C.PARTITION_KEY_POSITION & 65280) > 0;
+
+connection conn_sys_follower;
+select IF(count(*) >= 0, 1, 0) from oceanbase.CDB_SUBPART_KEY_COLUMNS;
+SELECT  CAST(D.TENANT_ID AS SIGNED) AS CON_ID, CAST(D.DATABASE_NAME AS CHAR(128)) AS OWNER,    CAST(T.TABLE_NAME AS CHAR(128)) AS NAME,    CAST('TABLE' AS CHAR(5)) AS OBJECT_TYPE,    CAST(C.COLUMN_NAME AS CHAR(4000)) AS COLUMN_NAME,    CAST((C.PARTITION_KEY_POSITION & 65280)/256 AS SIGNED) AS COLUMN_POSITION,    CAST(NULL AS SIGNED) AS COLLATED_COLUMN_ID     FROM OCEANBASE.__ALL_VIRTUAL_COLUMN C, OCEANBASE.__ALL_VIRTUAL_TABLE T, OCEANBASE.__ALL_VIRTUAL_DATABASE D     WHERE C.TENANT_ID = T.TENANT_ID  AND T.TENANT_ID = D.TENANT_ID  AND C.TABLE_ID = T.TABLE_ID  AND T.DATABASE_ID = D.DATABASE_ID  AND (C.PARTITION_KEY_POSITION & 65280) > 0  AND T.TABLE_TYPE IN (3, 6, 8, 9)     UNION ALL SELECT  CAST(D.TENANT_ID AS SIGNED) AS CON_ID,    CAST(D.DATABASE_NAME AS CHAR(128)) AS OWNER,    CAST(CASE WHEN D.DATABASE_NAME = '__recyclebin' THEN T.TABLE_NAME        ELSE SUBSTR(T.TABLE_NAME, 7 + POSITION('_' IN SUBSTR(T.TABLE_NAME, 7))) END AS CHAR(128)) AS NAME,    CAST('INDEX' AS CHAR(5)) AS OBJECT_TYPE,    CAST(C.COLUMN_NAME AS CHAR(4000)) AS COLUMN_NAME,    CAST((C.PARTITION_KEY_POSITION & 65280)/256 AS SIGNED) AS COLUMN_POSITION,    CAST(NULL AS SIGNED) AS COLLATED_COLUMN_ID     FROM OCEANBASE.__ALL_VIRTUAL_COLUMN C, OCEANBASE.__ALL_VIRTUAL_TABLE T, OCEANBASE.__ALL_VIRTUAL_DATABASE D     WHERE C.TENANT_ID = T.TENANT_ID  AND T.TENANT_ID = D.TENANT_ID  AND T.DATABASE_ID = D.DATABASE_ID  AND C.TABLE_ID = T.TABLE_ID  AND T.TABLE_TYPE = 5  AND (C.PARTITION_KEY_POSITION & 65280) > 0;
+
+####### 验证lock tenant功能
+connection conn_sys;
+
+SELECT TENANT_ID, TENANT_NAME, LOCKED FROM DBA_OB_TENANTS WHERE TENANT_NAME = 'oracle';
+SELECT TENANT_ID, TENANT_NAME, LOCKED FROM DBA_OB_TENANTS WHERE TENANT_NAME = 'mysql';
+ALTER TENANT oracle lock;
+ALTER TENANT mysql lock;
+SELECT TENANT_ID, TENANT_NAME, LOCKED FROM DBA_OB_TENANTS WHERE TENANT_NAME = 'oracle';
+SELECT TENANT_ID, TENANT_NAME, LOCKED FROM DBA_OB_TENANTS WHERE TENANT_NAME = 'mysql';
+
+
+####### case最后：删除租户，顺便验证相关依赖的视图
+connection conn_sys;
+set recyclebin = 'ON';
+
+# 进回收站
+drop tenant oracle;
+
+# 验证能够看到被删除的租户信息
+SELECT TENANT_ID, TENANT_TYPE, PRIMARY_ZONE, LOCALITY, PREVIOUS_LOCALITY, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED FROM DBA_OB_TENANTS WHERE TENANT_ID = 1004;
+
+# 强制删除租户
+drop tenant mysql force;
+
+# 验证看不到租户信息
+SELECT count(*) FROM DBA_OB_TENANTS WHERE TENANT_NAME = 'mysql';
+
+# 验证相关Unit不再依赖租户
+SELECT UNIT_ID, TENANT_ID, STATUS, RESOURCE_POOL_ID, UNIT_GROUP_ID, ZONE, MIGRATE_FROM_SVR_IP, MIGRATE_FROM_SVR_PORT, MANUAL_MIGRATE FROM DBA_OB_UNITS WHERE TENANT_ID is null;

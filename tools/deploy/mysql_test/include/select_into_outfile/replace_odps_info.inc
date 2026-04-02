@@ -1,0 +1,1 @@
+--replace_regex /ACCESSID[\s]*=[\s]*\'[^']*\'/ACCESSID='#ODPS_ACCESSID#'/ /ACCESSKEY[\s]*=[\s]*\'[^']*\'/ACCESSKEY='#ODPS_ACCESSKEY#'/ /ENDPOINT[\s]*=[\s]*\'[^']*\'/ENDPOINT='#ODPS_ENDPOINT#'/ /TUNNEL_ENDPOINT[\s]*=[\s]*\'[^']*\'/TUNNEL_ENDPOINT='#TUNNEL_ENDPOINT#'/

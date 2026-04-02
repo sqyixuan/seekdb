@@ -38,35 +38,17 @@ public:
   IteratorWrapper(Iterator iter, int64_t index, int64_t end)
     : iter_(iter), index_(index), end_(end)
   {}
-  bool abort_maybe_bad_compare() const
+  bool abort_maybe_bad_compare()
   {
     abort();
   }
-  inline reference operator*()
+  inline value_type &operator*()
   {
     return *iter_;
   }
-  inline reference operator*() const
-  {
-    // For random access iterators, even const iterators should return non-const references
-    // to allow standard library algorithms to modify values
-    return *iter_;
-  }
-  inline pointer operator->()
+  inline value_type *operator->()
   {
     return &(*iter_);
-  }
-  inline pointer operator->() const
-  {
-    return &(*iter_);
-  }
-  inline reference operator[](difference_type n)
-  {
-    return iter_[n];
-  }
-  inline reference operator[](difference_type n) const
-  {
-    return iter_[n];
   }
   inline IteratorWrapper operator++(int)
   {
@@ -92,12 +74,10 @@ public:
     --index_;
     return *this;
   }
-  inline IteratorWrapper operator+(int64_t off) const
+  inline IteratorWrapper operator+(int64_t off)
   {
     if (OB_UNLIKELY(index_ >= end_)) abort_maybe_bad_compare();
-    Iterator new_iter = iter_;
-    new_iter += off;
-    return IteratorWrapper(new_iter, index_ + off, end_);
+    return IteratorWrapper(iter_ + off, index_ + off, end_);
   }
   inline IteratorWrapper &operator+=(int64_t off)
   {
@@ -106,21 +86,12 @@ public:
     index_ += off;
     return *this;
   }
-  inline IteratorWrapper &operator-=(int64_t off)
+  inline IteratorWrapper operator-(int64_t off)
   {
     if (OB_UNLIKELY(index_ < 0)) abort_maybe_bad_compare();
-    iter_ -= off;
-    index_ -= off;
-    return *this;
+    return IteratorWrapper(iter_ - off, index_ - off, end_);
   }
-  inline IteratorWrapper operator-(int64_t off) const
-  {
-    if (OB_UNLIKELY(index_ < 0)) abort_maybe_bad_compare();
-    Iterator new_iter = iter_;
-    new_iter -= off;
-    return IteratorWrapper(new_iter, index_ - off, end_);
-  }
-  inline difference_type operator-(const IteratorWrapper &rhs) const
+  inline difference_type operator-(const IteratorWrapper &rhs)
   {
     return index_ - rhs.index_;
   }
@@ -140,14 +111,6 @@ public:
   inline bool operator<=(const IteratorWrapper &rhs) const
   {
     return (index_ <= rhs.index_);
-  }
-  inline bool operator>(const IteratorWrapper &rhs) const
-  {
-    return (index_ > rhs.index_);
-  }
-  inline bool operator>=(const IteratorWrapper &rhs) const
-  {
-    return (index_ >= rhs.index_);
   }
   
 private:

@@ -1,0 +1,296 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: dachuan.sdc
+#owner group:sql2
+#description:information_schema test
+# this test mostly test privilege control (what doesn't work
+# in the embedded server by default). So skip the test in embedded-server mode.
+-- source mysql_test/include/not_embedded.inc
+
+#Don't run this test when thread_pool active
+--source mysql_test/include/not_threadpool.inc
+
+-- source mysql_test/include/testdb_only.inc
+--disable_abort_on_error
+--disable_query_log
+call oceanbase.drop_tenant_force('tt1');
+call oceanbase.create_mysql_tenant_mini('tt1');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+
+--replace_column 1 create_time 2 modify_time 3 tenant_id 6 zone 7 zone 13 locality 14 logonly_replica_num 15 previous_locality 16 storage_format_version 17 storage_format_work_version
+select * from oceanbase.__all_tenant where tenant_name='tt1';
+change effective tenant tt1;
+use test;
+
+--disable_warnings
+drop table if exists t1,t2;
+--disable_warnings
+drop view if exists v1,v2;
+--enable_warnings
+#drop function if exists f1;
+#drop function if exists f2;
+--enable_warnings
+
+use INFORMATION_SCHEMA;
+--replace_result Tables_in_INFORMATION_SCHEMA Tables_in_information_schema
+show tables where Tables_in_INFORMATION_SCHEMA NOT LIKE 'Innodb%';
+--replace_result 'Tables_in_INFORMATION_SCHEMA (T%)' 'Tables_in_information_schema (T%)'
+show tables from INFORMATION_SCHEMA like 'T%';
+create database if not exists `inf%`;
+create database if not exists mbase;
+use `inf%`;
+show tables;
+
+#
+# Bug#18113 SELECT * FROM information_schema.xxx crashes server
+# Bug#17204 second CALL to procedure crashes Server
+# Crash happened when one selected data from one of INFORMATION_SCHEMA
+# tables and in order to build its contents server had to open view which
+# used stored function and table or view on which one had not global or
+# database-level privileges (e.g. had only table-level or had no
+# privileges at all).
+#
+grant all privileges on `inf%`.* to 'mysqltest_1';
+grant all privileges on `mbase`.* to 'mysqltest_1';
+drop table if exists t1;
+create table t1 (f1 int);
+#delimiter |;
+#create function func1(curr_int int) returns int
+#begin
+#  declare ret_val int;
+#  select max(f1) from t1 into ret_val;
+#  return ret_val;
+#end|
+#delimiter ;|
+#create view v1 as select f1 from t1 where f1 = func1(f1);
+#create function func2() returns int return 1;
+
+use mbase;
+#delimiter |;
+#create procedure p1 ()
+#begin
+#select table_name from information_schema.key_column_usage
+#order by table_name;
+#end|
+#delimiter ;|
+
+drop table if exists t1;
+create table t1
+(f1 int(10) unsigned not null,
+ f2 varchar(100) not null,
+ primary key (f1), unique key (f2));
+
+#connect (user1,localhost,mysqltest_1,,);
+#connect (user1,$OBMYSQL_MS0,mysqltest_1,,`inf%`,$OBMYSQL_PORT);
+#connection user1;
+--disable_result_log
+select * from information_schema.tables;
+#call mbase.p1();
+#call mbase.p1();
+#call mbase.p1();
+--enable_result_log
+
+connection default;
+use `inf%`;
+drop user mysqltest_1;
+drop table t1;
+#select table_name, table_type, table_comment from information_schema.tables
+#where table_schema='inf%' and func2();
+#select table_name, table_type, table_comment from information_schema.tables
+#where table_schema='inf%' and func2();
+#drop view v1;
+#drop function func1;
+#drop function func2;
+
+drop database `inf%`;
+#drop procedure mbase.p1;
+drop database mbase;
+#disconnect user1;
+
+#
+# Bug#18282 INFORMATION_SCHEMA.TABLES provides inconsistent info about invalid views
+#
+use test;
+create table t1 (i int);
+#create function f1 () returns int return (select max(i) from t1);
+#create view v1 as select f1();
+create table t2 (id int);
+#create function f2 () returns int return (select max(i) from t2);
+#create view v2 as select f2();
+drop table t2;
+select table_name, table_type, table_comment from information_schema.tables
+where table_schema='test';
+drop table t1;
+select table_name, table_type, table_comment from information_schema.tables
+where table_schema='test';
+#drop function f1;
+#drop function f2;
+#drop view v1, v2;
+
+#
+# Bug#20543 select on information_schema strange warnings, view, different
+#           schemas/users
+#
+#
+create database if not exists  testdb_1;
+create user testdb_1;
+grant all on testdb_1.* to testdb_1 with grant option;
+
+create user testdb_2;
+grant all on test.* to testdb_2 with grant option;
+
+#connect (testdb_1,localhost,testdb_1,,test);
+--source mysql_test/include/check_schema_sync.inc
+connect (testdb_1,$OBMYSQL_MS0,testdb_1@tt1,,testdb_1,$OBMYSQL_PORT);
+
+use testdb_1;
+drop table if exists t1;
+drop view if exists v1,v5,v6;
+create table t1 (f1 char(4));
+create view v1 as select f1 from t1;
+grant insert on v1 to testdb_2;
+
+
+create view v5 as select f1 from t1;
+grant select, show view on v5 to testdb_2;
+
+#--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+#create definer=`no_such_user` view v6 as select f1 from t1;
+
+connection default;
+use testdb_1;
+create view v6 as select f1 from t1;
+grant select, show view on v6 to testdb_2;
+
+#create table t2 (f1 char(4));
+#create definer=`no_such_user`@`no_such_host` view v7 as select * from t2;
+
+show fields from testdb_1.v6;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create view testdb_1.v6;
+
+#show create view testdb_1.v7;
+#show fields from testdb_1.v7;
+
+connection testdb_1;
+
+create table t3 (f1 char(4), f2 char(4));
+create view v3 as select f1,f2 from t3;
+#grant insert(f1), insert(f2) on v3 to testdb_2;
+
+#connect (testdb_2,localhost,testdb_2,,test);
+--source mysql_test/include/check_schema_sync.inc
+connect (testdb_2,$OBMYSQL_MS0,testdb_2,,test,$OBMYSQL_PORT);
+#create view v2 as select f1 from testdb_1.v1;
+#create view v4 as select f1,f2 from testdb_1.v3;
+select * from  testdb_1.v5;
+show fields from testdb_1.v5;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create view testdb_1.v5;
+
+show fields from testdb_1.v6;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create view testdb_1.v6;
+
+connection testdb_1;
+#show fields from testdb_1.v7;
+#show create view testdb_1.v7;
+
+#revoke insert(f1) on v3 from testdb_2;
+revoke select,show view on v5 from testdb_2;
+connection default;
+use testdb_1;
+revoke select,show view on v6 from testdb_2;
+connection testdb_2;
+
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show fields from testdb_1.v5;
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show create view testdb_1.v5;
+
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show fields from testdb_1.v6;
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show create view testdb_1.v6;
+
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show fields from testdb_1.v7;
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show create view testdb_1.v7;
+
+#show create view v4;
+#--error ER_VIEW_NO_EXPLAIN
+#show fields from v4;
+
+#show fields from v2;
+#show fields from testdb_1.v1;
+#show create view v2;
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show create view testdb_1.v1;
+
+select table_name from information_schema.columns a
+where a.table_name = 'v2';
+select view_definition from information_schema.views a
+where a.table_name = 'v2';
+select view_definition from information_schema.views a
+where a.table_name = 'testdb_1.v1';
+
+#--error ER_VIEW_INVALID
+#select * from v2;
+
+connection default;
+use test;
+#drop view testdb_1.v1, v2, testdb_1.v3, v4;
+drop view testdb_1.v1;
+drop database testdb_1;
+connection testdb_1;
+disconnect testdb_1;
+--source mysql_test/include/wait_until_disconnected.inc
+connection testdb_2;
+disconnect testdb_2;
+--source mysql_test/include/wait_until_disconnected.inc
+connection default;
+drop user testdb_1;
+drop user testdb_2;
+
+#
+# Bug#22763 Disrepancy between SHOW CREATE VIEW and I_S.VIEWS
+#
+create database testdb_1;
+create table testdb_1.t1 (a int);
+create view testdb_1.v1 as select * from testdb_1.t1;
+
+grant show view on testdb_1.* to mysqltest_1;
+grant select on testdb_1.v1 to mysqltest_1;
+
+#connect (user1,localhost,mysqltest_1,,test);
+#connect (user1,$OBMYSQL_MS0,mysqltest_1,,test,$OBMYSQL_PORT);
+#connection user1;
+select table_schema, table_name, view_definition from information_schema.views
+where table_name='v1';
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create view testdb_1.v1;
+
+connection default;
+revoke select on testdb_1.v1 from mysqltest_1;
+#connection user1;
+select table_schema, table_name, view_definition from information_schema.views
+where table_name='v1';
+#--error ER_TABLEACCESS_DENIED_ERROR
+#show create view testdb_1.v1;
+
+connection default;
+drop user mysqltest_1;
+drop database testdb_1;
+#connection user1;
+#disconnect user1;
+#--source mysql_test/include/wait_until_disconnected.inc
+connection default;
+
+connect (obsys1,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys1;
+--disable_query_log
+call oceanbase.drop_tenant_force('tt1');
+--enable_query_log

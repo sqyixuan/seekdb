@@ -1,0 +1,126 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+#    z*.obs1 shoud be on different svr_ip and should be different from sys tenant's servers(z*.obs0).
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+
+let $extra_conf = "cpu_count=16,memory_limit='30G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',enable_async_syslog=false";
+ob1.set extra_config=enable_sys_unit_standalone='True',$extra_conf;
+ob1.z1.obs1.set status=disable;
+ob1.z2.obs1.set status=disable;
+ob1.z3.obs1.set status=disable;
+ob1.reboot;
+
+sleep 3;
+
+ob1.z1.obs1.set status=enable;
+ob1.z2.obs1.set status=enable;
+ob1.z3.obs1.set status=enable;
+ob1.z1.obs1.start;
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+
+ob1.z1.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z2.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z3.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z1.obs1.add;
+ob1.z2.obs1.add;
+ob1.z3.obs1.add;
+
+ob1.check_until_timeout SELECT COUNT(*) c FROM DBA_OB_SERVERS WHERE START_SERVICE_TIME > 0, 6, 200;
+
+ob1.mysql alter tenant sys set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from DBA_OB_LS_LOCATIONS where ls_id = 1 and role = 'LEADER' and zone = 'z1', 1, 60;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+
+let $tenant_z1 = ob1.z1.obs1;
+
+alter system set _ob_ddl_timeout = '10s';
+
+# rs is standalone, mysql tenant must be located on obs1
+ob_connect (conn_mysql, ob1.z1.obs1, root@mysql, ,test, , USE_MYSQL_CONNECTOR);
+
+# case 1: leader->follower block net
+echo [case 1] leader->follower block net;
+
+connection conn_mysql;
+
+# majority alive
+$tenant_z1.block_net ob1.z2.obs1;
+
+# create table
+create table t1 (c1 int primary key);
+
+# create ls
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id != 1 and role = 'LEADER', 2, 30;
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where ls_id != 1 and role = 'LEADER' and member_list like "%,%,%";
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where ls_id != 1 and role = 'LEADER' and member_list not like "%,%,%" and member_list like "%,%";
+
+# majority not alive
+$tenant_z1.block_net ob1.z3.obs1;
+--disable_result_log
+--error 4012,6002
+create table t2 (c1 int primary key);
+--enable_result_log
+
+$tenant_z1.clean_net ob1.z2.obs1;
+$tenant_z1.clean_net ob1.z3.obs1;
+
+# recovery
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and role = 'LEADER' and zone = 'z1', 3, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id != 1 and role = 'LEADER' and member_list like "%,%,%", 2, 30;
+
+# case 2: follower->leader block net
+echo [case 2] follower->leader block net;
+
+# majority alive
+ob1.z2.obs1.block_net $tenant_z1;
+
+create table t2 (c1 int primary key);
+
+# majority not alive
+ob1.z3.obs1.block_net $tenant_z1;
+
+--disable_result_log
+--error 4012,6002
+create table t3 (c1 int primary key);
+--enable_result_log
+
+ob1.z2.obs1.clean_net $tenant_z1;
+ob1.z3.obs1.clean_net $tenant_z1;
+
+# recovery
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where role = 'LEADER' and zone != 'z1', 0, 30;
+
+# case 3: server down
+echo [case 3] server down;
+
+# majority alive
+ob1.z2.obs1.force_stop;
+
+create table t3 (c1 int primary key);
+# create ls
+create table dup_t1(c1 int, c2 longtext) duplicate_scope = 'cluster';
+insert into dup_t1 value (1, "123"), (2,"456"), (3,"789"), (4,"1"), (5, "2");
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where ls_id != 1 and role = 'LEADER' and member_list like "%,%,%";
+select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where ls_id != 1 and role = 'LEADER' and member_list not like "%,%,%" and member_list like "%,%";
+
+# majority not alive
+ob1.z3.obs1.force_stop;
+
+--disable_result_log
+--error 4012,6002
+create table t4 (c1 int primary key) duplicate_scope = 'cluster';
+--enable_result_log
+

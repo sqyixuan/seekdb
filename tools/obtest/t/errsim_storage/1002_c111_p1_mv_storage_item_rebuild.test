@@ -1,0 +1,108 @@
+# owner: buwen.wbw
+# owner group: storage
+
+#
+#### item rebuild case
+#1. 先合z1
+#2. z2-3上item设置为rebuild
+#3. 卡主z2-3的info表合并（info一直合并失败），直到z2-3的item表rebuild成功
+#4. z2-3的info表开始合并
+#
+ob1=OBI(cluster=1:1:1, init_unit_cpu=2, proxy_num=0, ct_num = 0);
+ob1.reboot;
+sleep 5;
+
+ob1.create_client tenant=obtest,user=admin,passwd=admin,database=test;
+
+create table info (
+  l_user_id bigint not null,
+  l_item_type bigint not null,
+  l_item_id bigint not null,
+  l_collect_time bigint not null,
+  l_info_from varchar(255) default null,
+  l_info_note char(255) default null,
+  primary key (l_user_id, l_item_type, l_item_id)
+) partition by key (l_user_id) partitions 2;
+
+
+alter table info set compression = 'none';
+
+create table item (
+  r_item_id bigint not null,
+  r_item_type bigint not null,
+  r_item_title varchar(255) default null,
+  r_item_price bigint default null,
+  r_item_note char(255) default null,
+  primary key (r_item_id, r_item_type)
+)locality='F,R{all_server}@z1, F,R{all_server}@z2, F,R{all_server}@z3';
+
+alter table item set compression = 'none';
+
+create materialized view mv_info_item as
+  select info.l_item_id, info.l_info_from, info.l_info_note, item.r_item_title, item.r_item_price, item.r_item_note, info.l_user_id, info.l_item_type, info.l_collect_time, item.r_item_id, item.r_item_type
+  from info, item where info.l_item_type = item.r_item_type and info.l_item_id = item.r_item_id
+  order by info.l_user_id, info.l_item_type, info.l_collect_time;
+
+--disable_query_log
+--disable_result_log
+let $i=1;
+set @cnt=1;
+while($i < 11)
+{
+  select @from_field:=concat('from', @cnt);
+  select @note_field:=concat('note', @cnt);
+  let $stmt=insert into info values (@cnt, 10+@cnt, 100+@cnt, 1000+@cnt, @from_field, @note_field);
+  eval $stmt;
+  set @cnt=@cnt+1;
+  inc $i;
+}
+
+let $i=1;
+set @cnt=1;
+while($i < 6)
+{
+  select @title_field:=concat('title', @cnt+10);
+  select @note_field:=concat('note', @cnt+10);
+  let $stmt=insert into item values (100+@cnt, 10+@cnt, @title_field, 10000+@cnt, @note_field);
+  eval $stmt;
+  set @cnt=@cnt+1;
+  inc $i;
+}
+--enable_query_log
+--enable_result_log
+
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout  select value from oceanbase.__all_zone where name='last_merged_version' and zone = '', 2, 500;
+ob1.check_until_timeout select index_status from oceanbase.__all_virtual_table where tenant_id=1001 and table_name = 'mv_info_item', 2, 20;
+
+--disable_query_log
+--disable_result_log
+let $i=6;
+set @cnt=6;
+while($i < 10)
+{
+  select @title_field:=concat('title', @cnt+10);
+  select @note_field:=concat('note', @cnt+10);
+  let $stmt=insert into item values (100+@cnt, 10+@cnt, @title_field, 10000+@cnt, @note_field);
+  eval $stmt;
+  set @cnt=@cnt+1;
+  inc $i;
+}
+--enable_query_log
+--enable_result_log
+
+let $item_tid = deploy_get_value(ob1.select select table_id as v from __all_virtual_table where table_name = 'item', v , 1);
+
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout  select value from oceanbase.__all_zone where name='last_merged_version' and zone = 'z1', 3, 500;
+ob1.mysql alter system set_tp tp_no = 7, error_code = 6215, frequency = 1;
+ob1.mysql update oceanbase.__all_virtual_meta_table set rebuild = 1 where tenant_id = 1001 and table_id = $item_tid and zone = 'z2';
+ob1.mysql update oceanbase.__all_virtual_meta_table set rebuild = 1 where tenant_id = 1001 and table_id = $item_tid and zone = 'z3';
+
+# wait rebuild finish
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = 1001 and table_id = $item_tid and rebuild = 1, 0, 1000;
+
+ob1.mysql alter system set_tp tp_no = 7, error_code = 6215, frequency = 1000000;
+ob1.check_until_timeout  select value from oceanbase.__all_zone where name='last_merged_version' and zone = '', 3, 500;
+
+select * from mv_info_item;

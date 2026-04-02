@@ -1,0 +1,149 @@
+# owner: rongxuan.lc
+# description: 本case是为了主要测试运维命令:
+#alter system remove balance task opt_tenant_list opt_scope
+#case 中做一次opt_tenant_list和opt_scope的正交；
+####由于测试环境中经常出现无主的情况，所以将任务数50的检查改成30；无主的情况下，是不会生成迁移任务的
+
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0);
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 1;
+ob1.mysql alter system set server_data_copy_in_concurrency = 1;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+#ob1.mysql create table oceanbase.sys_test(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+let $sys_tid0 = deploy_get_value(ob1.select select column_value table_id from __all_core_table where table_name = '__all_table' and row_id=2 and column_name = 'table_id', table_id, 1);
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table tenant_t1(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tenant_t2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+let $tenant_tid1 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'tenant_t1' and tenant_id = $tenant_id, table_id, 1);
+let $tenant_tid2 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'tenant_t2' and tenant_id = $tenant_id, table_id, 1);
+
+ob1.mysql set ob_query_timeout=60000000;
+ob1.mysql set ob_global_debug_sync = 'STOP_BALANCE_EXECUTOR wait_for begin execute 1000000000';
+##case 4
+##在zone3做一次unit的迁移；
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id=$tenant_id and zone='z3', unit_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone='z3' except select concat(svr_ip,":",svr_port) addr from __all_unit where resource_pool_id= $tenant_id and zone='z3', addr, 1);
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where unit_id = $unit_id and tenant_id =$tenant_id, c, 1);
+ob1.mysql alter system migrate unit $unit_id destination='$dest';
+##等待生成迁移任务；
+ob1.check_until_timeout select (count(*) > 30) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, 1, 120;
+ob1.mysql alter system remove balance task tenant='tenant_1' type = auto;
+let $new_count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, c, 1);
+#if ($new_count == $count)
+#{
+#  echo "10 success";
+#}
+ob1.mysql alter system remove balance task tenant='tenant_1' type = manual;
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, c, 1);
+if ($count == 0)
+{
+  echo "11 success";
+}
+ob1.check_until_timeout select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, $count , 120;
+ob1.mysql alter system remove balance task tenant='tenant_1';
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, c, 1);
+if ($count == 0)
+{
+  echo "12 success";
+}
+ob1.mysql alter system set enable_rebalance = 'false';
+##清理迁移命令；
+ob1.mysql update oceanbase.__all_unit set migrate_from_svr_ip="" and migrate_from_svr_port= 0;
+ob1.mysql alter system remove balance task;
+##case 1
+alter table tenant_t2 set locality='f@z1,f@z2,F@z3, R@z3';
+ob1.mysql alter resource pool sys_pool unit_num =2;
+
+ob1.check_until_timeout select count(*)>30 from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, 1,120; 
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_tenant_meta_table where tenant_id = 1 and table_id = $sys_tid0 and partition_id = 7 and zone='z2', addr, 1);
+ob1.mysql alter system change replica partition_id ='7%16@$sys_tid0' server='$addr' change replica_type = "R";
+
+ob1.create_client tenant=tenant_t2,user=root,passwd=,database=oceanbase;
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $tenant_tid1 and partition_id = 7 and zone='z2', addr, 1);
+ob1.mysql alter system change replica partition_id ='7%50@$tenant_tid1' server='$addr' change replica_type = "R";
+
+ob1.mysql alter system remove balance task tenant='tenant_1' type = auto;
+
+ob1.mysql alter system set enable_rebalance = 'true';
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, c, 1);
+if ($count == 0)
+{
+  echo "1 success";
+}
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat, c, 1);
+if ($count > 0)
+{
+  echo "2 success";
+}
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = 1, c, 1);
+if ($count > 0)
+{
+  echo "3 success";
+}
+##case 2
+ob1.mysql alter system remove balance task;
+ob1.check_until_timeout select count(*)>30 from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, 1,220; 
+ob1.mysql alter system remove balance task tenant='tenant_1' type = manual;
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, c, 1);
+if ($count > 30)
+{
+  echo "4 success";
+}
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = 1, c, 1);
+if ($count > 0)
+{
+  echo "5 success";
+}
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, c, 1);
+if ($count > 30)
+{
+  echo "6 success";
+}
+##case 3
+ob1.mysql alter system remove balance task;
+ob1.check_until_timeout select count(*)>30 from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, 1,120; 
+ob1.mysql alter system remove balance task tenant='tenant_1';
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = $tenant_id, c, 1);
+if ($count == 0)
+{
+  echo "7 success";
+}
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_rebalance_task_stat where tenant_id = 1, c, 1);
+if ($count > 0)
+{
+  echo "8 success";
+}
+
+ob1.mysql alter system remove balance task;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.check_until_timeout select count(*) >30 from __all_virtual_rebalance_task_stat where table_id = $tenant_tid2, 1,120;
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_tenant_meta_table where tenant_id = 1 and table_id = $sys_tid0 and partition_id = 3 and zone='z2', addr, 1);
+ob1.mysql alter system change replica partition_id ='3%16@$sys_tid0' server='$addr' change replica_type = "R";
+
+ob1.mysql alter system set enable_rebalance = 'true';
+let $addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $tenant_tid1 and partition_id = 17 and zone='z2', addr, 1);
+ob1.mysql alter system change replica partition_id ='17%50@$tenant_tid1' server='$addr' change replica_type = "R";
+
+ob1.mysql alter system remove balance task tenant='sys','tenant_1';
+let $count = deploy_get_value(ob1.select  select count(*) c from __all_virtual_rebalance_task_stat, c, 1);
+if ($count == 0)
+{
+  echo '9 success';
+}
+

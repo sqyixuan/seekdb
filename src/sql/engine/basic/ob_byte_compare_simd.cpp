@@ -16,9 +16,6 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include <cstdint>
-#include <cstdlib>
-
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif

@@ -1,0 +1,297 @@
+# owner: xiongjingpan.xjp
+# owner group: shenzhen
+# description: test create hybrid vector index
+
+--disable_warnings
+drop database if exists post_create_vec;
+--enable_warnings
+create database post_create_vec;
+use post_create_vec;
+
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+
+--disable_query_log
+eval call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT (
+'ob_embed_endpoint', '{
+    "ai_model_name": "ob_embed",
+    "scope": "all",
+    "url": "$OB_API_HOST",
+    "access_key": "$OB_API_KEY",
+    "request_model_name": "$OB_MODEL_NAME",
+    "provider": "$OB_MODEL_PROVIDER"
+  }');
+--enable_query_log
+
+--echo
+--echo
+--echo "=========================================== normal case ==========================================="
+--disable_warnings
+drop table if exists vec_table;
+--enable_warnings
+CREATE TABLE vec_table (
+  id int primary key,
+  c2 varchar(100));
+
+alter system set ob_vector_memory_limit_percentage = 20;
+sleep 3;
+CREATE VECTOR INDEX VEC_IDX1 ON vec_table(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table vec_table;
+drop table vec_table;
+
+--echo
+--echo
+--echo "=========================================== 索引名有转义字符 ================================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), primary key(c1));
+create vector index `idx\n1` ON t_vec(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+drop table t_vec;
+
+# 索引名有大小写
+--echo
+--echo
+--echo "=========================================== 索引名有大小写 ==================================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), primary key(c1));
+create vector index iDx1 ON t_vec(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+drop table t_vec;
+
+# 索引名有特殊字符
+# case 1
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 001 ==============================================="
+
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), primary key(c1));
+create vector index iDx$1 ON t_vec(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+drop table t_vec;
+
+# case 2
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 002 ==============================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), primary key(c1));
+create vector index café ON t_vec(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+drop table t_vec;
+
+# case 特殊字符café与cafe，认为创建同名索引失败
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 003 ==============================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), c3 varchar(100), primary key(c1));
+create vector index café ON t_vec(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 1061
+create vector index cafe ON t_vec(c3) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+drop table t_vec;
+
+# parallel build
+--echo
+--echo
+--echo "========================================== 串行并行构建索引 ==============================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+alter system set _enable_parallel_table_creation = false;
+sleep 3;
+create table t_vec(c1 int, c2 varchar(100), primary key(c1), vector index idx1(c2) with (distance=L2, type=hnsw, model=ob_embed, dim=1024));
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+show index from t_vec;
+drop table if exists t_vec;
+create table t1(c1 int primary key, c2 varchar(100));
+CREATE VECTOR INDEX idx ON t1(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t1;
+show index from t1;
+drop table if exists t1;
+
+alter system set _enable_parallel_table_creation = true;
+sleep 3;
+create table t_vec(c1 int, c2 varchar(100), primary key(c1), vector index idx1(c2) with (distance=L2, type=hnsw, model=ob_embed, dim=1024));
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t_vec;
+show index from t_vec;
+drop table if exists t_vec;
+create table t1_p(c1 int primary key, c2 varchar(100));
+CREATE VECTOR INDEX idx_p ON t1_p(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table t1_p;
+show index from t1_p;
+drop table if exists t1_p;
+
+alter system set _enable_parallel_table_creation = true;
+sleep 3;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1(c1 int primary key, c2 varchar(100));
+insert into t1 values(1, 'hello world');
+--error 1235
+create unique index idx1 on t1(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 1072
+create vector index idx1 on t1(c5) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 7601
+create vector index idx1 on t1(c1) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 1235
+create vector index idx1 on t1(c2);
+--error 1235
+create vector index idx1 on t1(c2) with (distance=l2, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 1235
+create vector index idx1 on t1(c2) with (distance=l2, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+--error 1235
+create vector index idx1 on t1(c2) with (distance=l2, lib=vs, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+CREATE VECTOR INDEX IDX1 ON t1(c2) with (distance=l2, type=hnsw, lib=vsag, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+drop table t1;
+
+
+--echo ====================== basic test #2 =================================
+--echo ============= create vec index on existing table with data ===========
+
+--disable_warnings
+DROP TABLE IF EXISTS t1;
+--enable_warnings
+
+create table t1(c1 int, c2 varchar(100), primary key(c1));
+insert into t1 values(1, 'He was an old man who fished alone in a skiff in the Gulf1 Stream');
+insert into t1 values(2, 'he had gone eighty-four days now without taking a fish');
+insert into t1 values(3, 'In the first forty days a boy had been with him.');
+insert into t1 values(4, 'But after forty days without a fish the boy’s parents');
+insert into t1 values(5, 'had told him that the old man was now definitely and finally salao');
+insert into t1 values(6, 'which is the worst form of unlucky');
+insert into t1 values(7, 'the boy had gone at their orders in another boat');
+insert into t1 values(8, 'which caught three good fish the first week');
+insert into t1 values(9, 'It made the boy sad to see the old man');
+insert into t1 values(10, 'come in each day with his skiff empty');
+insert into t1 values(11, 'he always went down to help him carry');
+insert into t1 values(12, 'the coiled lines or the gaff and harpoon');
+insert into t1 values(13, 'the sail that was furled around the mast');
+insert into t1 values(14, 'The sail was patched with flour sacks');
+insert into t1 values(15, 'it looked like the flag of permanent defeat');
+insert into t1 values(16, 'The old man was thin and gaunt');
+insert into t1 values(17, 'with deep wrinkles in the back of his neck');
+insert into t1 values(18, 'The brown blotches of the benevolent skin cancer');
+insert into t1 values(19, 'sun brings from its reflection on the tropic sea');
+insert into t1 values(20, 'The blotches ran well down the sides of his face');
+
+create vector index idx1 on t1(c2) WITH (distance=L2, lib=vsag, type=hnsw, m=10, ef_construction = 12, ef_search = 40, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+
+--error 1235
+select * from t1 order by semantic_distance(c2, 'The old man') limit 10;
+select * from t1 order by semantic_distance(c2, 'The old man') approx limit 10;
+select /*+ opt_param('rowsets_enabled', 'false') */ * from t1 order by semantic_distance(c2, 'The old man') approx limit 10;
+
+update t1 set c2 = 'his hands had the deep-creased scars' where c1 = 5;
+update t1 set c2 = 'handling heavy fish on the cords' where c1 = 10;
+update t1 set c2 = 'But none of these scars were fresh' where c1 = 15;
+update t1 set c2 = 'They were as old as erosions in a fishless desert' where c1 = 20;
+update t1 set c2 = 'Everything about him was old ' where c1 = 25;
+update t1 set c2 = 'except his eyes and they were the same color ' where c1 = 30;
+update t1 set c2 = 'sea and were cheerful and undefeated' where c1 = 35;
+update t1 set c2 = 'the boy said to him as they climbed the bank ' where c1 = 40;
+update t1 set c2 = 'from where the skiff was hauled up' where c1 = 45;
+update t1 set c2 = 'I could go with you again' where c1 = 50;
+
+--error 1235
+select * from t1 order by semantic_distance(c2, 'The old man') limit 10;
+--error 4377
+select * from t1 order by semantic_distance(c2, 'The old man') approx limit 10;
+--error 4377
+select /*+ opt_param('rowsets_enabled', 'false') */ * from t1 order by semantic_distance(c2, 'The old man') approx limit 10;
+
+drop table t1;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 vector(3),c3 varchar(100) ,c4 vector(3));
+insert into t1 values(1,'[1,1,2]','ggggggggg','[1,3,2]');
+insert /*+ direct(true,100) enable_parallel_dml parallel(2) */ into t1 select c1+1, c2, c3, c4 from t1;
+create VECTOR index vector_idx1 on t1(c3) with (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+drop table t1;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+CREATE TABLE t1 (c1 int primary key, c2 varchar(100));
+insert into t1 values(1, "ob1");
+insert into t1 values(2, "");
+insert into t1 values(3, null);
+insert into t1 values(4, "ob4");
+create VECTOR index vector_idx1 on t1(c2) with (distance=l2, lib=vsag, type=hnsw, m=10, ef_construction=100, ef_search=40, model=ob_embed, dim=1024, sync_mode=IMMEDIATE);
+drop table t1;
+
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 varchar(100), c3 varchar(20), j json, c4 sparsevector,primary key(c1));
+insert into t_vec values(1, 'aadwdawdwadawass', 'a', '{"key":[7,932,22]}', '{1:0.1,2:0.2, 3:0.3}');
+--error 1235
+create vector index idx1 on t_vec(c2) with (distance=l2, type=hnswm, model=ob_embed, dim=1024, sync_mode=IMMEDIATE) with column group(each column);
+--error 1235
+create vector index idx1 on t_vec(c2) with (distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=IMMEDIATE) with column group(all columns);
+--error 1235
+create fulltext index idx1 on t_vec(c3) with column group(each column);
+--error 1235
+create fulltext index idx1 on t_vec(c3) with column group(all columns);
+--error 1235
+create index idx1 on t_vec((CAST(j->'$.key' AS UNSIGNED ARRAY))) with column group(each column);
+--error 1235
+create index idx1 on t_vec((CAST(j->'$.key' AS UNSIGNED ARRAY))) with column group(all columns);
+drop table t_vec;
+
+# bugfix: 2025101700111463000
+--disable_warnings
+drop table if exists tbl_65;
+--enable_warnings
+create TABLE tbl_65 ( col_1019 smallint  unsigned not null default 28746 ,col_1020 char ( 191 )    default 'KpflB^i2U9s8tK7sWB' ,col_1021 timestamp   not null default '2016-04-10' ,col_1022 bigint   not null default 8386665492819325807 ,col_1023 int  unsigned ,col_1024 varchar ( 123 )   not null ,col_1025 bit ( 28 )    default 262054020 ,col_1026 int  unsigned not null ,col_1027 smallint  unsigned  default 2990 ,col_1028 bit ( 14 )    default 11989 ,col_1029 smallint  unsigned  default 18662 ) DEFAULT CHARSET= latin1 ROW_FORMAT = DYNAMIC COMPRESSION = 'snappy_1.0' partition by hash ( col_1023 ) partitions 125;
+create vector index vector_idx_2918 ON tbl_65 ( col_1024 ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=async, sync_interval=10m );
+truncate table tbl_65;
+drop table tbl_65;
+
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+
+# check virtual table later
+PURGE RECYCLEBIN;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+drop database if exists post_create_vec;
+alter system set ob_vector_memory_limit_percentage = 0;
+--enable_query_log
+PURGE RECYCLEBIN;

@@ -1,0 +1,139 @@
+ob1=OBI(cluster=1,proxy_num=0,version=4_3_2_0);
+ob1.reboot;
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+ob_connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+
+let $table_name=__all_virtual_sql_audit;
+
+let $table_id=query_get_value(select table_id from __all_table where table_name='$table_name', table_id, 1);
+let $max_column_id=query_get_value(select max(column_id)+1 as c from __all_column where table_id=$table_id and tenant_id=0, c, 1);
+
+# 修改从 plan_id 到 execution_id 的所有列
+let $plan_id_column_id=query_get_value(select column_id from __all_column where table_id=$table_id and column_name='plan_id', column_id, 1);
+let $execution_id_column_id=query_get_value(select column_id from __all_column where table_id=$table_id and column_name='execution_id', column_id, 1);
+
+# 涉及max_column_id，后续添加表会导致测试出问题，所以不打印query_log
+--disable_query_log
+eval update __all_column set column_id=$max_column_id where table_id=$table_id and column_id=$execution_id_column_id;
+eval update __all_column_history set column_id=$max_column_id where table_id=$table_id and column_id=$execution_id_column_id;
+--enable_query_log
+
+# eval update __all_column set column_id=column_id + 1 where table_id=$table_id and column_id>=$plan_id_column_id and column_id<$execution_id_column_id;;
+# eval update __all_column_history set column_id=column_id + 1 where table_id=$table_id and column_id>=$plan_id_column_id and column_id<$execution_id_column_id;;
+
+--disable_query_log
+let $now=$execution_id_column_id;
+while ($now > $plan_id_column_id)
+{
+  eval update __all_column set column_id=column_id + 1 where table_id=$table_id and column_id=$now-1;
+  eval update __all_column_history set column_id=column_id + 1 where table_id=$table_id and column_id=$now-1;
+  dec $now;
+}
+--enable_query_log
+
+--disable_query_log
+eval update __all_column set column_id=$plan_id_column_id where table_id=$table_id and column_id=$max_column_id;
+eval update __all_column_history set column_id=$plan_id_column_id where table_id=$table_id and column_id=$max_column_id;
+--enable_query_log
+
+ob1.force_stop;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob_connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+
+# 验证root_inspection检查不出来
+alter system run job 'root_inspection';
+
+--disable_result_log
+--error 4016
+eval select*from $table_name limit 1;
+--enable_result_log
+
+# 验证升级无法解决这个问题
+alter system run upgrade job 'UPGRADE_ALL';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_ALL' order by job_id desc, SUCCESS, 600;
+
+alter system run job 'root_inspection';
+
+# 验证查询报错
+--disable_result_log
+--error 4016
+eval select*from $table_name limit 1;
+--enable_result_log
+
+# 升级到最新版
+alter system begin upgrade;
+alter system begin rolling upgrade;
+
+ob1.force_stop;
+ob1.upgrade;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob_connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+
+alter system end rolling upgrade;
+alter system run upgrade job 'UPGRADE_ALL';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_ALL' order by job_id desc, SUCCESS, 600;
+alter system end upgrade;
+
+# 前面upgrade_all成功可能是这张虚拟表加了列触发的修改，因此这里再改一遍
+let $max_column_id=query_get_value(select max(column_id)+1 as c from __all_column where table_id=$table_id and tenant_id=0, c, 1);
+
+--disable_query_log
+eval update __all_column set column_id=$max_column_id where table_id=$table_id and column_id=$execution_id_column_id;
+eval update __all_column_history set column_id=$max_column_id where table_id=$table_id and column_id=$execution_id_column_id;
+--enable_query_log
+
+# eval update __all_column set column_id=column_id + 1 where table_id=$table_id and column_id>=$plan_id_column_id and column_id<$execution_id_column_id;;
+# eval update __all_column_history set column_id=column_id + 1 where table_id=$table_id and column_id>=$plan_id_column_id and column_id<$execution_id_column_id;;
+
+--disable_query_log
+let $now=$execution_id_column_id;
+while ($now > $plan_id_column_id)
+{
+  eval update __all_column set column_id=column_id + 1 where table_id=$table_id and column_id=$now-1;
+  eval update __all_column_history set column_id=column_id + 1 where table_id=$table_id and column_id=$now-1;
+  dec $now;
+}
+--enable_query_log
+
+--disable_query_log
+eval update __all_column set column_id=$plan_id_column_id where table_id=$table_id and column_id=$max_column_id;
+eval update __all_column_history set column_id=$plan_id_column_id where table_id=$table_id and column_id=$max_column_id;
+--enable_query_log
+
+ob1.force_stop;
+ob1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob_connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+
+# root_inspection 检查出来修改，升级解决问题
+--disable_result_log
+--error 4029
+alter system run job 'root_inspection';
+--enable_result_log
+alter system run upgrade job 'UPGRADE_VIRTUAL_SCHEMA';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_VIRTUAL_SCHEMA' order by job_id desc, SUCCESS, 600;
+alter system run job 'root_inspection';
+
+--disable_result_log
+eval select * from $table_name limit 1;
+--enable_result_log

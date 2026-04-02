@@ -1,0 +1,66 @@
+# owner: yongle.xh
+# owner group: storage
+# description: this case is use for migrate_rebuild_during_wait_replay
+#
+
+--disable_query_log
+ob1=OBI(cluster=1:2:1,proxy_num=0,init_unit_cpu=2, init_unit_num=1);
+
+ob1.z2.obs1.set status=disable;
+ob1.reboot;
+
+#设置灰度切主的时间为0, 关闭自动切主，关闭自动balance
+ob1.mysql alter system set resource_soft_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rebalance=true;
+ob1.mysql alter system set enable_rereplication=false;
+ob1.mysql alter system set balancer_idle_time='10s';
+
+ob1.create_client tenant=obtest,user=root,passwd=,database=test;
+
+create table test01(c1 int, c2 int, c3 varchar(4096), primary key(c1)) primary_zone='z1';
+
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, 'oceanbase');
+  inc $cnt;
+}
+
+ob1.z1.obs0.mysql alter system major freeze;
+ob1.check_version 2;
+
+ob1.z2.obs1.set status=enable;
+ob1.z2.obs1.start;
+sleep 10;
+ob1.z2.obs1.add;
+sleep 30;
+
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = 'obtestpool', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone='z2' and resource_pool_id=$pool_id, unit_id, 1);
+
+ob1.mysql alter system set slog_size='0K';
+ob1.mysql alter system set fake_replay_start_point=true;
+sleep 3;
+ob1.z2.migrate_unit $unit_id;
+ob1.check_no_migrate_unit 240;
+
+ob1.mysql alter system set slog_size='256M';
+sleep 3;
+
+ob1.z2.migrate_unit $unit_id;
+ob1.check_no_migrate_unit 240;
+
+
+ob1.z1.obs0.mysql alter system major freeze;
+ob1.check_version 3;
+sleep 10;
+
+ob1.z2.obs1.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2' and status = 'inactive', 1, 60; 
+ob1.z2.obs1.force_stop;
+sleep 2;
+ob1.z2.obs1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone='z2' and status='active', 2, 60; 
+

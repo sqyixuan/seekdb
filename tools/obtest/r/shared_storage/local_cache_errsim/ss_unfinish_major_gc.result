@@ -1,0 +1,41 @@
+'1. =========== bootstrap ==========='
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+'2. =========== create tenant ==========='
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT gc_tenant RESOURCE_POOL_LIST=('tenant_pool') SET ob_tcp_invited_nodes='%';
+'3. =========== create table and insert data ==========='
+create table t (a int);
+insert into t values (1);
+'4. =========== major freeze ==========='
+alter system set ob_compaction_schedule_interval = '10s';
+alter system major freeze;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+'5. =========== insert data again ==========='
+insert into t values (2);
+'6. =========== major freeze again ==========='
+ob1.mysql alter system set_tp tp_no=746, error_code=3, frequency=1;
+alter system major freeze;
+'7. =========== wait gc meta version ==========='
+alter system set _ss_old_ver_retention_time = '1s';
+$shared_obs.check_log_until_success -c "there is uncompaction finish tablet_version.*id:$tablet_id";
+$shared_obs.check_log_until_success -c "finish shared tablet meta gc.*ret=0.*id:$tablet_id";
+'8. =========== clear cache ==========='
+alter system flush kvcache tenant='gc_tenant';
+alter system flush ss_micro_cache tenant='gc_tenant';
+alter system flush kvcache tenant='gc_tenant';
+alter system flush ss_micro_cache tenant='gc_tenant';
+'9. reboot'
+ob1.restart;
+'10. select old version'
+select*from t;
+a
+1
+2
+ob1.mysql alter system set_tp tp_no=746, error_code=3, frequency=0;

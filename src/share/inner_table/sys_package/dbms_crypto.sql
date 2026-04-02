@@ -1,0 +1,69 @@
+#package_name:DBMS_CRYPTO
+#author: mingdou.tmd
+
+CREATE OR REPLACE PACKAGE DBMS_CRYPTO AS
+
+  HASH_MD4           CONSTANT PLS_INTEGER  :=     1;
+  HASH_MD5           CONSTANT PLS_INTEGER  :=     2;
+  HASH_SH1           CONSTANT PLS_INTEGER  :=     3;
+  HASH_SH256         CONSTANT PLS_INTEGER  :=     4;
+  HASH_SH384         CONSTANT PLS_INTEGER  :=     5;
+  HASH_SH512         CONSTANT PLS_INTEGER  :=     6;
+  HASH_SM3           CONSTANT PLS_INTEGER  :=     7;
+
+  ENCRYPT_DES        CONSTANT PLS_INTEGER  :=     1;
+  ENCRYPT_3DES_2KEY  CONSTANT PLS_INTEGER  :=     2;
+  ENCRYPT_3DES       CONSTANT PLS_INTEGER  :=     3;
+  ENCRYPT_AES128     CONSTANT PLS_INTEGER  :=     6;
+  ENCRYPT_AES192     CONSTANT PLS_INTEGER  :=     7;
+  ENCRYPT_AES256     CONSTANT PLS_INTEGER  :=     8;
+  ENCRYPT_SM4        CONSTANT PLS_INTEGER  :=     9;
+
+  CHAIN_CBC          CONSTANT PLS_INTEGER  :=   256;
+  CHAIN_CFB          CONSTANT PLS_INTEGER  :=   512;
+  CHAIN_ECB          CONSTANT PLS_INTEGER  :=   768;
+  CHAIN_OFB          CONSTANT PLS_INTEGER  :=  1024;
+
+  PAD_PKCS5          CONSTANT PLS_INTEGER  :=  4096;
+  PAD_NONE           CONSTANT PLS_INTEGER  :=  8192;
+
+  LEGACY_DEFAULT_IV  CONSTANT VARCHAR2(16) := '0123456789ABCDEF';
+
+  DES_CBC_PKCS5      CONSTANT PLS_INTEGER  := ENCRYPT_DES
+                                              + CHAIN_CBC
+                                              + PAD_PKCS5;
+
+  DES3_CBC_PKCS5     CONSTANT PLS_INTEGER  := ENCRYPT_3DES
+                                              + CHAIN_CBC
+                                              + PAD_PKCS5;
+
+  FUNCTION ENCRYPT(
+    src IN RAW,
+    typ IN PLS_INTEGER,
+    key IN RAW,
+    iv  IN RAW DEFAULT NULL
+  )
+  RETURN RAW;
+
+  FUNCTION DECRYPT (
+    src IN RAW,
+    typ IN PLS_INTEGER,
+    key IN RAW,
+    iv  IN RAW DEFAULT NULL
+  )
+  RETURN RAW;
+
+  FUNCTION Hash (src IN RAW,
+                 typ IN PLS_INTEGER)
+  RETURN RAW DETERMINISTIC;
+
+  FUNCTION Hash (src IN BLOB,
+                 typ IN PLS_INTEGER)
+  RETURN RAW DETERMINISTIC;
+
+  FUNCTION Hash (src IN CLOB CHARACTER SET ANY_CS,
+                 typ IN PLS_INTEGER)
+  RETURN RAW DETERMINISTIC;
+
+END DBMS_CRYPTO;
+//

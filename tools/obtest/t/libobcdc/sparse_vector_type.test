@@ -1,0 +1,188 @@
+#
+# owner: lb446709
+# owner group: shenzhen
+# description: sparse_vector_type basic test
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建mysql租户 oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant_with_gts.inc;
+
+create database oblog_db1;
+
+use oblog_db1;
+
+# max size of map is 32MB
+alter tenant oblog_tt set variables max_allowed_packet=52428800;
+set global max_allowed_packet=52428800;
+
+# 设置事务超时时间: 100秒
+set ob_trx_timeout=100000000;
+set ob_query_timeout = 100000000;
+
+let $record_cnt=0;
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+echo "[CASE_BEGIN] [sparse_vector_type]";
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -x;
+ob1.oblog.restart;
+
+echo "[SECTION_BEGIN] [basic_test]";
+create table sparse_vector_t1(c1 int primary key, c2 SparseVector);
+ob1.oblog.next;
+inc $record_cnt;
+
+# insert null
+insert into sparse_vector_t1 values(0, null);
+ob1.oblog.next;
+inc $record_cnt;
+
+insert into sparse_vector_t1 values(1, '{}');
+ob1.oblog.next;
+inc $record_cnt;
+
+insert into sparse_vector_t1 values(2, '{1:1.2, 3:1.3}');
+ob1.oblog.next;
+inc $record_cnt;
+
+insert into sparse_vector_t1 values(3, '{1:1.2, 1:1.3}');
+ob1.oblog.next;
+inc $record_cnt;
+
+insert into sparse_vector_t1 values(4, '{3:1.2, 1:1.3}');
+ob1.oblog.next;
+inc $record_cnt;
+
+# update test
+update sparse_vector_t1 set c2= '{5:3.4, 100:3}' where c1 = 0;
+ob1.oblog.next;
+inc $record_cnt;
+
+update sparse_vector_t1 set c2='{100:3.4, 5:100}' where c1=1;
+ob1.oblog.next;
+inc $record_cnt;
+
+update sparse_vector_t1 set c2=null where c1 = 2;
+ob1.oblog.next;
+inc $record_cnt;
+
+# update primary key
+update sparse_vector_t1 set c1 = 12 where c1 = 3;
+ob1.oblog.next;
+inc $record_cnt;
+
+delete from sparse_vector_t1 where c1 = 1;
+ob1.oblog.next;
+inc $record_cnt;
+
+drop table sparse_vector_t1;
+ob1.oblog.next;
+inc $record_cnt;
+
+# stop libobcdc
+ob1.oblog.stop;
+
+echo "[SECTION_END] [basic_test]";
+
+echo "[SECTION_BEGIN] [outrow_test]";
+
+# 启动liboblog，同步oblog_tt租户数据，改变extra_argument
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG meta_data_refresh_mode=data_dict;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $record_cnt)
+{
+  ob1.oblog.next;
+  inc $idx;
+}
+
+## test outrow sparse vector
+
+CREATE FUNCTION generate_large_map(count int) RETURNS LONGTEXT DETERMINISTIC BEGIN DECLARE result LONGTEXT DEFAULT '{'; DECLARE i INT DEFAULT 1; WHILE i <= count DO SET result = CONCAT(result, i, ':', i); IF i < count THEN SET result = CONCAT(result, ','); END IF; IF i >= count THEN SET result = CONCAT(result, '}'); END IF; SET i = i + 1; END WHILE; RETURN result; END;
+ob1.oblog.next;
+
+# CREATE FUNCTION generate_large_map(count int) 
+# RETURNS LONGTEXT
+# DETERMINISTIC
+# BEGIN
+#     DECLARE result LONGTEXT DEFAULT '{';
+#     DECLARE i INT DEFAULT 1;
+#     WHILE i <= count DO
+#         SET result = CONCAT(result, i, ':', i);
+#         IF i < count THEN
+#             SET result = CONCAT(result, ',');
+#         END IF;
+#         IF i >= count THEN
+#             SET result = CONCAT(result, '}');
+#         END IF;
+#         SET i = i + 1;
+#     END WHILE;
+#     RETURN result;
+# END;
+
+SET @large_sparse_vector1:=generate_large_map(5000);
+SET @large_sparse_vector2:=generate_large_map(5001);
+SET @large_sparse_vector3:=generate_large_map(5002);
+select length(@large_sparse_vector1);
+select length(@large_sparse_vector2);
+select length(@large_sparse_vector3);
+
+drop function generate_large_map;
+ob1.oblog.next;
+
+create table outrow_sparse_vector_t1(c1 int primary key, c2 SparseVector);
+ob1.oblog.next;
+
+# insert outrow
+insert into outrow_sparse_vector_t1 values(1, @large_sparse_vector1);
+ob1.oblog.next;
+select md5(@large_sparse_vector1);
+
+insert into outrow_sparse_vector_t1 values(2, @large_sparse_vector2);
+ob1.oblog.next;
+select md5(@large_sparse_vector2);
+
+## outrow->outrow
+update outrow_sparse_vector_t1 set c2=@large_sparse_vector3 where c1=1;
+ob1.oblog.next;
+select md5(@large_sparse_vector3);
+
+## outrow->inrow
+update outrow_sparse_vector_t1 set c2='{1:1.2}' where c1=1;  
+ob1.oblog.next;
+
+## outrow->null
+update outrow_sparse_vector_t1 set c2=null where c1=2;
+ob1.oblog.next;
+
+## null->outrow
+update outrow_sparse_vector_t1 set c2=@large_sparse_vector3 where c1=2;
+ob1.oblog.next;
+select md5(@large_sparse_vector3);
+
+## inrow->null
+update outrow_sparse_vector_t1 set c2=null where c1=1;  
+ob1.oblog.next;
+
+## null->inrow
+update outrow_sparse_vector_t1 set c2='{1:1.2}' where c1=1;  
+ob1.oblog.next;
+
+## delete outrow
+delete from outrow_sparse_vector_t1 where c1=2;
+ob1.oblog.next;
+
+drop table outrow_sparse_vector_t1;
+ob1.oblog.next;
+
+echo "[SECTION_END] [outrow_test]";
+
+echo "[CASE_END] [case_name]";

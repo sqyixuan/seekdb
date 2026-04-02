@@ -1,0 +1,17 @@
+connection tentsql_conn;
+create database test_mview;
+use test_mview;
+create table t1(c1 int primary key, c2 int, c3 int, c4 int);
+create table t1_mix(c1 int primary key, c2 int, c3 int, c4 int);
+create materialized view log on t1 with primary key, sequence (c2, c3) including new values;
+create materialized view mv1 refresh fast on demand as select c2 as c2, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3 from t1 group by c2;
+create materialized view mv2 as select * from t1;
+create sequence s1 cache 1000000 noorder;
+call dbms_mview_stats.set_mvref_stats_params('mv1', 'NONE', 31);
+call dbms_mview_stats.set_mvref_stats_params('mv2', 'NONE', 31);
+select OWNER,MVIEW_NAME,CONTAINER_NAME,QUERY,REFRESH_MODE,REFRESH_METHOD,BUILD_MODE,LAST_REFRESH_DATE IS NULL,LAST_REFRESH_END_TIME IS NULL from oceanbase.DBA_MVIEWS where OWNER = 'test_mview' AND MVIEW_NAME IN ('mv1', 'mv2') ORDER BY MVIEW_NAME;
+insert into t1 select s1.nextval, s1.nextval, s1.nextval, s1.nextval from table(generator(100000));
+#insert into t1 select s1.nextval, s1.nextval, s1.nextval, s1.nextval from table(generator(100));
+call dbms_mview.refresh('mv1');
+call dbms_mview.refresh('mv2');
+select OWNER,MVIEW_NAME,CONTAINER_NAME,QUERY,REFRESH_MODE,REFRESH_METHOD,BUILD_MODE,LAST_REFRESH_DATE IS NULL,LAST_REFRESH_END_TIME IS NULL,TIMESTAMPDIFF(SECOND, LAST_REFRESH_DATE, LAST_REFRESH_END_TIME) < 10 from oceanbase.DBA_MVIEWS where OWNER = 'test_mview' AND MVIEW_NAME IN ('mv1', 'mv2') ORDER BY MVIEW_NAME;

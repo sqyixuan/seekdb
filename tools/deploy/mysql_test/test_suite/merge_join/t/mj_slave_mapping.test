@@ -1,0 +1,160 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhenling.zzg
+#owner group: sql3
+#tags: optimizer
+
+--disable_warnings
+set recyclebin = off;
+drop database if exists muhangtest_slave_mapping;
+#drop table if exists t1;
+#drop table if exists t2;
+#drop table if exists t3;
+#drop table if exists t4;
+#drop table if exists t5;
+#drop table if exists lineitem;
+#drop table if exists part;
+#drop table if exists customer;
+#drop table if exists orders;
+purge recyclebin;
+drop tablegroup if exists pq_map_pwj;
+create database muhangtest_slave_mapping;
+use muhangtest_slave_mapping;
+set recyclebin = on;
+--enable_warnings
+
+create tablegroup pq_map_pwj;
+
+create table lineitem(
+ l_orderkey           bigint NOT NULL ,
+ l_partkey            bigint NOT NULL ,
+ l_suppkey            bigint NOT NULL ,
+ l_linenumber         bigint NOT NULL ,
+ l_quantity           bigint NOT NULL ,
+ l_extendedprice      number(10,2) NOT NULL ,
+ l_discount           number(10,2) NOT NULL ,
+ l_tax                number(10,2) NOT NULL ,
+ l_returnflag         char(1) ,
+ l_linestatus         char(1) ,
+ l_shipdate           date ,
+ l_commitdate         date ,
+ l_receiptdate        date ,
+ l_shipinstruct       char(25) ,
+ l_shipmode           char(10) ,
+ l_comment            varchar(44),
+ primary key(L_ORDERKEY, L_LINENUMBER),
+ index
+ i_l_orderkey(l_orderkey)
+  local
+  ) tablegroup = pq_map_pwj partition by hash(L_ORDERKEY) partitions 5;
+
+
+create table part(
+ p_partkey            bigint NOT NULL ,
+ p_name               varchar(55) ,
+ p_mfgr               char(25) ,
+ p_brand              char(10) ,
+ p_type               varchar(25) ,
+ p_size               bigint ,
+ p_container          char(10) ,
+ p_retailprice        number(10,2) ,
+ p_comment            varchar(23) ,
+ primary key (P_PARTKEY)
+  ) tablegroup = pq_map_pwj partition by hash(P_PARTKEY) partitions 5;
+
+create table customer(
+ c_custkey            bigint NOT NULL ,
+ c_name               varchar(25) ,
+ c_address            varchar(40) ,
+ c_nationkey          bigint ,
+ c_phone              char(15) ,
+ c_acctbal            number(10,2) ,
+ c_mktsegment         char(10) ,
+ c_comment            varchar(117),
+ primary key(C_CUSTKEY),
+ unique index i_c_custkey(c_custkey) local
+  ) tablegroup = pq_map_pwj partition by hash(C_CUSTKEY) partitions 5;
+
+create table orders(
+ o_orderkey           bigint NOT NULL ,
+ o_custkey            bigint NOT NULL ,
+ o_orderstatus        char(1) ,
+ o_totalprice         number(10,2) ,
+ o_orderdate          date ,
+ o_orderpriority      char(15) ,
+ o_clerk              char(15) ,
+ o_shippriority       bigint ,
+ o_comment            varchar(79),
+ primary key(o_orderkey),
+ index(o_orderkey) local
+  ) tablegroup = pq_map_pwj partition by hash(o_orderkey) partitions 5;
+
+## 只有hash join hint才会生效
+explain select /*TPC-H Q18 parallel(2) pq_map(orders)*/ c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice, sum(l_quantity) from customer, orders, lineitem where o_orderkey in ( select l_orderkey from lineitem group by l_orderkey having sum(l_quantity) > 314 ) and c_custkey = o_custkey and o_orderkey = l_orderkey group by c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice order by o_totalprice desc, o_orderdate limit 100;
+
+
+create table t1 (c1 int, c2 int, c3 int) tablegroup = pq_map_pwj partition by hash(c1) partitions 5;
+create table t2 (c1 int, c2 int, c3 int) tablegroup = pq_map_pwj partition by hash(c1) partitions 5;
+create table t3 (c1 int, c2 int, c3 int) tablegroup = pq_map_pwj partition by hash(c1) partitions 5;
+
+--let $count=1
+while($count < 60)
+{
+    --let $stmt=INSERT INTO t1 VALUES($count, $count, $count)
+    eval $stmt;
+    --let $stmt=INSERT INTO t2 VALUES($count, $count, $count)
+    eval $stmt;
+    --let $stmt=INSERT INTO t3 VALUES($count, $count, $count)
+    eval $stmt;
+    inc $count; 
+}
+
+explain select /*+use_px parallel(4) leading(t1 t2) use_merge(t1 t2) pq_map(t2) */ * from t1,t2,t3 where t1.c1 = t2.c1 and t1.c1 = t3.c1;
+explain extended_noaddr select /*+use_px parallel(4) leading(t1 t2) use_merge(t1 t2) pq_map(t2) */ * from t1,t2 where t1.c1 = t2.c1;
+explain select /*+use_px parallel(4) leading(t1 t2) use_merge(t1 t2) */ * from t1,t2 where t1.c1 = t2.c1;
+
+--sorted_result
+select /*+use_px parallel(4) leading(t1 t2) use_merge(t1 t2) pq_map(t2) */ * from t1,t2 where t1.c1 = t2.c1;
+
+
+create table t4(c1 int primary key, c2 int, c3 int, c4 date);
+create table t5(c1 int(11) not null, c2 int(11) not null, c3 int(11) not null, primary key (c1, c2, c3)) partition by hash(c1) partitions 4;
+
+insert into t4 values(1,1,1,'1991-1-1');
+insert into t4 values(2,2,2,'1991-1-1');
+insert into t4 values(3,3,3,'1991-1-1');
+insert into t4 values(4,4,4,'1991-1-1');
+
+insert into t5 values(1,1,1);
+insert into t5 values(2,2,2);
+insert into t5 values(3,3,3);
+insert into t5 values(4,4,4);
+
+explain basic select /*+pq_map(t5) leading(t4 t5) use_merge(t5)*/ * from t4 join t5 on t4.c2 = t5.c1;
+--sorted_result
+select /*+pq_map(t5) leading(t4 t5) use_merge(t5)*/ * from t4 join t5 on t4.c2 = t5.c1;
+
+explain select /*+pq_map(t5) pq_distribute(t5 broadcast none) leading(t4 t5) use_merge(t5)*/ * from t4 join t5 on t4.c2 = t5.c1;
+--sorted_result
+select /*+pq_map(t5) pq_distribute(t5 broadcast none) leading(t4 t5) use_merge(t5) parallel(2)*/ * from t4 join t5 on t4.c2 = t5.c1;
+## 看看plan cache生效与否
+select hints_info, hints_all_worked from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where sql_id='F0AB1B550C737B7DA8D2024E355703CB';
+explain select
+/*+
+  BEGIN_OUTLINE_DATA
+  LEADING(@"SEL$1" ("muhangtest_slave_mapping.t4"@"SEL$1" "muhangtest_slave_mapping.t5"@"SEL$1" ))
+  use_merge(@"SEL$1" ("muhangtest_slave_mapping.t5"@"SEL$1" ))
+  PQ_DISTRIBUTE(@"SEL$1" ("muhangtest_slave_mapping.t5"@"SEL$1" ) BROADCAST NONE)
+  PQ_MAP(@"SEL$1" "muhangtest_slave_mapping.t5"@"SEL$1" )
+  FULL(@"SEL$1" "muhangtest_slave_mapping.t4"@"SEL$1")
+  FULL(@"SEL$1" "muhangtest_slave_mapping.t5"@"SEL$1")
+  END_OUTLINE_DATA
+ */
+* from t4 join t5 on t4.c2 = t5.c1;
+
+explain select * from t4 join t5 on t4.c2 = t5.c1;
+--sorted_result
+select * from t4 join t5 on t4.c2 = t5.c1;
+
+

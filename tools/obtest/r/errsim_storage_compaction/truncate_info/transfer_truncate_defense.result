@@ -1,0 +1,95 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+ob1.mysql alter system set _enable_adaptive_compaction = false tenant obtest;
+ob1.mysql alter system set _ob_enable_truncate_partition_preserve_global_index=true tenant obtest;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'TRUNCATE_PARTITION_TRANS wait_for signal1';
+create table test01(c1 int, c2 int, primary key(c1, c2)) partition by list(c1) (
+partition p0 values in ((100)),
+partition p1 values in ((200), (300)),
+partition p2 values in ((400)),
+partition p3 values in ((500), (700)),
+partition p4 values in (DEFAULT));
+create unique index idx1 on test01(c2) global;
+INSERT ROW (30-0) * 5
+alter table test01 truncate partition p1,p2,p4;
+# transfer meet table lock
+ob1.mysql ALTER SYSTEM TRANSFER PARTITION TABLE_ID=$index_table_id, OBJECT_ID=$object_id  TO LS $dst_ls_id tenant 'obtest';
+# verify offline ddl hidden table is treated as lock conflict table in transfer
+ob1.check_until_timeout select count(*) > 1 from oceanbase.__all_virtual_transfer_task_history where tenant_id = $tenant_id and lock_conflict_part_list like '%$index_table_id%', 1, 600;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal1';
+# wait balance job finish
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where tenant_id = $tenant_id, 0, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where tenant_id = $tenant_id, 0, 30;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_mds_node_stat where tenant_id = $tenant_id and ls_id=$dst_ls_id and tablet_id=$transfer_tablet_id and unit_id=5, 1, 100;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'AFTER_TRANSFER_PROCESS_INIT_TASK_AND_BEFORE_NOTIFY_STORAGE wait_for signal1';
+# start another transfer task
+ob1.mysql ALTER SYSTEM TRANSFER PARTITION TABLE_ID=$index_table_id, OBJECT_ID=$object_id  TO LS $dst_ls_id tenant 'obtest';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_balance_job, 1, 200;
+alter table test01 truncate partition p3;
+ob1.check_until_timeout select count(*) > 0 from __all_server_event_history where module='ddl_errsim' and event='ddl_retry' and name2="err" and value2="OB_EAGAIN", 1, 600;
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal1';
+# wait balance job finish
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $tenant_id, 0, 100;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where tenant_id = $tenant_id, 0, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_transfer_task where tenant_id = $tenant_id, 0, 30;
+alter table test01 truncate partition p3,p4;
+ob1.mysql alter system major freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$transfer_tablet_id and type="MAJOR_MERGE" and compaction_scn=$major_scn1 and mds_filter_info!='', 1, 300;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+INSERT ROW (50-30) * 5
+alter table test01 truncate partition p0,p4;
+# start another transfer task
+ob1.mysql ALTER SYSTEM TRANSFER PARTITION TABLE_ID=$index_table_id, OBJECT_ID=$object_id  TO LS $dst_ls_id tenant 'obtest';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_balance_job, 1, 200;
+ob1.mysql alter system major freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_tablet_compaction_history where tablet_id=$transfer_tablet_id and type="MAJOR_MERGE" and compaction_scn=$major_scn2 and mds_filter_info!='', 1, 300;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+ob1.mysql alter system set allow_transfer_backfill = 'False' tenant = 'obtest';
+INSERT ROW (60-50) * 5
+select count(*) from test01;
+count(*)
+51
+alter table test01 truncate partition p4;
+select count(*) from test01;
+count(*)
+1
+begin;
+select /*+INDEX(test01 primary)*/count(*) from test01;
+count(*)
+1
+select /*+INDEX(test01 idx1)*/count(*) from test01;
+count(*)
+1
+commit;
+# start another transfer task
+ob1.mysql ALTER SYSTEM TRANSFER PARTITION TABLE_ID=$index_table_id, OBJECT_ID=$object_id  TO LS $dst_ls_id tenant 'obtest';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_to_ls where tablet_id = $transfer_tablet_id and ls_id =$dst_ls_id, 1, 300;
+INSERT ROW (70-60) * 5
+# query duing transfer
+begin;
+select /*+INDEX(test01 primary)*/count(*) from test01;
+count(*)
+51
+select /*+INDEX(test01 idx1)*/count(*) from test01;
+count(*)
+51
+commit;
+ob1.mysql alter system set allow_transfer_backfill = 'true' tenant = 'obtest';
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_balance_job, 0, 1200;
+# query after transfer
+begin;
+select /*+INDEX(test01 primary)*/count(*) from test01;
+count(*)
+51
+select /*+INDEX(test01 idx1)*/count(*) from test01;
+count(*)
+51
+rollback;

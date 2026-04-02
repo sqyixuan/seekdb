@@ -1,0 +1,6023 @@
+purge recyclebin;
+mysql不支持并行执行，只是兼容parallel hint的语法。  obmysql模式支持并行
+SET SESSION sql_mode = 'ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION';
+DROP TABLE lyq_test_fk;
+DROP TABLE lyq_test;
+CREATE TABLE lyq_test(  
+c1 int primary key,  
+c2 float, 
+c3 DECIMAL(5,2) DEFAULT null, 
+c4 BLOB(100), 
+c5 bit(16),
+c6 datetime, 
+c7 json NOT NULL,
+c8 SET('a', 'b', 'c', 'd'),   
+c9 timestamp,
+c10 VARCHAR(100) GENERATED ALWAYS AS(c7) VIRTUAL COMMENT '生成列') 
+PARALLEL 5
+PARTITION BY LIST (c1)(
+PARTITION p_list_unique_t_1 VALUES IN (1,2,3,4,5,6),
+PARTITION p_list_unique_t_2 VALUES IN (7,8,9,10,11),
+PARTITION p_list_unique_t_3 VALUES IN (12,13,14,15,16));
+DROP PROCEDURE get_data1;
+CREATE  PROCEDURE get_data1(in j int)
+begin
+DECLARE i int;
+set i = 1;
+while i <= j DO
+insert into lyq_test(c1,c2,c3,c4,c5,c6,c7,c8,c9) values(i,mod(i,5),round(i/8, 0),substr('这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试',round(i/1, 0)),
+hex((CASE round(i/20, 0) WHEN 0 THEN 1 ELSE round(i/20, 0) END)),ADDDATE('2018-12-22 22:22:22', round(i/6, 0)*10000) ,JSON_ARRAY(mod(i,5), "abc", NULL, TRUE, '{"a":100}'),
+CASE mod(i,5) WHEN 0 THEN null ELSE 'b,d' END,ADDDATE('2018-12-22 22:22:22', 1 ));
+set i = i + 1;
+end WHILE;
+end;
+//
+call get_data1(15);
+create table lyq_test_fk(
+c1 INT,
+c2 VARCHAR(100)) 
+NOPARALLEL
+;
+DROP PROCEDURE get_data2;
+CREATE  PROCEDURE get_data2(in j int)
+begin
+DECLARE i int;
+set i = 1;
+while i <= j DO
+insert into lyq_test_fk values(i,CASE mod(i,5) WHEN 0 THEN null ELSE mod(i,5) END);
+set i = i + 1;
+end WHILE;
+end;
+//
+call get_data2(9);
+create-1-1 普通索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T1 ON lyq_test(c1);
+create-1-3 组合索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T3 ON lyq_test(c3,c2,c5);
+create-1-4 hash索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T4 USING HASH ON lyq_test(c6);
+create-1-5 json 生成列索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T5 ON lyq_test(c10);
+create-1-6 全局分区索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T6 ON lyq_test(c1)
+GLOBAL   PARTITION BY RANGE (c1)(
+PARTITION less_3 VALUES less than (2),
+PARTITION b_3_8 VALUES less than (5),
+PARTITION b_8_2000 VALUES less than (2000),
+PARTITION greater_2000 VALUES less than MAXVALUE);
+distinct
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c1),c1,count(distinct c2),count(distinct c2) FROM lyq_test where c8 is not null and c4 like '%测试%'  
+GROUP BY c1,c2 with ROLLUP  HAVING c2 NOT IN (4) order by c1;
+grouping(c1)	c1	count(distinct c2)	count(distinct c2)
+0	1	1	1
+0	11	1	1
+0	12	1	1
+0	13	1	1
+0	2	1	1
+0	3	1	1
+0	6	1	1
+0	7	1	1
+0	8	1	1
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c2),c1,min(distinct c2),min(distinct c9) FROM lyq_test where c3 <> 2 GROUP BY c1,c9,(c2) with rollup
+HAVING c2 > some(SELECT  min(c2) FROM lyq_test GROUP BY c3 with ROLLUP) order by c1;
+grouping(c2)	c1	min(distinct c2)	min(distinct c9)
+0	1	1	2018-12-23 22:22:22
+0	11	1	2018-12-23 22:22:22
+0	2	2	2018-12-23 22:22:22
+0	3	3	2018-12-23 22:22:22
+0	4	4	2018-12-23 22:22:22
+0	6	1	2018-12-23 22:22:22
+0	7	2	2018-12-23 22:22:22
+0	8	3	2018-12-23 22:22:22
+0	9	4	2018-12-23 22:22:22
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ CASE  WHEN avg(distinct c2) =1  THEN 1 when avg( distinct c2) > 1 then 2 else 3 END as a FROM lyq_test 
+where c3 is not null and c4 like '这是aseri%'  GROUP BY c3 with ROLLUP HAVING c3 NOT IN (4,40,400) order by c3;
+a
+1
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ c1,min(distinct c2),max(distinct c9),count(distinct c4),sum(distinct c6), avg(distinct c2) FROM lyq_test 
+where c3 <> 2 GROUP BY c1,c9,c4,c2,c3 with ROLLUP HAVING c2 > any(SELECT  min(c2) FROM lyq_test GROUP BY c3 with ROLLUP ) order by c1;
+c1	min(distinct c2)	max(distinct c9)	count(distinct c4)	sum(distinct c6)	avg(distinct c2)
+1	1	2018-12-23 22:22:22	1	20181222222222	1
+1	1	2018-12-23 22:22:22	1	20181222222222	1
+11	1	2018-12-23 22:22:22	1	20730924222222	1
+11	1	2018-12-23 22:22:22	1	20730924222222	1
+2	2	2018-12-23 22:22:22	1	20181222222222	2
+2	2	2018-12-23 22:22:22	1	20181222222222	2
+3	3	2018-12-23 22:22:22	1	20460509222222	3
+3	3	2018-12-23 22:22:22	1	20460509222222	3
+4	4	2018-12-23 22:22:22	1	20460509222222	4
+4	4	2018-12-23 22:22:22	1	20460509222222	4
+6	1	2018-12-23 22:22:22	1	20460509222222	1
+6	1	2018-12-23 22:22:22	1	20460509222222	1
+7	2	2018-12-23 22:22:22	1	20460509222222	2
+7	2	2018-12-23 22:22:22	1	20460509222222	2
+8	3	2018-12-23 22:22:22	1	20460509222222	3
+8	3	2018-12-23 22:22:22	1	20460509222222	3
+9	4	2018-12-23 22:22:22	1	20730924222222	4
+9	4	2018-12-23 22:22:22	1	20730924222222	4
+select /*+ parallel(3) NO_USE_HASH_AGGREGATION */ grouping(c8),c1,min(distinct c2),max(distinct c2),count(distinct c2),sum(distinct c2), avg(distinct c2) FROM lyq_test 
+where c3 <> 2 GROUP BY c1,c9,c4,c2,c8 with ROLLUP HAVING c2 > any(SELECT  min(c2) FROM lyq_test GROUP BY c8 with ROLLUP ) order by 1, 2;
+grouping(c8)	c1	min(distinct c2)	max(distinct c2)	count(distinct c2)	sum(distinct c2)	avg(distinct c2)
+0	1	1	1	1	1	1
+0	11	1	1	1	1	1
+0	2	2	2	1	2	2
+0	3	3	3	1	3	3
+0	4	4	4	1	4	4
+0	6	1	1	1	1	1
+0	7	2	2	1	2	2
+0	8	3	3	1	3	3
+0	9	4	4	1	4	4
+1	1	1	1	1	1	1
+1	11	1	1	1	1	1
+1	2	2	2	1	2	2
+1	3	3	3	1	3	3
+1	4	4	4	1	4	4
+1	6	1	1	1	1	1
+1	7	2	2	1	2	2
+1	8	3	3	1	3	3
+1	9	4	4	1	4	4
+select /*+ parallel(3) */ count(distinct cast(c2 as char(100))),sum(distinct c2) FROM lyq_test where c2 is not null  
+GROUP BY c1,c4 with ROLLUP HAVING sum(distinct c1) NOT IN (4) order by c1;
+count(distinct cast(c2 as char(100)))	sum(distinct c2)
+1	0
+1	0
+1	0
+1	0
+1	0
+1	0
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+1	2
+1	2
+1	2
+1	2
+1	2
+1	2
+1	3
+1	3
+1	3
+1	3
+1	3
+1	3
+1	4
+1	4
+1	4
+1	4
+5	10
+select /*+ parallel(3) */ c1,count(distinct upper(c6)),avg(distinct c3) FROM lyq_test where c2 is not null and c4 like '%这是aseri%'  
+GROUP BY c1,c3 with ROLLUP HAVING max(distinct c1) NOT IN (4) order by c1;
+c1	count(distinct upper(c6))	avg(distinct c3)
+1	1	0.000000
+1	1	0.000000
+10	1	1.000000
+10	1	1.000000
+11	1	1.000000
+11	1	1.000000
+12	1	2.000000
+12	1	2.000000
+13	1	2.000000
+13	1	2.000000
+14	1	2.000000
+14	1	2.000000
+15	1	2.000000
+15	1	2.000000
+2	1	0.000000
+2	1	0.000000
+3	1	0.000000
+3	1	0.000000
+5	1	1.000000
+5	1	1.000000
+6	1	1.000000
+6	1	1.000000
+7	1	1.000000
+7	1	1.000000
+8	1	1.000000
+8	1	1.000000
+9	1	1.000000
+9	1	1.000000
+NULL	4	1.000000
+select /*+ parallel(3) */ c1,max(distinct upper(c4)),avg(distinct upper(c6)) FROM lyq_test where c2 is not null and c4 like '%这是aseri%'  
+GROUP BY c1,c3,c8 with ROLLUP HAVING count(distinct c1) NOT IN (4) order by c1;
+c1	max(distinct upper(c4))	avg(distinct upper(c6))
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2101
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2101
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2101
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2018
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2046
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2073
+NULL	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试	2059.5
+select /*+ parallel(3) */ sum(DISTINCT c2+c3),min(DISTINCT c2 + 1000),avg(DISTINCT c1)
+FROM lyq_test GROUP BY  c1,c3 with ROLLUP ORDER BY c1 desc;
+sum(DISTINCT c2+c3)	min(DISTINCT c2 + 1000)	avg(DISTINCT c1)
+1	1000	10.0000
+1	1000	10.0000
+1	1000	5.0000
+1	1000	5.0000
+1	1001	1.0000
+1	1001	1.0000
+2	1000	15.0000
+2	1000	15.0000
+2	1001	11.0000
+2	1001	11.0000
+2	1001	6.0000
+2	1001	6.0000
+2	1002	2.0000
+2	1002	2.0000
+21	1000	8.0000
+3	1002	7.0000
+3	1002	7.0000
+3	1003	3.0000
+3	1003	3.0000
+4	1002	12.0000
+4	1002	12.0000
+4	1003	8.0000
+4	1003	8.0000
+5	1003	13.0000
+5	1003	13.0000
+5	1004	4.0000
+5	1004	4.0000
+5	1004	9.0000
+5	1004	9.0000
+6	1004	14.0000
+6	1004	14.0000
+聚合函数count
+rollup + 参数
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	count(c2)
+1	1
+1	1
+10	1
+10	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+15	1
+15	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	1
+5	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+NULL	15
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	count(c2)
+NULL	15
+1	1
+1	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	1
+5	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+10	1
+10	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+15	1
+15	1
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+count(c2)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+15
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null with rollup limit 1;
+count(c2)
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null with rollup;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY '' with rollup;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'count(c2)'
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	count(c2)
+1	1
+1	1
+10	1
+10	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+15	1
+15	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	1
+5	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+NULL	15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY null,null with rollup;
+count(c2)
+15
+15
+15
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c7,null with rollup order by c1;
+c1	count(c2)
+1	1
+1	1
+1	1
+10	1
+10	1
+10	1
+11	1
+11	1
+11	1
+12	1
+12	1
+12	1
+13	1
+13	1
+13	1
+14	1
+14	1
+14	1
+15	1
+15	1
+15	1
+2	1
+2	1
+2	1
+3	1
+3	1
+3	1
+4	1
+4	1
+4	1
+5	1
+5	1
+5	1
+6	1
+6	1
+6	1
+7	1
+7	1
+7	1
+8	1
+8	1
+8	1
+9	1
+9	1
+9	1
+NULL	15
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	count(c2)
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+1	1
+10	1
+10	1
+10	1
+10	1
+10	1
+10	1
+10	1
+10	1
+10	1
+10	1
+11	1
+11	1
+11	1
+11	1
+11	1
+11	1
+11	1
+11	1
+11	1
+11	1
+12	1
+12	1
+12	1
+12	1
+12	1
+12	1
+12	1
+12	1
+12	1
+12	1
+13	1
+13	1
+13	1
+13	1
+13	1
+13	1
+13	1
+13	1
+13	1
+13	1
+14	1
+14	1
+14	1
+14	1
+14	1
+14	1
+14	1
+14	1
+14	1
+14	1
+15	1
+15	1
+15	1
+15	1
+15	1
+15	1
+15	1
+15	1
+15	1
+15	1
+2	1
+2	1
+2	1
+2	1
+2	1
+2	1
+2	1
+2	1
+2	1
+2	1
+3	1
+3	1
+3	1
+3	1
+3	1
+3	1
+3	1
+3	1
+3	1
+3	1
+4	1
+4	1
+4	1
+4	1
+4	1
+4	1
+4	1
+4	1
+4	1
+4	1
+5	1
+5	1
+5	1
+5	1
+5	1
+5	1
+5	1
+5	1
+5	1
+5	1
+6	1
+6	1
+6	1
+6	1
+6	1
+6	1
+6	1
+6	1
+6	1
+6	1
+7	1
+7	1
+7	1
+7	1
+7	1
+7	1
+7	1
+7	1
+7	1
+7	1
+8	1
+8	1
+8	1
+8	1
+8	1
+8	1
+8	1
+8	1
+8	1
+8	1
+9	1
+9	1
+9	1
+9	1
+9	1
+9	1
+9	1
+9	1
+9	1
+9	1
+NULL	15
+rollup + having some any all like...
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2) order by c1;
+c1	count(c2)
+1	1
+1	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	count(c2)
+10	1
+10	1
+10	1
+15	1
+15	1
+15	1
+5	1
+5	1
+5	1
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	count(c2)
+10	1
+10	1
+10	1
+15	1
+15	1
+15	1
+5	1
+5	1
+5	1
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	count(c2)
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	count(c2)
+1	1
+1	1
+10	1
+10	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+15	1
+15	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	1
+5	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c4 like '这%' GROUP BY c1,c3,c7 with rollup HAVING count(c7)>1 order by c1;
+c1	count(c2)
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING count(distinct c7)> 1 order by c1;
+c1	count(c2)
+NULL	15
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+c1	count(c2)
+1	1
+1	1
+10	1
+10	1
+10	1
+11	1
+11	1
+12	1
+12	1
+13	1
+13	1
+14	1
+14	1
+15	1
+15	1
+15	1
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	1
+5	1
+5	1
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+NULL	15
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	count(c2)
+1	1
+11	1
+12	1
+13	1
+14	1
+2	1
+3	1
+4	1
+6	1
+7	1
+8	1
+9	1
+34113963
+select /*+ parallel(3) */ c1 as a,count(c2) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	1
+11	1
+12	1
+13	1
+14	1
+2	1
+3	1
+4	1
+6	1
+7	1
+8	1
+9	1
+rollup + union all  minus
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING count(distinct c7)> 1 order by c1;
+c1	count(c2)
+NULL	15
+5	1
+5	1
+5	1
+10	1
+10	1
+10	1
+15	1
+15	1
+15	1
+mysql不支持，ob支持
+select /*+ parallel(3) */ c1,count(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(lyq_test 3) */ c1,count(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	count(c2)
+rollup + join
+select /*+ parallel(lyq_test 3) */ t1.c1,count(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c7 with rollup order by t1.c1;
+c1	count(t2.c2)
+1	1
+1	1
+10	0
+10	0
+11	0
+11	0
+12	0
+12	0
+13	0
+13	0
+14	0
+14	0
+15	0
+15	0
+2	1
+2	1
+3	1
+3	1
+4	1
+4	1
+5	0
+5	0
+6	1
+6	1
+7	1
+7	1
+8	1
+8	1
+9	1
+9	1
+NULL	8
+select /*+ parallel(3) */ t1.c1,count(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(3) */ t2.c1,count(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+c1	count(t2.c2)
+NULL	8
+select /*+ parallel(3) */ t1.c1,count(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	count(t2.c2)
+rollup  subquery
+select /*+ parallel(3) */ c1,count(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	count(c2)
+10	1
+10	1
+10	1
+15	1
+15	1
+15	1
+5	1
+5	1
+5	1
+select /*+ parallel(3) */ t2.c1,count(t2.c2) from (select c1,c2,c3,c7,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING count(distinct t1.c7)> 1 order by t2.c1;
+c1	count(t2.c2)
+NULL	8
+select /*+ parallel(lyq_test 3) */ c1,count(c3) from (select c1,c3,c7 from lyq_test where c1 < 10000 GROUP BY c1,c3,c7 with rollup ) a GROUP BY c1,c7 with rollup order by c1;
+c1	count(c3)
+1	1
+1	1
+1	2
+10	1
+10	1
+10	2
+11	1
+11	1
+11	2
+12	1
+12	1
+12	2
+13	1
+13	1
+13	2
+14	1
+14	1
+14	2
+15	1
+15	1
+15	2
+2	1
+2	1
+2	2
+3	1
+3	1
+3	2
+4	1
+4	1
+4	2
+5	1
+5	1
+5	2
+6	1
+6	1
+6	2
+7	1
+7	1
+7	2
+8	1
+8	1
+8	2
+9	1
+9	1
+9	2
+NULL	0
+NULL	0
+NULL	30
+运算 常量
+select /*+ parallel(3) */ c1,count(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+c1	count(c2)
+1	1
+10	1
+11	1
+12	1
+13	1
+14	1
+15	1
+2	1
+3	1
+4	1
+5	1
+6	1
+7	1
+8	1
+9	1
+NULL	15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+count(c2)
+15
+3
+3
+3
+3
+3
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+count(c2)
+15
+3
+4
+8
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+count(c2)
+15
+15
+select /*+ parallel(lyq_test 3) */ count(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+count(c2)
+12
+15
+3
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+count(c2)
+15
+15
+select /*+ parallel(3) */ count(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'count(c2)'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(lyq_test 3) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ count(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+a
+15
+15
+函数
+select /*+ parallel(3) */ count(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having count(upper(LOWER(c2))) >0 order by c1;
+count(upper(c3))
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+15
+select /*+ parallel(3) */ count(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+count(NULLIF(c8,c4))
+0
+0
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+12
+select /*+ parallel(3) */ count(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+count(c2)
+0
+1
+1
+1
+1
+1
+5
+select /*+ parallel(3) */ count(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+count(c3)
+0
+1
+1
+1
+3
+select /*+ parallel(3) */ count(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+count(c4)
+0
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+15
+select /*+ parallel(3) */ count(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+count(c5)
+0
+1
+1
+select /*+ parallel(3) */ count(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+count(c6)
+0
+1
+1
+1
+1
+4
+select /*+ parallel(lyq_test 3) */ count(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+count(c7)
+0
+1
+1
+1
+1
+1
+5
+select /*+ parallel(3) */ count(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+count(c8)
+0
+1
+1
+select /*+ parallel(3) */ count(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+count(c9)
+0
+1
+1
+select /*+ parallel(3) */ count(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+count(c10)
+0
+1
+1
+1
+1
+1
+5
+select /*+ parallel(3) */ VAR_POP(c4) from lyq_test group by c1,c2 with ROLLUP having VARIANCE(c2) >0 order by c1;
+VAR_POP(c4)
+0
+select /*+ parallel(3) */ STD(c5) from lyq_test group by c1,c2 with ROLLUP having VAR_POP(c2) >0 order by c1;
+STD(c5)
+0
+select /*+ parallel(3) */ VARIANCE(c7) from lyq_test group by c1,c2 with ROLLUP having STDDEV_SAMP(c2) >0 order by c1;
+VARIANCE(c7)
+0
+聚合函数group_concat
+rollup + 参数
+select /*+ parallel(1) */ c1,group_concat(c2,c1) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	group_concat(c2,c1)
+1	11
+1	11
+10	010
+10	010
+11	111
+11	111
+12	212
+12	212
+13	313
+13	313
+14	414
+14	414
+15	015
+15	015
+2	22
+2	22
+3	33
+3	33
+4	44
+4	44
+5	05
+5	05
+6	16
+6	16
+7	27
+7	27
+8	38
+8	38
+9	49
+9	49
+NULL	11,015,414,313,212,111,010,49,38,27,16,05,44,33,22
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	group_concat(c2)
+NULL	1,0,4,3,2,1,0,4,3,2,1,0,4,3,2
+1	1
+1	1
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY c1,(c3,c7) with rollup;
+group_concat(c2)
+1
+3
+0
+2
+2
+0
+1
+2
+2
+4
+4
+3
+4
+0
+4
+0
+0
+4
+2
+2
+1,0,4,3,2,1,0,4,3,2,1,0,4,3,2
+2
+2
+3
+3
+3
+4
+3
+1
+3
+1
+2
+4
+3
+4
+1
+0
+4
+0
+0
+1
+1
+1
+3
+0
+1
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'group_concat(c2)'
+select /*+ parallel(1) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(1) */ c1,group_concat(c2,c3) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	group_concat(c2,c3)
+1	10.00
+1	10.00
+10	01.00
+10	01.00
+11	11.00
+11	11.00
+12	22.00
+12	22.00
+13	32.00
+13	32.00
+14	42.00
+14	42.00
+15	02.00
+15	02.00
+2	20.00
+2	20.00
+3	30.00
+3	30.00
+4	41.00
+4	41.00
+5	01.00
+5	01.00
+6	11.00
+6	11.00
+7	21.00
+7	21.00
+8	31.00
+8	31.00
+9	41.00
+9	41.00
+NULL	10.00,02.00,42.00,32.00,22.00,11.00,01.00,41.00,31.00,21.00,11.00,01.00,41.00,30.00,20.00
+select /*+ parallel(1) */ c1,group_concat(c3,c4,c5,c6,c7,c8 order by c1, c2, c3, c4, c5, c6, c7, c8, c9) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	group_concat(c3,c4,c5,c6,c7,c8 order by c1, c2, c3, c4, c5, c6, c7, c8, c9)
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+10	NULL
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	1.00一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	2.00个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d,0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12018-12-22 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d,0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d,1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d,1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":10
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d,1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12046-05-09 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d,1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[1, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[2, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[3, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+12073-09-24 22:22:22[4, "abc", null, true, "{\"a\":100}"]b,d
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	2.00字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	2.00符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+15	NULL
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	0.00是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	0.00aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	1.00seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+5	NULL
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	1.00riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	1.00iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	1.00qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	1.00on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+NULL	0.00这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+rollup + having some any all like...
+select /*+ parallel(1) */ group_concat(distinct c2 ORDER BY c2 DESC SEPARATOR '_') from lyq_test where c8 is not null GROUP BY c3,c7 with rollup HAVING c3 in (0,1,2) order by c3,c7;
+group_concat(distinct c2 ORDER BY c2 DESC SEPARATOR '_')
+1
+1
+2
+2
+2
+3
+3
+3
+3_2_1
+4
+4
+4_3_2
+4_3_2_1
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	group_concat(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	group_concat(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	group_concat(c2)
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	group_concat(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c4 like '这%' GROUP BY c1,c3,c7 with rollup HAVING group_concat(c7)>1 order by c1;
+c1	group_concat(c2)
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING group_concat(distinct c7)> 1 order by c1;
+c1	group_concat(c2)
+select /*+ parallel(1) */ group_concat(distinct c6 ORDER BY c6 DESC SEPARATOR '_') from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c3,c8 with rollup 
+HAVING c8 is null order by c3,c8;
+group_concat(distinct c6 ORDER BY c6 DESC SEPARATOR '_')
+2046-05-09 22:22:22_2018-12-22 22:22:22
+2073-09-24 22:22:22_2046-05-09 22:22:22
+2073-09-24 22:22:22_2046-05-09 22:22:22
+2101-02-10 22:22:22
+2101-02-10 22:22:22_2073-09-24 22:22:22
+2101-02-10 22:22:22_2073-09-24 22:22:22_2046-05-09 22:22:22_2018-12-22 22:22:22
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	group_concat(c2)
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+34113963
+select /*+ parallel(1) */ c1 as a,group_concat(c2) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+rollup + union all  minus
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c7 with rollup 
+HAVING group_concat(distinct c7)> 1 order by c1;
+c1	group_concat(c2)
+5	0
+5	0
+5	0
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+mysql不支持，ob支持
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(1) */ c1,group_concat(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	group_concat(c2)
+rollup + join
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c7 with rollup order by t1.c1;
+c1	group_concat(t2.c2)
+1	1
+1	1
+10	NULL
+10	NULL
+11	NULL
+11	NULL
+12	NULL
+12	NULL
+13	NULL
+13	NULL
+14	NULL
+14	NULL
+15	NULL
+15	NULL
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	NULL
+5	NULL
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	1,4,3,2,1,4,3,2
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(1) */ t2.c1,group_concat(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+c1	group_concat(t2.c2)
+select /*+ parallel(1) */ t1.c1,group_concat(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	group_concat(t2.c2)
+rollup  subquery
+select /*+ parallel(1) */ c1,group_concat(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c7 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	group_concat(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(1) */ t2.c1,group_concat(t2.c2) from (select c1,c2,c3,c7,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c7 with rollup 
+HAVING group_concat(distinct t1.c7)> 1 order by t2.c1;
+c1	group_concat(t2.c2)
+select /*+ parallel(1) */ group_concat(concat_ws(', ',c8,c3) ORDER BY c1 DESC SEPARATOR '. ') from (select c1,c3,c8 from lyq_test where c1 < 10000 GROUP BY c1,c3,c8 with rollup ) a GROUP BY c3,c8 
+with rollup order by c3,c8;
+group_concat(concat_ws(', ',c8,c3) ORDER BY c1 DESC SEPARATOR '. ')
+. . . . . . . . . . . . . . . 
+. . . . . . . . . . . . . . . 
+. 2.00. 2.00. . 2.00. b,d, 2.00. . 2.00. b,d, 2.00. . 2.00. b,d, 2.00. b,d, 1.00. 1.00. . 1.00. . 1.00. . 1.00. b,d, 1.00. . 1.00. b,d, 1.00. . 1.00. b,d, 1.00. 1.00. . b,d, 1.00. 1.00. 1.00. . . 1.00. b,d, 1.00. . 0.00. b,d, 0.00. . 0.00. b,d, 0.00. . 0.00. b,d, 0.00. 
+0.00. 0.00. 0.00
+0.00. b,d, 0.00. 0.00. b,d, 0.00. b,d, 0.00. 0.00
+1.00. 1.00. 1.00. 1.00. 1.00. 1.00. 1.00. 1.00. 1.00. 1.00
+1.00. b,d, 1.00. 1.00. 1.00. 1.00. b,d, 1.00. 1.00. b,d, 1.00. 1.00. b,d, 1.00. 1.00. b,d, 1.00. 1.00. 1.00. b,d, 1.00. 1.00
+2.00. 2.00. 2.00. 2.00. 2.00
+2.00. 2.00. 2.00. b,d, 2.00. 2.00. b,d, 2.00. b,d, 2.00. 2.00
+b,d, 0.00. b,d, 0.00. b,d, 0.00
+b,d, 1.00. b,d, 1.00. b,d, 1.00. b,d, 1.00. b,d, 1.00. b,d, 1.00
+b,d, 2.00. b,d, 2.00. b,d, 2.00
+运算 常量
+select /*+ parallel(1) */ group_concat(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'group_concat(c2)'
+select /*+ parallel(1) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(1) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(1) */ group_concat(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+a
+2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00
+2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00,2011-11-11 00:00:00
+函数
+select /*+ parallel(1) */ group_concat(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having group_concat(upper(LOWER(c2))) >0 order by c1;
+group_concat(upper(c3))
+0.00
+0.00
+0.00
+0.00
+0.00
+0.00
+0.00,2.00,2.00,2.00,2.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,0.00,0.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+2.00
+2.00
+2.00
+2.00
+2.00
+2.00
+select /*+ parallel(1) */ group_concat(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+group_concat(NULLIF(c8,c4))
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d
+select /*+ parallel(1) */ group_concat(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+group_concat(c2)
+0
+1
+1,4,0,3,2
+2
+3
+4
+NULL
+select /*+ parallel(1) */ group_concat(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+group_concat(c3)
+0.00
+0.00,2.00,1.00
+1.00
+2.00
+NULL
+select /*+ parallel(1) */ group_concat(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+group_concat(c4)
+NULL
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,aseriqon一个字符串@$$测试lnczl
+select /*+ parallel(1) */ group_concat(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+group_concat(c6)
+2018-12-22 22:22:22
+2018-12-22 22:22:22,2101-02-10 22:22:22,2073-09-24 22:22:22,2046-05-09 22:22:22
+2046-05-09 22:22:22
+2073-09-24 22:22:22
+2101-02-10 22:22:22
+NULL
+select /*+ parallel(1) */ group_concat(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+group_concat(c7)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(1) */ group_concat(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+group_concat(c8)
+NULL
+b,d
+b,d
+select /*+ parallel(1) */ group_concat(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+group_concat(c9)
+2018-12-23 22:22:22
+2018-12-23 22:22:22
+NULL
+select /*+ parallel(1) */ group_concat(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+group_concat(c10)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(1) */ group_concat(c2) from (select group_concat(c2) c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+group_concat(c2)
+0,0,0
+1,1,1
+1,1,1,0,0,0,3,3,3,2,2,2,4,4,4,1,4,3,2,0,4,3,2,1,0,4,1,0,3,2
+1,4,3,2,0,4,3,2,1,0,4,1,0,3,2
+2,2,2
+3,3,3
+4,4,4
+select /*+ parallel(1) */ group_concat(c3) from (select group_concat(c3) c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+group_concat(c3)
+0.00,0.00,0.00
+0.00,0.00,0.00,2.00,2.00,2.00,2.00,0.00,2.00,2.00,2.00,2.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,0.00,0.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00
+0.00,2.00,2.00,2.00,2.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00,0.00,0.00
+1.00,1.00,1.00,1.00,1.00,1.00,1.00,1.00
+2.00,2.00,2.00,2.00
+select /*+ parallel(1) */ group_concat(c4) from (select group_concat(c4) c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+group_concat(c4)
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,这是aseriqon一个字符串@$$
+n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试,aseriqon一个字符串@$$测试lnczl
+select /*+ parallel(1) */ group_concat(c6) from (select group_concat(c6) c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+group_concat(c6)
+2018-12-22 22:22:22,2018-12-22 22:22:22
+2018-12-22 22:22:22,2101-02-10 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2018-12-22 22:22:22
+2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22
+2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2018-12-22 22:22:22,2018-12-22 22:22:22,2018-12-22 22:22:22,2101-02-10 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2046-05-09 22:22:22,2018-12-22 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2101-02-10 22:22:22
+2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22,2073-09-24 22:22:22
+2101-02-10 22:22:22
+select /*+ parallel(1) */ group_concat(c7) from (select group_concat(c7) c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+group_concat(c7)
+[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"
+select /*+ parallel(1) */ group_concat(c8) from (select group_concat(c8) c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+group_concat(c8)
+NULL
+b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d
+b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d,b,d
+select /*+ parallel(1) */ group_concat(c9) from (select group_concat(c9) c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+group_concat(c9)
+2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22
+2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22,2018-12-23 22:22:22
+select /*+ parallel(1) */ group_concat(c10) from (select group_concat(c10) c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+group_concat(c10)
+[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"]
+[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"]
+[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[0, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"
+[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"],[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"],[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"],[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"],[4, "abc", null, true, "{\"a\":100}"]
+聚合函数min
+rollup + 参数
+select /*+ parallel(3) */ c1,min(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	min(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	0
+select /*+ parallel(3) */ c1,min(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	min(c3)
+NULL	0.00
+1	0.00
+1	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+select /*+ parallel(3) */ min(c4) from lyq_test GROUP BY null with rollup;
+min(c4)
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'min(c2)'
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(3) */ c1,min(c10) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	min(c10)
+1	[1, "abc", null, true, "{\"a\":100}"]
+1	[1, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+11	[1, "abc", null, true, "{\"a\":100}"]
+11	[1, "abc", null, true, "{\"a\":100}"]
+12	[2, "abc", null, true, "{\"a\":100}"]
+12	[2, "abc", null, true, "{\"a\":100}"]
+13	[3, "abc", null, true, "{\"a\":100}"]
+13	[3, "abc", null, true, "{\"a\":100}"]
+14	[4, "abc", null, true, "{\"a\":100}"]
+14	[4, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+2	[2, "abc", null, true, "{\"a\":100}"]
+2	[2, "abc", null, true, "{\"a\":100}"]
+3	[3, "abc", null, true, "{\"a\":100}"]
+3	[3, "abc", null, true, "{\"a\":100}"]
+4	[4, "abc", null, true, "{\"a\":100}"]
+4	[4, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+6	[1, "abc", null, true, "{\"a\":100}"]
+6	[1, "abc", null, true, "{\"a\":100}"]
+7	[2, "abc", null, true, "{\"a\":100}"]
+7	[2, "abc", null, true, "{\"a\":100}"]
+8	[3, "abc", null, true, "{\"a\":100}"]
+8	[3, "abc", null, true, "{\"a\":100}"]
+9	[4, "abc", null, true, "{\"a\":100}"]
+9	[4, "abc", null, true, "{\"a\":100}"]
+NULL	[0, "abc", null, true, "{\"a\":100}"]
+set _force_parallel_query_dop = 3;
+select  min(c2) from lyq_test GROUP BY null,null with rollup;
+min(c2)
+0
+0
+0
+select  c1,min(c3) from lyq_test GROUP BY c1,c7,null with rollup order by c1;
+c1	min(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+15	2.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+9	1.00
+NULL	0.00
+select  c1,min(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	min(c5)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+NULL	
+rollup + having some any all like...
+explain basic select  c1,min(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+Query Plan
+=============================================================
+|ID|OPERATOR                    |NAME                       |
+-------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT   |                           |
+|1 |└─EXCHANGE OUT DISTR        |:EX10000                   |
+|2 |  └─SORT                    |                           |
+|3 |    └─PX PARTITION ITERATOR |                           |
+|4 |      └─HASH GROUP BY       |                           |
+|5 |        └─EXPANSION         |                           |
+|6 |          └─TABLE RANGE SCAN|lyq_test(INDEX_lyq_test_T3)|
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(lyq_test.c1, T_FUN_MIN(lyq_test.c4))]), filter(nil), rowset=16
+      sort_keys([lyq_test.c1, ASC])
+  1 - output([lyq_test.c1], [INTERNAL_FUNCTION(lyq_test.c1, T_FUN_MIN(lyq_test.c4))]), filter(nil), rowset=16
+      dop=3
+  2 - output([lyq_test.c1], [T_FUN_MIN(lyq_test.c4)]), filter(nil), rowset=16
+      sort_keys([lyq_test.c1, ASC])
+  3 - output([lyq_test.c1], [T_FUN_MIN(lyq_test.c4)]), filter(nil), rowset=16
+      partition wise, force partition granule
+  4 - output([lyq_test.c1], [T_FUN_MIN(lyq_test.c4)]), filter(nil), rowset=16
+      group([lyq_test.c1], [lyq_test.c6], [GROUPING_ID]), agg_func([T_FUN_MIN(lyq_test.c4)])
+  5 - output([lyq_test.c1], [lyq_test.c6], [GROUPING_ID], [lyq_test.c4]), filter(nil), rowset=16
+      repeat(2)[(lyq_test.c6), (NULL)]
+  6 - output([lyq_test.c1], [lyq_test.c4], [lyq_test.c6]), filter([lyq_test.c8 IS NOT NULL]), rowset=16
+      access([lyq_test.c1], [lyq_test.c8], [lyq_test.c4], [lyq_test.c6]), partitions(p[0-2])
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      range_key([lyq_test.c3], [lyq_test.c2], [lyq_test.c5], [lyq_test.c1]), range(0.00,MIN,MIN,MIN ; 0.00,MAX,MAX,MAX), (1.00,MIN,MIN,MIN ; 1.00,MAX,MAX,
+      MAX), (2.00,MIN,MIN,MIN ; 2.00,MAX,MAX,MAX), 
+      range_cond([lyq_test.c3 IN (cast(0, DECIMAL_INT(5, 2)), cast(1, DECIMAL_INT(5, 2)), cast(2, DECIMAL_INT(5, 2)))])
+set _force_parallel_query_dop = 1;
+select /*+ parallel(3) */ c1,min(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	min(c5)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+10	
+10	
+10	
+15	
+15	
+15	
+5	
+5	
+5	
+select /*+ parallel(3) */ c1,min(c10) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	min(c10)
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	min(c2)
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	min(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+select /*+ parallel(3) */ c1,min(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING min(c6)>1 order by c1;
+c1	min(c3)
+1	0.00
+1	0.00
+1	0.00
+NULL	0.00
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING min(distinct c6)> 1 order by c1;
+c1	min(c2)
+1	1
+1	1
+1	1
+10	0
+10	0
+10	0
+11	1
+11	1
+11	1
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+2	2
+2	2
+2	2
+3	3
+3	3
+3	3
+4	4
+4	4
+4	4
+5	0
+5	0
+5	0
+6	1
+6	1
+6	1
+7	2
+7	2
+7	2
+8	3
+8	3
+8	3
+9	4
+9	4
+9	4
+NULL	0
+select /*+ parallel(3) */ c1,min(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+c1	min(c4)
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+NULL	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	min(c2)
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+34113963
+select /*+ parallel(3) */ c1 as a,min(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+rollup + union all  minus
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING min(distinct c6)> 1 order by c1;
+c1	min(c2)
+NULL	0
+1	1
+1	1
+1	1
+2	2
+2	2
+2	2
+3	3
+3	3
+3	3
+4	4
+4	4
+4	4
+5	0
+5	0
+5	0
+5	0
+5	0
+5	0
+6	1
+6	1
+6	1
+7	2
+7	2
+7	2
+8	3
+8	3
+8	3
+9	4
+9	4
+9	4
+10	0
+10	0
+10	0
+10	0
+10	0
+10	0
+11	1
+11	1
+11	1
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+15	0
+15	0
+15	0
+mysql不支持，ob支持
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c7 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,min(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c7 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	min(c2)
+rollup + join
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+c1	min(t2.c2)
+1	1
+1	1
+10	NULL
+10	NULL
+11	NULL
+11	NULL
+12	NULL
+12	NULL
+13	NULL
+13	NULL
+14	NULL
+14	NULL
+15	NULL
+15	NULL
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	NULL
+5	NULL
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	1
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(3) */ t2.c1,min(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+c1	min(t2.c2)
+1	1
+1	1
+1	1
+2	2
+2	2
+2	2
+3	3
+3	3
+3	3
+4	4
+4	4
+4	4
+5	NULL
+5	NULL
+5	NULL
+6	1
+6	1
+6	1
+7	2
+7	2
+7	2
+8	3
+8	3
+8	3
+9	4
+9	4
+9	4
+NULL	1
+select /*+ parallel(3) */ t1.c1,min(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c7 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	min(t2.c2)
+rollup  subquery
+select /*+ parallel(3) */ c1,min(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	min(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ t2.c1,min(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING min(distinct t1.c6)> 1 order by t2.c1;
+c1	min(t2.c2)
+1	1
+1	1
+1	1
+2	2
+2	2
+2	2
+3	3
+3	3
+3	3
+4	4
+4	4
+4	4
+5	NULL
+5	NULL
+5	NULL
+6	1
+6	1
+6	1
+7	2
+7	2
+7	2
+8	3
+8	3
+8	3
+9	4
+9	4
+9	4
+NULL	1
+select /*+ parallel(3) */ c1,min(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by c1;
+c1	min(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+15	2.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+9	1.00
+NULL	0.00
+NULL	NULL
+NULL	NULL
+运算 常量
+select /*+ parallel(3) */ c1,min(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+c1	min(c2)
+1	1
+10	0
+11	1
+12	2
+13	3
+14	4
+15	0
+2	2
+3	3
+4	4
+5	0
+6	1
+7	2
+8	3
+9	4
+NULL	0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+min(c2)
+0
+0
+1
+2
+3
+4
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+min(c2)
+0
+0
+0
+1
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+min(c2)
+0
+0
+1
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+min(c2)
+0
+0
+select /*+ parallel(3) */ min(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'min(c2)'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ min(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having min(cast('20111111' as dateTime)) >1;
+a
+2011-11-11 00:00:00
+2011-11-11 00:00:00
+函数
+select /*+ parallel(3) */ min(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having min(upper(LOWER(c2))) >0 order by c1;
+min(upper(c3))
+0.00
+0.00
+0.00
+0.00
+0.00
+0.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+2.00
+2.00
+2.00
+2.00
+2.00
+2.00
+select /*+ parallel(3) */ min(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+min(NULLIF(c8,c4))
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+select /*+ parallel(3) */ min(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+min(c2)
+0
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ min(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+min(c3)
+0.00
+0.00
+1.00
+2.00
+NULL
+select /*+ parallel(3) */ min(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+min(c4)
+NULL
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ min(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+min(c6)
+2018-12-22 22:22:22
+2018-12-22 22:22:22
+2046-05-09 22:22:22
+2073-09-24 22:22:22
+2101-02-10 22:22:22
+NULL
+select /*+ parallel(3) */ min(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+min(c7)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(3) */ min(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+min(c8)
+NULL
+b,d
+b,d
+select /*+ parallel(3) */ min(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+min(c9)
+2018-12-23 22:22:22
+2018-12-23 22:22:22
+NULL
+select /*+ parallel(3) */ min(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+min(c10)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+聚合函数max
+rollup + 参数
+select /*+ parallel(3) */ c1,max(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	max(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	4
+select /*+ parallel(3) */ c1,max(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	max(c3)
+NULL	2.00
+1	0.00
+1	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+select /*+ parallel(3) */ max(c3) from lyq_test GROUP BY null with rollup limit 1;
+max(c3)
+2.00
+select /*+ parallel(3) */ max(c4) from lyq_test GROUP BY null with rollup;
+max(c4)
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'max(c2)'
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(3) */ c1,max(c10) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+c1	max(c10)
+1	[1, "abc", null, true, "{\"a\":100}"]
+1	[1, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+11	[1, "abc", null, true, "{\"a\":100}"]
+11	[1, "abc", null, true, "{\"a\":100}"]
+12	[2, "abc", null, true, "{\"a\":100}"]
+12	[2, "abc", null, true, "{\"a\":100}"]
+13	[3, "abc", null, true, "{\"a\":100}"]
+13	[3, "abc", null, true, "{\"a\":100}"]
+14	[4, "abc", null, true, "{\"a\":100}"]
+14	[4, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+2	[2, "abc", null, true, "{\"a\":100}"]
+2	[2, "abc", null, true, "{\"a\":100}"]
+3	[3, "abc", null, true, "{\"a\":100}"]
+3	[3, "abc", null, true, "{\"a\":100}"]
+4	[4, "abc", null, true, "{\"a\":100}"]
+4	[4, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+6	[1, "abc", null, true, "{\"a\":100}"]
+6	[1, "abc", null, true, "{\"a\":100}"]
+7	[2, "abc", null, true, "{\"a\":100}"]
+7	[2, "abc", null, true, "{\"a\":100}"]
+8	[3, "abc", null, true, "{\"a\":100}"]
+8	[3, "abc", null, true, "{\"a\":100}"]
+9	[4, "abc", null, true, "{\"a\":100}"]
+9	[4, "abc", null, true, "{\"a\":100}"]
+NULL	[4, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY null,null with rollup;
+max(c2)
+4
+4
+4
+select /*+ parallel(3) */ c1,max(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+c1	max(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+15	2.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+9	1.00
+NULL	2.00
+select /*+ parallel(3) */ c1,max(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	max(c5)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+1	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+10	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+11	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+12	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+13	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+14	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+15	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+2	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+3	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+4	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+5	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+6	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+7	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+8	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+9	
+NULL	
+rollup + having some any all like...
+select /*+ parallel(3) */ c1,max(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+c1	max(c4)
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ c1,max(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	max(c5)
+1
+1
+1
+1
+1
+1
+1
+1
+1
+10	
+10	
+10	
+15	
+15	
+15	
+5	
+5	
+5	
+select /*+ parallel(3) */ c1,max(c10) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	max(c10)
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+10	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+15	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+5	[0, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	max(c2)
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	max(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+select /*+ parallel(3) */ c1,max(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING max(c3)>1 order by c1;
+c1	max(c3)
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING max(distinct c3)> 1 order by c1;
+c1	max(c2)
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+NULL	4
+select /*+ parallel(3) */ c1,max(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+c1	max(c4)
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+10	n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+15	串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+5	eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+NULL	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	max(c2)
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+34113963
+select /*+ parallel(3) */ c1 as a,max(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+11	一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+12	个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+13	字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+14	符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+2	是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+3	aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+4	seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+6	riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+7	iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+8	qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+9	on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+rollup + union all  minus
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING max(distinct c3)> 1 order by c1;
+c1	max(c2)
+NULL	4
+5	0
+5	0
+5	0
+10	0
+10	0
+10	0
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+15	0
+15	0
+15	0
+mysql不支持，ob支持
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,max(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	max(c2)
+rollup + join
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+c1	max(t2.c2)
+1	1
+1	1
+10	NULL
+10	NULL
+11	NULL
+11	NULL
+12	NULL
+12	NULL
+13	NULL
+13	NULL
+14	NULL
+14	NULL
+15	NULL
+15	NULL
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	NULL
+5	NULL
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	4
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(3) */ t2.c1,max(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+c1	max(t2.c2)
+select /*+ parallel(3) */ t1.c1,max(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	max(t2.c2)
+rollup  subquery
+select /*+ parallel(3) */ c1,max(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	max(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ t2.c1,max(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING max(distinct t1.c3)> 1 order by t2.c1;
+c1	max(t2.c2)
+select /*+ parallel(3) */ c1,max(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by c1;
+c1	max(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+15	2.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+9	1.00
+NULL	2.00
+NULL	NULL
+NULL	NULL
+运算 常量
+select /*+ parallel(3) */ c1,max(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+c1	max(c2)
+1	1
+10	0
+11	1
+12	2
+13	3
+14	4
+15	0
+2	2
+3	3
+4	4
+5	0
+6	1
+7	2
+8	3
+9	4
+NULL	4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+max(c2)
+0
+1
+2
+3
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+max(c2)
+3
+4
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+max(c2)
+0
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+max(c2)
+4
+4
+select /*+ parallel(3) */ max(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'max(c2)'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ max(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having max(cast('20111111' as dateTime)) >1;
+a
+2011-11-11 00:00:00
+2011-11-11 00:00:00
+函数
+select /*+ parallel(3) */ max(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having max(upper(LOWER(c2))) >0 order by c1;
+max(upper(c3))
+0.00
+0.00
+0.00
+0.00
+0.00
+0.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+1.00
+2.00
+2.00
+2.00
+2.00
+2.00
+2.00
+2.00
+select /*+ parallel(3) */ max(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+max(NULLIF(c8,c4))
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+b,d
+select /*+ parallel(3) */ max(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+max(c2)
+0
+1
+2
+3
+4
+4
+NULL
+select /*+ parallel(3) */ max(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+max(c3)
+0.00
+1.00
+2.00
+2.00
+NULL
+select /*+ parallel(3) */ max(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+max(c4)
+NULL
+aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+eriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+iqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+n一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+on一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+qon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+riqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+seriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试
+select /*+ parallel(3) */ max(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+max(c6)
+2018-12-22 22:22:22
+2046-05-09 22:22:22
+2073-09-24 22:22:22
+2101-02-10 22:22:22
+2101-02-10 22:22:22
+NULL
+select /*+ parallel(3) */ max(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+max(c7)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+select /*+ parallel(3) */ max(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+max(c8)
+NULL
+b,d
+b,d
+select /*+ parallel(3) */ max(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+max(c9)
+2018-12-23 22:22:22
+2018-12-23 22:22:22
+NULL
+select /*+ parallel(3) */ max(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+max(c10)
+NULL
+[0, "abc", null, true, "{\"a\":100}"]
+[1, "abc", null, true, "{\"a\":100}"]
+[2, "abc", null, true, "{\"a\":100}"]
+[3, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+[4, "abc", null, true, "{\"a\":100}"]
+聚合函数sum
+rollup + 参数
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	sum(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	30
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	sum(c3)
+NULL	16.00
+1	0.00
+1	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+select /*+ parallel(3) */ sum(c3) from lyq_test GROUP BY null with rollup limit 1;
+sum(c3)
+16.00
+select /*+ parallel(3) */ sum(c4) from lyq_test GROUP BY null with rollup;
+sum(c4)
+0
+0
+select /*+ parallel(3) */ sum(c5) from lyq_test GROUP BY '' with rollup;
+sum(c5)
+735
+735
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'sum(c2)'
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+c1	sum(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY null,null with rollup;
+sum(c2)
+30
+30
+30
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+c1	sum(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	1.00
+11	1.00
+11	1.00
+11	1.00
+12	2.00
+12	2.00
+12	2.00
+13	2.00
+13	2.00
+13	2.00
+14	2.00
+14	2.00
+14	2.00
+15	2.00
+15	2.00
+15	2.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	1.00
+5	1.00
+5	1.00
+5	1.00
+6	1.00
+6	1.00
+6	1.00
+7	1.00
+7	1.00
+7	1.00
+8	1.00
+8	1.00
+8	1.00
+9	1.00
+9	1.00
+9	1.00
+NULL	16.00
+select /*+ parallel(3) */ c1,sum(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	sum(c5)
+1	49
+1	49
+1	49
+1	49
+1	49
+1	49
+1	49
+1	49
+1	49
+1	49
+10	49
+10	49
+10	49
+10	49
+10	49
+10	49
+10	49
+10	49
+10	49
+10	49
+11	49
+11	49
+11	49
+11	49
+11	49
+11	49
+11	49
+11	49
+11	49
+11	49
+12	49
+12	49
+12	49
+12	49
+12	49
+12	49
+12	49
+12	49
+12	49
+12	49
+13	49
+13	49
+13	49
+13	49
+13	49
+13	49
+13	49
+13	49
+13	49
+13	49
+14	49
+14	49
+14	49
+14	49
+14	49
+14	49
+14	49
+14	49
+14	49
+14	49
+15	49
+15	49
+15	49
+15	49
+15	49
+15	49
+15	49
+15	49
+15	49
+15	49
+2	49
+2	49
+2	49
+2	49
+2	49
+2	49
+2	49
+2	49
+2	49
+2	49
+3	49
+3	49
+3	49
+3	49
+3	49
+3	49
+3	49
+3	49
+3	49
+3	49
+4	49
+4	49
+4	49
+4	49
+4	49
+4	49
+4	49
+4	49
+4	49
+4	49
+5	49
+5	49
+5	49
+5	49
+5	49
+5	49
+5	49
+5	49
+5	49
+5	49
+6	49
+6	49
+6	49
+6	49
+6	49
+6	49
+6	49
+6	49
+6	49
+6	49
+7	49
+7	49
+7	49
+7	49
+7	49
+7	49
+7	49
+7	49
+7	49
+7	49
+8	49
+8	49
+8	49
+8	49
+8	49
+8	49
+8	49
+8	49
+8	49
+8	49
+9	49
+9	49
+9	49
+9	49
+9	49
+9	49
+9	49
+9	49
+9	49
+9	49
+NULL	735
+rollup + having some any all like...
+select /*+ parallel(3) */ c1,sum(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+c1	sum(c4)
+1	0
+1	0
+11	0
+11	0
+12	0
+12	0
+13	0
+13	0
+14	0
+14	0
+2	0
+2	0
+3	0
+3	0
+4	0
+4	0
+6	0
+6	0
+7	0
+7	0
+8	0
+8	0
+9	0
+9	0
+select /*+ parallel(3) */ c1,sum(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	sum(c5)
+10	49
+10	49
+10	49
+15	49
+15	49
+15	49
+5	49
+5	49
+5	49
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	sum(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	sum(c2)
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	sum(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+select /*+ parallel(3) */ c1,sum(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING sum(c3)>1 order by c1;
+c1	sum(c3)
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING sum(distinct c3)> 1 order by c1;
+c1	sum(c2)
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+NULL	30
+select /*+ parallel(3) */ c1,sum(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+c1	sum(c4)
+1	0
+1	0
+10	0
+10	0
+10	0
+11	0
+11	0
+12	0
+12	0
+13	0
+13	0
+14	0
+14	0
+15	0
+15	0
+15	0
+2	0
+2	0
+3	0
+3	0
+4	0
+4	0
+5	0
+5	0
+5	0
+6	0
+6	0
+7	0
+7	0
+8	0
+8	0
+9	0
+9	0
+NULL	0
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	sum(c2)
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+34113963
+select /*+ parallel(3) */ c1 as a,sum(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	0
+11	0
+12	0
+13	0
+14	0
+2	0
+3	0
+4	0
+6	0
+7	0
+8	0
+9	0
+rollup + union all  minus
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING sum(distinct c3)> 1 order by c1;
+c1	sum(c2)
+NULL	30
+5	0
+5	0
+5	0
+10	0
+10	0
+10	0
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+15	0
+15	0
+15	0
+mysql不支持，ob支持
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	sum(c2)
+rollup + join
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+c1	sum(t2.c2)
+1	1
+1	1
+10	NULL
+10	NULL
+11	NULL
+11	NULL
+12	NULL
+12	NULL
+13	NULL
+13	NULL
+14	NULL
+14	NULL
+15	NULL
+15	NULL
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	NULL
+5	NULL
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	20
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(3) */ t2.c1,sum(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+c1	sum(t2.c2)
+select /*+ parallel(3) */ t1.c1,sum(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	sum(t2.c2)
+rollup  subquery
+select /*+ parallel(3) */ c1,sum(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	sum(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ t2.c1,sum(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING sum(distinct t1.c3)> 1 order by t2.c1;
+c1	sum(t2.c2)
+select /*+ parallel(3) */ c1,sum(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by c1;
+c1	sum(c3)
+1	0.00
+1	0.00
+1	0.00
+10	1.00
+10	1.00
+10	2.00
+11	1.00
+11	1.00
+11	2.00
+12	2.00
+12	2.00
+12	4.00
+13	2.00
+13	2.00
+13	4.00
+14	2.00
+14	2.00
+14	4.00
+15	2.00
+15	2.00
+15	4.00
+2	0.00
+2	0.00
+2	0.00
+3	0.00
+3	0.00
+3	0.00
+4	1.00
+4	1.00
+4	2.00
+5	1.00
+5	1.00
+5	2.00
+6	1.00
+6	1.00
+6	2.00
+7	1.00
+7	1.00
+7	2.00
+8	1.00
+8	1.00
+8	2.00
+9	1.00
+9	1.00
+9	2.00
+NULL	32.00
+NULL	NULL
+NULL	NULL
+运算 常量
+select /*+ parallel(3) */ c1,sum(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+c1	sum(c2)
+1	1
+10	0
+11	1
+12	2
+13	3
+14	4
+15	0
+2	2
+3	3
+4	4
+5	0
+6	1
+7	2
+8	3
+9	4
+NULL	30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+sum(c2)
+0
+12
+3
+30
+6
+9
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+sum(c2)
+15
+30
+6
+9
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+sum(c2)
+0
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+sum(c2)
+30
+30
+select /*+ parallel(3) */ sum(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'sum(c2)'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ sum(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having sum(cast('20111111' as dateTime)) >1;
+a
+301666665000000
+301666665000000
+函数
+select /*+ parallel(3) */ sum(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having sum(upper(LOWER(c2))) >0 order by c1;
+sum(upper(c3))
+0
+0
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+16
+2
+2
+2
+2
+2
+2
+select /*+ parallel(3) */ sum(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+sum(NULLIF(c8,c4))
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+select /*+ parallel(3) */ sum(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+sum(c2)
+0
+1
+10
+2
+3
+4
+NULL
+select /*+ parallel(3) */ sum(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+sum(c3)
+0.00
+1.00
+2.00
+3.00
+NULL
+select /*+ parallel(3) */ sum(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+sum(c4)
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+NULL
+select /*+ parallel(3) */ sum(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+sum(c5)
+49
+49
+NULL
+select /*+ parallel(3) */ sum(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+sum(c6)
+20181222222222
+20460509222222
+20730924222222
+21010210222222
+82382865888888
+NULL
+select /*+ parallel(3) */ sum(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+sum(c7)
+0
+0
+0
+0
+0
+0
+NULL
+select /*+ parallel(3) */ sum(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+sum(c8)
+10
+10
+NULL
+select /*+ parallel(3) */ sum(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+sum(c9)
+20181223222222
+20181223222222
+NULL
+select /*+ parallel(3) */ sum(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+sum(c10)
+0
+0
+0
+0
+0
+0
+NULL
+聚合函数avg
+rollup + 参数
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1,c7 with rollup order by c1;
+c1	avg(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	2
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test GROUP BY (c1,c7) with rollup order by c1;
+c1	avg(c3)
+NULL	1.066667
+1	0.000000
+1	0.000000
+2	0.000000
+2	0.000000
+3	0.000000
+3	0.000000
+4	1.000000
+4	1.000000
+5	1.000000
+5	1.000000
+6	1.000000
+6	1.000000
+7	1.000000
+7	1.000000
+8	1.000000
+8	1.000000
+9	1.000000
+9	1.000000
+10	1.000000
+10	1.000000
+11	1.000000
+11	1.000000
+12	2.000000
+12	2.000000
+13	2.000000
+13	2.000000
+14	2.000000
+14	2.000000
+15	2.000000
+15	2.000000
+select /*+ parallel(3) */ avg(c4) from lyq_test GROUP BY null with rollup;
+avg(c4)
+0
+0
+select /*+ parallel(3) */ avg(c5) from lyq_test GROUP BY '' with rollup;
+avg(c5)
+49.0000
+49.0000
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY (1) with rollup;
+ERROR 42000: Can't group on 'avg(c2)'
+select /*+ parallel(3) */ c1 from lyq_test GROUP BY (1) with rollup;
+c1
+1
+10
+11
+12
+13
+14
+15
+2
+3
+4
+5
+6
+7
+8
+9
+NULL
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1,c6 with rollup order by c1;
+c1	avg(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY null,null with rollup;
+avg(c2)
+2
+2
+2
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test GROUP BY c1,c6,null with rollup order by c1;
+c1	avg(c3)
+1	0.000000
+1	0.000000
+1	0.000000
+10	1.000000
+10	1.000000
+10	1.000000
+11	1.000000
+11	1.000000
+11	1.000000
+12	2.000000
+12	2.000000
+12	2.000000
+13	2.000000
+13	2.000000
+13	2.000000
+14	2.000000
+14	2.000000
+14	2.000000
+15	2.000000
+15	2.000000
+15	2.000000
+2	0.000000
+2	0.000000
+2	0.000000
+3	0.000000
+3	0.000000
+3	0.000000
+4	1.000000
+4	1.000000
+4	1.000000
+5	1.000000
+5	1.000000
+5	1.000000
+6	1.000000
+6	1.000000
+6	1.000000
+7	1.000000
+7	1.000000
+7	1.000000
+8	1.000000
+8	1.000000
+8	1.000000
+9	1.000000
+9	1.000000
+9	1.000000
+NULL	1.066667
+select /*+ parallel(3) */ c1,avg(c5) from lyq_test GROUP BY c1,c2,c3,c4,c5,c6,c7,c8,c9,c10 with rollup order by c1;
+c1	avg(c5)
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+1	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+10	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+11	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+12	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+13	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+14	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+2	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+3	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+4	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+6	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+7	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+8	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+9	49.0000
+NULL	49.0000
+rollup + having some any all like...
+select /*+ parallel(3) */ c1,avg(c4) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2) order by c1;
+c1	avg(c4)
+1	0
+1	0
+11	0
+11	0
+12	0
+12	0
+13	0
+13	0
+14	0
+14	0
+2	0
+2	0
+3	0
+3	0
+4	0
+4	0
+6	0
+6	0
+7	0
+7	0
+8	0
+8	0
+9	0
+9	0
+select /*+ parallel(3) */ c1,avg(c5) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	avg(c5)
+10	49.0000
+10	49.0000
+10	49.0000
+15	49.0000
+15	49.0000
+15	49.0000
+5	49.0000
+5	49.0000
+5	49.0000
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > any(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	avg(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > all(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	avg(c2)
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	avg(c2)
+1	1
+1	1
+10	0
+10	0
+11	1
+11	1
+12	2
+12	2
+13	3
+13	3
+14	4
+14	4
+15	0
+15	0
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	0
+5	0
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+select /*+ parallel(3) */ c1,avg(c3) from lyq_test where c4 like '这%' GROUP BY c1,c3,c6 with rollup HAVING avg(c3)>1 order by c1;
+c1	avg(c3)
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING avg(distinct c3)> 1 order by c1;
+c1	avg(c2)
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+select /*+ parallel(3) */ c1,avg(c4) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is null order by c1;
+c1	avg(c4)
+1	0
+1	0
+10	0
+10	0
+10	0
+11	0
+11	0
+12	0
+12	0
+13	0
+13	0
+14	0
+14	0
+15	0
+15	0
+15	0
+2	0
+2	0
+3	0
+3	0
+4	0
+4	0
+5	0
+5	0
+5	0
+6	0
+6	0
+7	0
+7	0
+8	0
+8	0
+9	0
+9	0
+NULL	0
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+c1	avg(c2)
+1	1
+11	1
+12	2
+13	3
+14	4
+2	2
+3	3
+4	4
+6	1
+7	2
+8	3
+9	4
+34113963
+select /*+ parallel(3) */ c1 as a,avg(c4) as b from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c8 with rollup 
+HAVING c8 is not null order by c1;
+a	b
+1	0
+11	0
+12	0
+13	0
+14	0
+2	0
+3	0
+4	0
+6	0
+7	0
+8	0
+9	0
+rollup + union all  minus
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  )
+UNION ALL
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c6 with rollup 
+HAVING avg(distinct c3)> 1 order by c1;
+c1	avg(c2)
+5	0
+5	0
+5	0
+10	0
+10	0
+10	0
+12	2
+12	2
+12	2
+13	3
+13	3
+13	3
+14	4
+14	4
+14	4
+15	0
+15	0
+15	0
+15	0
+15	0
+15	0
+mysql不支持，ob支持
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c8 is not null GROUP BY c1,c3,c6 with rollup HAVING c3 in (0,1,2)
+minus
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test where c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY c1,c3,c4,c6 with rollup 
+HAVING c4 like '%a%' order by c1;
+c1	avg(c2)
+rollup + join
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1
+GROUP BY t1.c1,t1.c6 with rollup order by t1.c1;
+c1	avg(t2.c2)
+1	1
+1	1
+10	NULL
+10	NULL
+11	NULL
+11	NULL
+12	NULL
+12	NULL
+13	NULL
+13	NULL
+14	NULL
+14	NULL
+15	NULL
+15	NULL
+2	2
+2	2
+3	3
+3	3
+4	4
+4	4
+5	NULL
+5	NULL
+6	1
+6	1
+7	2
+7	2
+8	3
+8	3
+9	4
+9	4
+NULL	2.5
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+ERROR 42000: nonaggregated column 'test.t1.c1' is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+select /*+ parallel(3) */ t2.c1,avg(t2.c2) from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+c1	avg(t2.c2)
+select /*+ parallel(3) */ t1.c1,avg(t2.c2) from lyq_test t1 
+inner join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t1.c1,t1.c3,t1.c4,t1.c6 with rollup 
+HAVING t1.c4 like '%a' order by t1.c1;
+c1	avg(t2.c2)
+rollup  subquery
+select /*+ parallel(3) */ c1,avg(c2) from (select * from lyq_test) a where c8 is null GROUP BY c1,c3,c6 with rollup HAVING c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) order by c1;
+c1	avg(c2)
+10	0
+10	0
+10	0
+15	0
+15	0
+15	0
+5	0
+5	0
+5	0
+select /*+ parallel(3) */ t2.c1,avg(t2.c2) from (select c1,c2,c3,c6,c8 from lyq_test where c1 < 10000 ) t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1
+where t1.c1 > some(SELECT c2 FROM lyq_test GROUP BY c2 with ROLLUP  ) GROUP BY t2.c1,t1.c3,t1.c6 with rollup 
+HAVING avg(distinct t1.c3)> 1 order by t2.c1;
+c1	avg(t2.c2)
+select /*+ parallel(3) */ c1,avg(c3) from (select c1,c3,c6 from lyq_test where c1 < 10000 GROUP BY c1,c3,c6 with rollup ) a GROUP BY c1,c6 with rollup order by c1;
+c1	avg(c3)
+1	0.000000
+1	0.000000
+1	0.000000
+10	1.000000
+10	1.000000
+10	1.000000
+11	1.000000
+11	1.000000
+11	1.000000
+12	2.000000
+12	2.000000
+12	2.000000
+13	2.000000
+13	2.000000
+13	2.000000
+14	2.000000
+14	2.000000
+14	2.000000
+15	2.000000
+15	2.000000
+15	2.000000
+2	0.000000
+2	0.000000
+2	0.000000
+3	0.000000
+3	0.000000
+3	0.000000
+4	1.000000
+4	1.000000
+4	1.000000
+5	1.000000
+5	1.000000
+5	1.000000
+6	1.000000
+6	1.000000
+6	1.000000
+7	1.000000
+7	1.000000
+7	1.000000
+8	1.000000
+8	1.000000
+8	1.000000
+9	1.000000
+9	1.000000
+9	1.000000
+NULL	1.066667
+NULL	NULL
+NULL	NULL
+运算 常量
+select /*+ parallel(3) */ c1,avg(c2) from lyq_test GROUP BY c1 with rollup order by c1;
+c1	avg(c2)
+1	1
+10	0
+11	1
+12	2
+13	3
+14	4
+15	0
+2	2
+3	3
+4	4
+5	0
+6	1
+7	2
+8	3
+9	4
+NULL	2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c2 - 2 with rollup order by c2 - 2;
+avg(c2)
+0
+1
+2
+2
+3
+4
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c3 * 2 with rollup order by c3 * 2;
+avg(c2)
+1.875
+2
+2
+2.25
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c4 / 2 with rollup order by c4 / 2;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c5||2 with rollup order by c5||2;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c6||c5 with rollup order by c6||c5;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY (c7 * 2)+2 with rollup order by (c7 * 2)+2;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY concat(c8,c9) with rollup order by concat(c8,c9);
+avg(c2)
+0
+2
+2.5
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c9 * 2 with rollup order by c9 * 2;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY c10 * 2 with rollup order by c10 * 2;
+avg(c2)
+2
+2
+select /*+ parallel(3) */ avg(c2) from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42000: Can't group on 'avg(c2)'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1,2,3 with rollup;
+ERROR 42S22: Unknown column '2' in 'group statement'
+select /*+ parallel(3) */ c2 from lyq_test GROUP BY 1 with rollup;
+c2
+0
+1
+2
+3
+4
+NULL
+select /*+ parallel(3) */ avg(cast('20111111' as dateTime))as a  FROM lyq_test GROUP BY  cast(20111111 as dateTime) with rollup   having avg(cast('20111111' as dateTime)) >1;
+a
+20111111000000.0000
+20111111000000.0000
+函数
+select /*+ parallel(3) */ avg(upper(c3)) from lyq_test group by c1,c2 with ROLLUP having avg(upper(LOWER(c2))) >0 order by c1;
+avg(upper(c3))
+0
+0
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1.0666666666666667
+2
+2
+2
+2
+2
+2
+select /*+ parallel(3) */ avg(NULLIF(c8,c4)) from lyq_test group by c1,c2 with ROLLUP order by c1;
+avg(NULLIF(c8,c4))
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+select /*+ parallel(3) */ avg(c2) from (select c2 from lyq_test group by c2 with rollup) as a group by c2 with rollup;
+avg(c2)
+0
+1
+2
+2
+3
+4
+NULL
+select /*+ parallel(3) */ avg(c3) from (select c3 from lyq_test group by c3 with rollup) as a group by c3 with rollup;
+avg(c3)
+0.000000
+1.000000
+1.000000
+2.000000
+NULL
+select /*+ parallel(3) */ avg(c4) from (select c4 from lyq_test group by c4 with rollup) as a group by c4 with rollup;
+avg(c4)
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+NULL
+select /*+ parallel(3) */ avg(c5) from (select c5 from lyq_test group by c5 with rollup) as a group by c5 with rollup;
+avg(c5)
+49.0000
+49.0000
+NULL
+select /*+ parallel(3) */ avg(c6) from (select c6 from lyq_test group by c6 with rollup) as a group by c6 with rollup;
+avg(c6)
+20181222222222.0000
+20460509222222.0000
+20595716472222.0000
+20730924222222.0000
+21010210222222.0000
+NULL
+select /*+ parallel(3) */ avg(c7) from (select c7 from lyq_test group by c7 with rollup) as a group by c7 with rollup;
+avg(c7)
+0
+0
+0
+0
+0
+0
+NULL
+select /*+ parallel(3) */ avg(c8) from (select c8 from lyq_test group by c8 with rollup) as a group by c8 with rollup;
+avg(c8)
+10
+10
+NULL
+select /*+ parallel(3) */ avg(c9) from (select c9 from lyq_test group by c9 with rollup) as a group by c9 with rollup;
+avg(c9)
+20181223222222.0000
+20181223222222.0000
+NULL
+select /*+ parallel(3) */ avg(c10) from (select c10 from lyq_test group by c10 with rollup) as a group by c10 with rollup;
+avg(c10)
+0
+0
+0
+0
+0
+0
+NULL
+DROP TABLE lyq_test_fk;
+DROP TABLE lyq_test;
+DROP PROCEDURE get_data1;
+DROP PROCEDURE get_data2;

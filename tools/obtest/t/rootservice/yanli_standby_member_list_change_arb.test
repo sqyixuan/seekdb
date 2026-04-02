@@ -1,0 +1,178 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+
+ob1=OBI(cluster=2:2, proxy_num=0,asvr_num=1);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+
+ob1.reboot;
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter tenant sys set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where role = 1 and zone = 'z1', 1, 100;
+sleep 2;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 1;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+# 获取仲裁server的ip、port
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 5;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1,z2" ,enable_arbitration_service = true set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+ob1.mysql alter system set log_storage_compress_all = true tenant = ALL;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+let $ip_port = deploy_get_value(ob1.select select concat(svr_ip,':', sql_port) as host from oceanbase.__all_virtual_ls_meta_table where tenant_id = $oracle_id, host, 1);
+ob_connect(primary_tenant_conn, ob1.z1.obs0 ,SYS@oracle,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+
+
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2 USER=mytest@oracle PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1,F@z2', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select (tenant_id -1) as tenant_id from oceanbase.__all_tenant where tenant_name='standby_oracle_tenant', tenant_id, 1);
+ob1.mysql alter tenant standby_oracle_tenant set enable_arbitration_service = true;
+ob1.mysql alter tenant sys set enable_arbitration_service = true;
+ob1.mysql alter tenant oracle set enable_arbitration_service = true;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = $tenant_id and arbitration_service_status = "ENABLED", 1, 200;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = $oracle_id and arbitration_service_status = "ENABLED", 1, 200;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where tenant_id = 1 and arbitration_service_status = "ENABLED", 1, 200;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+#仲裁在线的时候, 降级一台机器，可读点推上去后，升级操作不参考可读点，宕机另一台机器，不能剔除副本
+
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z2', host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z2', host, 2);
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+#可读点不满足多数派，不能继续推进了
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+sleep 3;
+ob1.mysql_p select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant';
+
+ob1.mysql alter system stop zone 'z2';
+#降级z2，降级后应该可以推进了
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+#拉起z2
+ob1.mysql alter system start zone 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list !='', 0, 100;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.z1.obs0.force_stop;
+ob1.z1.obs1.force_stop;
+#永久下线不能踢成员成功
+ob1.z2.obs0.check_until_timeout select count(*) > 1 from oceanbase.__all_virtual_ls_replica_task_history, 1, 50;
+let $task_id = deploy_get_value(ob1.z2.obs0.select select max(task_id) as task_id from oceanbase.__all_virtual_ls_replica_task_history where tenant_id = $tenant_id, task_id, 1);
+ob1.z2.obs0.check_until_timeout select count(*) > 1 from oceanbase.__all_virtual_ls_replica_task_history where task_id > '$task_id' and task_status = 'FAILED' and execute_result like "%OB_TIMEOUT%", 1, 40;
+#但是可以降级成功
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list ='' and tenant_id = $tenant_id, 0, 100;
+
+#放开errsim，可以踢成员并且补副本成功
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+
+#可以踢成员，所以degraded_list会变空
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list !='', 0, 30;
+#拉起z1
+ob1.z1.obs0.nstart;
+ob1.z1.obs1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where member_list not like "%,%", 0, 200;
+ob1.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 100;
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+#验证降级的情况下副本可以迁移
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.DBA_OB_UNITS WHERE tenant_id = $tenant_id and zone = 'z1', unit_id, 1);
+let $src = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) host from oceanbase.__all_unit where unit_id = $unit_id,host, 1);
+let $dest = deploy_get_value(ob1.select  select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z1' and  concat(svr_ip,':',svr_port) !='$src', host, 1);
+
+ob1.mysql alter system stop zone 'z2';
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $oracle_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list ='' and tenant_id = $tenant_id, 0, 100;
+
+ob1.mysql alter system migrate unit $unit_id destination = '$dest';
+ob1.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '', 0, 100;
+ob1.mysql alter system start zone 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where degraded_list !='', 0, 100;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, 2, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $meta_tenant_id, 2, 100;
+ob1.mysql alter resource tenant standby_oracle_tenant unit_num = 2;
+#宕机z1，验证z2的迁移
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+
+ob1.z1.obs0.force_stop;
+ob1.z1.obs1.force_stop;
+#等待T成员成功
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where zone = 'z1', 0, 100;
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_2';
+
+let $src = deploy_get_value(ob1.z2.obs0.select select concat(svr_ip,':',svr_port) host from oceanbase.__all_virtual_ls_meta_table WHERE tenant_id = $tenant_id and ls_id = 1 and zone = 'z2', host, 1);
+let $dest = deploy_get_value(ob1.z2.obs0.select  select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where zone = 'z2' and  concat(svr_ip,':',svr_port) !='$src', host, 1);
+sleep 10;
+ob1.z2.obs0.mysql alter system migrate replica ls=1 source='$src' destination='$dest' tenant ='standby_oracle_tenant'; 
+#ob1.z2.obs0.mysql alter system migrate unit $unit_id destination = '$dest';
+#由于z2不能回放到最新，所以不能迁移成功
+#由于缺副本的情况，不能迁移成功，一个badcase，这段逻辑校验不了
+#
+ob1.z2.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 1, 30;
+let $task_id = deploy_get_value(ob1.z2.obs0.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+
+ob1.z2.obs0.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_ls_replica_task_history where task_status = 'FAILED' and execute_result like "%OB_MEMBER_CHANGE_FAILED%" and task_type = 'MIGRATE REPLICA' and task_id = '$task_id', 1, 100;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_info where tenant_id = $tenant_id and ls_id = 1, 1, 100;
+#放开可以迁移
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+ob1.z2.obs0.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_2';
+
+#等日志流彻底GC
+#sleep 5;
+#ob_connect(sys_conn1, ob1.z2.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+#eval alter system migrate replica ls=1 source='$src' destination='$dest' tenant ='standby_oracle_tenant'; 
+#ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where  tenant_id = $tenant_id and ls_id = 1 and role = 1 and concat(svr_ip,':',svr_port) = '$dest', 1, 100;
+
+#ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.__all_unit where migrate_from_svr_ip != '', 0, 100;
+
+#拉起可以补副本成功
+ob1.z1.obs0.start;
+ob1.z1.obs1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time = 0, 0, 100;
+
+
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.V\$OB_LS_REPLICA_TASK_PLAN, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where member_list not like "%,%", 0, 100;

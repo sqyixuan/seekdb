@@ -1,0 +1,178 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test create duplicate log stream
+#    We designed following cases to simulate different scenes:
+#
+#    CASE 1: create duplicate table t1
+#    CASE 2: create table t2 like t1
+#
+
+
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant tenant_for_duplicate_table
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_duplicate_table RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, R@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_duplicate_table", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_duplicate_table", meta_tenant_id, 1);
+
+# do not remove duplicate replica because disaster recovery can not recognize these replicas yet
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC wait_for signal';
+
+--echo =================================================================================
+--echo                 test sys tenant can not create duplicate table
+--echo =================================================================================
+# sys tenant can not create duplicate table
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+--error 1235
+create table sys_dup_t1(c1 int) duplicate_scope = 'cluster';
+
+--echo =================================================================================
+--echo                     test create duplicate table dup_t1
+--echo =================================================================================
+# create duplicate table dup_t1
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table dup_t1(c1 int) duplicate_scope = 'cluster';
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'dup_t1', ls_id, 1);
+ob1.check_until_timeout select ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', $ls_id, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 6, 20;
+
+--echo =================================================================================
+--echo                   test create duplicate table dup_t2 like dup_t1
+--echo =================================================================================
+# create duplicate table dup_t2 like dup_t1
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table dup_t2 like dup_t1;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'dup_t2', ls_id, 1);
+ob1.check_until_timeout select ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', $ls_id, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 6, 20;
+
+--echo =================================================================================
+--echo                        test create normal table t1
+--echo =================================================================================
+# create normal table t1
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table normal_t1(c1 int) duplicate_scope = 'none';
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'normal_t1', ls_id, 1);
+ob1.check_until_timeout select ls_id != $ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 3, 20;
+
+--echo =================================================================================
+--echo                        test create normal table t2 from t1
+--echo =================================================================================
+# create normal table t2 from t1
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table normal_t2 like normal_t1;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'normal_t2', ls_id, 1);
+ob1.check_until_timeout select ls_id != $ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 3, 20;
+
+--echo =================================================================================
+--echo                       test create normal table t3 like t2
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table normal_t3 like normal_t2;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'normal_t3', ls_id, 1);
+ob1.check_until_timeout select ls_id != $ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 3, 20;
+
+--echo =================================================================================
+--echo                       test create duplicate table dup_t3 like dup_t1
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table dup_t3 like dup_t1;
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'dup_t3', ls_id, 1);
+ob1.check_until_timeout select ls_id = $ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 6, 20;
+
+--echo =================================================================================
+--echo                          test create normal table t4
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table normal_t4 (c1 int);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) as dup_ls_cnt from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name = 'normal_t4', ls_id, 1);
+ob1.check_until_timeout select ls_id != $ls_id from oceanbase.CDB_OB_LS where flag like '%duplicate%', 1, 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where ls_id = $ls_id, 3, 20;
+
+--echo =================================================================================
+--echo                            test tablegroup related
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create tablegroup tg1;
+--error 1235
+create table table_with_tg(c1 int) duplicate_scope = 'cluster', tablegroup = 'tg1';
+--error 1235
+alter tablegroup tg1 add table dup_t1;
+--error 1235
+alter table dup_t1 set tablegroup = 'tg1';
+
+--echo =================================================================================
+--echo                            test create partition table
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table part_table_with_dup(c1 int) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+
+--echo =================================================================================
+--echo                               test create index
+--echo =================================================================================
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_duplicate_table, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create index dup_t1_idx on dup_t1(c1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_TABLE_LOCATIONS where index_name like "%dup_t1_idx%" and duplicate_scope like "%cluster%" and role like "%leader%", 1, 10;
+
+--echo =================================================================================
+--echo                                      test views
+--echo =================================================================================
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "%DUP%" and role like "%LEADER%" and duplicate_scope like "%CLUSTER%", 8, 30;
+

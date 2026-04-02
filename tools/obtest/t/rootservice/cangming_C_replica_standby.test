@@ -1,0 +1,124 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    C 副本备份恢复, 基于归档的备库, 网络备库
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant  = backup_mysql_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $standby_mysql_tenant = standby_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+# 创建主租户, locality FFC
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1', locality = 'F@z1,F@z2,C@z3' set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+
+--echo ========================================================
+--echo case 1: backup-based standby
+--echo ========================================================
+# 设置归档源
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+# 准备一些数据
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t1(a, b) values(1, 1);
+create table t2(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t2(a, b) values(1, 1);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $backup_mysql_tenant_id, s, 1);
+
+# 打开归档
+ob1.mysql alter system archivelog;
+# 检查归档状态
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+# 执行数据备份
+ob1.mysql alter system backup database;
+# 检查备份状态
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+let $restore_path = $log_backup_dest,$data_backup_dest;
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_mysql_tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = $restore_checkpoint2;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+# 在目标集群上执行RESTORE命令，使用租户的备份和归档，创建并恢复出备租户
+# 恢复租户 locality 不能带有C副本, 预期失败
+--disable_query_log
+--error 1235
+eval alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool_2&primary_zone=z1&locality=F@z1,F@z2,C@z3';
+--enable_query_log
+# 恢复租户 locality 没有C副本
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool_2&primary_zone=z1&locality=F@z1,F@z2';
+let $restore_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$restore_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = $restore_mysql_tenant_id - 1, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 4, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = $restore_mysql_tenant_id, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+# 更改备租户恢复终点
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant UNTIL UNLIMITED;
+
+# alter standby tenant
+ob1.mysql ALTER TENANT $restore_mysql_tenant LOCALITY = 'F@z1,F@z2,C@z3';
+ob1.check_until_timeout select count(*) FROM __all_rootservice_job WHERE job_type = 'ALTER_TENANT_LOCALITY' AND tenant_id = 1004 AND job_status = 'SUCCESS', 1, 300;
+
+--echo ========================================================
+--echo case 2: network standby
+--echo ========================================================
+# get primary tenant access point
+let $server_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+
+# create log restore source user
+connection backup_mysql_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+
+# create net-standby tenant
+ob1.mysql CREATE STANDBY TENANT $standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_3'),locality='F@z1,F@z2,C@z3', comment='aaaaaaaa';
+ob1.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = '$standby_mysql_tenant', NORMAL, 200;
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+let $standby_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$standby_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select floor(readable_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $standby_mysql_tenant_id, 1, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = $standby_mysql_tenant_id and refreshed_schema_version < $schema_version, 0, 30;
+
+# direct connect z3 (C-replica)
+ob_connect(standby_mysql_tenant_conn, ob1.z3.obs0,root@$standby_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection standby_mysql_tenant_conn;
+# check ls C replica
+select ls_id, zone, replica_type from oceanbase.DBA_OB_LS_LOCATIONS order by ls_id, zone, replica_type;
+# check read
+select * from t1;

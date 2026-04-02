@@ -1,0 +1,130 @@
+#owner: wangzhennan.wzn
+#owner group: RS
+#description: Test __all_virtual_proxy_schema;
+
+--result_format 4
+--disable_warnings
+
+connect (default1,$OBMYSQL_MS0,admin,admin,,$OBMYSQL_PORT);
+#connection default1;
+
+#--error 0,942
+#DROP TABLE "a'b";
+
+# Range + List
+#CREATE TABLE "a'b"(col1 INT,col2 INT);
+
+connect (obsys,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+
+connection obsys;
+#select tenant_name, database_name, table_name, part_num, table_type, dup_replica_type from __all_virtual_proxy_schema where tenant_name='oracle' and database_name='ADMIN' and table_name="a'b" order by role asc limit 1;
+
+#connection default1;
+#DROP TABLE "a'b";
+
+connect (default2,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+connection default2;
+
+--error 0,1051
+DROP TABLE test.`a'b`;
+--error 0,1051
+DROP TABLE test.t01;
+--error 0,1051
+DROP TABLE test.t02;
+--error 0,1051
+DROP TABLE test.t03;
+
+CREATE TABLE test.`a'b`(col1 INT,col2 INT);
+CREATE TABLE test.t01(id int);
+CREATE TABLE test.t02(id int);
+CREATE TABLE test.t03(col1 INT,col2 INT) 
+       PARTITION BY LIST COLUMNS(col1)
+       SUBPARTITION BY HASH(col2) SUBPARTITIONS 5
+        (PARTITION p0 VALUES IN(100),
+         PARTITION p1 VALUES IN(200),
+         PARTITION p2 VALUES IN(300)
+        );
+
+connection obsys;
+--error 0,1051
+DROP TABLE t01_sys;
+CREATE TABLE t01_sys(id int);
+
+select tenant_name, database_name, table_name, part_num, table_type, dup_replica_type from __all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="a'b" order by role asc limit 1;
+
+# added validation for the new column spare1 (changed to rpc_port)
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name like 'sys', tenant_id, 1);
+let $rpc_port = query_get_value(select SVR_PORT from oceanbase.cdb_ob_table_locations where tenant_id = $tenant_id and table_name like "a'b" and ROLE like 'LEADER', SVR_PORT, 1);
+--disable_query_log
+# result is 0
+eval select count(*) as compare_result from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="a'b" and role = 1 and spare1 != $rpc_port;
+# result is 0
+eval select count(*) as compare_result from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='oceanbase' and table_name='__all_dummy' and spare1 not in (select SVR_PORT from oceanbase.__all_unit U join oceanbase.__all_resource_pool P on U.resource_pool_id = P.resource_pool_id where tenant_id = $tenant_id);
+--enable_query_log
+
+# return empty if nonblack_get returns OB_LS_LOCATION_NOT_EXIST or OB_MAPPING_BETWEEN_TABLET_AND_LS_NOT_EXIST
+# result is 1
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="a'b";
+alter system set_tp tp_name = 'ERRSIM_GET_LS_LOCATION_NOT_EXIST_ERROR', error_code = 4721, frequency = 1;
+# result is 0
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="a'b";
+alter system set_tp tp_name = 'ERRSIM_GET_LS_LOCATION_NOT_EXIST_ERROR', error_code = 4721, frequency = 0;
+alter system set_tp tp_name = 'ERRSIM_GET_TABLET_LS_LOCATION_NOT_EXIST_ERROR', error_code = 4723, frequency = 1;
+# result is 0
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="a'b";
+alter system set_tp tp_name = 'ERRSIM_GET_TABLET_LS_LOCATION_NOT_EXIST_ERROR', error_code = 4723, frequency = 0;
+
+# When a new table has no access history (no info in the tablet_to_ls cache):
+# - If OB_GET_LOCATION_TIME_OUT occurs during the tablet_to_ls refresh in batch_renew_tablet_locations, it will return empty.
+# - If OB_GET_LOCATION_TIME_OUT occurs during the ls refresh in batch_renew_tablet_locations, it will usually not return empty as ls actively refreshes; 
+#   the table typically has ls info in the cache, even if it doesn't meet expire_renew_time, so the old cache value is returned.
+# For tables that have been accessed before, even if OB_GET_LOCATION_TIME_OUT occurs, the old cache value will be returned.
+
+alter system set_tp tp_name = 'ERRSIM_REFRESH_TABLET_LS_CACHE_TIME_OUT_ERROR', error_code = 4664, frequency = 1;
+# result is 0
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="t02";
+alter system set_tp tp_name = 'ERRSIM_REFRESH_TABLET_LS_CACHE_TIME_OUT_ERROR', error_code = 4664, frequency = 0;
+# result is 1
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name='sys' and database_name='test' and table_name="t02";
+
+# during batch get, tables that are not found will be filtered without raising errors.
+select distinct(table_name) from oceanbase.__all_virtual_proxy_schema where (tenant_name, database_name, table_name) in (('sys', 'test', "a'b"), ('sys', 'test', 't02'), ('sys', 'test', '123'), ('sys', 'test', 't01'));
+
+# mysql tenant can only get tables belong to itself
+connection default2;
+# result is 0
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = 't01_sys';
+# result is 1
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't01';
+# sys tenant can get all tables
+connection obsys;
+# result is 1
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'oceanbase' and table_name = 't01_sys';
+# result is 1
+select count(*) != 0 from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't01';
+
+--error ER_WRONG_ARGUMENTS
+eval select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name = 'sys';
+--error ER_NOT_SUPPORTED_YET
+eval select count(*) from oceanbase.__all_virtual_proxy_schema where (tenant_name, database_name, table_name) in (('sys', 'test', 't01'),('sys', 'oceanbase', 't01_sys'));
+#--error ER_NOT_SUPPORTED_YET
+eval select count(*) from oceanbase.__all_virtual_proxy_schema where (tenant_name, database_name, table_name) in (('sys', 'oceanbase', '__all_core_table'),('sys', 'oceanbase', 't01_sys'));
+
+# verify default selection of the smallest tablet_id when no tablet is specified
+let $tablet_id = query_get_value(select tablet_id from cdb_ob_table_locations where tenant_id = $tenant_id and table_name = 't03' order by tablet_id limit 1, tablet_id, 1);
+let $svr_ip = query_get_value(select svr_ip from __all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't03' and tablet_id = $tablet_id and role = 1, svr_ip, 1);
+let $sql_port = query_get_value(select sql_port from __all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't03' and tablet_id = $tablet_id and role = 1, sql_port, 1);
+let $svr_port =  query_get_value(select spare1 from __all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't03' and tablet_id = $tablet_id and role = 1, spare1, 1);
+# result is 0
+--disable_query_log
+eval select count(*) from __all_virtual_proxy_schema where tenant_name = 'sys' and database_name = 'test' and table_name = 't03' and role = 1 and svr_ip != '$svr_ip' and sql_port != $sql_port and spare1 != $svr_port;
+--enable_query_log
+
+connection default2;
+DROP TABLE test.`a'b`;
+DROP TABLE test.t01;
+DROP TABLE test.t02;
+DROP TABLE test.t03;
+
+connection obsys;
+DROP TABLE t01_sys;

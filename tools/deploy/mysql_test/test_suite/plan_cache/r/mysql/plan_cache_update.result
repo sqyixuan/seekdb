@@ -1,0 +1,485 @@
+alter system set resource_hard_limit = 500;
+alter system flush plan cache;
+set ob_trx_timeout = 1000000000;
+drop user 'xy'@'%';
+create user 'xy'@'%';
+grant CREATE, SELECT, INSERT, DROP on *.* to xy;
+select effective_tenant();
+effective_tenant()
+sys
+set autocommit = 0;
+set ob_read_consistency = 'weak';
+drop database if exists xy_db;
+create database xy_db;
+use xy_db;
+
+#bug 8044575 plan cache对table schema校验bug
+create table ts_t(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+select * from ts_t where c1 = 0;
+c1	c2
+// expect hit_count = 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from ts_t where c1 = ?';
+hit_count
+0
+drop table ts_t;
+create table ts_t(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+select * from ts_t where c1 = 1;
+c1	c2
+//expect hit_count = 0, because new pcv create and add plan create by 'select * from ts_t where c1 = 1';
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from ts_t where c1 = ?';
+hit_count
+0
+select * from ts_t where c1 = 1;
+c1	c2
+//expect hit_count = 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from ts_t where c1 = ?';
+hit_count
+1
+
+#bug 7998585 plan cache支持恒真/假表达式的校验
+drop table if exists bool_t1,bool_t2,bool_t3;
+drop tablegroup if exists bool_group;
+create tablegroup bool_group;
+create table bool_t1(c1 int primary key, c2 int) tablegroup='bool_group';
+create table bool_t2(c1 int primary key, c2 int) tablegroup='bool_group';
+create table bool_t3(c1 int primary key, c2 int) tablegroup='bool_group';
+select * from bool_t1 where (0 = 1) or c1 = 1;
+c1	c2
+
+//expect hit_count = 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from bool_t1 where (? = ?) or c1 = ?';
+hit_count
+0
+select * from bool_t1 where (1 = 1) or c1 = 1;
+c1	c2
+//expect two records, each record's hit_count is 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from bool_t1 where (? = ?) or c1 = ?';
+hit_count
+0
+0
+
+select * from bool_t1 left join bool_t2 on (1 = 0 or bool_t1.c1 = bool_t2.c1) left join bool_t3 on (2=2 or bool_t2.c1 = bool_t3.c1);
+c1	c2	c1	c2	c1	c2
+//expect hit_count = 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from bool_t1 left join bool_t2 on (? = ? or bool_t1.c1 = bool_t2.c1) left join bool_t3 on (?=? or bool_t2.c1 = bool_t3.c1)';
+hit_count
+0
+select * from bool_t1 left join bool_t2 on (1 = 3 or bool_t1.c1 = bool_t2.c1) left join bool_t3 on (4=4 or bool_t2.c1 = bool_t3.c1);
+c1	c2	c1	c2	c1	c2
+//expect hit_count = 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from bool_t1 left join bool_t2 on (? = ? or bool_t1.c1 = bool_t2.c1) left join bool_t3 on (?=? or bool_t2.c1 = bool_t3.c1)';
+hit_count
+1
+drop table bool_t1,bool_t2,bool_t3;
+
+*********************************change view table version ************************
+//test drop/create view
+drop table if exists t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+drop view if exists vt;
+create view vt as select * from t1;
+
+select * from vt;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vt';
+hit_count
+0
+
+drop view vt;
+create view vt as select * from t1;
+select * from vt;
+i1	f1	s1	d1
+// expect hit_count = 0; not hit, because view version change, plan update
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vt';
+hit_count
+0
+
+select * from vt;
+i1	f1	s1	d1
+// expect hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vt';
+hit_count
+1
+
+********************* test nest view, and have reduplicated view *****************
+drop table if exists t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+drop view if exists vt,vvt;
+create view vt as select * from t1;
+create view vvt as select * from vt;
+
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+0
+
+drop view vt;
+create view vt as select * from t1;
+select * from vvt where i1=1;
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+0
+
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+1
+
+*********** test nest view, and have reduplicated view **************************
+drop table if exists t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+drop view if exists vt,vvt;
+create view vt as select * from t1;
+create view vvt as select * from vt;
+
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+0
+
+drop view vt;
+create view vt as select * from t1;
+select * from vvt where i1=1;
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+0
+
+select * from vvt;
+i1	f1	s1	d1
+// expect hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from vvt';
+hit_count
+1
+
+******************************** change table version ****************************
+********* test when drop/create table, plan update ********
+drop table if exists t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+select * from t1;
+i1	f1	s1	d1
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1';
+hit_count
+0
+
+drop table t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+select * from t1;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1';
+hit_count
+0
+
+select * from t1;
+i1	f1	s1	d1
+// expect hit_count = 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1';
+hit_count
+1
+
+************** test alter table, plan update; ****************************************
+drop table if exists alter_add_t;
+create table alter_add_t(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+
+select * from alter_add_t where i1 = 1;
+i1	f1	s1	d1
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_add_t where i1 = ?';
+hit_count
+0
+
+alter table alter_add_t add i2 int;
+select * from alter_add_t where i1 = 1;
+i1	f1	s1	d1	i2
+//expect hit_count = 0, not hit, because table version change, plan update
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_add_t where i1 = ?';
+hit_count
+0
+
+select * from alter_add_t where i1 = 1;
+i1	f1	s1	d1	i2
+//expect hit_count = 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_add_t where i1 = ?';
+hit_count
+1
+
+************************ test alter table, plan update ******************************
+drop table if exists alter_table_t;
+create table alter_table_t(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+
+select * from alter_table_t where i1 = 1;
+i1	f1	s1	d1
+// expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_table_t where i1 = ?';
+hit_count
+0
+
+alter table alter_table_t drop s1;
+select * from alter_table_t where i1 = 1;
+i1	f1	d1
+//expect hit_count = 0, not hit, because table version change, plan update
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_table_t where i1 = ?';
+hit_count
+0
+
+select * from alter_table_t where i1 = 1;
+i1	f1	d1
+//expect hit_count = 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from alter_table_t where i1 = ?';
+hit_count
+1
+
+***************************** change system variable : binlog_row_image *************************
+drop table if exists binlog_t_update_oracle;
+create table binlog_t_update_oracle(c1 int primary key, c2 varchar(100), v3 timestamp);
+
+set binlog_row_image='minimal';
+update binlog_t_update_oracle set v3 = current_timestamp();
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'update binlog_t_update_oracle set v3 = current_timestamp()';
+hit_count
+0
+
+set binlog_row_image = 'full';
+update binlog_t_update_oracle set v3 = current_timestamp();
+//expect two records, each record's hit_count is 0; because system variable change, add new plan;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'update binlog_t_update_oracle set v3 = current_timestamp()';
+hit_count
+0
+0
+
+update binlog_t_update_oracle set v3 = current_timestamp();
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'update binlog_t_update_oracle set v3 = current_timestamp()';
+hit_count
+0
+1
+drop table binlog_t_update_oracle;
+commit;
+
+********************************* change system variable : ob_enable_index_direct_select  ************************
+//change to system tenant, because only system tenant can read __all_table;
+set autocommit = 0;
+drop database if exists xy_db;
+create database xy_db;
+use xy_db;
+drop table if exists index_enabled_t;
+create table index_enabled_t(c1 int primary key, c2 int);
+create index i1_unique_index on index_enabled_t(c1);
+let $table = query_get_value(select table_name from oceanbase.__all_virtual_table where data_table_id=(select table_id from oceanbase.__all_virtual_table where table_name='index_enabled_t'),table_name,1);
+
+set ob_enable_index_direct_select = 1;
+select  * from $table
+c1
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  * from $table';
+hit_count
+0
+
+set ob_enable_index_direct_select = 0;
+select  * from $table;
+error 1146  #该处报错信息中有表的id，该id是变化的，为保证结果稳定性使用echo输出；
+//expect hit_count = 0; not hit, and not add new plan
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  * from $table';
+hit_count
+0
+
+set ob_enable_index_direct_select = 1;
+select  * from $table;
+c1
+//expect hit_count = 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  * from $table';
+hit_count
+1
+
+drop database if exists xy_db;
+commit;
+
+********************************* change system variable : collation_connection ************************
+set autocommit = 0;
+create database xy_db;
+use xy_db;
+drop table if exists collation_t;
+create table collation_t(c1 int primary key, c2 varchar(50));
+
+set collation_connection = 'utf8mb4_bin';
+select * from collation_t where c2 = 'ab';
+c1	c2
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from collation_t where c2 = ?';
+hit_count
+0
+
+set collation_connection = 'utf8_general_ci';
+select * from collation_t where c2 = 'ab';
+c1	c2
+//expect two records, each record's hit_count is 0; because system variable change, add new plan;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from collation_t where c2 = ?';
+hit_count
+0
+0
+
+select * from collation_t where c2 = 'ab';
+c1	c2
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from collation_t where c2 = ?';
+hit_count
+0
+1
+
+********************************* change system variable : div_precision_increment ************************
+//this system variable doesn't work now, is known bug;
+drop table if exists div_precision_t;
+create table div_precision_t(c1 int primary key, c2 varchar(50));
+set div_precision_increment = 1;
+select * from div_precision_t;
+c1	c2
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from div_precision_t';
+hit_count
+0
+
+set div_precision_increment = 4;
+select * from div_precision_t;
+c1	c2
+//expect two records, each record's hit_count is 0; because system variable change, add new plan;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from div_precision_t';
+hit_count
+0
+0
+
+select * from div_precision_t;
+c1	c2
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from div_precision_t';
+hit_count
+0
+1
+
+******************************* change system variable : ob_enable_aggregation_pushdown *******************
+drop table if exists pushdown_t;
+create table pushdown_t(c1 int primary key, c2 int);
+
+set ob_enable_aggregation_pushdown = 0;
+select * from pushdown_t where c1 = 1;
+c1	c2
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from pushdown_t where c1 = ?';
+hit_count
+0
+
+set ob_enable_aggregation_pushdown = 1;
+select * from pushdown_t where c1 = 1;
+c1	c2
+//expect two records, each record's hit_count is 0; because system variable change, add new plan;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from pushdown_t where c1 = ?';
+hit_count
+0
+0
+
+select * from pushdown_t where c1 = 1;
+c1	c2
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from pushdown_t where c1 = ?';
+hit_count
+0
+1
+
+******************************* change system variable : sql mode *********************************
+drop table if exists t1;
+create table t1(i1 int primary key, f1 float, s1 varchar(32), d1 datetime);
+
+set session sql_mode='STRICT_TRANS_TABLES';
+select * from t1 where i1 > 0;
+i1	f1	s1	d1
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1 where i1 > ?';
+hit_count
+0
+
+set session sql_mode='STRICT_ALL_TABLES';
+select * from t1 where i1 > 0;
+i1	f1	s1	d1
+//expect two records, each record's hit_count is 0; because system variable change, add new plan;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1 where i1 > ?';
+hit_count
+0
+0
+
+select * from t1 where i1 > 0;
+i1	f1	s1	d1
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1 where i1 > ?';
+hit_count
+0
+1
+drop table t1;
+
+******************************* change system variable : ob_enable_transformation *********************************
+drop table if exists t1;
+create table t1(c1 int primary key, c2 int);
+set ob_enable_transformation = 1;
+select * from t1, (select * from t1 ) as v1;
+c1	c2	c1	c2
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1, (select * from t1 ) as v1';
+hit_count
+0
+
+set ob_enable_transformation = 0;
+select * from t1, (select * from t1 ) as v1;
+c1	c2	c1	c2
+//expect two records, every hit_count is 0 ;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1, (select * from t1 ) as v1';
+hit_count
+0
+0
+
+select * from t1, (select * from t1 ) as v1;
+c1	c2	c1	c2
+//expect two records, one hit_count is 0, another hit_count is 1;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from t1, (select * from t1 ) as v1';
+hit_count
+0
+1
+drop table t1;
+commit;
+set autocommit = 1;
+
+******************************* change system variable : read only *********************************
+use xy_db;
+set autocommit = 0;
+drop table if exists t1;
+create table t1(c1 int primary key, c2 int);
+
+set @@global.read_only = off;
+insert into t1 values(1,1);
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t1 values(?,?)';
+hit_count
+0
+
+set @@global.read_only = on;
+insert into t1 values(2,1);
+ERROR HY000: The MySQL server is running with the --read-only option so it cannot execute this statement
+//expect hit_count = 0;
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t1 values(?,?)';
+hit_count
+0
+
+set @@global.read_only = off;
+commit;

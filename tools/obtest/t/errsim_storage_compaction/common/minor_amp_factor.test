@@ -1,0 +1,89 @@
+# owner:fengjingkun.fjk
+# owner group:storage
+# test minor size amplification factor
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (obsys, $svr_ip, root@sys, , oceanbase, $svr_port);
+connection obsys;
+
+
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+alter system set _enable_adaptive_compaction = 'False' tenant sys;
+alter system set minor_compact_trigger = 1 tenant sys;
+
+
+create table t1 (c1 bigint);
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $t1_id = query_get_value(select tablet_id from __all_table where table_name like "%t1%", tablet_id, 1);
+
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+let $freeze_cnt = 10;
+while ($freeze_cnt > 0)
+{
+  insert into t1 select random() from table(generator(200001));
+  alter system minor freeze;
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 0, 0, 100;
+  dec $freeze_cnt;
+}
+#advance snapshot gc scn
+sleep 10;
+
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type in (11, 12), 1, 300;
+let $large_sst_end_scn = query_get_value(select end_log_scn from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 11, end_log_scn, 1);
+
+
+alter system set minor_compact_trigger = 2 tenant sys;
+alter system set _minor_compaction_amplification_factor = 10 tenant sys;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+let $freeze_cnt = 3;
+while ($freeze_cnt > 0)
+{
+  insert into t1 select random() from table(generator(100005));
+  alter system minor freeze;
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 0, 0, 100;
+  dec $freeze_cnt;
+}
+let $latest_end_scn = query_get_value(select end_log_scn from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 12 order by end_log_scn desc, end_log_scn, 1);
+
+
+sleep 10;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $sys_tenant_id and tablet_id = $t1_id and type = 'MINOR_MERGE' and compaction_scn = $latest_end_scn, 1, 100;
+
+
+let $large_sst_cnt = query_get_value(select count(1) as value from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and end_log_scn = $large_sst_end_scn, value, 1);
+if ($large_sst_cnt == 0)
+{
+  --echo expect no refined
+}
+
+
+alter system set _minor_compaction_amplification_factor = 50 tenant sys;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+let $freeze_cnt = 3;
+while ($freeze_cnt > 0)
+{
+  insert into t1 select random() from table(generator(10000));
+  alter system minor freeze;
+  ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 0, 0, 100;
+  dec $freeze_cnt;
+}
+let $latest_end_scn = query_get_value(select end_log_scn from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type = 12 order by end_log_scn desc, end_log_scn, 1);
+
+sleep 10;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(1) from __all_virtual_tablet_compaction_history where tenant_id = $sys_tenant_id and tablet_id = $t1_id and type = 'MINOR_MERGE' and compaction_scn = $latest_end_scn, 1, 100;
+
+
+let $minor_sst_cnt = query_get_value(select count(1) as value from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $t1_id and table_type in (11, 12), value, 1);
+if ($minor_sst_cnt == 2)
+{
+  --echo success to refine minor merge with amplification factor
+}

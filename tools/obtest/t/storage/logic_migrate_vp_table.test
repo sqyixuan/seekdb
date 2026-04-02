@@ -1,0 +1,66 @@
+# owner: hanhuyi
+# owner group: storage
+# description:this case is use for logic migrate vertical partition table
+#
+
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2);
+ob1.reboot;
+
+
+#alter system set server_temporary_offline_time = '15s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+ob1.mysql alter system set enable_async_syslog=false;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+connection conn1;
+use test;
+create table test01(c1 int primary key, c2 varchar(1024), c3 int, c4 int, c5 int, c6 int, c7 int) partition by column ((c1, c2), (c3, c4), (c5, c6), c7);
+create unique index uidx_63 on test01(c6, c3);
+
+sleep 10;
+
+#all data in memtable
+insert into test01 values (1,'a',2,3,4,100,9000);
+insert into test01 values (2,'b',3,4,5,101,9001);
+insert into test01 values (3,'c',4,5,6,102,9002);
+insert into test01 values (4,'d',5,6,7,103,9003);
+insert into test01 values (5,'e',6,7,8,104,9004);
+insert into test01 values (6,'f',7,8,9,105,9005);
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+sleep 30;
+
+insert into test01 values (7,'a',8,9,10,106,9006);
+insert into test01 values (8,'b',9,10,11,107,9007);
+insert into test01 values (9,'c',10,11,12,108,9008);
+insert into test01 values (10,'d',11,12,13,109,9009);
+insert into test01 values (11,'e',12,13,14,110,9010);
+insert into test01 values (12,'f',13,14,15,111,9011);
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $src = deploy_get_value(ob1.get_follower obtest:test:test01:0,1);
+let $src_ip = deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+let $src_zone = deploy_get_value(ob1.select select zone from oceanbase.__all_server where svr_ip='$src_ip' and svr_port='$src_port', zone, 1);
+let $dst_host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='$src_zone' and (svr_ip!='$src_ip' or svr_port!='$src_port'), host, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_host);
+let $dst_ip = deploy_get_value($dst.ip);
+let $dst_port = deploy_get_value($dst.port);
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+
+$src.migrate_to $dst,obtest:test:test01;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where tenant_id=$tenant_id and table_id=$table_id and role=1 and member_list like '%$dst_ip:$dst_port%', 1, 1000;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table a ,oceanbase.__all_virtual_meta_table b where a.tenant_id=$tenant_id and a.table_id=$table_id and b.table_id=$table_id  and a.member_list=b.member_list and a.role=1 and b.role=2 and b.svr_ip='$dst_ip' and b.svr_port='$dst_port', 1, 1000;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;

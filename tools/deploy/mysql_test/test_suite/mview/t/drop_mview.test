@@ -1,0 +1,137 @@
+# owner: wyh329796 
+# owner group: mv
+# tags: 
+# descriotion: test the behavior of mview diagnose related inner tables and system views
+#
+
+connect (sys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connect (conn1, $OBMYSQL_MS0, root,,test, $OBMYSQL_PORT);
+connect (conn2, $OBMYSQL_MS0, root,,test, $OBMYSQL_PORT);
+
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+sleep 3;
+
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_mv_diagnose_views;
+--enable_warnings
+create database test_mv_diagnose_views;
+use test_mv_diagnose_views;
+
+create table dv_t1(c1 int primary key, c2 int);
+create materialized view log on dv_t1 with primary key (c2);
+insert into dv_t1 values(1, 1);
+insert into dv_t1 values(2, 2);
+create materialized view dv_mv1(c1, c2, primary key(c1)) refresh fast as select c1, count(*) c2 from dv_t1 group by c1;
+create materialized view dv_mv2(c1, c2, primary key(c1)) refresh fast as select c1, count(*) c2 from dv_t1 group by c1;
+
+connection sys;
+set ob_global_debug_sync = 'AFTER_LOCK_MVIEW_IN_REFRESH wait_for signalxxx execute 10000';
+sleep 3;
+
+connection default;
+let $database_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'test_mv_diagnose_views', database_id, 1);
+let $mv_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'dv_mv1' and database_id = $database_id, table_id, 1);
+
+use test_mv_diagnose_views;
+alter materialized view dv_mv1 refresh start with sysdate() + interval 1 second;
+sleep 20;
+let $mv1_first_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv_id, refresh_job, 1);
+connection sys;
+--disable_query_log
+eval select count(*) = 1 from oceanbase.__all_virtual_tenant_scheduler_running_job where job_name like '%$mv1_first_refresh_job%';
+--enable_query_log
+
+connection default;
+alter materialized view dv_mv1 refresh start with sysdate() + interval 1 second;
+alter materialized view dv_mv2 refresh start with sysdate() + interval 1 second;
+let $mv1_second_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv_id, refresh_job, 1);
+let $mv2_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'dv_mv2' and database_id = $database_id, table_id, 1);
+let $mv2_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv2_id, refresh_job, 1);
+sleep 20;
+
+##### 校验任务被卡住
+connection sys;
+--disable_query_log
+eval select count(*) = 1 from oceanbase.__all_virtual_tenant_scheduler_running_job where job_name like '%$mv1_first_refresh_job%';
+eval select count(*) = 1 from oceanbase.__all_virtual_tenant_scheduler_running_job where job_name like '%$mv1_second_refresh_job%';
+eval select count(*) = 1 from oceanbase.__all_virtual_tenant_scheduler_running_job where job_name like '%$mv2_refresh_job%';
+--enable_query_log
+
+##### DDL完成后任务已经被删除
+connection default;
+use test_mv_diagnose_views;
+drop materialized view dv_mv1;
+use test;
+drop database test_mv_diagnose_views; 
+sleep 5;
+
+connection sys;
+--disable_query_log
+eval select count(*) = 0 from oceanbase.__all_virtual_tenant_scheduler_job where job_name like '%$mv1_first_refresh_job%';
+eval select count(*) = 0 from oceanbase.__all_virtual_tenant_scheduler_job where job_name like '%$mv1_second_refresh_job%';
+eval select count(*) = 0 from oceanbase.__all_virtual_tenant_scheduler_job where job_name like '%$mv2_refresh_job%';
+--enable_query_log
+
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'now signal signalxxx';
+set ob_global_debug_sync = 'now signal signalxxx';
+sleep 3;
+
+##### 校验任务被kill掉
+--disable_query_log
+eval select message from oceanbase.__all_virtual_scheduler_job_run_detail_v2 where job_name like '%$mv1_first_refresh_job%';
+eval select message from oceanbase.__all_virtual_scheduler_job_run_detail_v2 where job_name like '%$mv1_second_refresh_job%';
+eval select message from oceanbase.__all_virtual_scheduler_job_run_detail_v2 where job_name like '%$mv2_refresh_job%'; 
+--enable_query_log
+
+connection sys;
+set ob_global_debug_sync = 'AFTER_LOCK_MVIEW_IN_REFRESH clear';
+alter system set debug_sync_timeout = '100000s';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'AFTER_LOCK_MVIEW_IN_REFRESH wait_for signalccc execute 10000';
+sleep 3;
+
+####### 验证alter 会kill旧的job
+connection default;
+create database test_mv_diagnose_views;
+sleep 5;
+--disable_query_log
+use test_mv_diagnose_views;
+create table t1 (c1 int, c2 int, primary key(c1));
+create table t2 (c1 int, c2 int, primary key(c1));
+insert into t1 values(1, 1), (2, 2), (3, 3);
+insert into t2 values(1, 1), (2, 2), (3, 3);
+create materialized view log on t1 with primary key (c2) including new values;
+create materialized view log on t2 with primary key (c2) including new values;
+ 
+create materialized view mv1_alter refresh fast as select t1.c1 s1, t1.c2 s2, t2.c1 s3, t2.c2 s4 from t1 join t2 on t1.c1 = t2.c1;
+alter materialized view mv1_alter refresh start with sysdate() + interval 1 second;
+let $database_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'test_mv_diagnose_views', database_id, 1);
+let $mv1_alter_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'mv1_alter' and database_id = $database_id, table_id, 1);
+let $mv1_alter_first_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv1_alter_id, refresh_job, 1);
+sleep 20;
+
+alter materialized view mv1_alter refresh start with sysdate() + interval 1 second;
+let $mv1_alter_second_refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv1_alter_id, refresh_job, 1);
+sleep 20;
+
+connection sys;
+eval select count(*) = 1 from oceanbase.__all_virtual_tenant_scheduler_running_job where job_name like '%$mv1_alter_first_refresh_job%';
+set ob_global_debug_sync = 'now signal signalccc';
+set ob_global_debug_sync = 'now signal signalccc';
+sleep 5;
+eval select message from oceanbase.__all_virtual_scheduler_job_run_detail_v2 where job_name like '%$mv1_alter_first_refresh_job%';
+eval select message from oceanbase.__all_virtual_scheduler_job_run_detail_v2 where job_name like '%$mv1_alter_second_refresh_job%';
+--enable_query_log
+
+set ob_global_debug_sync = 'AFTER_LOCK_MVIEW_IN_REFRESH clear';
+
+connection default;
+drop database test_mv_diagnose_views; 

@@ -1,0 +1,2787 @@
+result_format: 4
+drop table if exists t1;
+drop table if exists t1_1;
+drop table if exists t1_2;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+CREATE TABLE T1 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T1_1 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T1_2 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T2 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 4;
+CREATE TABLE T3 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 18;
+CREATE TABLE T4 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 19;
+insert into t1 values(1, 1), (2,2), (3,3), (4,4), (5,5);
+insert into t1_1 values(1, 1), (3,3), (4,4);
+insert into t1_2 values(1, 1), (3,3), (4,4), (5, 5);
+insert into t2 values(1, 1), (2,2), (4,4), (5,5), (6,6);
+insert into t3 values(2,2), (4,4), (5,5), (6,6);
+## create index idx_t1 on t1(c1) partition by hash(c1) partition 3 global;
+call dbms_stats.gather_table_stats(NULL, 't1');
+call dbms_stats.gather_table_stats(NULL, 't1_1');
+call dbms_stats.gather_table_stats(NULL, 't1_2');
+call dbms_stats.gather_table_stats(NULL, 't2');
+call dbms_stats.gather_table_stats(NULL, 't3');
+call dbms_stats.gather_table_stats(NULL, 't4');
+
+explain_protocol: 2
+######################################    GROUP BY  ###############################################
+## 1. pkey to pw group by
+EXPLAIN select * from t2 join (select c1, count(*) c2 from t1 group by c1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |1       |26          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|1       |26          |
+|2 |  └─HASH GROUP BY                  |        |1       |25          |
+|3 |    └─HASH JOIN                    |        |5       |23          |
+|4 |      ├─PX PARTITION ITERATOR      |        |5       |7           |
+|5 |      │ └─TABLE FULL SCAN          |t1      |5       |7           |
+|6 |      └─EXCHANGE IN DISTR          |        |5       |15          |
+|7 |        └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |14          |
+|8 |          └─PX PARTITION ITERATOR  |        |5       |9           |
+|9 |            └─TABLE FULL SCAN      |t2      |5       |9           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, T_FUN_COUNT(*))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, T_FUN_COUNT(*))]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [T_FUN_COUNT(*)], [t2.C2], [t1.C1]), filter([t2.C2 != T_FUN_COUNT(*)]), rowset=16
+      group([t2.C1], [t2.__pk_increment]), agg_func([T_FUN_COUNT(*)])
+  3 - output([t2.C1], [t2.__pk_increment], [t2.C2], [t1.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  4 - output([t1.C1]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([t1.C1]), filter(nil), rowset=16
+      access([t1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t2.C1], [t2.__pk_increment], [t2.C2]), filter(nil), rowset=16
+  7 - output([t2.C1], [t2.__pk_increment], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  8 - output([t2.__pk_increment], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  9 - output([t2.__pk_increment], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.__pk_increment], [t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t2 join (select c1, count(*) c2 from t1 group by c1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
++------+------+------+------+
+| C1   | C2   | c1   | c2   |
++------+------+------+------+
+|    4 |    4 |    4 |    1 |
+|    5 |    5 |    5 |    1 |
+|    2 |    2 |    2 |    1 |
++------+------+------+------+
+
+## 2. pkey的结果和pw group by 做pwj(这个之前gi只能生成在pw group by的下面，现在提到了group by的上面)
+EXPLAIN select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select c1, count(*) c2 from t1 group by c1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
+Query Plan
+=========================================================================
+|ID|OPERATOR                             |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------
+|0 |PX COORDINATOR                       |        |1       |33          |
+|1 |└─EXCHANGE OUT DISTR                 |:EX10001|1       |33          |
+|2 |  └─HASH GROUP BY                    |        |1       |33          |
+|3 |    └─HASH JOIN                      |        |3       |31          |
+|4 |      ├─HASH JOIN                    |        |3       |23          |
+|5 |      │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|6 |      │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |14          |
+|7 |      │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|8 |      │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|9 |      │ └─PX PARTITION ITERATOR      |        |3       |7           |
+|10|      │   └─TABLE FULL SCAN          |t1_1    |3       |7           |
+|11|      └─PX PARTITION ITERATOR        |        |5       |7           |
+|12|        └─TABLE FULL SCAN            |t1      |5       |7           |
+=========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.C1, T_FUN_COUNT(*))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.C1, T_FUN_COUNT(*))]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [T_FUN_COUNT(*)], [t1_1.C2], [t2.C2], [t1.C1], [t1_1.C1]), filter([t1_1.C2 != T_FUN_COUNT(*)]), rowset=16
+      group([t2.C1], [t2.__pk_increment], [t1_1.__pk_increment]), agg_func([T_FUN_COUNT(*)])
+  3 - output([t2.C1], [t2.__pk_increment], [t1_1.__pk_increment], [t1_1.C2], [t2.C2], [t1.C1], [t1_1.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  4 - output([t2.C1], [t2.__pk_increment], [t1_1.__pk_increment], [t1_1.C2], [t2.C2], [t1_1.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  5 - output([t2.C1], [t2.__pk_increment], [t2.C2]), filter(nil), rowset=16
+  6 - output([t2.C1], [t2.__pk_increment], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  7 - output([t2.__pk_increment], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  8 - output([t2.__pk_increment], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.__pk_increment], [t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([t1_1.__pk_increment], [t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 10 - output([t1_1.__pk_increment], [t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.__pk_increment], [t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([t1.C1]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([t1.C1]), filter(nil), rowset=16
+      access([t1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select c1, count(*) c2 from t1 group by c1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | c1   | c2   |
++------+------+------+------+------+------+
+|    4 |    4 |    4 |    4 |    4 |    1 |
++------+------+------+------+------+------+
+
+
+######################################  WINDOW FUNCTION  ##########################################
+## 1. pkey到pw window function
+EXPLAIN select * from t2 join (select c1, rank() OVER (PARTITION BY c1 ORDER BY c2 DESC) c2 from t1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |5       |39          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|5       |35          |
+|2 |  └─HASH JOIN                    |        |5       |28          |
+|3 |    ├─SUBPLAN SCAN               |t1      |5       |11          |
+|4 |    │ └─PX PARTITION ITERATOR    |        |5       |11          |
+|5 |    │   └─WINDOW FUNCTION        |        |5       |11          |
+|6 |    │     └─SORT                 |        |5       |8           |
+|7 |    │       └─TABLE FULL SCAN    |t1      |5       |7           |
+|8 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|9 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|10|        └─PX PARTITION ITERATOR  |        |5       |9           |
+|11|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.c1], [t1.c2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.c1]), other_conds([t2.C2 != t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2])
+  4 - output([t1.C1], [T_WIN_FUN_RANK()]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([t1.C1], [T_WIN_FUN_RANK()]), filter(nil), rowset=16
+      win_expr(T_WIN_FUN_RANK()), partition_by([t1.C1]), order_by([t1.C2, DESC]), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      sort_keys([t1.C1, ASC], [t1.C2, DESC])
+  7 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t2 join (select c1, rank() OVER (PARTITION BY c1 ORDER BY c2 DESC) c2 from t1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
++------+------+------+----+
+| C1   | C2   | c1   | c2 |
++------+------+------+----+
+|    4 |    4 |    4 |  1 |
+|    5 |    5 |    5 |  1 |
+|    2 |    2 |    2 |  1 |
++------+------+------+----+
+
+## 2. pkey的结果和pw window function 做pwj
+EXPLAIN select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select c1, rank() OVER (PARTITION BY c1 ORDER BY c2 DESC) c2 from t1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |46          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |43          |
+|2 |  └─HASH JOIN                      |        |3       |35          |
+|3 |    ├─HASH JOIN                    |        |3       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |3       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_1    |3       |7           |
+|10|    └─SUBPLAN SCAN                 |t1      |5       |11          |
+|11|      └─PX PARTITION ITERATOR      |        |5       |11          |
+|12|        └─WINDOW FUNCTION          |        |5       |11          |
+|13|          └─SORT                   |        |5       |8           |
+|14|            └─TABLE FULL SCAN      |t1      |5       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.c1], [t1_1.C2], [t1.c2], [t1_1.C1], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.c1]), other_conds([t1_1.C2 != t1.c2])
+  3 - output([t2.C2], [t1_1.C2], [t1_1.C1], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2])
+ 11 - output([t1.C1], [T_WIN_FUN_RANK()]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([t1.C1], [T_WIN_FUN_RANK()]), filter(nil), rowset=16
+      win_expr(T_WIN_FUN_RANK()), partition_by([t1.C1]), order_by([t1.C2, DESC]), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      sort_keys([t1.C1, ASC], [t1.C2, DESC])
+ 14 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select c1, rank() OVER (PARTITION BY c1 ORDER BY c2 DESC) c2 from t1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
++------+------+------+------+------+----+
+| C1   | C2   | C1   | C2   | c1   | c2 |
++------+------+------+------+------+----+
+|    4 |    4 |    4 |    4 |    4 |  1 |
++------+------+------+------+------+----+
+
+
+
+##########################################  DISTINCT  #############################################
+## 1. pkey到pw distinct
+EXPLAIN select * from t2 join (select distinct c1, c2 from t1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |5       |36          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|5       |33          |
+|2 |  └─HASH JOIN                    |        |5       |25          |
+|3 |    ├─SUBPLAN SCAN               |t1      |5       |9           |
+|4 |    │ └─PX PARTITION ITERATOR    |        |5       |9           |
+|5 |    │   └─HASH DISTINCT          |        |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t1      |5       |7           |
+|7 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|9 |        └─PX PARTITION ITERATOR  |        |5       |9           |
+|10|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.c1], [t1.c2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.c1]), other_conds([t2.C2 != t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2])
+  4 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      distinct([t1.C1], [t1.C2])
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select * from t2 join (select distinct c1, c2 from t1) t1 on t2.c2 = t1.c1 and t2.c2 != t1.c2;
++------+------+------+------+
+| C1   | C2   | c1   | c2   |
++------+------+------+------+
++------+------+------+------+
+
+## 2. pkey的结果和pw distinct 做pwj
+EXPLAIN select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select distinct c1, c2 from t1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |43          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |40          |
+|2 |  └─HASH JOIN                      |        |3       |33          |
+|3 |    ├─HASH JOIN                    |        |3       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |3       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_1    |3       |7           |
+|10|    └─SUBPLAN SCAN                 |t1      |5       |9           |
+|11|      └─PX PARTITION ITERATOR      |        |5       |9           |
+|12|        └─HASH DISTINCT            |        |5       |9           |
+|13|          └─TABLE FULL SCAN        |t1      |5       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_1.C1, t1_1.C2, t1.c1, t1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.c1], [t1_1.C2], [t1.c2], [t1_1.C1], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.c1]), other_conds([t1_1.C2 != t1.c2])
+  3 - output([t2.C2], [t1_1.C2], [t1_1.C1], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2])
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      distinct([t1.C1], [t1.C2])
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_1) t1) */* from t2 join t1_1 join (select distinct c1, c2 from t1) t1 on t2.c2 = t1_1.c1 and t1_1.c1 = t1.c1 and t1_1.c2 != t1.c2;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | c1   | c2   |
++------+------+------+------+------+------+
++------+------+------+------+------+------+
+
+
+##########################################    SET    #############################################
+## 1. pkey到pw set
+EXPLAIN select  * from t2 join (select * from t1 union select * from t1_1) t on t2.c2 = t.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |5       |44          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|5       |40          |
+|2 |  └─HASH JOIN                    |        |5       |33          |
+|3 |    ├─EXCHANGE IN DISTR          |        |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|7 |    └─SUBPLAN SCAN               |t       |8       |16          |
+|8 |      └─PX PARTITION ITERATOR    |        |8       |16          |
+|9 |        └─HASH UNION DISTINCT    |        |8       |16          |
+|10|          ├─TABLE FULL SCAN      |t1      |5       |7           |
+|11|          └─TABLE FULL SCAN      |t1_1    |3       |7           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  8 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 10 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select  * from t2 join (select * from t1 union select * from t1_1) t on t2.c2 = t.c1;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |
+|    2 |    2 |    2 |    2 |
+|    5 |    5 |    5 |    5 |
++------+------+------+------+
+EXPLAIN select  * from t2 join (select * from t1 except select * from t1_1) t on t2.c2 = t.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |5       |43          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|5       |40          |
+|2 |  └─HASH JOIN                    |        |5       |32          |
+|3 |    ├─SUBPLAN SCAN               |t       |5       |15          |
+|4 |    │ └─PX PARTITION ITERATOR    |        |5       |15          |
+|5 |    │   └─HASH EXCEPT DISTINCT   |        |5       |15          |
+|6 |    │     ├─TABLE FULL SCAN      |t1      |5       |7           |
+|7 |    │     └─TABLE FULL SCAN      |t1_1    |3       |7           |
+|8 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|9 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|10|        └─PX PARTITION ITERATOR  |        |5       |9           |
+|11|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select  * from t2 join (select * from t1 except select * from t1_1) t on t2.c2 = t.c1;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    5 |    5 |    5 |    5 |
+|    2 |    2 |    2 |    2 |
++------+------+------+------+
+EXPLAIN select  * from t2 join (select * from t1_1 except select * from t1) t on t2.c2 = t.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |3       |38          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|3       |36          |
+|2 |  └─HASH JOIN                    |        |3       |31          |
+|3 |    ├─SUBPLAN SCAN               |t       |3       |15          |
+|4 |    │ └─PX PARTITION ITERATOR    |        |3       |15          |
+|5 |    │   └─HASH EXCEPT DISTINCT   |        |3       |15          |
+|6 |    │     ├─TABLE FULL SCAN      |t1_1    |3       |7           |
+|7 |    │     └─TABLE FULL SCAN      |t1      |5       |7           |
+|8 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|9 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|10|        └─PX PARTITION ITERATOR  |        |5       |9           |
+|11|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  6 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select  * from t2 join (select * from t1_1 except select * from t1) t on t2.c2 = t.c1;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
++------+------+------+------+
+
+## 2. pkey的结果和pw set做pwj
+EXPLAIN select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |41          |
+|3 |    ├─HASH JOIN                    |        |4       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |4       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|10|    └─SUBPLAN SCAN                 |t       |8       |16          |
+|11|      └─PX PARTITION ITERATOR      |        |8       |16          |
+|12|        └─HASH UNION DISTINCT      |        |8       |16          |
+|13|          ├─TABLE FULL SCAN        |t1      |5       |7           |
+|14|          └─TABLE FULL SCAN        |t1_1    |3       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t1_2.C1], [t2.C1], [t1_2.C2], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |55          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |41          |
+|3 |    ├─HASH JOIN                    |        |5       |33          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─SUBPLAN SCAN               |t       |8       |16          |
+|9 |    │   └─PX PARTITION ITERATOR    |        |8       |16          |
+|10|    │     └─HASH UNION DISTINCT    |        |8       |16          |
+|11|    │       ├─TABLE FULL SCAN      |t1      |5       |7           |
+|12|    │       └─TABLE FULL SCAN      |t1_1    |3       |7           |
+|13|    └─PX PARTITION ITERATOR        |        |4       |7           |
+|14|      └─TABLE FULL SCAN            |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t.C1], [t2.C1], [t.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  9 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 10 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |55          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |41          |
+|3 |    ├─SUBPLAN SCAN                 |t       |8       |16          |
+|4 |    │ └─PX PARTITION ITERATOR      |        |8       |16          |
+|5 |    │   └─HASH UNION DISTINCT      |        |8       |16          |
+|6 |    │     ├─TABLE FULL SCAN        |t1      |5       |7           |
+|7 |    │     └─TABLE FULL SCAN        |t1_1    |3       |7           |
+|8 |    └─HASH JOIN                    |        |4       |23          |
+|9 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|10|      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|11|      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|12|      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|13|      └─PX PARTITION ITERATOR      |        |4       |7           |
+|14|        └─TABLE FULL SCAN          |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+ 10 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |40          |
+|3 |    ├─PX PARTITION ITERATOR        |        |4       |7           |
+|4 |    │ └─TABLE FULL SCAN            |t1_2    |4       |7           |
+|5 |    └─HASH JOIN                    |        |5       |33          |
+|6 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|7 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|8 |      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|9 |      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|10|      └─SUBPLAN SCAN               |t       |8       |16          |
+|11|        └─PX PARTITION ITERATOR    |        |8       |16          |
+|12|          └─HASH UNION DISTINCT    |        |8       |16          |
+|13|            ├─TABLE FULL SCAN      |t1      |5       |7           |
+|14|            └─TABLE FULL SCAN      |t1_1    |3       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t1_2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  6 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  8 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1 union select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+
+EXPLAIN select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |40          |
+|3 |    ├─HASH JOIN                    |        |4       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |4       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|10|    └─SUBPLAN SCAN                 |t       |5       |15          |
+|11|      └─PX PARTITION ITERATOR      |        |5       |15          |
+|12|        └─HASH EXCEPT DISTINCT     |        |5       |15          |
+|13|          ├─TABLE FULL SCAN        |t1      |5       |7           |
+|14|          └─TABLE FULL SCAN        |t1_1    |3       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t1_2.C1], [t2.C1], [t1_2.C2], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |50          |
+|2 |  └─HASH JOIN                      |        |4       |40          |
+|3 |    ├─HASH JOIN                    |        |5       |32          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─SUBPLAN SCAN               |t       |5       |15          |
+|9 |    │   └─PX PARTITION ITERATOR    |        |5       |15          |
+|10|    │     └─HASH EXCEPT DISTINCT   |        |5       |15          |
+|11|    │       ├─TABLE FULL SCAN      |t1      |5       |7           |
+|12|    │       └─TABLE FULL SCAN      |t1_1    |3       |7           |
+|13|    └─PX PARTITION ITERATOR        |        |4       |7           |
+|14|      └─TABLE FULL SCAN            |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t.C1], [t2.C1], [t.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  9 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 10 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |49          |
+|2 |  └─HASH JOIN                      |        |4       |40          |
+|3 |    ├─SUBPLAN SCAN                 |t       |5       |15          |
+|4 |    │ └─PX PARTITION ITERATOR      |        |5       |15          |
+|5 |    │   └─HASH EXCEPT DISTINCT     |        |5       |15          |
+|6 |    │     ├─TABLE FULL SCAN        |t1      |5       |7           |
+|7 |    │     └─TABLE FULL SCAN        |t1_1    |3       |7           |
+|8 |    └─HASH JOIN                    |        |4       |23          |
+|9 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|10|      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|11|      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|12|      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|13|      └─PX PARTITION ITERATOR      |        |4       |7           |
+|14|        └─TABLE FULL SCAN          |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+ 10 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |4       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|4       |49          |
+|2 |  └─HASH JOIN                      |        |4       |40          |
+|3 |    ├─PX PARTITION ITERATOR        |        |4       |7           |
+|4 |    │ └─TABLE FULL SCAN            |t1_2    |4       |7           |
+|5 |    └─HASH JOIN                    |        |5       |32          |
+|6 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|7 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|8 |      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|9 |      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|10|      └─SUBPLAN SCAN               |t       |5       |15          |
+|11|        └─PX PARTITION ITERATOR    |        |5       |15          |
+|12|          └─HASH EXCEPT DISTINCT   |        |5       |15          |
+|13|            ├─TABLE FULL SCAN      |t1      |5       |7           |
+|14|            └─TABLE FULL SCAN      |t1_1    |3       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t1_2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  6 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  8 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1 except select * from t1_1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    5 |    5 |    5 |    5 |    5 |    5 |
++------+------+------+------+------+------+
+
+EXPLAIN select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |50          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |47          |
+|2 |  └─HASH JOIN                      |        |3       |40          |
+|3 |    ├─HASH JOIN                    |        |4       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |4       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|10|    └─SUBPLAN SCAN                 |t       |3       |15          |
+|11|      └─PX PARTITION ITERATOR      |        |3       |15          |
+|12|        └─HASH EXCEPT DISTINCT     |        |3       |15          |
+|13|          ├─TABLE FULL SCAN        |t1_1    |3       |7           |
+|14|          └─TABLE FULL SCAN        |t1      |5       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t1_2.C1], [t2.C1], [t1_2.C2], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 13 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_2) t) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |50          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |46          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─HASH JOIN                    |        |3       |31          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─SUBPLAN SCAN               |t       |3       |15          |
+|9 |    │   └─PX PARTITION ITERATOR    |        |3       |15          |
+|10|    │     └─HASH EXCEPT DISTINCT   |        |3       |15          |
+|11|    │       ├─TABLE FULL SCAN      |t1_1    |3       |7           |
+|12|    │       └─TABLE FULL SCAN      |t1      |5       |7           |
+|13|    └─PX PARTITION ITERATOR        |        |4       |7           |
+|14|      └─TABLE FULL SCAN            |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t.C1], [t2.C1], [t.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  9 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 10 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 11 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t) t1_2) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |49          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |46          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─SUBPLAN SCAN                 |t       |3       |15          |
+|4 |    │ └─PX PARTITION ITERATOR      |        |3       |15          |
+|5 |    │   └─HASH EXCEPT DISTINCT     |        |3       |15          |
+|6 |    │     ├─TABLE FULL SCAN        |t1_1    |3       |7           |
+|7 |    │     └─TABLE FULL SCAN        |t1      |5       |7           |
+|8 |    └─HASH JOIN                    |        |4       |23          |
+|9 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|10|      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|11|      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|12|      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|13|      └─PX PARTITION ITERATOR      |        |4       |7           |
+|14|        └─TABLE FULL SCAN          |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+  6 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+ 10 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t (t2 t1_2)) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |49          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |46          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─PX PARTITION ITERATOR        |        |4       |7           |
+|4 |    │ └─TABLE FULL SCAN            |t1_2    |4       |7           |
+|5 |    └─HASH JOIN                    |        |3       |31          |
+|6 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|7 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|8 |      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|9 |      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|10|      └─SUBPLAN SCAN               |t       |3       |15          |
+|11|        └─PX PARTITION ITERATOR    |        |3       |15          |
+|12|          └─HASH EXCEPT DISTINCT   |        |3       |15          |
+|13|            ├─TABLE FULL SCAN      |t1_1    |3       |7           |
+|14|            └─TABLE FULL SCAN      |t1      |5       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t1_2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  6 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  8 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([EXCEPT([1])], [EXCEPT([2])]), filter(nil), rowset=16
+ 13 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t1_2 (t2 t)) */ * from t2 join t1_2 join (select * from t1_1 except select * from t1) t on t2.c2 = t1_2.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
++------+------+------+------+------+------+
+
+
+
+#######################################  SUBPLAN FILTER  ##########################################
+## 1. pkey到pw spf
+EXPLAIN select /*+ leading(t t2) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |3       |297         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|3       |296         |
+|2 |  └─HASH JOIN                    |        |3       |292         |
+|3 |    ├─SUBPLAN SCAN               |t       |3       |276         |
+|4 |    │ └─PX PARTITION ITERATOR    |        |3       |276         |
+|5 |    │   └─SUBPLAN FILTER         |        |3       |276         |
+|6 |    │     ├─TABLE FULL SCAN      |t1      |5       |7           |
+|7 |    │     └─TABLE FULL SCAN      |t1_1    |1       |54          |
+|8 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|9 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|10|        └─PX PARTITION ITERATOR  |        |5       |9           |
+|11|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  4 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([t1.C1], [t1.C2]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.C1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([1]), filter([:0 = t1_1.C1]), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t t2) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+EXPLAIN select /*+ leading(t2 t) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |3       |298         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|3       |296         |
+|2 |  └─HASH JOIN                    |        |3       |292         |
+|3 |    ├─EXCHANGE IN DISTR          |        |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|7 |    └─SUBPLAN SCAN               |t       |3       |276         |
+|8 |      └─PX PARTITION ITERATOR    |        |3       |276         |
+|9 |        └─SUBPLAN FILTER         |        |3       |276         |
+|10|          ├─TABLE FULL SCAN      |t1      |5       |7           |
+|11|          └─TABLE FULL SCAN      |t1_1    |1       |54          |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t2.C1], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.C1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 10 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([1]), filter([:0 = t1_1.C1]), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 t) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |
++------+------+------+------+
+
+## 2. pkey的结果和pw spf做pwj
+EXPLAIN select /*+ leading((t t2) t1_2) */* from t2 join t1_2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |308         |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |305         |
+|2 |  └─HASH JOIN                      |        |3       |299         |
+|3 |    ├─HASH JOIN                    |        |3       |292         |
+|4 |    │ ├─SUBPLAN SCAN               |t       |3       |276         |
+|5 |    │ │ └─PX PARTITION ITERATOR    |        |3       |276         |
+|6 |    │ │   └─SUBPLAN FILTER         |        |3       |276         |
+|7 |    │ │     ├─TABLE FULL SCAN      |t1      |5       |7           |
+|8 |    │ │     └─TABLE FULL SCAN      |t1_1    |1       |54          |
+|9 |    │ └─EXCHANGE IN DISTR          |        |5       |15          |
+|10|    │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|11|    │     └─PX PARTITION ITERATOR  |        |5       |9           |
+|12|    │       └─TABLE FULL SCAN      |t2      |5       |9           |
+|13|    └─PX PARTITION ITERATOR        |        |4       |7           |
+|14|      └─TABLE FULL SCAN            |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_2.C1], [t.C1], [t.C2], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  3 - output([t2.C2], [t.C1], [t.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  4 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+  5 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  6 - output([t1.C1], [t1.C2]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.C1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  7 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([1]), filter([:0 = t1_1.C1]), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+ 10 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 14 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t t2) t1_2) */* from t2 join t1_2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t2 t1_2) t) */* from t2 join t1_2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1 and t1_2.c1 = t.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |309         |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |306         |
+|2 |  └─HASH JOIN                      |        |3       |300         |
+|3 |    ├─HASH JOIN                    |        |4       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |4       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|10|    └─SUBPLAN SCAN                 |t       |3       |276         |
+|11|      └─PX PARTITION ITERATOR      |        |3       |276         |
+|12|        └─SUBPLAN FILTER           |        |3       |276         |
+|13|          ├─TABLE FULL SCAN        |t1      |5       |7           |
+|14|          └─TABLE FULL SCAN        |t1_1    |1       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1_2.C1, t1_2.C2, t.C1, t.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t.C1], [t1_2.C1], [t2.C1], [t1_2.C2], [t.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t.C1], [t.C2]), filter(nil), rowset=16
+      access([t.C1], [t.C2])
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 12 - output([t1.C1], [t1.C2]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.C1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 14 - output([1]), filter([:0 = t1_1.C1]), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1_2) t) */* from t2 join t1_2 join (select /*+ no_rewrite */ * from t1 where exists(select 1 from t1_1 where t1.c1 = t1_1.c1)) t on t2.c2 = t.c1 and t1_2.c1 = t.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+
+
+
+
+##################################  pkey  partition pruning   ######################################
+create index idx_t1 on t1(c1, c2);
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_nl(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |145         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |143         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |139         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |72          |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |72          |
+|9 |        └─NESTED-LOOP JOIN       |          |1       |72          |
+|10|          ├─TABLE RANGE SCAN     |t1(idx_t1)|1       |54          |
+|11|          └─MATERIAL             |          |3       |54          |
+|12|            └─TABLE FULL SCAN    |t1_1      |3       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:0)], [t2.C2(:1)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      conds([t1_1.C1 = t1.C1]), nl_params_(nil), use_batch=false
+ 10 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([t1.C1 = :0], [t1.C2 = :1])
+ 11 - output([t1_1.C1]), filter(nil), rowset=16
+ 12 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_nl(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_merge(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |206         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |204         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |199         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |108         |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |108         |
+|9 |        └─MERGE JOIN             |          |1       |108         |
+|10|          ├─TABLE RANGE SCAN     |t1(idx_t1)|1       |54          |
+|11|          └─SORT                 |          |3       |54          |
+|12|            └─TABLE FULL SCAN    |t1_1      |3       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:0)], [t2.C2(:1)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1.C1]), other_conds(nil)
+      merge_directions([ASC])
+ 10 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([t1.C1 = :0], [t1.C2 = :1])
+ 11 - output([t1_1.C1]), filter(nil), rowset=16
+      sort_keys([t1_1.C1, ASC])
+ 12 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_merge(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_hash(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |206         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |204         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |199         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |109         |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |109         |
+|9 |        └─HASH JOIN              |          |1       |109         |
+|10|          ├─TABLE RANGE SCAN     |t1(idx_t1)|1       |54          |
+|11|          └─TABLE FULL SCAN      |t1_1      |3       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:0)], [t2.C2(:1)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1.C1]), other_conds(nil)
+ 10 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([t1.C1 = :0], [t1.C2 = :1])
+ 11 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1 t1_1) use_hash(t1_1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_nl(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |196         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |194         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |189         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |103         |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |103         |
+|9 |        └─NESTED-LOOP JOIN       |          |1       |103         |
+|10|          ├─TABLE FULL SCAN      |t1_1      |3       |54          |
+|11|          └─TABLE RANGE SCAN     |t1(idx_t1)|1       |46          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:1)], [t2.C2(:2)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t1_1.C1(:3)]), use_batch=true
+ 10 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([GROUP_ID], [t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN ; MAX), 
+      range_cond([t1.C1 = :1], [t1.C2 = :2], [:3 = t1.C1])
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_nl(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_merge(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |206         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |204         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |199         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |108         |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |108         |
+|9 |        └─MERGE JOIN             |          |1       |108         |
+|10|          ├─SORT                 |          |3       |54          |
+|11|          │ └─TABLE FULL SCAN    |t1_1      |3       |54          |
+|12|          └─TABLE RANGE SCAN     |t1(idx_t1)|1       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:0)], [t2.C2(:1)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1.C1]), other_conds(nil)
+      merge_directions([ASC])
+ 10 - output([t1_1.C1]), filter(nil), rowset=16
+      sort_keys([t1_1.C1, ASC])
+ 11 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([t1.C1 = :0], [t1.C2 = :1])
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_merge(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+EXPLAIN select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_hash(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
+Query Plan
+=======================================================================
+|ID|OPERATOR                         |NAME      |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                   |          |3       |206         |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001  |3       |204         |
+|2 |  └─NESTED-LOOP JOIN             |          |3       |199         |
+|3 |    ├─EXCHANGE IN DISTR          |          |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000  |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |          |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2        |5       |9           |
+|7 |    └─SUBPLAN SCAN               |A         |1       |109         |
+|8 |      └─PX PARTITION ITERATOR    |          |1       |109         |
+|9 |        └─HASH JOIN              |          |1       |109         |
+|10|          ├─TABLE FULL SCAN      |t1_1      |3       |54          |
+|11|          └─TABLE RANGE SCAN     |t1(idx_t1)|1       |54          |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, A.C1, A.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C1], [t2.C2], [A.C1], [A.C2]), filter(nil), rowset=16
+      conds(nil), nl_params_([t2.C1(:0)], [t2.C2(:1)]), use_batch=false
+  3 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+  4 - output([PARTITION_ID], [t2.C1], [t2.C2]), filter(nil), rowset=16
+      (#keys=1, [t2.C1]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([A.C1], [A.C2]), filter(nil), rowset=16
+      access([A.C1], [A.C2])
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1.C1]), other_conds(nil)
+ 10 - output([t1_1.C1]), filter(nil), rowset=16
+      access([t1_1.C1]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([t1.C1 = :0], [t1.C2 = :1])
+select /*+ leading(t2 A) use_nl(A) no_rewrite */ * from t2 join (select /*+ leading(t1_1 t1) use_hash(t1) */t1.* from t1_1 join t1 on t1_1.c1 = t1.c1) A on A.c1 = t2.c1 and A.c2 = t2.c2;
++------+------+------+------+
+| C1   | C2   | C1   | C2   |
++------+------+------+------+
+|    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |
++------+------+------+------+
+alter table t1 drop index idx_t1;
+
+###########################################   JOIN   ##############################################
+## 1. pkey到pwj
+EXPLAIN select /*+ leading(t2 (t1 t1_1)) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |3       |42          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|3       |39          |
+|2 |  └─HASH JOIN                    |        |3       |31          |
+|3 |    ├─EXCHANGE IN DISTR          |        |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|7 |    └─PX PARTITION ITERATOR      |        |3       |15          |
+|8 |      └─HASH JOIN                |        |3       |15          |
+|9 |        ├─TABLE FULL SCAN        |t1      |5       |7           |
+|10|        └─TABLE FULL SCAN        |t1_1    |3       |7           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t2.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  8 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 (t1 t1_1)) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1 t1_1) t2) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |3       |42          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|3       |39          |
+|2 |  └─HASH JOIN                    |        |3       |31          |
+|3 |    ├─PX PARTITION ITERATOR      |        |3       |15          |
+|4 |    │ └─HASH JOIN                |        |3       |15          |
+|5 |    │   ├─TABLE FULL SCAN        |t1      |5       |7           |
+|6 |    │   └─TABLE FULL SCAN        |t1_1    |3       |7           |
+|7 |    └─EXCHANGE IN DISTR          |        |5       |15          |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|9 |        └─PX PARTITION ITERATOR  |        |5       |9           |
+|10|          └─TABLE FULL SCAN      |t2      |5       |9           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+  5 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1 t1_1) t2) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |    1 |    1 |
++------+------+------+------+------+------+
+
+## 2. pkey的结果和pwj做pwj
+EXPLAIN select /*+ leading((t2 t1) (t1_1 t1_2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |50          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─HASH JOIN                    |        |5       |24          |
+|4 |    │ ├─EXCHANGE IN DISTR          |        |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |        |5       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1      |5       |7           |
+|10|    └─PX PARTITION ITERATOR        |        |3       |15          |
+|11|      └─HASH JOIN                  |        |3       |15          |
+|12|        ├─TABLE FULL SCAN          |t1_1    |3       |7           |
+|13|        └─TABLE FULL SCAN          |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_1.C1], [t1.C1], [t2.C1], [t1.C2], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1.C1], [t2.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 11 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1_2.C1]), other_conds(nil)
+ 12 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1) (t1_1 t1_2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1 t2) (t1_1 t1_2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |50          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─HASH JOIN                    |        |5       |24          |
+|4 |    │ ├─PX PARTITION ITERATOR      |        |5       |7           |
+|5 |    │ │ └─TABLE FULL SCAN          |t1      |5       |7           |
+|6 |    │ └─EXCHANGE IN DISTR          |        |5       |15          |
+|7 |    │   └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|8 |    │     └─PX PARTITION ITERATOR  |        |5       |9           |
+|9 |    │       └─TABLE FULL SCAN      |t2      |5       |9           |
+|10|    └─PX PARTITION ITERATOR        |        |3       |15          |
+|11|      └─HASH JOIN                  |        |3       |15          |
+|12|        ├─TABLE FULL SCAN          |t1_1    |3       |7           |
+|13|        └─TABLE FULL SCAN          |t1_2    |4       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_1.C1], [t1.C1], [t1.C2], [t2.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1.C1], [t1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  4 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  5 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  8 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 11 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1_2.C1]), other_conds(nil)
+ 12 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1 t2) (t1_1 t1_2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1_1 t1_2) (t2 t1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |49          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─PX PARTITION ITERATOR        |        |3       |15          |
+|4 |    │ └─HASH JOIN                  |        |3       |15          |
+|5 |    │   ├─TABLE FULL SCAN          |t1_1    |3       |7           |
+|6 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|7 |    └─HASH JOIN                    |        |5       |24          |
+|8 |      ├─EXCHANGE IN DISTR          |        |5       |15          |
+|9 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|10|      │   └─PX PARTITION ITERATOR  |        |5       |9           |
+|11|      │     └─TABLE FULL SCAN      |t2      |5       |9           |
+|12|      └─PX PARTITION ITERATOR      |        |5       |7           |
+|13|        └─TABLE FULL SCAN          |t1      |5       |7           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2], [t1.C1], [t2.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  3 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1_2.C1]), other_conds(nil)
+  5 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t2.C2], [t1.C1], [t2.C1], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  9 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 11 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+ 13 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1_1 t1_2) (t2 t1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1_1 t1_2) (t1 t2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------
+|0 |PX COORDINATOR                     |        |3       |54          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|3       |49          |
+|2 |  └─HASH JOIN                      |        |3       |39          |
+|3 |    ├─PX PARTITION ITERATOR        |        |3       |15          |
+|4 |    │ └─HASH JOIN                  |        |3       |15          |
+|5 |    │   ├─TABLE FULL SCAN          |t1_1    |3       |7           |
+|6 |    │   └─TABLE FULL SCAN          |t1_2    |4       |7           |
+|7 |    └─HASH JOIN                    |        |5       |24          |
+|8 |      ├─PX PARTITION ITERATOR      |        |5       |7           |
+|9 |      │ └─TABLE FULL SCAN          |t1      |5       |7           |
+|10|      └─EXCHANGE IN DISTR          |        |5       |15          |
+|11|        └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |13          |
+|12|          └─PX PARTITION ITERATOR  |        |5       |9           |
+|13|            └─TABLE FULL SCAN      |t2      |5       |9           |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2], [t1.C1], [t1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_1.C1]), other_conds(nil)
+  3 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1_1.C1], [t1_2.C1], [t1_1.C2], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t1_1.C1 = t1_2.C1]), other_conds(nil)
+  5 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t2.C2], [t1.C1], [t1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  8 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  9 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+ 11 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+ 12 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 13 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1_1 t1_2) (t1 t2)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1_1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
++------+------+------+------+------+------+------+------+
+
+## 3. pkey到pw mj
+create index idx_t1 on t1(c1, c2);
+create index idx_t1_1 on t1_1(c1, c2);
+EXPLAIN select /*+ leading(t2 (t1 t1_1) use_merge(t1_1)) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
+Query Plan
+===========================================================================
+|ID|OPERATOR                         |NAME          |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |PX COORDINATOR                   |              |3       |41          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001      |3       |38          |
+|2 |  └─HASH JOIN                    |              |3       |30          |
+|3 |    ├─PX PARTITION ITERATOR      |              |3       |14          |
+|4 |    │ └─MERGE JOIN               |              |3       |14          |
+|5 |    │   ├─TABLE FULL SCAN        |t1_1(idx_t1_1)|3       |7           |
+|6 |    │   └─TABLE FULL SCAN        |t1(idx_t1)    |5       |7           |
+|7 |    └─EXCHANGE IN DISTR          |              |5       |15          |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000      |5       |13          |
+|9 |        └─PX PARTITION ITERATOR  |              |5       |9           |
+|10|          └─TABLE FULL SCAN      |t2            |5       |9           |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t1_1.C1], [t1_1.C2], [t1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t1.C1], [t1_1.C1], [t1_1.C2], [t1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1.C1], [t1_1.C1], [t1_1.C2], [t1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+      merge_directions([ASC])
+  5 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.C1], [t1_1.C2], [t1_1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  6 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t2 (t1 t1_1) use_merge(t1_1)) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |    1 |    1 |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1 t1_1) t2) use_merge(t1_1) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
+Query Plan
+===========================================================================
+|ID|OPERATOR                         |NAME          |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |PX COORDINATOR                   |              |3       |41          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001      |3       |38          |
+|2 |  └─HASH JOIN                    |              |3       |30          |
+|3 |    ├─PX PARTITION ITERATOR      |              |3       |14          |
+|4 |    │ └─MERGE JOIN               |              |3       |14          |
+|5 |    │   ├─TABLE FULL SCAN        |t1(idx_t1)    |5       |7           |
+|6 |    │   └─TABLE FULL SCAN        |t1_1(idx_t1_1)|3       |7           |
+|7 |    └─EXCHANGE IN DISTR          |              |5       |15          |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000      |5       |13          |
+|9 |        └─PX PARTITION ITERATOR  |              |5       |9           |
+|10|          └─TABLE FULL SCAN      |t2            |5       |9           |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2], [t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+      merge_directions([ASC])
+  5 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  6 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.C1], [t1_1.C2], [t1_1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  7 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  8 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  9 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1 t1_1) t2) use_merge(t1_1) */ * from t2 join t1 join t1_1 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1;
++------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+
+|    4 |    4 |    4 |    4 |    4 |    4 |
+|    1 |    1 |    1 |    1 |    1 |    1 |
++------+------+------+------+------+------+
+
+create index idx_t1_2 on t1_2(c1, c2);
+EXPLAIN select /*+ leading(t2 (t1_2 (t1 t1_1))) use_merge(t1_1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1.c1 = t1_2.c1;
+Query Plan
+===========================================================================
+|ID|OPERATOR                         |NAME          |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------------
+|0 |PX COORDINATOR                   |              |3       |52          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001      |3       |47          |
+|2 |  └─HASH JOIN                    |              |3       |37          |
+|3 |    ├─EXCHANGE IN DISTR          |              |5       |15          |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000      |5       |13          |
+|5 |    │   └─PX PARTITION ITERATOR  |              |5       |9           |
+|6 |    │     └─TABLE FULL SCAN      |t2            |5       |9           |
+|7 |    └─PX PARTITION ITERATOR      |              |3       |21          |
+|8 |      └─MERGE JOIN               |              |3       |21          |
+|9 |        ├─TABLE FULL SCAN        |t1_2(idx_t1_2)|4       |7           |
+|10|        └─MERGE JOIN             |              |3       |14          |
+|11|          ├─TABLE FULL SCAN      |t1(idx_t1)    |5       |7           |
+|12|          └─TABLE FULL SCAN      |t1_1(idx_t1_1)|3       |7           |
+===========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t2.C1], [t1_2.C1], [t1_2.C2], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  5 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.C1], [t1_2.C1], [t1_2.C2], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  8 - output([t1.C1], [t1_2.C1], [t1_2.C2], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_2.C1]), other_conds(nil)
+      merge_directions([ASC])
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.C1], [t1_2.C2], [t1_2.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+ 10 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+      merge_directions([ASC])
+ 11 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+ 12 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.C1], [t1_1.C2], [t1_1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+select /*+ leading(t2 (t1_2 (t1 t1_1))) use_merge(t1_1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+------+------+
+
+## 4. pkey的结果和 pw mj做 pwj
+EXPLAIN select /*+ leading((t2 t1_2) (t1 t1_1)) use_merge(t1_1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1.c1 = t1_2.c1;
+Query Plan
+=============================================================================
+|ID|OPERATOR                           |NAME          |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------
+|0 |PX COORDINATOR                     |              |3       |61          |
+|1 |└─EXCHANGE OUT DISTR               |:EX10002      |3       |56          |
+|2 |  └─HASH JOIN                      |              |3       |46          |
+|3 |    ├─HASH JOIN                    |              |4       |23          |
+|4 |    │ ├─EXCHANGE IN DISTR          |              |5       |15          |
+|5 |    │ │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000      |5       |13          |
+|6 |    │ │   └─PX PARTITION ITERATOR  |              |5       |9           |
+|7 |    │ │     └─TABLE FULL SCAN      |t2            |5       |9           |
+|8 |    │ └─PX PARTITION ITERATOR      |              |4       |7           |
+|9 |    │   └─TABLE FULL SCAN          |t1_2(idx_t1_2)|4       |7           |
+|10|    └─EXCHANGE IN DISTR            |              |3       |21          |
+|11|      └─EXCHANGE OUT DISTR (PKEY)  |:EX10001      |3       |19          |
+|12|        └─PX PARTITION ITERATOR    |              |3       |14          |
+|13|          └─MERGE JOIN             |              |3       |14          |
+|14|            ├─TABLE FULL SCAN      |t1(idx_t1)    |5       |7           |
+|15|            └─TABLE FULL SCAN      |t1_1(idx_t1_1)|3       |7           |
+=============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t2.C1, t2.C2, t1.C1, t1.C2, t1_1.C1, t1_1.C2, t1_2.C1, t1_2.C2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t2.C2], [t1.C1], [t1_2.C1], [t2.C1], [t1_2.C2], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1.C1]), other_conds(nil)
+  3 - output([t2.C2], [t1_2.C1], [t2.C1], [t1_2.C2]), filter(nil), rowset=16
+      equal_conds([t2.C2 = t1_2.C1]), other_conds(nil)
+  4 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+  5 - output([t2.C2], [t2.C1]), filter(nil), rowset=16
+      (#keys=1, [t2.C2]), dop=1
+  6 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      force partition granule
+  7 - output([t2.C1], [t2.C2]), filter(nil), rowset=16
+      access([t2.C1], [t2.C2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  8 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      affinitize, force partition granule
+  9 - output([t1_2.C1], [t1_2.C2]), filter(nil), rowset=16
+      access([t1_2.C1], [t1_2.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_2.C1], [t1_2.C2], [t1_2.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+ 10 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+ 11 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      (#keys=1, [t1.C1]), dop=1
+ 12 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      partition wise, force partition granule
+ 13 - output([t1.C1], [t1_1.C1], [t1.C2], [t1_1.C2]), filter(nil), rowset=16
+      equal_conds([t1.C1 = t1_1.C1]), other_conds(nil)
+      merge_directions([ASC])
+ 14 - output([t1.C1], [t1.C2]), filter(nil), rowset=16
+      access([t1.C1], [t1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.C1], [t1.C2], [t1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+ 15 - output([t1_1.C1], [t1_1.C2]), filter(nil), rowset=16
+      access([t1_1.C1], [t1_1.C2]), partitions(p[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1_1.C1], [t1_1.C2], [t1_1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+select /*+ leading((t2 t1_2) (t1 t1_1)) use_merge(t1_1)) */ * from t2 join t1 join t1_1 join t1_2 on t2.c2 = t1.c1 and t1.c1 = t1_1.c1 and t1.c1 = t1_2.c1;
++------+------+------+------+------+------+------+------+
+| C1   | C2   | C1   | C2   | C1   | C2   | C1   | C2   |
++------+------+------+------+------+------+------+------+
+|    1 |    1 |    1 |    1 |    1 |    1 |    1 |    1 |
+|    4 |    4 |    4 |    4 |    4 |    4 |    4 |    4 |
++------+------+------+------+------+------+------+------+
+
+## 5. pkey到pwj，并且pwj的两个表不是按顺序匹配
+drop table t1, t2, t3;
+CREATE TABLE t1 (c1 int, c2 varchar(10)) PARTITION BY LIST (c1) 
+(PARTITION p1 VALUES IN (0, 1, 2),
+PARTITION p2 VALUES IN (3, 4, 5),
+PARTITION p3 VALUES IN (6, 7),
+PARTITION p4 VALUES IN (8),
+PARTITION p5 VALUES IN (9, 10));
+
+CREATE TABLE t2 (c1 int, c2 varchar(10)) PARTITION BY LIST (c1) 
+(PARTITION p1 VALUES IN (8),
+PARTITION p2 VALUES IN (9, 10),
+PARTITION p3 VALUES IN (0, 1, 2),
+PARTITION p4 VALUES IN (6, 7),
+PARTITION p5 VALUES IN (3, 4, 5));
+
+create table t3(c1 int, c2 varchar(10));
+EXPLAIN insert into t1 values(0, '0'), (3, '3'), (5, '5'), (7, '7'), (9, '9');
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED INSERT|    |5       |39          |
+|1 |└─EXPRESSION      |    |5       |1           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t1: ({t1: (t1.__pk_increment, t1.c1, t1.c2)})}]), 
+      column_values([T_HIDDEN_PK], [column_conv(INT,PS:(11,0),NULL,__values.c1)], [column_conv(VARCHAR,utf8mb4_general_ci,length:10,NULL,__values.c2)])
+  1 - output([__values.c1], [__values.c2]), filter(nil)
+      values({0, '0'}, {3, '3'}, {5, '5'}, {7, '7'}, {9, '9'})
+insert into t1 values(0, '0'), (3, '3'), (5, '5'), (7, '7'), (9, '9');
+EXPLAIN insert into t2 values(0, '0'), (1, '1'), (5, '5'), (8, '8'), (9, '9'), (10, '10');
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED INSERT|    |6       |45          |
+|1 |└─EXPRESSION      |    |6       |1           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t2: ({t2: (t2.__pk_increment, t2.c1, t2.c2)})}]), 
+      column_values([T_HIDDEN_PK], [column_conv(INT,PS:(11,0),NULL,__values.c1)], [column_conv(VARCHAR,utf8mb4_general_ci,length:10,NULL,__values.c2)])
+  1 - output([__values.c1], [__values.c2]), filter(nil)
+      values({0, '0'}, {1, '1'}, {5, '5'}, {8, '8'}, {9, '9'}, {10, '10'})
+insert into t2 values(0, '0'), (1, '1'), (5, '5'), (8, '8'), (9, '9'), (10, '10');
+EXPLAIN insert into t3(c1) values(0), (9);
+Query Plan
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |DISTRIBUTED INSERT|    |2       |20          |
+|1 |└─EXPRESSION      |    |2       |1           |
+==================================================
+Outputs & filters:
+-------------------------------------
+  0 - output(nil), filter(nil)
+      columns([{t3: ({t3: (t3.__pk_increment, t3.c1, t3.c2)})}]), 
+      column_values([T_HIDDEN_PK], [column_conv(INT,PS:(11,0),NULL,__values.c1)], [column_conv(VARCHAR,utf8mb4_general_ci,length:10,NULL,cast(NULL, VARCHAR(1048576)))])
+  1 - output([__values.c1]), filter(nil)
+      values({0}, {9})
+insert into t3(c1) values(0), (9);
+
+
+EXPLAIN select /*+ leading(t3 (t1 t2)) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |2       |35          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|2       |33          |
+|2 |  └─HASH JOIN                    |        |2       |29          |
+|3 |    ├─EXCHANGE IN DISTR          |        |2       |5           |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|2       |4           |
+|5 |    │   └─TABLE FULL SCAN        |t3      |2       |3           |
+|6 |    └─PX PARTITION ITERATOR      |        |5       |23          |
+|7 |      └─HASH JOIN                |        |5       |23          |
+|8 |        ├─TABLE FULL SCAN        |t1      |5       |11          |
+|9 |        └─TABLE FULL SCAN        |t2      |6       |11          |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t3.c1], [t1.c1], [t3.c2], [t2.c1], [t1.c2], [t2.c2]), filter(nil), rowset=16
+      equal_conds([t3.c1 = t1.c1]), other_conds(nil)
+  3 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  4 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      (#keys=1, [t3.c1]), is_single, dop=1
+  5 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      access([t3.c1], [t3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1.c1], [t2.c1], [t1.c2], [t2.c2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  7 - output([t1.c1], [t2.c1], [t1.c2], [t2.c2]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  8 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t3 (t1 t2)) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
++------+------+------+------+------+------+
+| c1   | c2   | c1   | c2   | c1   | c2   |
++------+------+------+------+------+------+
+|    0 | 0    |    0 | 0    |    0 | NULL |
+|    9 | 9    |    9 | 9    |    9 | NULL |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading(t3 (t2 t1)) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |2       |35          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|2       |33          |
+|2 |  └─HASH JOIN                    |        |2       |29          |
+|3 |    ├─EXCHANGE IN DISTR          |        |2       |5           |
+|4 |    │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|2       |4           |
+|5 |    │   └─TABLE FULL SCAN        |t3      |2       |3           |
+|6 |    └─PX PARTITION ITERATOR      |        |5       |24          |
+|7 |      └─HASH JOIN                |        |5       |24          |
+|8 |        ├─TABLE FULL SCAN        |t2      |6       |11          |
+|9 |        └─TABLE FULL SCAN        |t1      |5       |11          |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t3.c1], [t1.c1], [t3.c2], [t2.c1], [t2.c2], [t1.c2]), filter(nil), rowset=16
+      equal_conds([t3.c1 = t1.c1]), other_conds(nil)
+  3 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  4 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      (#keys=1, [t3.c1]), is_single, dop=1
+  5 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      access([t3.c1], [t3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1.c1], [t2.c1], [t2.c2], [t1.c2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  7 - output([t1.c1], [t2.c1], [t2.c2], [t1.c2]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  8 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading(t3 (t2 t1)) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
++------+------+------+------+------+------+
+| c1   | c2   | c1   | c2   | c1   | c2   |
++------+------+------+------+------+------+
+|    0 | 0    |    0 | 0    |    0 | NULL |
+|    9 | 9    |    9 | 9    |    9 | NULL |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t1 t2) t3) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |2       |35          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|2       |33          |
+|2 |  └─HASH JOIN                    |        |2       |29          |
+|3 |    ├─PX PARTITION ITERATOR      |        |5       |23          |
+|4 |    │ └─HASH JOIN                |        |5       |23          |
+|5 |    │   ├─TABLE FULL SCAN        |t1      |5       |11          |
+|6 |    │   └─TABLE FULL SCAN        |t2      |6       |11          |
+|7 |    └─EXCHANGE IN DISTR          |        |2       |5           |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|2       |4           |
+|9 |        └─TABLE FULL SCAN        |t3      |2       |3           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t3.c1], [t1.c1], [t2.c1], [t1.c2], [t2.c2], [t3.c2]), filter(nil), rowset=16
+      equal_conds([t3.c1 = t1.c1]), other_conds(nil)
+  3 - output([t1.c1], [t2.c1], [t1.c2], [t2.c2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1.c1], [t2.c1], [t1.c2], [t2.c2]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  5 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  8 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      (#keys=1, [t3.c1]), is_single, dop=1
+  9 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      access([t3.c1], [t3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t1 t2) t3) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
++------+------+------+------+------+------+
+| c1   | c2   | c1   | c2   | c1   | c2   |
++------+------+------+------+------+------+
+|    0 | 0    |    0 | 0    |    0 | NULL |
+|    9 | 9    |    9 | 9    |    9 | NULL |
++------+------+------+------+------+------+
+EXPLAIN select /*+ leading((t2 t1) t3) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                         |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------------
+|0 |PX COORDINATOR                   |        |2       |35          |
+|1 |└─EXCHANGE OUT DISTR             |:EX10001|2       |34          |
+|2 |  └─HASH JOIN                    |        |2       |29          |
+|3 |    ├─PX PARTITION ITERATOR      |        |5       |24          |
+|4 |    │ └─HASH JOIN                |        |5       |24          |
+|5 |    │   ├─TABLE FULL SCAN        |t2      |6       |11          |
+|6 |    │   └─TABLE FULL SCAN        |t1      |5       |11          |
+|7 |    └─EXCHANGE IN DISTR          |        |2       |5           |
+|8 |      └─EXCHANGE OUT DISTR (PKEY)|:EX10000|2       |4           |
+|9 |        └─TABLE FULL SCAN        |t3      |2       |3           |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t1.c1, t1.c2, t2.c1, t2.c2, t3.c1, t3.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t3.c1], [t1.c1], [t2.c1], [t2.c2], [t1.c2], [t3.c2]), filter(nil), rowset=16
+      equal_conds([t3.c1 = t1.c1]), other_conds(nil)
+  3 - output([t1.c1], [t2.c1], [t2.c2], [t1.c2]), filter(nil), rowset=16
+      affinitize, partition wise, force partition granule
+  4 - output([t1.c1], [t2.c1], [t2.c2], [t1.c2]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  5 - output([t2.c1], [t2.c2]), filter(nil), rowset=16
+      access([t2.c1], [t2.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p[0-4])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+  8 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      (#keys=1, [t3.c1]), is_single, dop=1
+  9 - output([t3.c1], [t3.c2]), filter(nil), rowset=16
+      access([t3.c1], [t3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+select /*+ leading((t2 t1) t3) */ t1.*, t2.*, t3.* from t1 join t2 join t3 on t1.c1 = t2.c1 and t3.c1 = t1.c1;
++------+------+------+------+------+------+
+| c1   | c2   | c1   | c2   | c1   | c2   |
++------+------+------+------+------+------+
+|    0 | 0    |    0 | 0    |    0 | NULL |
+|    9 | 9    |    9 | 9    |    9 | NULL |
++------+------+------+------+------+------+

@@ -1,0 +1,179 @@
+# owner: wangxiaoding.wxd
+# owner group: physical_backup
+# Testing Case: recover table basic case
+
+ob1=OBI(cluster=1, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_oracle_tenant);
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+
+CREATE RESOURCE UNIT small_unit MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL small_pool_0 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.create_tenant CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql',lower_case_table_names=1;
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+alter system set ob_compaction_schedule_interval = '3s' tenant all;
+
+ob_connect(sys_conn_oracle, ob1.z1.obs0, root@$backup_oracle_tenant, ,oceanbase, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+set global wait_timeout = 288000;
+
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest';
+eval alter system set data_backup_dest='$data_backup_dest';
+--enable_all_result_log
+
+--echo ===============================================================
+--echo ====================     import gis   =========================
+--echo ===============================================================
+connection backup_sys_conn;
+use oceanbase;
+alter system change tenant backup_oracle_tenant;
+--disable_all_result_log
+source sql/default_srs_data_mysql.sql;
+--enable_all_result_log
+
+--echo ===============================================================
+--echo ====================     create table   =======================
+--echo ===============================================================
+connection sys_conn_oracle;
+use test;
+create table t2 (id2 number primary key);
+create table t1 (id number, names char(50) not null, driver_id char(50) unique, age number check(age>20), id_fk number, second_id bigint not null auto_increment primary key, gmt_create timestamp not null default current_timestamp,  CONSTRAINT t1_fk FOREIGN KEY(id_fk) REFERENCES t2 (id2));
+CREATE TRIGGER test_trg BEFORE INSERT ON t1 FOR EACH ROW SET @sum = @sum + NEW.id;
+# local/global index
+create index t1_idx on t1(names) local;
+create index t2_idx on t1(driver_id, names) global;
+insert into t2 values (1);
+insert into t2 values (2);
+insert into t2 values (3);
+insert into t2 values (4);
+insert into t1 (id,names,driver_id,age,id_fk) values (1, 'allen',  '1234567890123',30,1);
+insert into t1 (id,names,driver_id,age,id_fk) values (2, 'sam', '2234567890123',30,2);
+insert into t1 (id,names,driver_id,age,id_fk) values (3, 'billy', '3234567890123',30,3);
+insert into t1 (id,names,driver_id,age,id_fk) values (4, 'carl', '4234567890123',30,4);
+call dbms_stats.gather_table_stats('TEST', 'T1', method_opt=>'FOR ALL COLUMNS SIZE 1');
+
+CREATE TABLE ```t'\"_str`(a int);
+
+# geom index
+CREATE TABLE geom (g GEOMETRY NOT NULL SRID 4326, SPATIAL INDEX(g));
+INSERT INTO geom VALUES (ST_GeomFromText('POINT(1 1)', 4326));
+INSERT INTO geom VALUES (ST_GeomFromText('POINT(1 1)', 4326));
+
+# vector index
+create table vec_table (c1 int primary key, c2 vector(3), c3 vector(3), c4 vector(3), c5 vector(3));
+insert into vec_table(c1,c2,c3,c4,c5) values(1, '[1,1,2]', '[2,2,3]', '[1,3,2]', '[1,3,2]');
+insert into vec_table(c1,c2,c3,c4,c5) values(2, '[2,1,2]', '[2,2,2]', '[2,3,2]', '[1,3,2]');
+insert into vec_table(c1,c2,c3,c4,c5) values(3, '[3,1,2]', '[3,2,2]', '[3,3,2]', '[1,3,2]');
+create vector index vec_idx1 on vec_table(c2) with (distance=L2, type=ivf_flat, nlist=2, sample_per_nlist=3);
+create vector index vec_idx2 on vec_table(c3) with (distance=L2, type=ivf_sq8);
+create vector index vec_idx3 on vec_table(c4) with (distance=L2, type=ivf_pq, m=1);
+create vector index vec_idx4 on vec_table(c5) with (distance=L2, type=hnsw, lib=vsag);
+
+# fulltext index
+create table articles (id int, title varchar(200), content text, primary key (id), fulltext index f101 (content));
+insert into articles values (1, 'Cloud Computing', 'test: Cloud computing revolutionizes data storage and processing by enabling scalable, on-demand resources. It enhances flexibility and reduces infrastructure costs for businesses.');
+insert into articles values (2, 'Data Security', 'test: Data security is critical in protecting sensitive information from unauthorized access. Implementing encryption and access controls ensures data integrity and compliance with regulatory standards.');
+insert into articles values (3, 'AI in Healthcare', 'test: Artificial intelligence is transforming healthcare through predictive analytics and diagnostic tools. It improves patient outcomes by enabling faster, more accurate medical decisions and personalized treatment plans.');
+create fulltext index f102 on articles(title, content);
+
+# json multivalue index/comp index
+create table customers01 (id bigint, custinfo json, primary key(id), index zips( (CAST(custinfo->'$.zipcode' AS UNSIGNED ARRAY))), index comp(id, (CAST(custinfo->'$.zipcode' AS UNSIGNED ARRAY))));
+insert into customers01(id, custinfo) values (20, '{"user":"Jack", "user_id":37, "zipcode":[84582,64536]}');
+insert into customers01(id, custinfo) values (21, '{"user":"Jill","user_id":22,"zipcode":[44568,64507,84582]}');
+insert into customers01(id, custinfo) values (22, '{"user":"Bob","user_id":31,"zipcode":[54477,84507]}');
+insert into customers01(id, custinfo) values (23, '{"user":"Mary","user_id":72,"zipcode":[74536]}');
+
+# json multivalue unique index
+create table customers02 (id bigint, custinfo json, primary key(id), unique index zips( (CAST(custinfo->'$.zipcode' AS UNSIGNED ARRAY))));
+insert into customers02(id, custinfo) values (20, '{"user":"Jack", "user_id":37, "zipcode":[84582,64536]}');
+insert into customers02(id, custinfo) values (21, '{"user":"Jill","user_id":22,"zipcode":[44568,64507]}');
+insert into customers02(id, custinfo) values (22, '{"user":"Bob","user_id":31,"zipcode":[54477,84507]}');
+insert into customers02(id, custinfo) values (23, '{"user":"Mary","user_id":72,"zipcode":[74536]}');
+
+--echo ===============================================================
+--echo ==============   check constraint and index   =================
+--echo ===============================================================
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+let $src_database_id = query_get_value(select database_id from oceanbase.__all_virtual_database where tenant_id = 1002 and database_name='test', database_id, 1);
+let $src_index_cnt = query_get_value(select count(*) as index_cnt from oceanbase.__all_virtual_table where table_type = 5 and database_id = $src_database_id, index_cnt, 1);
+
+--echo ===============================================================
+--echo ==============   backup and archive   =========================
+--echo ===============================================================
+connection backup_sys_conn;
+use oceanbase;
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) from cdb_ob_backup_jobs, 0, 600;
+let $restore_checkpoint_scn = `select timestamp_to_scn(current_timestamp(6))`;
+ob1.check_until_timeout select checkpoint_scn > $restore_checkpoint_scn from CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, 1, 300;
+let $restore_time = `select CHECKPOINT_SCN_DISPLAY from CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id`;
+
+--echo ===============================================================
+--echo ====================   recover table   ========================
+--echo ===============================================================
+connection sys_conn_oracle;
+create database recover_test;
+create database recover_test_2;
+
+connection backup_sys_conn;
+use oceanbase;
+let $restore_path = $log_backup_dest,$data_backup_dest;
+ob1.recover_table alter system recover table test.t1,test.geom,test.articles,test.customers01,test.customers02,test.vec_table to tenant backup_oracle_tenant from '$restore_path' until time='$restore_time' with 'pool_list=small_pool_0&primary_zone=z1' remap table test.t1:recover_test.t3,test.geom:recover_test.geom,test.articles:recover_test.articles,test.customers01:recover_test.customers01,test.customers02:recover_test.customers02,test.vec_table:recover_test.vec_table;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = 1004, SUCCESS, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where table_type = 5 and database_id in (select database_id from __all_virtual_database where tenant_id = 1002 and database_name='recover_test'), $src_index_cnt, 100; 
+
+# check fulltext index
+connection sys_conn_oracle;
+use recover_test;
+select /*+ opt_param('rowsets_enabled', 'true') */ * from articles where match (content) against ("+test +computing -security" IN BOOLEAN MODE);
+select /*+ opt_param('rowsets_enabled', 'false') */ * from articles where match (content) against ("+test +computing -security" IN BOOLEAN MODE);
+select /*+ opt_param('rowsets_enabled', 'true') */ * from articles where match (content) against ("Data security" IN MATCH PHRASE MODE);
+select /*+ opt_param('rowsets_enabled', 'false') */ * from articles where match (content) against ("Data security" IN MATCH PHRASE MODE);
+
+# check json multivalue index
+select * from customers01 where 84582 member of(custinfo->'$.zipcode');
+select * from customers01 where JSON_CONTAINS(custinfo->'$.zipcode', CAST('[44568,64507,84582]' AS JSON));
+select * from customers01 where JSON_OVERLAPS(custinfo->'$.zipcode', CAST('[44568,64507]' AS JSON));
+select * from customers02 where 84582 member of(custinfo->'$.zipcode');
+select * from customers02 where JSON_CONTAINS(custinfo->'$.zipcode', CAST('[44568,64507]' AS JSON));
+select * from customers02 where JSON_OVERLAPS(custinfo->'$.zipcode', CAST('[44568,64507]' AS JSON));
+
+ob1.check_until_timeout select tenant_id from __all_resource_pool where name = 'small_pool_0', -1, 600;
+ob1.recover_table alter system recover table test.* to tenant backup_oracle_tenant from '$restore_path' until time='$restore_time' with 'pool_list=small_pool_0&primary_zone=z1' remap table test.*:recover_test_2.*;
+ob1.check_until_timeout select status from cdb_ob_restore_history where tenant_id = 1 and restore_tenant_id = 1006, SUCCESS, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_recover_table_job, 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where table_type = 5 and database_id in (select database_id from __all_virtual_database where tenant_id = 1002 and database_name='recover_test_2'), $src_index_cnt, 100; 

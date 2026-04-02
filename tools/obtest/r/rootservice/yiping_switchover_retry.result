@@ -1,0 +1,88 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+set global wait_timeout = 288000;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+use oceanbase;
+ob1.mysql alter tenant $backup_mysql_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=1 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_mysql_tenant_id, 1, 100;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 2, 1200;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1004;
+tenant_role
+STANDBY
+set wait_timeout = 288000;
+ob1.mysql alter system archivelog;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant UNTIL UNLIMITED;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$restore_mysql_tenant_id, DOING, 600;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where tenant_name = '$restore_mysql_tenant' and sync_scn > $check_sync_scn, 1, 180;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant CANCEL;
+insert into t1(a, b) values(2, 2);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+select TENANT_ID, TENANT_NAME, TENANT_TYPE, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED, TENANT_ROLE, SWITCHOVER_STATUS, LOG_MODE from DBA_OB_TENANTS order by TENANT_ID;
+TENANT_ID	TENANT_NAME	TENANT_TYPE	COMPATIBILITY_MODE	STATUS	IN_RECYCLEBIN	LOCKED	TENANT_ROLE	SWITCHOVER_STATUS	LOG_MODE
+1	sys	SYS	MYSQL	NORMAL	NO	NO	PRIMARY	NORMAL	NOARCHIVELOG
+1001	META$1002	META	MYSQL	NORMAL	NO	NO	PRIMARY	NORMAL	NOARCHIVELOG
+1002	backup_mysql_tenant	USER	MYSQL	NORMAL	NO	NO	PRIMARY	NORMAL	ARCHIVELOG
+1003	META$1004	META	MYSQL	NORMAL	NO	NO	PRIMARY	NORMAL	NOARCHIVELOG
+1004	restore_mysql_tenant	USER	MYSQL	NORMAL	NO	NO	STANDBY	NORMAL	ARCHIVELOG
+select count(*) from DBA_OB_TENANTS where SYNC_SCN >= REPLAYABLE_SCN and REPLAYABLE_SCN>=READABLE_SCN and RECOVERY_UNTIL_SCN !=0 and TENANT_TYPE = "USER";
+count(*)
+2
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'SWITCHING_TO_STANDBY wait_for continue_signal_2 execute 10000';
+set ob_query_timeout=5000000;
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where TENANT_NAME = '$backup_mysql_tenant' and tenant_role = 'STANDBY' and switchover_status = 'SWITCHING TO STANDBY', 1, 10;
+ob1.mysql set ob_global_debug_sync = 'SWITCHING_TO_STANDBY clear';
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal_2 execute 10000';
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where TENANT_NAME = '$backup_mysql_tenant' and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where TENANT_NAME = '$backup_mysql_tenant' and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and switchover_epoch = $primary_switchover_epoch, 0, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1002 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL' and replayable_scn = $primary_sync_scn, 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_standby_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob1.check_until_timeout SELECT    count(*) FROM      cdb_ob_ls LEFT JOIN GV\$ob_log_stat as primary_log_stat ON        cdb_ob_ls.tenant_id = primary_log_stat.tenant_id AND       cdb_ob_ls.ls_id = primary_log_stat.ls_id LEFT JOIN (select orig.tenant_id as tenant_id, orig.ls_id as ls_id, orig.checkpoint_scn as checkpoint_scn   from  __all_virtual_ls_log_archive_progress orig           LEFT JOIN (select max(round_id) as max_round_id,tenant_id,ls_id  from  __all_virtual_ls_log_archive_progress where status= 'DOING' group by tenant_id,ls_id) as max_round_id_table          on max_round_id_table.max_round_id = orig.round_id and max_round_id_table.tenant_id = orig.tenant_id and max_round_id_table.ls_id = orig.ls_id          LEFT JOIN (select max(piece_id) as max_piece_id,tenant_id,ls_id  from  __all_virtual_ls_log_archive_progress where status= 'DOING' group by tenant_id,ls_id) as max_piece_id_table          on max_piece_id_table.max_piece_id = orig.piece_id and max_piece_id_table.tenant_id = orig.tenant_id and max_piece_id_table.ls_id = orig.ls_id          where status= 'DOING' ) as archive_log_stat ON        cdb_ob_ls.tenant_id = archive_log_stat.tenant_id AND       cdb_ob_ls.ls_id = archive_log_stat.ls_id WHERE     cdb_ob_ls.tenant_id = $to_standby_tenant_id AND       primary_log_stat.role='LEADER' AND       archive_log_stat.checkpoint_scn!=primary_log_stat.end_scn and cdb_ob_ls.STATUS NOT IN ('CREATING', 'CREATED', 'TENANT_DROPPING', 'CREATE_ABORT', 'PRE_TENANT_DROPPING'), 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $to_primary_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+select * from t1;
+a	b	c
+1	1	NULL
+2	2	NULL
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ERROR HY000: wait tenant sync to latest failed(original error code: -4012), switchover to primary is not allowed
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant UNTIL UNLIMITED;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where tenant_name = '$restore_mysql_tenant' and sync_scn > $check_sync_scn, 1, 30;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'PREPARE_FLASHBACK_FOR_SWITCH_TO_PRIMARY wait_for continue_signal_3 execute 10000';
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where TENANT_NAME = '$restore_mysql_tenant' and tenant_role = 'STANDBY' and switchover_status = 'PREPARE SWITCHING TO PRIMARY', 1, 10;
+ob1.mysql set ob_global_debug_sync = 'PREPARE_FLASHBACK_FOR_SWITCH_TO_PRIMARY clear';
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal_3 execute 10000';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and switchover_epoch = $standby_switchover_epoch, 0, 20;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 20;
+select * from t1;
+a	b	c
+1	1	NULL
+2	2	NULL

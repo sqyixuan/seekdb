@@ -1,0 +1,63 @@
+# owner: runlin.zjf
+# ownergroup: clog
+# description: 缩短ilog memstore dump周期，验证宕机重启的正确性
+
+ob1=OBI(cluster=1:1:1,proxy_num=1);
+ob1.reboot;
+sleep 2;
+
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+
+ob1.mysql create resource unit ut1 max_memory '15g', max_cpu 10, max_iops 20000, max_disk_size '100g', max_session_num 100;
+ob1.mysql create resource pool rp1 unit = 'ut1', unit_num = 1, zone_list = ('z1','z2','z3');
+ob1.mysql create tenant tt1 replica_num 3, primary_zone 'z3', resource_pool_list('rp1') set ob_tcp_invited_nodes='%';
+
+ob1.mysql alter system set enable_rebalance = 'false';
+
+connect (rl1_conn,$ip,root@tt1,,*NO-ONE*,$port);
+connection rl1_conn;
+create database obtest;
+use obtest;
+create table t1(pk int primary key, c1 int);
+
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set freeze_trigger_percentage = '90';
+
+##############################################################################################
+####################################验证宕机重启##############################################
+##############################################################################################
+let $cnt=10;
+while($cnt>0)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}
+commit;
+# 等待ilog memstore转储，触发memstore转储操作
+sleep 10;
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+
+let $table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t1', table_id, 1);
+let $src=deploy_get_value(ob1.get_follower tt1:obtest:t1:0,1);
+let $src_ip=deploy_get_value($src.ip);
+let $src_port = deploy_get_value($src.port);
+
+# 等待转储完成
+ob1.check_until_timeout select count(table_type)=1 from  __all_virtual_table_mgr where svr_ip = '$src_ip' and svr_port = '$src_port' and table_id = '$table_id' and table_type = 0, 1, 300;
+# 验证last_replay_log_id是否已经更新
+ob1.check_until_timeout select last_replay_log_id != 0 from  __all_virtual_partition_info where svr_ip = '$src_ip' and svr_port = '$src_port' and table_id = '$table_id', 1, 10;
+
+ob1.z2.obs0.stop;
+sleep 2;
+ob1.z2.obs0.start;
+sleep 10;
+
+let $cnt=20;
+while($cnt>10)
+{
+  eval insert into t1 values($cnt, $cnt);
+  dec $cnt;
+}

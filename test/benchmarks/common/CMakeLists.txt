@@ -1,0 +1,1 @@
+ob_perftest(perf_kv_storecache)

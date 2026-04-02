@@ -1,0 +1,285 @@
+# owner: linzhigang.lzg
+# owner group: SQL1
+# tags: optimizer, opt_stats
+
+--disable_warnings
+drop table if exists test;
+drop table if exists test_hash;
+drop table if exists test_hash_hash;
+drop procedure if exists InsertTestData;
+drop table if exists cost1;
+drop table if exists cost2;
+drop table if exists cost3;
+drop table if exists cost1_range;
+--enable_warnings
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set_tp tp_no = 368, error_code = 0, frequency = 1;
+alter system flush kvcache;
+connection default;
+set _enable_storage_cardinality_estimation = OFF;
+set optimizer_dynamic_sampling = 0;
+--result_format 4
+set ob_query_timeout = 1000000000;
+
+
+create table test(
+  c1 bigint DEFAULT NULL,
+  c2 float DEFAULT NULL,
+  c3 double DEFAULT NULL,
+  c4 date DEFAULT NULL,
+  c5 time DEFAULT NULL,
+  c6 year DEFAULT NULL,
+  c7 timestamp DEFAULT NULL,
+  c8 char(20) DEFAULT NULL,
+  c9 varchar(20) DEFAULT NULL,
+  c10 text DEFAULT NULL
+) with column group (each column);
+
+call dbms_stats.SET_TABLE_PREFS('TEST','test', 'SKIP_RATE_SAMPLE_COUNT', '100000');
+SELECT dbms_stats.get_prefs('SKIP_RATE_SAMPLE_COUNT', 'TEST', 'test') FROM dual;
+
+delimiter $$;
+
+create procedure InsertTestData()
+begin
+  declare i int default 0;
+  declare base_time time default '00:00:00';
+  declare base_date date default '2024-01-01';
+  declare base_ts timestamp default '2024-01-01 00:00:00';
+  
+  while i < 10000 do
+    insert into test (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
+    values (
+      i + 1,
+      round(rand(i) * 1000, 2),
+      round(rand(i) * 1000000, 2),
+      base_date + interval floor(rand(i) * 365) day,
+      sec_to_time(time_to_sec(base_time) + floor(rand(i) * 86400)),
+      year(base_date) + floor(rand(i) * 10),
+      base_ts + interval floor(rand(i) * 31536000) second,
+      char(
+        65 + floor(rand(i) * 26),
+        65 + floor(rand(i) * 26),
+        65 + floor(rand(i) * 26)
+      ),
+      concat('test', lpad(i, 4, '0')),
+      concat('Fixed text content ', i) 
+    );
+    set i = i + 1;
+  end while;
+end$$
+
+delimiter ;$$
+
+call InsertTestData();
+
+create table test_hash(c1 int, c2 int) partition by hash(c1) partitions 3 with column group (each column);
+insert into test_hash select random(3)%100,random(100)%100 from table(generator(30000));
+
+create table test_hash_hash(c1 int, c2 int) partition by hash(c1)  subpartition by hash(c2) subpartitions 2 partitions 3 with column group (all columns, each column);
+insert into test_hash_hash select random(3)%100,random(100)%100 from table(generator(300000));
+
+create table cost1(c1 int, c2 float) with column group (all columns, each column);
+create index k1 on cost1(c1);
+set cte_max_recursion_depth =  1000000;
+insert into cost1(c1, c2)
+with recursive nums(n) as (
+  select 1
+  union all
+  select n + 1 from nums where n < 1000000
+)
+select n, n from nums;
+
+create table cost1_range (
+    c1 int,
+    c2 float
+)
+partition by range (c1) (
+    partition p0 values less than (100001),
+    partition p1 values less than (500001),
+    partition p2 values less than maxvalue
+) with column group (all columns, each column);
+create index k1 on cost1_range(c1);
+set cte_max_recursion_depth =  1000000;
+insert into cost1_range(c1, c2)
+with recursive nums(n) as (
+  select 1
+  union all
+  select n + 1 from nums where n < 1000000
+)
+select n, n from nums;
+
+create table cost2 (c1 int, c2 date) with column group (all columns, each column);
+create index k1 on cost2(c1);
+set cte_max_recursion_depth = 1000000;
+insert into cost2 (c1, c2)
+with recursive nums1 (n, start_date) as (
+    select 1, '2023-01-01'
+    union all
+    select n + 1, date_add(start_date, interval 1 day)
+    from nums1
+    where n < 1000000
+)
+select n, start_date from nums1;
+
+create table cost3 (c1 int, c2 float) with column group (all columns, each column);
+create index k1 on cost3(c1);
+Insert /*+ append enable_parallel_dml parallel(8) */ into cost3 select random(100)%100, random(100)%100 from table(generator(1000000));
+
+alter system major freeze;
+--source mysql_test/include/wait_daily_merge.inc
+
+
+--echo -------------------test non-partitioned table and different column type ----------------------
+
+--echo --collect single column
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for columns size 8 c1');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+--echo --collect all column
+
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+--echo --test prefs SKIP_RATE_SAMPLE_COUNT
+
+call dbms_stats.set_global_prefs('SKIP_RATE_SAMPLE_COUNT', '1');
+select sname, spare4 from oceanbase.__all_optstat_global_prefs where sname = 'SKIP_RATE_SAMPLE_COUNT';
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8');
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+--echo --test gather global stat
+call dbms_stats.set_global_prefs('SKIP_RATE_SAMPLE_COUNT', '100000');
+select sname, spare4 from oceanbase.__all_optstat_global_prefs where sname = 'SKIP_RATE_SAMPLE_COUNT';
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8', granularity => 'ALL');
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+--echo -------------------test first level partitioned table ----------------------
+
+call dbms_stats.gather_table_stats('test', 'test_hash', method_opt=>'for all columns size 8', granularity => 'PARTITION');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+call dbms_stats.gather_table_stats('test', 'test_hash', method_opt=>'for all columns size 8', granularity => 'GLOBAL');
+
+select b.table_name, a.partition_id, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash"
+) b
+where a.table_id=b.table_id and a.partition_id = -1 order by a.table_id, a.partition_id, a.column_id;
+
+
+--echo -------------------test first second partitioned table ----------------------
+
+call dbms_stats.gather_table_stats('test', 'test_hash_hash', method_opt=>'for all columns size 8', granularity => 'PARTITION');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash_hash"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+call dbms_stats.gather_table_stats('test', 'test_hash_hash', method_opt=>'for all columns size 8', granularity => 'GLOBAL');
+
+select b.table_name, a.partition_id, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash_hash"
+) b
+where a.table_id=b.table_id and a.partition_id = -1 order by a.table_id, a.partition_id, a.column_id;
+
+--echo -------------------test plan cost ----------------------
+
+--echo --test cg_skip_rate = 1
+call dbms_stats.gather_table_stats('test', 'cost1', granularity => 'ALL');
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table cost1;
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost1"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+call dbms_stats.gather_table_stats('test', 'cost1_range', granularity => 'ALL');
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table cost1_range;
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost1_range"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table cost3;
+call dbms_stats.gather_table_stats('test', 'cost3', granularity => 'ALL');
+
+select b.table_name, a.column_id, a.cg_skip_rate between 0.495 and 0.496 as Expected, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt between 60 and 80 as Expected
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost3"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+select count(1) from cost3;
+select count(1) from cost3 where c1>98;
+explain select * from cost3 where c1>98;
+
+select count(1) from cost3 where c1>10;
+explain select * from cost3 where c1>10;
+
+call dbms_stats.gather_table_stats('test', 'cost2', granularity => 'ALL');
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table cost2;
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost2"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
+
+explain select c2 from cost2 where c1 < 10000 and c2 < '2050-05-18' ;
+
+--echo --clean
+call dbms_stats.SET_TABLE_PREFS('TEST','test', 'SKIP_RATE_SAMPLE_COUNT', '0');
+drop table test;
+drop table test_hash;
+drop table test_hash_hash;
+drop procedure InsertTestData;
+drop table cost1;
+drop table cost2;
+drop table cost3;
+drop table cost1_range;
+set _enable_storage_cardinality_estimation = True;
+set optimizer_dynamic_sampling = 1;
