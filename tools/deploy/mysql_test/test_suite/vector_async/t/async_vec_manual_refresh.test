@@ -1,0 +1,150 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: test dbms_index_manager.refresh() for async vector index
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+--enable_warnings
+
+--echo ========== 1. Basic refresh test ==========
+# Create table with async index
+create table t1(
+  c1 int primary key,
+  c2 vector(3),
+  vector index idx1(c2) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap;
+
+# Insert data
+insert into t1 values (1, '[1,2,3]');
+insert into t1 values (2, '[4,5,6]');
+insert into t1 values (3, '[7,8,9]');
+
+# Manual refresh to ensure data is immediately queryable
+call dbms_index_manager.refresh();
+
+# Query should return all 3 rows
+select c1, c2 from t1 order by l2_distance(c2, '[1,2,3]') approximate limit 3;
+
+--echo
+--echo ========== 2. Batch DML + refresh test ==========
+# More inserts
+--disable_query_log
+let $i = 10;
+while ($i < 20) {
+  eval insert into t1 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+# Manual refresh
+call dbms_index_manager.refresh();
+
+# Verify all data is searchable
+select count(*) from t1;
+select c1 from t1 order by l2_distance(c2, '[15.0, 15.0, 15.0]') approximate limit 5;
+
+--echo
+--echo ========== 3. Mixed DML operations + refresh ==========
+# UPDATE
+update t1 set c2 = '[100, 100, 100]' where c1 = 1;
+
+# DELETE
+delete from t1 where c1 = 2;
+
+# INSERT
+insert into t1 values (100, '[200, 200, 200]');
+
+# Manual refresh
+call dbms_index_manager.refresh();
+
+# Verify changes
+select c1, c2 from t1 where c1 in (1, 2, 100);
+select c1 from t1 order by l2_distance(c2, '[100, 100, 100]') approximate limit 3;
+
+--echo
+--echo ========== 4. Multi-table scenario ==========
+# Create second table with async index
+create table t2(
+  id int primary key,
+  vec vector(3),
+  vector index idx2(vec) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap;
+
+# Insert into both tables
+insert into t1 values (200, '[1,1,1]');
+insert into t2 values (1, '[2,2,2]');
+insert into t2 values (2, '[3,3,3]');
+
+# Single refresh call should refresh both tables
+call dbms_index_manager.refresh();
+
+# Verify both tables
+select c1 from t1 where c1 = 200;
+select id from t2 order by cosine_distance(vec, '[2,2,2]') approximate limit 2;
+
+--echo
+--echo ========== 5. Check sync statistics after refresh ==========
+# Query sync info to verify refresh worked
+select 
+  b.table_name,
+  SUBSTRING_INDEX(SUBSTRING_INDEX(a.sync_info, 'incr_cnt=', -1),';',1) as incr_cnt,
+  SUBSTRING_INDEX(SUBSTRING_INDEX(a.sync_info, 'sync_total_cnt=', -1),';',1) as sync_total_cnt
+from oceanbase.__all_virtual_vector_index_info a
+join oceanbase.__all_virtual_table b 
+on a.data_table_id = b.table_id 
+where b.table_name in ('t1', 't2')
+order by b.table_name;
+
+--echo
+--echo ========== 6. Transaction scenario ==========
+# Start transaction but don't commit
+begin;
+insert into t1 values (300, '[5,5,5]');
+
+# Refresh should not sync uncommitted data
+call dbms_index_manager.refresh();
+
+# Query in same session (should see uncommitted data in table, but maybe not in index)
+select c1 from t1 where c1 = 300;
+
+# Commit and refresh again
+commit;
+call dbms_index_manager.refresh();
+
+# Now data should be in index
+select c1 from t1 order by l2_distance(c2, '[5,5,5]') approximate limit 3;
+
+
+--echo
+--echo ========== 7. Partition table scenario ==========
+# Create partition table
+create table t3(
+  pk int primary key,
+  v vector(3),
+  vector index idx3(v) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async)
+) organization heap
+partition by range(pk) (
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+
+# Insert into different partitions
+insert into t3 values (10, '[1,1,1]');
+insert into t3 values (110, '[2,2,2]');
+insert into t3 values (210, '[3,3,3]');
+
+# Refresh all partitions
+call dbms_index_manager.refresh();
+
+# Query across partitions
+select pk from t3 order by l2_distance(v, '[2,2,2]') approximate limit 3;
+
+# Cleanup
+drop table t1;
+drop table t2;
+drop table t3;

@@ -1,0 +1,10 @@
+insert into t1 values (1, '[1.0, 1.0, 1.0]');
+insert into t1 values (2, '[2.0, 2.0, 2.0]');
+insert into t1 values (3, '[3.0, 3.0, 3.0]');
+insert into t1 values (4, '[4.0, 4.0, 4.0]');
+insert into t1 values (5, '[5.0, 5.0, 5.0]');
+insert into t1 values (6, '[6.0, 6.0, 6.0]');
+insert into t1 values (7, '[7.0, 7.0, 7.0]');
+insert into t1 values (8, '[8.0, 8.0, 8.0]');
+insert into t1 values (9, '[9.0, 9.0, 9.0]');
+insert into t1 values (10, '[10.0, 10.0, 10.0]');
