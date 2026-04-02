@@ -22,20 +22,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
-#include <unistd.h>
-
-#ifdef __APPLE__
-// macOS: use _exit instead of exit to skip static destructors
-// This is to work around memory deallocation issues during LLVM PassRegistry static destruction
-// LLVM is statically linked, its internal malloc/free calls do not go through DYLD_INTERPOSE,
-// but some memory is allocated via OceanBase's hooked_malloc (with Header),
-// when LLVM calls system free() to release this memory during destruction, it causes a crash
-// Note: _exit() is preferred over quick_exit() for better macOS compatibility (quick_exit may
-// not be available in libSystem.B.dylib on some macOS versions)
-#define OB_EXIT(code) _exit(code)
-#else
-#define OB_EXIT(code) exit(code)
-#endif
 
 #include "lib/oblog/ob_log.h"
 #include "lib/utility/ob_print_utils.h"
@@ -75,8 +61,8 @@ static int get_executable_name(ObSqlString &exe_name)
 /**
  * Command line option enumeration
  * Starting from 1000 to avoid conflicts with getopt_long short option characters
- * Short options use ASCII character values (e.g. 'P'=80, 'V'=86, 'h'=104, '6'=54)
- * Long options use values above 1000 to distinguish them
+ * Short options use ASCII character values (e.g., 'P'=80, 'V'=86, 'h'=104, '6'=54)
+ * Long options use values above 1000 to distinguish
  */
 enum ObCommandOption {
   COMMAND_OPTION_INITIALIZE = 1000,
@@ -88,6 +74,7 @@ enum ObCommandOption {
   COMMAND_OPTION_REDO_DIR,
   COMMAND_OPTION_LOG_LEVEL,
   COMMAND_OPTION_PARAMETER,
+  COMMAND_OPTION_ROLE,
 };
 
 // Define long options
@@ -103,6 +90,7 @@ static struct option long_options[] = {
   {"redo-dir",   required_argument, 0, COMMAND_OPTION_REDO_DIR},
   {"log-level",  required_argument, 0, COMMAND_OPTION_LOG_LEVEL},
   {"parameter",  required_argument, 0, COMMAND_OPTION_PARAMETER},
+  {"role", required_argument, 0, COMMAND_OPTION_ROLE},
   {"version",    no_argument,       0, 'V'},
   {"help",       no_argument,       0, 'h'},
   {0, 0, 0, 0}
@@ -252,6 +240,15 @@ int ObCommandLineParser::handle_option(int option, const char* value, ObServerOp
       ret = append_key_value(value, opts.parameters_);
       break;
     }
+    case COMMAND_OPTION_ROLE: { // role
+      if (nullptr == value) {
+        ret = OB_INVALID_ARGUMENT;
+        MPRINT("Invalid argument, the value should not be empty of 'role'");
+      } else {
+        opts.role_.assign(value);
+      }
+      break;
+    }
     case 'V': { // version
       version_requested_ = true;
       break;
@@ -287,22 +284,22 @@ int ObCommandLineParser::parse_args(int argc, char* argv[], ObServerOptions& opt
   }
 
   // Check for non-option arguments
-  // optind is the index of the next unprocessed argument in argv after getopt_long finishes processing options
+  // optind is the index in argv of the next element to be scanned after getopt_long processes option arguments
   if (OB_SUCC(ret) && optind < argc) {
     ret = OB_INVALID_ARGUMENT;
     MPRINT("Invalid argument, unexpected non-option parameter: %s", argv[optind]);
     print_help();
-    OB_EXIT(1);
+    exit(1);
   }
 
   // Handle help and version requests
   if (OB_FAIL(ret)) {
   } else if (help_requested_) {
     print_help();
-    OB_EXIT(0);
+    exit(0);
   } else if (version_requested_) {
     print_version();
-    OB_EXIT(0);
+    exit(0);
   }
 
   // Set default values
@@ -383,6 +380,7 @@ void ObCommandLineParser::print_help() const
   MPRINT("  --log-level <level>             The server log level. Can be one of [ERROR, WARN, INFO, EDIAG, WDIAG, TRACE, DEBUG]");
   MPRINT("  --variable <key=value>          system variables, format: key=value. Note: This takes effect only during the initial startup. Can be specified multiple times.");
   MPRINT("  --parameter <key=value>         system parameters, format: key=value. Can be specified multiple times.");
+  MPRINT("  --role <role>                   server role: PRIMARY (default) or STANDBY");
   MPRINT("  --version, -V                   show version message and exit");
   MPRINT("  --help, -h                      show this message and exit");
   MPRINT();

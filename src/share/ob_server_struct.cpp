@@ -23,7 +23,7 @@ namespace share
 
 void ObGlobalContext::init()
 {
-  server_status_ = share::OBSERVER_INVALID_STATUS;
+  server_role_ = common::PRIMARY_CLUSTER;
 }
 
 ObGlobalContext &ObGlobalContext::get_instance()
@@ -57,7 +57,6 @@ DEF_TO_STRING(ObGlobalContext)
        KP_(schema_service),
        KP_(config),
        KP_(config_mgr),
-       KP_(lst_operator),
        KP_(tablet_operator),
        KP_(srv_rpc_proxy),
        KP_(storage_rpc_proxy),
@@ -65,7 +64,6 @@ DEF_TO_STRING(ObGlobalContext)
        KP_(load_data_proxy),
        KP_(executor_rpc),
        KP_(sql_proxy),
-       KP_(rs_mgr),
        KP_(bandwidth_throttle),
        KP_(vt_par_ser),
        KP_(session_mgr),
@@ -73,7 +71,6 @@ DEF_TO_STRING(ObGlobalContext)
        KP_(omt),
        KP_(vt_iter_creator),
        KP_(batch_rpc),
-       KP_(server_tracer),
        K_(start_time),
        KP_(warm_up_start_time));
   J_COMMA();
