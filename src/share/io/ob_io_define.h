@@ -27,7 +27,6 @@
 #include "lib/profile/ob_trace_id.h"
 #include "lib/restore/ob_storage.h"
 #include "lib/tc/ob_tc.h"
-#include "lib/thread/thread_mgr_interface.h"
 #include "lib/worker.h"
 #include "share/resource_manager/ob_resource_plan_info.h"
 #include "storage/ob_storage_checked_object_base.h"
@@ -51,7 +50,6 @@ namespace common
 {
 
 class ObObjectDevice;
-class ObIOCallbackManager;
 
 // the timestamp adjustment will not adjust until the queue is idle for more than this time
 static constexpr int64_t CLOCK_IDLE_THRESHOLD_US = 100 * 1000L;  // 100ms
@@ -217,21 +215,24 @@ private:
 
 // different io callback types enqueue different io callback thread queue
 enum class ObIOCallbackType : uint8_t {
-  ASYNC_SINGLE_MICRO_BLOCK_CALLBACK = 0,
-  MULTI_DATA_BLOCK_CALLBACK = 1,
-  SYNC_SINGLE_MICRO_BLOCK_CALLBACK = 2,
-  SS_CACHE_LOAD_FROM_REMOTE_CALLBACK = 3,
-  SS_CACHE_LOAD_FROM_LOCAL_CALLBACK = 4,
-  SS_MC_PREWARM_CALLBACK = 5,
-  STORAGE_META_CALLBACK = 6,
-  TMP_PAGE_CALLBACK = 7,
-  TMP_MULTI_PAGE_CALLBACK = 8,
-  TMP_DIRECT_READ_PAGE_CALLBACK = 9,
-  TEST_CALLBACK = 10, // just for unittest
-  SS_TMP_FILE_CALLBACK = 11,
-  TMP_CACHED_READ_CALLBACK = 12,
-  MAX_CALLBACK_TYPE = 13
+  ATOMIC_WRITE_CALLBACK = 0,
+  ASYNC_SINGLE_MICRO_BLOCK_CALLBACK = 1,
+  MULTI_DATA_BLOCK_CALLBACK = 2,
+  SYNC_SINGLE_MICRO_BLOCK_CALLBACK = 3,
+  SS_CACHE_LOAD_FROM_REMOTE_CALLBACK = 4,
+  SS_CACHE_LOAD_FROM_LOCAL_CALLBACK = 5,
+  SS_MC_PREWARM_CALLBACK = 6,
+  STORAGE_META_CALLBACK = 7,
+  TMP_PAGE_CALLBACK = 8,
+  TMP_MULTI_PAGE_CALLBACK = 9,
+  TMP_DIRECT_READ_PAGE_CALLBACK = 10,
+  TEST_CALLBACK = 11, // just for unittest
+  SS_TMP_FILE_CALLBACK = 12,
+  TMP_CACHED_READ_CALLBACK = 13,
+  MAX_CALLBACK_TYPE = 14
 };
+
+bool is_atomic_write_callback(const ObIOCallbackType type);
 
 class ObIOCallback
 {
@@ -514,7 +515,7 @@ public:
   ObThreadCond &get_cond() { return cond_; }
 
   TO_STRING_KV(K(is_inited_), K(is_finished_), K(is_canceled_), K(has_estimated_), K(complete_size_), K(offset_), K(size_),
-               K(timeout_us_), K(result_ref_cnt_), K(out_ref_cnt_), K(flag_), K(ret_code_), K(tenant_id_), K(tenant_io_mgr_),
+               K(timeout_us_), K(result_ref_cnt_), K(out_ref_cnt_), K(flag_), K(ret_code_), K(tenant_id_), KP(tenant_io_mgr_),
                KP(user_data_buf_), KP(buf_), KP(io_callback_), K_(time_log));
   DISALLOW_COPY_AND_ASSIGN(ObIOResult);
 private:
@@ -527,7 +528,7 @@ private:
   friend class ObTenantIOManager;
   friend class ObAsyncIOChannel;
   friend class ObSyncIOChannel;
-  friend class ObIOCallbackManager;
+  friend class ObIORunner;
   friend class backup::ObBackupDeviceHelper;
   bool is_inited_;
   bool is_finished_;
@@ -542,7 +543,7 @@ private:
   int64_t timeout_us_;
   uint64_t tenant_id_;
   int64_t aligned_size_;
-  ObRefHolder<ObTenantIOManager> tenant_io_mgr_;
+  ObTenantIOManager *tenant_io_mgr_;
   const char *buf_;
   char *user_data_buf_; //actual data buf without cb, allocated by thpe calling layer
   ObIOCallback *io_callback_;
@@ -588,20 +589,20 @@ public:
   int try_alloc_buf_until_timeout(char *&io_buf);
   bool can_callback() const;
   void free_io_buffer();
-  void inc_ref(const char *msg = nullptr);
-  void dec_ref(const char *msg = nullptr);
+  void inc_ref();
+  void dec_ref();
 
   int64_t get_remained_io_timeout_us();
 
   TO_STRING_KV(K(is_inited_), K(tenant_id_), KP(control_block_), K(ref_cnt_), KP(raw_buf_), K(fd_), K(is_object_device_req()),
-               K(trace_id_), K(retry_count_), K(tenant_io_mgr_), K_(storage_accesser),
+               K(trace_id_), K(retry_count_), KP(tenant_io_mgr_), K_(storage_accesser),
                KPC(io_result_), K_(part_id));
 private:
   friend class ObTenantIOSchedulerV2;
   friend class ObDeviceChannel;
   friend class ObIOManager;
   friend class ObIOResult;
-  friend class ObIOCallbackManager;
+  friend class ObIORunner;
   friend class ObMClockQueue;
   friend class ObAsyncIOChannel;
   friend class ObSyncIOChannel;
@@ -617,7 +618,6 @@ private:
   int hold_storage_accesser(const ObIOFd &fd, ObObjectDevice &object_device);
   int calc_io_offset_and_size_();
 public:
-  common::LinkTask req_node_;
   ObIOResult *io_result_;
   TCRequest qsched_req_;
 protected:
@@ -630,7 +630,7 @@ protected:
   int64_t align_offset_;
   ObIOCB *control_block_;
   uint64_t tenant_id_;
-  ObRefHolder<ObTenantIOManager> tenant_io_mgr_;
+  ObTenantIOManager *tenant_io_mgr_;
   ObRefHolder<ObStorageAccesser> storage_accesser_;
   ObIOFd fd_;
   ObCurTraceId::TraceId trace_id_;
@@ -748,12 +748,11 @@ public:
     ParamConfig();
     ~ParamConfig();
     bool is_valid() const;
-    TO_STRING_KV(K_(memory_limit), K_(callback_thread_count), K_(enable_io_tracer), K_(object_storage_io_timeout_ms));
+    TO_STRING_KV(K_(memory_limit), K_(callback_thread_count), K_(object_storage_io_timeout_ms));
 
   public:
     int64_t memory_limit_;
     int64_t callback_thread_count_;
-    bool enable_io_tracer_;
     int64_t object_storage_io_timeout_ms_;
   };
 

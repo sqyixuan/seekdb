@@ -209,7 +209,7 @@ int PalfEnvImpl::init(
     common::ObILogAllocator *log_alloc_mgr,
     ILogBlockPool *log_block_pool,
     PalfMonitorCb *monitor,
-    ObLocalDevice *log_local_device,
+    common::ObIODevice *log_local_device,
     ObResourceManager *resource_manager,
     ObIOManager *io_manager)
 {
@@ -613,7 +613,10 @@ int PalfEnvImpl::remove_directory(const char *log_dir)
 PalfEnvImpl::LogGetRecycableFileCandidate::LogGetRecycableFileCandidate()
   : id_(-1),
     min_block_id_(LOG_INVALID_BLOCK_ID),
+    min_block_max_scn_(),
     min_using_block_id_(LOG_INVALID_BLOCK_ID),
+    oldest_palf_id_(INVALID_PALF_ID),
+    oldest_block_scn_(),
     ret_code_(OB_SUCCESS)
 {}
 
@@ -621,7 +624,10 @@ PalfEnvImpl::LogGetRecycableFileCandidate::~LogGetRecycableFileCandidate()
 {
   ret_code_ = OB_SUCCESS;
   min_using_block_id_ = LOG_INVALID_BLOCK_ID;
+  min_block_max_scn_.reset();
   min_block_id_ = LOG_INVALID_BLOCK_ID;
+  oldest_palf_id_ = INVALID_PALF_ID;
+  oldest_block_scn_.reset();
   id_ = -1;
 }
 
@@ -636,6 +642,7 @@ bool PalfEnvImpl::LogGetRecycableFileCandidate::operator()(const LSKey &palf_id,
     const LSN base_lsn = palf_handle_impl->get_base_lsn_used_for_block_gc();
     const block_id_t min_using_block_id = lsn_2_block(base_lsn, PALF_BLOCK_SIZE);
     block_id_t min_block_id = LOG_INVALID_BLOCK_ID;
+    SCN min_block_max_scn;
     // OB_ENTRY_NOT_EXIST means there is not any block;
     // OB_NO_SUCH_FILE_OR_DIRECTORY means there is concurrently with rebuild.
     // OB_ERR_OUT_OF_UPPER_BOUND means there is one block
@@ -645,7 +652,7 @@ bool PalfEnvImpl::LogGetRecycableFileCandidate::operator()(const LSKey &palf_id,
     };
     if (false == base_lsn.is_valid()) {
       PALF_LOG(WARN, "base_lsn is invalid", K(base_lsn), KPC(palf_handle_impl));
-    } else if (OB_FAIL(palf_handle_impl->get_min_block_id_for_gc(min_block_id))
+    } else if (OB_FAIL(palf_handle_impl->get_min_block_info_for_gc(min_block_id, min_block_max_scn))
                && !need_skip_by_ret(ret)) {
       ret_code_ = ret;
       bool_ret = false;
@@ -661,12 +668,20 @@ bool PalfEnvImpl::LogGetRecycableFileCandidate::operator()(const LSKey &palf_id,
       PALF_LOG(TRACE, "can not recycle blocks, need keep at least two blocks or has been concurrently"
           " with rebuild, skip it",
           K(ret), KPC(palf_handle_impl), K(min_block_id), K(min_using_block_id));
+    } else if (min_block_max_scn_.is_valid() && min_block_max_scn_ < min_block_max_scn) {
+      PALF_LOG(TRACE, "current palf_handle_impl is not older than previous, skip it", K(min_block_max_scn),
+          K(min_block_max_scn_), KPC(palf_handle_impl), K(min_block_id));
     } else {
       id_ = palf_id.id_;
       min_block_id_ = min_block_id;
+      min_block_max_scn_ = min_block_max_scn;
       min_using_block_id_ = min_using_block_id;
       PALF_LOG(TRACE, "can be recycable palf_handle_impl", K(id_), K(min_block_id_), K(min_using_block_id_),
-          K(base_lsn));
+          K(min_block_max_scn_), K(base_lsn));
+    }
+    if (min_block_max_scn.is_valid() && (!oldest_block_scn_.is_valid() || oldest_block_scn_ > min_block_max_scn)) {
+      oldest_block_scn_ = min_block_max_scn;
+      oldest_palf_id_ = palf_id.id_;
     }
   }
   return bool_ret;
@@ -687,10 +702,6 @@ int PalfEnvImpl::try_recycle_blocks()
   int64_t total_unrecyclable_size_byte = 0;
   int64_t total_size_to_recycle_blocks = disk_opts_for_recycling_blocks.log_disk_usage_limit_size_;
   int64_t total_size_to_stop_write = disk_opts_for_stopping_writing.log_disk_usage_limit_size_;
-  int64_t utl_threshold_to_recycle_blocks = disk_opts_for_recycling_blocks.log_disk_utilization_threshold_;
-  int64_t utl_threshold_to_stop_write = disk_opts_for_stopping_writing.log_disk_utilization_threshold_;
-  utl_threshold_to_recycle_blocks = 0 == utl_threshold_to_recycle_blocks ? DEFAULT_LOG_UTL_THRESHOLD : utl_threshold_to_recycle_blocks;
-  utl_threshold_to_stop_write = 0 == utl_threshold_to_stop_write ? DEFAULT_LOG_UTL_THRESHOLD : utl_threshold_to_stop_write;
   int64_t palf_id = 0;
   int64_t maximum_used_size = 0;
   int tmp_ret = OB_SUCCESS;
@@ -705,17 +716,17 @@ int PalfEnvImpl::try_recycle_blocks()
   } else {
     const int64_t usable_disk_size_to_recycle_blocks =
         total_size_to_recycle_blocks
-        * utl_threshold_to_recycle_blocks / 100LL;
+        * disk_opts_for_recycling_blocks.log_disk_utilization_threshold_ / 100LL;
     const int64_t usable_disk_limit_size_to_stop_writing =
         total_size_to_stop_write
         * disk_opts_for_stopping_writing.log_disk_utilization_limit_threshold_ / 100LL;
-    const bool need_recycle = (disk_opts_for_recycling_blocks.log_disk_utilization_threshold_ == 0 ||
-        usable_disk_size_to_recycle_blocks < total_used_size_byte) ? true : false;
+    const bool need_recycle =
+        usable_disk_size_to_recycle_blocks >= total_used_size_byte ? false : true;
     const bool is_shrinking = disk_options_wrapper_.is_shrinking();
     constexpr int64_t MB = 1024 * 1024LL;
     const int64_t print_error_log_disk_size =
         disk_opts_for_stopping_writing.log_disk_usage_limit_size_
-        * utl_threshold_to_stop_write / 100LL;
+        * disk_opts_for_stopping_writing.log_disk_utilization_threshold_ / 100LL;
     const bool need_print_error_log =
         print_error_log_disk_size >= total_used_size_byte ? false : true;
 
@@ -723,6 +734,7 @@ int PalfEnvImpl::try_recycle_blocks()
     // 1. when there is no possibility to stop writing,
     // 2. the snapshot of status is SHRINKING_STATUS.
     bool has_recycled = false;
+    int64_t oldest_palf_id = INVALID_PALF_ID;
     const bool in_shrinking = (PalfDiskOptionsWrapper::Status::SHRINKING_STATUS == status);
     if (OB_SUCC(ret) && in_shrinking) {
       if (total_used_size_byte <= usable_disk_size_to_recycle_blocks) {
@@ -732,9 +744,10 @@ int PalfEnvImpl::try_recycle_blocks()
       }
     }
 
+    SCN oldest_scn;
     // step2. try recycle blocks
     if (true == need_recycle) {
-      if (OB_FAIL(recycle_blocks_(has_recycled))) {
+      if (OB_FAIL(recycle_blocks_(has_recycled, oldest_palf_id, oldest_scn))) {
         PALF_LOG(WARN, "recycle_blocks_ failed", K(usable_disk_size_to_recycle_blocks),
                  K(total_used_size_byte), KPC(this));
       }
@@ -749,8 +762,8 @@ int PalfEnvImpl::try_recycle_blocks()
       constexpr int64_t INTERVAL = 1*1000*1000;
       if (palf_reach_time_interval(INTERVAL, disk_not_enough_print_interval_in_gc_thread_)) {
         int tmp_ret = OB_LOG_OUTOF_DISK_SPACE;
-        const int64_t log_disk_warn_percent = utl_threshold_to_stop_write;
         const int64_t log_disk_usage_limit_size = disk_opts_for_stopping_writing.log_disk_usage_limit_size_;
+        const int64_t log_disk_warn_percent = disk_opts_for_stopping_writing.log_disk_utilization_threshold_;
         const int64_t log_disk_limit_percent = disk_opts_for_stopping_writing.log_disk_utilization_limit_threshold_;
         LOG_DBA_ERROR(OB_LOG_OUTOF_DISK_SPACE, "msg", "log disk space is almost full", "ret", tmp_ret,
             "total_size(MB)", log_disk_usage_limit_size/MB,
@@ -763,6 +776,8 @@ int PalfEnvImpl::try_recycle_blocks()
             "total_unrecyclable_size_byte(MB)", total_unrecyclable_size_byte/MB,
             "maximum_used_size(MB)", maximum_used_size/MB,
             "maximum_log_stream", palf_id,
+            "oldest_log_stream", oldest_palf_id,
+            "oldest_scn", oldest_scn,
             "in_shrinking", in_shrinking);
         LOG_DBA_ERROR_(OB_LOG_DISK_SPACE_ALMOST_FULL, tmp_ret, "log disk space is almost full",
             ", total_size(MB)=", log_disk_usage_limit_size/MB,
@@ -775,6 +790,8 @@ int PalfEnvImpl::try_recycle_blocks()
             ", total_unrecyclable_size_byte(MB)=", total_unrecyclable_size_byte/MB,
             ", maximum_used_size(MB)=", maximum_used_size/MB,
             ", maximum_log_stream=", palf_id,
+            ", oldest_log_stream=", oldest_palf_id,
+            ", oldest_scn=", oldest_scn,
             ", in_shrinking=", in_shrinking);
       }
     } else {
@@ -1129,7 +1146,7 @@ int PalfEnvImpl::get_disk_usage_(int64_t &used_size_byte)
   return ret;
 }
 
-int PalfEnvImpl::recycle_blocks_(bool &has_recycled)
+int PalfEnvImpl::recycle_blocks_(bool &has_recycled, int64_t &oldest_palf_id, SCN &oldest_scn)
 {
   int ret = OB_SUCCESS;
   has_recycled = false;
@@ -1144,7 +1161,7 @@ int PalfEnvImpl::recycle_blocks_(bool &has_recycled)
     int64_t palf_id(functor.id_);
     const block_id_t min_block_id = functor.min_block_id_;
     if (false == is_valid_block_id(min_block_id)) {
-      PALF_LOG(TRACE, "there is not any block can be recycled, need verify the base"
+      PALF_LOG(WARN, "there is not any block can be recycled, need verify the base"
           "lsn of PalfHandleImpl whether has been advanced", K(ret), KPC(this));
     } else if (OB_FAIL(get_palf_handle_impl(palf_id, guard))) {
       PALF_LOG(WARN, "get_palf_handle_impl failed", K(ret), K(palf_id));
@@ -1154,6 +1171,8 @@ int PalfEnvImpl::recycle_blocks_(bool &has_recycled)
       has_recycled = true;
       PALF_LOG(INFO, "recycle_blocks success", K(functor));
     }
+    oldest_palf_id = functor.oldest_palf_id_;
+    oldest_scn = functor.oldest_block_scn_;
   }
   return ret;
 }
@@ -1324,8 +1343,7 @@ void PalfEnvImpl::period_calc_disk_usage()
   } else {
     const int64_t log_disk_usage_limit_size =  disk_options.log_disk_usage_limit_size_;
     const int64_t log_disk_limit_percent = disk_options.log_disk_utilization_limit_threshold_;
-    const int64_t log_disk_warn_percent = 0 == disk_options.log_disk_utilization_threshold_ ?
-                                          DEFAULT_LOG_UTL_THRESHOLD : disk_options.log_disk_utilization_threshold_;
+    const int64_t log_disk_warn_percent = disk_options.log_disk_utilization_threshold_;
     const int64_t usable_disk_limit_size_to_stop_writing =
       log_disk_usage_limit_size * log_disk_limit_percent / 100LL;
     const bool curr_diskspace_enough =

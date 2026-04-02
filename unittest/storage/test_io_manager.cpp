@@ -305,8 +305,8 @@ TEST_F(TestIOStruct, IORequest)
   // prepare read request
   req.destroy();
   result.destroy();
-  req.tenant_io_mgr_.hold(&tenant_io_mgr);
-  result.tenant_io_mgr_.hold(&tenant_io_mgr);
+  req.tenant_io_mgr_ = &tenant_io_mgr;
+  result.tenant_io_mgr_ = &tenant_io_mgr;
   result.inc_ref();
   req.inc_ref();
 
@@ -345,8 +345,8 @@ TEST_F(TestIOStruct, IORequest)
   ASSERT_EQ(1, result.result_ref_cnt_);
   result.reset();
   ASSERT_EQ(0, result.result_ref_cnt_);
-  req.tenant_io_mgr_.hold(&tenant_io_mgr);
-  result.tenant_io_mgr_.hold(&tenant_io_mgr);
+  req.tenant_io_mgr_ = &tenant_io_mgr;
+  result.tenant_io_mgr_ = &tenant_io_mgr;
   ASSERT_FAIL(result.init(write_info)); // not aligned
   ASSERT_TRUE(req.init(write_info ,&result));
   ASSERT_EQ(1, result.result_ref_cnt_); //inc ref even fail
@@ -354,24 +354,24 @@ TEST_F(TestIOStruct, IORequest)
   write_info.offset_ = DIO_READ_ALIGN_SIZE * 2;
   req.reset();
   result.reset();
-  req.tenant_io_mgr_.hold(&tenant_io_mgr);
-  result.tenant_io_mgr_.hold(&tenant_io_mgr);
+  req.tenant_io_mgr_ = &tenant_io_mgr;
+  result.tenant_io_mgr_ = &tenant_io_mgr;
   ASSERT_FAIL(result.init(write_info)); // only offset aligned, size not aligned
   ASSERT_TRUE(req.init(write_info ,&result));
 
   write_info.size_ = DIO_READ_ALIGN_SIZE * 4;
   req.reset();
   result.reset();
-  req.tenant_io_mgr_.hold(&tenant_io_mgr);
-  result.tenant_io_mgr_.hold(&tenant_io_mgr);
+  req.tenant_io_mgr_ = &tenant_io_mgr;
+  result.tenant_io_mgr_ = &tenant_io_mgr;
   ASSERT_FAIL(result.init(write_info)); // offset and size aligned, but write buf is null
   ASSERT_TRUE(req.init(write_info ,&result));
 
   write_info.buf_ = "test_write";
   req.reset();
   result.reset();
-  req.tenant_io_mgr_.hold(&tenant_io_mgr);
-  result.tenant_io_mgr_.hold(&tenant_io_mgr);
+  req.tenant_io_mgr_ = &tenant_io_mgr;
+  result.tenant_io_mgr_ = &tenant_io_mgr;
   ASSERT_SUCC(result.init(write_info));
   ASSERT_SUCC(req.init(write_info ,&result)); // normal usage
   ASSERT_TRUE(req.is_inited_);
@@ -608,8 +608,8 @@ TEST_F(TestIOStruct, IOResult)
   // prepare test read request
   req->destroy();
   result->destroy();
-  req->tenant_io_mgr_.hold(holder.get_ptr());
-  result->tenant_io_mgr_.hold(holder.get_ptr());
+  req->tenant_io_mgr_ = holder.get_ptr();
+  result->tenant_io_mgr_ = holder.get_ptr();
   result->inc_ref();
   req->inc_ref();
 
@@ -661,8 +661,10 @@ TEST_F(TestIOStruct, IOCallbackManager)
   // test init
   ObIOCallbackManager callback_mgr;
   ASSERT_FALSE(callback_mgr.is_inited_);
-  ASSERT_FAIL(callback_mgr.init(TEST_TENANT_ID, 0, 1000));
-  ASSERT_SUCC(callback_mgr.init(TEST_TENANT_ID, 2, 1000));
+  ASSERT_FAIL(callback_mgr.init(TEST_TENANT_ID, 0, 1000, nullptr));
+  ObIOAllocator io_allocator;
+  ASSERT_SUCC(io_allocator.init(TEST_TENANT_ID, IO_MEMORY_LIMIT));
+  ASSERT_SUCC(callback_mgr.init(TEST_TENANT_ID, 2, 1000, &io_allocator));
   ASSERT_TRUE(callback_mgr.is_inited_);
 
   // test enqueue and dequeue
@@ -676,7 +678,6 @@ TEST_F(TestIOStruct, IOCallbackManager)
   ASSERT_SUCC(result.basic_init());
   ASSERT_SUCC(result.init(io_info));
   ASSERT_SUCC(req.init(io_info, &result));
-  ASSERT_FAIL(callback_mgr.enqueue_callback(req));
   char buf[32] = "test";
   req.raw_buf_ = buf;
   char callback_buf_[ObIOCallback::CALLBACK_BUF_SIZE] __attribute__ ((aligned (16)));
@@ -1178,11 +1179,7 @@ int prepare_file(const char *file_path, const int64_t file_size, int32_t &fd)
       ret = OB_IO_ERROR;
       LOG_WARN("fail to create file", K(ret));
     } else {
-#ifdef __linux__
       if (fallocate(fd, 0, 0, file_size) < 0) {
-#else
-      if (myfallocate(fd, 0, 0, file_size) < 0) {
-#endif
         ret = OB_IO_ERROR;
         LOG_WARN("fail to allocate file", K(ret), K(fd), K(file_size));
       } else {
@@ -2425,7 +2422,6 @@ void IOTracerSwitch::run1()
 int IOTracerSwitch::modify_tenant_io(IOPerfTenant &curr_tenant)
 {
   int ret = OB_SUCCESS;
-  ATOMIC_SET(&curr_tenant.config_.param_config_.enable_io_tracer_, true);
   if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_param_config(curr_tenant.tenant_id_, curr_tenant.config_.param_config_))) {
     LOG_WARN("refresh tenant io config failed", K(ret), K(curr_tenant.tenant_id_), K(curr_tenant.config_));
   }

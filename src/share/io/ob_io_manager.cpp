@@ -24,7 +24,6 @@
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "share/io/ob_ss_io_request.h"
 #endif
-#include "share/ob_io_device_helper.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -436,9 +435,9 @@ void ObTrafficControl::inner_calc_()
     int64_t write_bytes = 0;
     net_ibw_.inc(read_bytes);
     net_obw_.inc(write_bytes);
-    if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::READ), std::max(static_cast<int64_t>(0), device_bandwidth_ - read_bytes)))) {
+    if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::READ), std::max(0L, device_bandwidth_ - read_bytes)))) {
       LOG_WARN("set net_in limit failed", K(ret));
-    } else if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::WRITE), std::max(static_cast<int64_t>(0), device_bandwidth_ - write_bytes)))) {
+    } else if (0 != (ret = qdisc_set_limit(OB_IO_MANAGER_V2.get_sub_root_qid((int)ObIOMode::WRITE), std::max(0L, device_bandwidth_ - write_bytes)))) {
       LOG_WARN("set net_out limit failed", K(ret));
     }
   }
@@ -1296,8 +1295,6 @@ int ObTenantIOManager::init(const uint64_t tenant_id,
     LOG_WARN("invalid argument", K(ret), K(tenant_id), K(io_config));
   } else if (OB_FAIL(init_memory_pool(tenant_id, io_config.param_config_.memory_limit_))) {
     LOG_WARN("init tenant io memory pool failed", K(ret), K(io_config), K(io_memory_limit_), K(request_count_), K(request_count_));
-  } else if (OB_FAIL(io_tracer_.init(tenant_id))) {
-    LOG_WARN("init io tracer failed", K(ret));
   } else if (OB_FAIL(io_func_infos_.init(tenant_id))) {
     LOG_WARN("init io func infos failed", K(ret), K(tenant_id));
   } else if (OB_FAIL(io_usage_.init(tenant_id, io_config.group_configs_.count() / IO_MODE_CNT))) {
@@ -1345,7 +1342,6 @@ void ObTenantIOManager::destroy()
   int ret = OB_SUCCESS;
 
   callback_mgr_.destroy();
-  io_tracer_.destroy();
   io_memory_limit_ = 0;
   request_count_ = 0;
   result_count_ = 0;
@@ -1366,8 +1362,7 @@ int ObTenantIOManager::start()
     LOG_WARN("not init", K(ret), K(is_inited_));
   } else if (is_working()) {
     // do nothing
-  } else if (OB_FAIL(callback_mgr_.init(tenant_id_, callback_thread_count,
-                     callback_thread_count * DEFAULT_QUEUE_DEPTH))) {
+  } else if (OB_FAIL(callback_mgr_.init(tenant_id_, callback_thread_count, DEFAULT_QUEUE_DEPTH, &io_allocator_))) {
     LOG_WARN("init callback manager failed", K(ret), K(tenant_id_), K(callback_thread_count));
   } else {
     is_working_ = true;
@@ -1558,7 +1553,7 @@ int ObTenantIOManager::inner_aio(const ObIOInfo &info, ObIOHandle &handle)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("device handle is null", K(ret), K(info));
   } else if ((SLOG_IO != info.flag_.get_sys_module_id() &&
-              CLOG_READ_IO != info.flag_.get_sys_module_id() &&
+              CLOG_READ_IO != info.flag_.get_sys_module_id() && 
               CLOG_WRITE_IO != info.flag_.get_sys_module_id()) &&
               !info.fd_.device_handle_->is_object_device() &&
               NULL != detector && detector->is_data_disk_has_fatal_error()) {
@@ -1700,14 +1695,6 @@ int ObTenantIOManager::update_basic_io_param_config(const ObTenantIOConfig::Para
     LOG_WARN("tenant not working", K(ret), K(tenant_id_));
   } else {
     if (OB_FAIL(ret)) {
-    } else if (io_config_.param_config_.enable_io_tracer_ != io_param_config.enable_io_tracer_) {
-      LOG_INFO("update io tracer", K(tenant_id_), K(io_param_config.enable_io_tracer_), K(io_config_.param_config_.enable_io_tracer_));
-      ATOMIC_SET(&io_config_.param_config_.enable_io_tracer_, io_param_config.enable_io_tracer_);
-      if (!io_param_config.enable_io_tracer_) {
-        io_tracer_.reuse();
-      }
-    }
-    if (OB_FAIL(ret)) {
     } else if (io_config_.param_config_.memory_limit_ != io_param_config.memory_limit_) {
       LOG_INFO("update io memory limit", K(tenant_id_), K(io_param_config.memory_limit_), K(io_config_.param_config_.memory_limit_));
       if (OB_FAIL(update_memory_pool(io_param_config.memory_limit_))) {
@@ -1809,7 +1796,7 @@ int ObTenantIOManager::alloc_io_request(ObIORequest *&req)
     LOG_WARN("allocate memory failed", K(ret), K(sizeof(ObSSIORequest)));
   } else {
     req = new (buf) ObSSIORequest;
-    req->tenant_io_mgr_.hold(this);
+    req->tenant_io_mgr_ = this;
   }
 #else
   if (OB_ISNULL(buf = io_allocator_.alloc(sizeof(ObIORequest)))) {
@@ -1817,7 +1804,7 @@ int ObTenantIOManager::alloc_io_request(ObIORequest *&req)
     LOG_WARN("allocate memory failed", K(ret), K(sizeof(ObIORequest)));
   } else {
     req = new (buf) ObIORequest;
-    req->tenant_io_mgr_.hold(this);
+    req->tenant_io_mgr_ = this;
   }
 #endif
   return ret;
@@ -1833,7 +1820,7 @@ int ObTenantIOManager::alloc_io_result(ObIOResult *&result)
     LOG_WARN("allocate memory failed", K(ret), K(sizeof(ObIORequest)));
   } else {
     result = new (buf) ObIOResult;
-    result->tenant_io_mgr_.hold(this);
+    result->tenant_io_mgr_ = this;
   }
   return ret;
 }
@@ -1936,20 +1923,6 @@ int ObTenantIOManager::refresh_group_io_config()
 const ObTenantIOConfig &ObTenantIOManager::get_io_config()
 {
   return io_config_;
-}
-
-int ObTenantIOManager::trace_request_if_need(const ObIORequest *req, const char* msg, ObIOTracer::TraceType trace_type)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret), K(is_inited_));
-  } else if (OB_LIKELY(!ATOMIC_LOAD(&io_config_.param_config_.enable_io_tracer_))) {
-    // do nothing
-  } else if (OB_FAIL(io_tracer_.trace_request(req, msg, trace_type))) {
-    LOG_WARN("trace io request failed", K(ret), KP(req), KCSTRING(msg), K(trace_type));
-  }
-  return ret;
 }
 
 int64_t ObTenantIOManager::get_group_num()
@@ -2212,9 +2185,6 @@ int ObTenantIOManager::print_io_status()
           "iops_limit", 0,
           "ibw_limit", 0,
           "obw_limit", 0);
-    }
-    if (ATOMIC_LOAD(&io_config_.param_config_.enable_io_tracer_)) {
-      io_tracer_.print_status();
     }
 
     // print io function status
