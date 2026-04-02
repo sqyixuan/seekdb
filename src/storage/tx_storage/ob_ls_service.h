@@ -84,10 +84,6 @@ public:
   // @param [in] arg, all the parameters that is need to create a LS.
   int create_ls(const obrpc::ObCreateLSArg &arg);
 
-  // create a LS for HighAvaiable
-  // @param [in] meta_package, all the parameters that is needed to create a LS for ha
-  int create_ls_for_ha(const share::ObTaskId task_id, const ObMigrationOpArg &arg);
-
   // create a LS for replay or update LS's meta
   // @param [in] ls_epoch, the epoch increases monotonically in tenant scope when an ls is created
   // @param [in] ls_meta, all the parameters that is needed to create a LS for replay
@@ -137,9 +133,6 @@ public:
   // @param [out] guard, the iterator created.
   // use guard just like a pointer of ObLSIterator
   int get_ls_iter(common::ObSharedGuard<ObLSIterator> &guard, ObLSGetMod mod);
-
-  template<class FUNC>
-  int foreach_ls(FUNC &func);
 
   // get all ls ids
   int get_ls_ids(common::ObIArray<share::ObLSID> &ls_id_array);
@@ -209,8 +202,7 @@ private:
     storage::ObMajorMVMergeInfo major_mv_merge_info_;
   };
 
-  int create_ls_(const ObCreateLSCommonArg &arg,
-                 const ObMigrationOpArg &mig_arg);
+  int create_ls_(const ObCreateLSCommonArg &arg);
   // the tenant smaller than 5G can only create 8 ls.
   // other tenant can create 100 ls.
   int check_tenant_ls_num_();
@@ -284,35 +276,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObLSService);
 };
 
-template <class FUNC>
-int ObLSService::foreach_ls(FUNC &func)
-{
-  int ret = OB_SUCCESS;
-
-  ObLSIterator *iter = NULL;
-  common::ObSharedGuard<ObLSIterator> guard;
-  if (OB_FAIL(get_ls_iter(guard, ObLSGetMod::TXSTORAGE_MOD))) {
-    STORAGE_LOG(WARN, "get log stream iter failed", K(ret));
-  } else if (OB_ISNULL(iter = guard.get_ptr())) {
-    ret = OB_ERR_UNEXPECTED;
-    STORAGE_LOG(WARN, "iter is NULL", K(ret));
-  } else {
-    ObLS *ls = nullptr;
-    while (OB_SUCC(ret)) {
-      if (OB_FAIL(iter->get_next(ls))) {
-        if (OB_ITER_END == ret) {
-          ret = OB_SUCCESS;
-          break;
-        } else {
-          STORAGE_LOG(WARN, "iter next ls failed", KR(ret), KP(this));
-        }
-      } else if (OB_FAIL(func(*ls))) {
-        STORAGE_LOG(WARN, "do function on ls failed", K(ret));
-      }
-    }
-  }
-  return ret;
-}
 
 }
 }
