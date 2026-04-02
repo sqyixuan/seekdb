@@ -14,14 +14,6 @@
  * limitations under the License.
  */
 #define USING_LOG_PREFIX SERVER
-#ifdef __APPLE__
-#include <libkern/OSByteOrder.h>
-// macOS doesn't have be64toh/htobe64, use OSSwapBigToHostInt64/OSSwapHostToBigInt64
-#define be64toh(x) OSSwapBigToHostInt64(x)
-#define htobe64(x) OSSwapHostToBigInt64(x)
-#elif defined(__linux__)
-#include <endian.h>
-#endif
 #include <pybind11/stl.h>
 #include <memory>
 #include "observer/embed/python/ob_embed_impl.h"
@@ -37,15 +29,15 @@
 #include "lib/timezone/ob_time_convert.h"
 #include "lib/charset/ob_charset.h"
 
-PYBIND11_MODULE(PYTHON_MODEL_NAME, m) {
-    m.doc() = "OceanBase seekdb";
+PYBIND11_MODULE(pyseekdb, m) {
+    m.doc() = "OceanBase SeekDB";
     char embed_version_str[oceanbase::common::OB_SERVER_VERSION_LENGTH];
     oceanbase::common::VersionUtil::print_version_str(embed_version_str, sizeof(embed_version_str), DATA_CURRENT_VERSION);
     m.attr("__version__") = embed_version_str;
 
-    const char *default_service_path = "./seekdb.db";
+    const char *default_service_path = "./seekdb";
     m.def("open", &oceanbase::embed::ObLiteEmbed::open, pybind11::arg("db_dir") = default_service_path, "open db");
-    m.def("open_with_service", &oceanbase::embed::ObLiteEmbed::open_with_service, pybind11::arg("db_dir") = default_service_path,
+    m.def("_open_with_service", &oceanbase::embed::ObLiteEmbed::open_with_service, pybind11::arg("db_dir") = default_service_path,
                                                   pybind11::arg("port") = 2881,
                                                  "open db");
 
@@ -158,13 +150,7 @@ int ObLiteEmbed::do_open_(const char* db_dir, int64_t port)
     opts.embed_mode_ = false;
   }
   opts.use_ipv6_ = false;
-  const char *params[][2] = {
-    {"memory_limit", "1G"},
-    {"log_disk_size", "2G"}
-  };
-  for (int i = 0; OB_SUCC(ret) && i < ARRAYSIZEOF(params); i++) {
-    ret = opts.parameters_.push_back(std::make_pair(params[i][0], params[i][1]));
-  }
+  opts.parameters_.push_back(std::make_pair(common::ObString("memory_limit"), common::ObString("1G")));
 
   char buffer[PATH_MAX];
   ObSqlString work_abs_dir;
@@ -173,8 +159,7 @@ int ObLiteEmbed::do_open_(const char* db_dir, int64_t port)
   int64_t start_time = ObTimeUtility::current_time();
 
   ObWarningBuffer::set_warn_log_on(true);
-  if (OB_FAIL(ret)) {
-  } else if (getcwd(buffer, sizeof(buffer)) == nullptr) {
+  if (getcwd(buffer, sizeof(buffer)) == nullptr) {
     MPRINT("getcwd failed %d %s", errno, strerror(errno));
   } else if (FALSE_IT(work_abs_dir.assign(buffer))) {
   } else if (OB_FAIL(opts.base_dir_.assign(db_dir))) {
@@ -228,7 +213,7 @@ int ObLiteEmbed::do_open_(const char* db_dir, int64_t port)
     MPRINT("db %s opened by other process", db_dir);
   } else if (FALSE_IT(pid_locked = true)) {
   } else {
-    OB_LOGGER.set_log_level(DEFAULT_LOG_LEVEL);
+    OB_LOGGER.set_log_level("INFO");
     ObSqlString log_file;
     if (OB_FAIL(log_file.assign_fmt("%s/log/seekdb.log", opts.base_dir_.ptr()))) {
       MPRINT("calculate log file failed %d", ret);
@@ -349,9 +334,6 @@ std::shared_ptr<ObLiteEmbedConn> ObLiteEmbed::connect(const char* db_name, const
     OX (session->set_priv_user_id(user_info->get_user_id()));
     OX (session->set_user_priv_set(user_info->get_priv_set()));
     OX (session->init_use_rich_format());
-    ObObj param_val;
-    param_val.set_int(60 * 1000 * 1000);
-    OZ(session->update_sys_variable(SYS_VAR_OB_QUERY_TIMEOUT, param_val));
     if (OB_NOT_NULL(db_name) && STRLEN(db_name) > 0) {
       OZ (schema_guard.get_db_priv_set(OB_SYS_TENANT_ID, user_info->get_user_id(), db_name, db_priv_set));
       OX (session->set_db_priv_set(db_priv_set));
@@ -603,7 +585,6 @@ void ObLiteEmbedConn::begin()
   if (OB_ISNULL(conn_)) {
     ret = OB_CONNECT_ERROR;
   } else if (session_->is_in_transaction()) {
-    reset_result();
     conn_->set_is_in_trans(true);
     conn_->rollback();
     LOG_WARN("last trans need rollback", KP(conn_));
@@ -619,7 +600,6 @@ void ObLiteEmbedConn::begin()
 void ObLiteEmbedConn::commit()
 {
   int ret = OB_SUCCESS;
-  reset_result();
   if (OB_ISNULL(conn_)) {
     ret = OB_CONNECT_ERROR;
   } else if (!session_->is_in_transaction()) {
@@ -635,7 +615,6 @@ void ObLiteEmbedConn::commit()
 void ObLiteEmbedConn::rollback()
 {
   int ret = OB_SUCCESS;
-  reset_result();
   if (OB_ISNULL(conn_)) {
     ret = OB_CONNECT_ERROR;
   } else if (!session_->is_in_transaction()) {
@@ -685,7 +664,8 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
       }
       break;
     }
-    case ObFloatType: {
+    case ObFloatType:
+    case ObUFloatType: {
       float float_val = 0;
       if (OB_SUCC(result.get_float(col_idx, float_val))) {
         char buf[64];
@@ -699,45 +679,11 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
       }
       break;
     }
-    case ObUFloatType: {
-      ObObj obj;
-      if (OB_FAIL(result.get_obj(col_idx, obj))) {
-        LOG_WARN("get obj failed", K(ret), K(col_idx));
-      } else {
-        float float_val = 0;
-        if (OB_FAIL(obj.get_ufloat(float_val))) {
-          LOG_WARN("get_ufloat failed", K(ret), K(obj));
-        } else {
-          char buf[64];
-          int len = snprintf(buf, sizeof(buf), "%.6g", float_val);
-          if (len > 0 && len < sizeof(buf)) {
-            std::string formatted_str(buf, len);
-            val = builtins.attr("float")(formatted_str);
-          } else {
-            ret = OB_NOT_SUPPORTED;
-          }
-        }
-      }
-      break;
-    }
-    case ObDoubleType: {
+    case ObDoubleType:
+    case ObUDoubleType: {
       double double_val = 0;
       if (OB_SUCC(result.get_double(col_idx, double_val))) {
         val = pybind11::float_(double_val);
-      }
-      break;
-    }
-    case ObUDoubleType: {
-      ObObj obj;
-      if (OB_FAIL(result.get_obj(col_idx, obj))) {
-        LOG_WARN("get obj failed", K(ret), K(col_idx));
-      } else {
-        double double_val = 0;
-        if (OB_FAIL(obj.get_udouble(double_val))) {
-          LOG_WARN("get_udouble failed", K(ret), K(obj));
-        } else {
-          val = pybind11::float_(double_val);
-        }
       }
       break;
     }
@@ -876,43 +822,10 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
       }
       break;
     }
-    case ObDateTimeType: {
-      ObObj obj;
-      if (OB_FAIL(result.get_obj(col_idx, obj))) {
-        LOG_WARN("get obj failed", K(ret), K(col_idx));
-      } else {
-        int64_t datetime_val = 0;
-        if (OB_FAIL(obj.get_datetime(datetime_val))) {
-          LOG_WARN("get_datetime failed", K(ret), K(obj));
-        } else {
-          const ObTimeZoneInfo *tz_info = session.get_timezone_info();
-          ObTime ob_time(DT_TYPE_DATETIME);
-          if (OB_FAIL(ObTimeConverter::datetime_to_ob_time(datetime_val, tz_info, ob_time))) {
-            LOG_WARN("failed to convert datetime to ob_time", K(ret), K(datetime_val));
-          } else {
-            val = datetime_class(
-              pybind11::int_(ob_time.parts_[DT_YEAR]),
-              pybind11::int_(ob_time.parts_[DT_MON]),
-              pybind11::int_(ob_time.parts_[DT_MDAY]),
-              pybind11::int_(ob_time.parts_[DT_HOUR]),
-              pybind11::int_(ob_time.parts_[DT_MIN]),
-              pybind11::int_(ob_time.parts_[DT_SEC]),
-              pybind11::int_(ob_time.parts_[DT_USEC])
-            );
-          }
-        }
-      }
-      break;
-    }
     case ObYearType: {
       uint8_t v = 0;
       if (OB_SUCC(result.get_year(col_idx, v))) {
-        int64_t year_int = 0;
-        if (OB_FAIL(ObTimeConverter::year_to_int(v, year_int))) {
-          LOG_WARN("year_to_int failed", K(ret), K(v));
-        } else {
-          val = pybind11::int_(year_int);
-        }
+        val = pybind11::int_(v);
       }
       break;
     }
@@ -936,16 +849,6 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
       }
       break;
     }
-    case ObHexStringType: {
-      ObObj obj;
-      if (OB_FAIL(result.get_obj(col_idx, obj))) {
-        LOG_WARN("get obj failed", K(ret), K(col_idx));
-      } else {
-        ObString hex_str = obj.get_hex_string();
-        val = pybind11::bytes(hex_str.ptr(), hex_str.length());
-      }
-      break;
-    }
     case ObTinyTextType:
     case ObTextType:
     case ObMediumTextType:
@@ -957,8 +860,6 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
           LOG_WARN("get obj failed", K(ret), K(col_idx));
         } else if (OB_FAIL(sql::ObTextStringHelper::read_real_string_data(&allocator, obj, real_data))) {
           LOG_WARN("failed to read real string data", K(ret), K(obj));
-        } else if (obj_meta.get_collation_type() == ObCollationType::CS_TYPE_BINARY) {
-          val = pybind11::bytes(real_data.ptr(), real_data.length());
         } else {
           ObString out_str;
           if (OB_FAIL(convert_string_charset(session, allocator, real_data,
@@ -1015,21 +916,19 @@ int ObLiteEmbedUtil::convert_result_to_pyobj(const int64_t col_idx, common::sqlc
       break;
     }
     case ObCollectionSQLType: {
-      MTL_SWITCH(OB_SYS_TENANT_ID) {
-        ObObj obj;
-        ObArenaAllocator allocator(mem_attr);
-        ObString res_str;
-        if (OB_FAIL(result.get_obj(col_idx, obj))) {
-          LOG_WARN("get obj failed", K(ret), K(col_idx));
-        } else if (OB_FAIL(convert_collection_to_string(obj, obj_meta, inner_result, allocator, res_str))) {
-          LOG_WARN("convert collection failed", KR(ret), K(obj), K(obj_meta));
-          if (ret == OB_NOT_SUPPORTED) {
-            val = pybind11::bytes(obj.get_string_ptr(), obj.get_string_len());
-            ret = OB_SUCCESS;
-          }
-        } else {
-          val = pybind11::str(res_str.ptr(), res_str.length());
+      ObObj obj;
+      ObArenaAllocator allocator(mem_attr);
+      ObString res_str;
+      if (OB_FAIL(result.get_obj(col_idx, obj))) {
+        LOG_WARN("get obj failed", K(ret), K(col_idx));
+      } else if (OB_FAIL(convert_collection_to_string(obj, obj_meta, inner_result, allocator, res_str))) {
+        LOG_WARN("convert collection failed", KR(ret), K(obj), K(obj_meta));
+        if (ret == OB_NOT_SUPPORTED) {
+          val = pybind11::bytes(obj.get_string_ptr(), obj.get_string_len());
+          ret = OB_SUCCESS;
         }
+      } else {
+        val = pybind11::str(res_str.ptr(), res_str.length());
       }
       break;
     }
