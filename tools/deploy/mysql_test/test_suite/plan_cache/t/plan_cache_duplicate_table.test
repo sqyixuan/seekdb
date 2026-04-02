@@ -1,0 +1,352 @@
+#owner: luofan.zp
+#owner group: sql1
+#tags: optimizer
+##
+## Test Name: plan_cache_duplicate_table
+##
+## Scope: Test plan cache for duplicate table
+##
+## INFO:  if you want to add case; you should read ../README.md;
+#         don't use sys tenant, because when parallel run on obfarm, the hit_count can't be expected;
+#         so we use new tenant, new plan cache will be  used for this case only;
+##
+##
+## Date: 2018-8-21
+##
+--result_format 4
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+alter system set large_query_threshold = '1s';
+alter system set resource_hard_limit = 500;
+
+--disable_info
+--disable_metadata
+
+alter system flush plan cache global;
+--sleep 3
+
+--disable_query_log
+--disable_result_log
+
+connection default;
+--disable_warnings
+drop database if exists xy_db;
+create database xy_db;
+use xy_db;
+
+## case #1
+## pwj test
+--disable_warnings
+--disable_query_log
+drop table if exists case1_t_1;
+drop table if exists case1_t_2;
+drop table if exists case1_t_3;
+drop table if exists case1_t_4;
+
+--disable_query_log
+--disable_result_log
+
+create table case1_t_1 (c11 int, c12 int) ;
+--sleep 3
+create table case1_t_2 (c21 int, c22 int) ;
+--sleep 3
+create table case1_t_3 (c31 int, c32 int);
+--sleep 3
+create table case1_t_4 (c41 int, c42 int) partition by hash(c41) partitions 2;
+--sleep 3
+connection conn_admin;
+
+--disable_result_log
+--disable_query_log
+--echo
+--echo // alter system switch replica part1 to backup server
+#eval alter system switch replica leader ls=$ls_id_4 server='$OBMYSQL_PORT' tenant='sys';
+#let $table_id = $case1_tbl_id_4;
+#let $target_ip = $case1_tbl_part4_backup_ip;
+#let $target_port = $case1_tbl_part4_backup_port;
+--sleep 5
+
+#       join
+#       /   \
+#   join    join
+#   /   \   /
+#  D
+
+connection default;
+insert into case1_t_1 values (0, 0), (1, 1);
+insert into case1_t_2 values (0, 0), (1, 1);
+insert into case1_t_3 values (0, 0), (1, 1);
+insert into case1_t_4 values (0, 0), (1, 1);
+select * from case1_t_4;
+--echo **************************************** non Partition wise join Dist Plan ****************************************
+--echo
+--echo =============================== single duplicate table select local ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41;
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41' order by hit_count;
+--echo
+--disable_result_log
+
+--echo
+--echo =============================== single duplicate table select remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41) as tab on c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41) as tab on c31=c41;
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41) as tab on c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41) as tab on c31=c41' order by hit_count;
+--echo
+--disable_result_log
+--echo **************************************** Partition wise Dist Plan ****************************************
+--echo
+--echo =============================== single duplicate table select local ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41 where c41=0;
+--disable_result_log
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41 where c41=0;
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41 where c41=0;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(case1_t_3, case1_t_1)*/* from case1_t_3 join case1_t_1 on c31=c11) as tab join case1_t_4 on c31=c41 where c41=?' order by hit_count;
+--echo
+--disable_result_log
+
+--echo
+--echo =============================== single duplicate table select remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(case1_t_1, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=?) as tab on c31=c41' order by hit_count;
+--echo
+--disable_result_log
+
+--echo
+--echo =============================== multi duplicate table select local ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(tab2, case1_t_3)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_3 on c11=c31) as tab join case1_t_4 on c31=c41 where c41=0;
+--disable_result_log
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(tab2, case1_t_3)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_3 on c11=c31) as tab join case1_t_4 on c31=c41 where c41=0;
+select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(tab2, case1_t_3)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_3 on c11=c31) as tab join case1_t_4 on c31=c41 where c41=0;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(tab, case1_t_4)*/* from (select /*+leading(tab2, case1_t_3)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_3 on c11=c31) as tab join case1_t_4 on c31=c41 where c41=?' order by hit_count;
+--echo
+
+--echo
+--echo =============================== multi duplicate table select remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(case1_t_3, tab)*/* from case1_t_3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=?) as tab on c31=c41' order by hit_count;
+--echo
+--echo
+--echo =============================== 1 local, 2 remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join case1_t_1 on case1_t_1.c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join case1_t_1 on case1_t_1.c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join case1_t_1 on case1_t_1.c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join case1_t_1 on case1_t_1.c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 join case1_t_4 on c11=c41 where c41=?) as tab on tab3.c31=c41' order by hit_count;
+--echo
+--echo
+--echo =============================== 2 local, 1 remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 on c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+--disable_result_log
+select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 on c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 on c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=0) as tab on tab3.c31=c41;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite leading(tab3, tab)*/* from (select c31, c32 from case1_t_3 join (select /*+leading(case1_t_1, case1_t_2)*/* from case1_t_1 join case1_t_2 on c11=c12) as tab2 on c11=c31) as tab3 join (select /*+leading(tab2, case1_t_4)*/* from case1_t_1 join case1_t_4 on c11=c41 where c41=?) as tab on tab3.c31=c41' order by hit_count;
+--echo 
+--echo **************************************** Union ALL Dist Plan ****************************************
+--echo
+--echo =============================== single duplicate table select local ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from case1_t_3 union all select * from case1_t_1;
+--disable_result_log
+select * from case1_t_3 union all select * from case1_t_1;
+select * from case1_t_3 union all select * from case1_t_1;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from case1_t_3 union all select * from case1_t_1' order by hit_count;
+--echo
+--disable_result_log
+
+--echo
+--echo =============================== single duplicate table select remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from case1_t_4 where c41=0 union all select * from case1_t_1;
+--disable_result_log
+select * from case1_t_4 where c41=0 union all select * from case1_t_1;
+select * from case1_t_4 where c41=0 union all select * from case1_t_1;
+--echo
+--echo // expect hit_count =  1 local,1 remote
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from case1_t_4 where c41=? union all select * from case1_t_1' order by hit_count;
+--echo
+--disable_result_log
+--echo
+--echo =============================== single duplicate table select local, remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3;
+--disable_result_log
+select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3;
+select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from case1_t_4 where c41=? union all select * from case1_t_1 union all select * from case1_t_3' order by hit_count;
+--echo
+
+--echo
+--echo =============================== multi duplicate table select remote ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3 union all select * from case1_t_2;
+--disable_result_log
+select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3 union all select * from case1_t_2;
+select * from case1_t_4 where c41=0 union all select * from case1_t_1 union all select * from case1_t_3 union all select * from case1_t_2;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from case1_t_4 where c41=? union all select * from case1_t_1 union all select * from case1_t_3 union all select * from case1_t_2' order by hit_count;
+--echo
+--echo 
+--echo **************************************** Union ALL and Partition wise Join Dist Plan ****************************************
+--echo
+--echo =============================== pwj union_all ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from case1_t_3 union all (select c41, c11 from case1_t_4 join case1_t_1 on c41=c11 where c41=0);
+--disable_result_log
+select * from case1_t_3 union all (select c41, c11 from case1_t_4 join case1_t_1 on c41=c11 where c41=0);
+select * from case1_t_3 union all (select c41, c11 from case1_t_4 join case1_t_1 on c41=c11 where c41=0);
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from case1_t_3 union all (select c41, c11 from case1_t_4 join case1_t_1 on c41=c11 where c41=?)' order by hit_count;
+--echo
+--disable_result_log
+
+--echo
+--echo =============================== union_all pwj ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select * from (select * from case1_t_3 union all select * from case1_t_1) as tab join case1_t_4 on c41=c31 where c41=0;
+--disable_result_log
+select * from (select * from case1_t_3 union all select * from case1_t_1) as tab join case1_t_4 on c41=c31 where c41=0;
+select * from (select * from case1_t_3 union all select * from case1_t_1) as tab join case1_t_4 on c41=c31 where c41=0;
+--echo
+--echo // expect hit_count =  1 local,1 remote
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select * from (select * from case1_t_3 union all select * from case1_t_1) as tab join case1_t_4 on c41=c31 where c41=?' order by hit_count;
+--echo
+--disable_result_log
+--echo
+--echo =============================== pwj union_all pwj ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite*/* from (select * from case1_t_4 join case1_t_1 on c41=c11 where c41=0) as tab union all select * from (select * from case1_t_3 join case1_t_2 on c31=c21) as tab1;
+--disable_result_log
+select /*+no_rewrite*/* from (select * from case1_t_4 join case1_t_1 on c41=c11 where c41=0) as tab union all select * from (select * from case1_t_3 join case1_t_2 on c31=c21) as tab1;
+select /*+no_rewrite*/* from (select * from case1_t_4 join case1_t_1 on c41=c11 where c41=0) as tab union all select * from (select * from case1_t_3 join case1_t_2 on c31=c21) as tab1;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite*/* from (select * from case1_t_4 join case1_t_1 on c41=c11 where c41=?) as tab union all select * from (select * from case1_t_3 join case1_t_2 on c31=c21) as tab1' order by hit_count;
+--echo
+
+--echo
+--echo =============================== union_all pwj union_all ===============================
+connection default;
+--enable_query_log
+--enable_result_log
+--echo
+explain select /*+no_rewrite*/* from (select * from case1_t_4 where c41=0 union all select * from case1_t_1) as tab join (select * from case1_t_3 union all select * from case1_t_2) as tab1 on c41=c31;
+--disable_result_log
+select /*+no_rewrite*/* from (select * from case1_t_4 where c41=0 union all select * from case1_t_1) as tab join (select * from case1_t_3 union all select * from case1_t_2) as tab1 on c41=c31;
+select /*+no_rewrite*/* from (select * from case1_t_4 where c41=0 union all select * from case1_t_1) as tab join (select * from case1_t_3 union all select * from case1_t_2) as tab1 on c41=c31;
+--echo
+--echo // expect hit_count =  1
+--enable_result_log
+select hit_count from oceanbase.v$ob_plan_cache_plan_stat where statement like 'select /*+no_rewrite*/* from (select * from case1_t_4 where c41=? union all select * from case1_t_1) as tab join (select * from case1_t_3 union all select * from case1_t_2) as tab1 on c41=c31' order by hit_count;
+--echo
+--echo
+--echo
+--echo ****************************** cleanup ******************************
+--disable_warnings
+drop database if exists xy_db;
+--enable_warnings
+# using admin acount
+connection conn_admin;
+
+alter system set large_query_threshold = '100ms';
