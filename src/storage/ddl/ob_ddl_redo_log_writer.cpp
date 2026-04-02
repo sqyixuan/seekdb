@@ -121,9 +121,8 @@ int ObDDLCtrlSpeedItem::refresh()
   } else {
     // archive is not on if ignore = true.
     write_speed_ = ignore ? std::max(refresh_speed, 1 * MIN_WRITE_SPEED) : std::max(archive_speed, 1 * MIN_WRITE_SPEED);
-    disk_used_stop_write_threshold_ = min(0 == palf_opt.disk_options_.log_disk_utilization_threshold_ ?
-                                          palf::DEFAULT_LOG_UTL_THRESHOLD : palf_opt.disk_options_.log_disk_utilization_threshold_,
-                                          palf_opt.disk_options_.log_disk_utilization_limit_threshold_);
+    disk_used_stop_write_threshold_ = min(palf_opt.disk_options_.log_disk_utilization_threshold_,
+                                       palf_opt.disk_options_.log_disk_utilization_limit_threshold_);
     need_stop_write_ = 100.0 * total_used_space / total_disk_space >= disk_used_stop_write_threshold_ ? true : false;
   }
   LOG_DEBUG("current ddl clog write speed", K(ret), K(need_stop_write_), K(ls_id_), K(archive_speed), K(write_speed_),
@@ -245,7 +244,7 @@ int ObDDLCtrlSpeedItem::do_sleep(
   }
 
   if (OB_SUCC(ret)) {
-    real_sleep_us = std::max(static_cast<int64_t>(0), next_available_ts - ObTimeUtility::current_time());
+    real_sleep_us = std::max(0L, next_available_ts - ObTimeUtility::current_time());
     ob_usleep(real_sleep_us);
   }
   return ret;
@@ -1110,131 +1109,6 @@ template int ObDDLRedoLogWriter::write_auto_split_log(const share::ObLSID &ls_id
                                   const ObTabletFreezeLog &log,
                                   SCN &scn);
 
-template <typename T>
-int ObDDLRedoLogWriter::write_auto_fork_log(
-    const share::ObLSID &ls_id,
-    const ObDDLClogType &clog_type,
-    const logservice::ObReplayBarrierType &replay_barrier_type,
-    const T &log,
-    SCN &scn)
-{
-  int ret = OB_SUCCESS;
-  scn = SCN::min_scn();
-  ObArenaAllocator tmp_arena("ForkLogBuf", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
-  logservice::ObLogBaseHeader base_header(logservice::ObLogBaseType::DDL_LOG_BASE_TYPE,
-                                          replay_barrier_type);
-  ObDDLClogHeader ddl_header(clog_type);
-  const int64_t buffer_size = base_header.get_serialize_size()
-                              + ddl_header.get_serialize_size()
-                              + log.get_serialize_size();
-  char *buffer = nullptr; // stack space avoided, to avoid too muck stack size.
-  int64_t pos = 0;
-  ObDDLClogCb *cb = nullptr;
-
-  palf::LSN lsn;
-  const bool need_nonblock = false;
-  ObLSHandle ls_handle;
-  ObLS *ls = nullptr;
-  logservice::ObLogHandler *log_handler = nullptr;
-  if (OB_UNLIKELY(!ls_id.is_valid()) ||
-              OB_UNLIKELY(ObDDLClogType::DDL_TABLE_FORK_FREEZE_LOG != clog_type &&
-                          ObDDLClogType::DDL_TABLE_FORK_START_LOG != clog_type &&
-                          ObDDLClogType::DDL_TABLE_FORK_FINISH_LOG != clog_type) ||
-      OB_UNLIKELY(!log.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(ret), K(ls_id), K(clog_type), K(log));
-  } else if (OB_ISNULL(buffer = static_cast<char *>(tmp_arena.alloc(buffer_size)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc failed", K(ret), K(buffer_size));
-  } else if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id, ls_handle, ObLSGetMod::DDL_MOD))) {
-    LOG_WARN("get ls failed", K(ret), K(log));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("ls should not be null", K(ret));
-  } else if (OB_ISNULL(log_handler = ls->get_log_handler())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("get log handler failed", K(ret), K(log));
-  } else if (OB_ISNULL(cb = op_alloc(ObDDLClogCb))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("fail to alloc memory", K(ret));
-  } else if (OB_FAIL(base_header.serialize(buffer, buffer_size, pos))) {
-    LOG_WARN("failed to serialize log base header", K(ret));
-  } else if (OB_FAIL(ddl_header.serialize(buffer, buffer_size, pos))) {
-    LOG_WARN("fail to serialize ddl header", K(ret));
-  } else if (OB_FAIL(log.serialize(buffer, buffer_size, pos))) {
-    LOG_WARN("fail to serialize fork log", K(ret));
-  } else if (OB_FAIL(log_handler->append(buffer,
-                                         buffer_size,
-                                         SCN::min_scn(),
-                                         need_nonblock,
-                                         false/*allow_compression*/,
-                                         cb,
-                                         lsn,
-                                         scn))) {
-    LOG_WARN("fail to submit ddl fork log", K(ret), K(buffer_size));
-    if (ObDDLUtil::need_remote_write(ret)) {
-      ret = OB_NOT_MASTER;
-      LOG_INFO("overwrite return to OB_NOT_MASTER");
-    }
-  } else {
-    ObDDLClogCb *tmp_cb = cb;
-    cb = nullptr;
-    bool finish = false;
-    const int64_t start_time = ObTimeUtility::current_time();
-    while (OB_SUCC(ret) && !finish) {
-      if (tmp_cb->is_success()) {
-        finish = true;
-      } else if (tmp_cb->is_failed()) {
-        ret = OB_NOT_MASTER;
-      }
-      if (OB_SUCC(ret) && !finish) {
-        const int64_t current_time = ObTimeUtility::current_time();
-        if (current_time - start_time > ObDDLRedoLogHandle::DDL_REDO_LOG_TIMEOUT) {
-          ret = OB_TIMEOUT;
-          LOG_WARN("write auto fork log timeout", K(ret), K(log));
-        } else {
-          ob_usleep(ObDDLRedoLogHandle::CHECK_DDL_REDO_LOG_FINISH_INTERVAL);
-        }
-      }
-    }
-    tmp_cb->try_release(); // release the memory no matter succ or not
-  }
-  if (OB_FAIL(ret)) {
-    if (nullptr != cb) {
-      op_free(cb);
-      cb = nullptr;
-    }
-  }
-  tmp_arena.reset();
-  buffer = nullptr;
-  const auto &source_tablet_ids = log.get_source_tablet_ids();
-  SERVER_EVENT_ADD("ddl", "write_fork_log",
-      "ret", ret,
-      "tenant_id", MTL_ID(),
-      "clog_type", clog_type,
-      "replay_barrier", replay_barrier_type,
-      "scn", scn,
-      "trace_id", *ObCurTraceId::get_trace_id());
-  LOG_INFO("write fork log finished", K(ret), K(ls_id), K(source_tablet_ids), K(clog_type), K(replay_barrier_type), K(scn));
-  return ret;
-}
-
-template int ObDDLRedoLogWriter::write_auto_fork_log(const share::ObLSID &ls_id,
-                                              const ObDDLClogType &clog_type,
-                                              const ObReplayBarrierType &replay_barrier_type,
-                                              const ObTableForkFreezeLog &log,
-                                              SCN &scn);
-template int ObDDLRedoLogWriter::write_auto_fork_log(const share::ObLSID &ls_id,
-                                              const ObDDLClogType &clog_type,
-                                              const ObReplayBarrierType &replay_barrier_type,
-                                              const ObTableForkStartLog &log,
-                                              SCN &scn);
-template int ObDDLRedoLogWriter::write_auto_fork_log(const share::ObLSID &ls_id,
-                                              const ObDDLClogType &clog_type,
-                                              const ObReplayBarrierType &replay_barrier_type,
-                                              const ObTableForkFinishLog &log,
-                                              SCN &scn);
-
 bool ObDDLRedoLogWriter::need_retry(int ret_code)
 {
   return OB_NOT_MASTER == ret_code;
@@ -2010,7 +1884,7 @@ int ObDDLRedoLogWriterCallback::write(const ObStorageObjectHandle &macro_handle,
       redo_info.end_row_id_ = param_.row_id_offset_ + row_count - 1;
       param_.row_id_offset_ += row_count;
     }
-
+    
     if (OB_FAIL(ret)) {
     } else if (nullptr != param_.macro_meta_store_ && OB_FAIL(param_.macro_meta_store_->append(buf, buf_len, macro_handle.get_macro_id()))) {
         LOG_WARN("append macro meta store failed", K(ret), KP(buf), K(buf_len), K(macro_handle.get_macro_id()));
