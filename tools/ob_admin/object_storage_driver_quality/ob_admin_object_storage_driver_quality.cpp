@@ -1163,9 +1163,7 @@ int ObAdminObjectStorageDriverQualityExecutor::parse_cmd_(int argc, char *argv[]
 int ObAdminObjectStorageDriverQualityExecutor::set_environment_()
 {
   int ret = OB_SUCCESS;
-#ifndef __APPLE__
   init_malloc_hook();
-#endif
   lib::set_memory_limit(MEMORY_LIMITED_SIZE);
   lib::set_tenant_memory_limit(OB_SERVER_TENANT_ID, MEMORY_LIMITED_SIZE);
 #ifdef __linux__
