@@ -55,15 +55,10 @@ int ObTriggerStorageCacheExecutor::execute(ObExecContext &ctx, ObTriggerStorageC
       LOG_WARN("tenant not exist", KR(ret), K(tenant_id));
     } else {
       FOREACH_X(unit, tenant_units, OB_SUCC(ret)) {
-        bool is_alive = false;
-        if (OB_FAIL(SVR_TRACER.check_server_alive(unit->server_, is_alive))) {
-          LOG_WARN("check_server_alive failed", KR(ret), K(unit->server_));
-        } else if (is_alive) {
-          if (has_exist_in_array(server_list, unit->server_)) {
-            // server exist
-          } else if (OB_FAIL(server_list.push_back(unit->server_))) {
-            LOG_WARN("push_back failed", KR(ret), K(unit->server_));
-          }
+        if (has_exist_in_array(server_list, unit->server_)) {
+          // server exist
+        } else if (OB_FAIL(server_list.push_back(unit->server_))) {
+          LOG_WARN("push_back failed", KR(ret), K(unit->server_));
         }
       }
     }

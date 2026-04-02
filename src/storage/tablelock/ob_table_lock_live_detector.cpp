@@ -247,42 +247,7 @@ int ObTableLockDetectFuncList::get_active_server_session_list_(const int64_t &cl
 int ObTableLockDetectFuncList::check_server_is_online_(const ObString &svr_ip, const int64_t svr_port, bool &is_online)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  char where_cond[512] = {'\0'};
-  is_online = false;
-  char full_table_name[OB_MAX_TABLE_NAME_BUF_LENGTH];
-
-  if (OB_FAIL(
-        databuff_printf(where_cond,
-                        512,
-                        "WHERE (svr_ip, svr_port) IN (SELECT u.svr_ip, u.svr_port FROM %s.%s AS u JOIN %s.%s AS r on "
-                        "r.resource_pool_id = u.resource_pool_id WHERE tenant_id = %ld) and svr_ip = '%.*s' and svr_port "
-                        "= %ld and status = 'active'",
-                        OB_SYS_DATABASE_NAME,
-                        OB_ALL_UNIT_TNAME,
-                        OB_SYS_DATABASE_NAME,
-                        OB_ALL_RESOURCE_POOL_TNAME,
-                        MTL_ID(),
-                        svr_ip.length(),
-                        svr_ip.ptr(),
-                        svr_port))) {
-    LOG_WARN("generate where condition for select sql failed", K(svr_ip), K(svr_port));
-  } else if (OB_FAIL(databuff_printf(full_table_name,
-                                     OB_MAX_TABLE_NAME_BUF_LENGTH,
-                                     "%s.%s",
-                                     OB_SYS_DATABASE_NAME,
-                                     OB_ALL_SERVER_TNAME))) {
-    LOG_WARN("generate full table_name failed", K(OB_SYS_DATABASE_NAME), K(OB_ALL_SERVER_TNAME));
-  } else if (OB_FAIL(
-               ObTableAccessHelper::read_single_row(OB_SYS_TENANT_ID, {"1"}, full_table_name, where_cond, is_online))) {
-    if (OB_EMPTY_RESULT == ret) {
-      ret = OB_SUCCESS;
-      is_online = false;
-      LOG_INFO("can not find the server in the server_list, it has been removed", K(svr_ip), K(svr_port));
-    } else {
-      LOG_WARN("read from __all_server table failed", K(where_cond));
-    }
-  }
+  is_online = true;
   return ret;
 }
 

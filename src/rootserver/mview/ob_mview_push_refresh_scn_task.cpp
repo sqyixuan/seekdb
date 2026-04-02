@@ -21,7 +21,6 @@
 #include "share/ob_global_stat_proxy.h"
 #include "share/backup/ob_backup_data_table_operator.h"
 #include "observer/ob_inner_sql_connection.h"
-#include "share/ob_all_server_tracer.h"
 
 namespace oceanbase {
 namespace rootserver {
@@ -193,14 +192,12 @@ int ObMViewPushRefreshScnTask::check_major_mv_refresh_scn_safety(const uint64_t 
              }
           }
         }
-        bool alive = true;
         // ignore ret
-        SVR_TRACER.check_server_alive(merge_info.svr_addr_, alive);
         if (find_dest_merge_scn) {
         } else if (!merge_info.is_member_ || merge_info.is_learner_) {
-          LOG_WARN("major_mv_safety>>>>", K(merge_info), K(alive));
+          LOG_WARN("major_mv_safety>>>>", K(merge_info));
         } else {
-          LOG_ERROR("major_mv_safety>>>>", K(merge_info), K(alive));
+          LOG_ERROR("major_mv_safety>>>>", K(merge_info));
           is_safety = false;
         }
       }

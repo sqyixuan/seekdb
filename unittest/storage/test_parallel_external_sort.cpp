@@ -249,7 +249,6 @@ int TestParallelExternalSort::init_tenant_mgr()
   ObAddr self;
   obrpc::ObSrvRpcProxy rpc_proxy;
   obrpc::ObCommonRpcProxy rs_rpc_proxy;
-  share::ObRsMgr rs_mgr;
   self.set_ip_addr("127.0.0.1", 8086);
   rpc::frame::ObReqTransport req_transport(NULL, NULL);
   const int64_t ulmt = 128LL << 30;
@@ -314,13 +313,7 @@ int TestParallelExternalSort::generate_items(const int64_t item_nums, const bool
     }
 
     if (OB_SUCC(ret) && !is_sorted) {
-#ifdef __APPLE__
-      std::random_device rd;
-      std::mt19937 rng(rd());
-      std::shuffle(items.begin(), items.end(), rng);
-#else
       std::random_shuffle(items.begin(), items.end());
-#endif
     }
   }
   return ret;
@@ -358,13 +351,7 @@ int TestParallelExternalSort::generate_items_dup(const int64_t item_nums, const 
     }
 
     if (OB_SUCC(ret) && !is_sorted) {
-#ifdef __APPLE__
-      std::random_device rd;
-      std::mt19937 rng(rd());
-      std::shuffle(items.begin(), items.end(), rng);
-#else
       std::random_shuffle(items.begin(), items.end());
-#endif
     }
   }
   return ret;
@@ -375,9 +362,8 @@ int TestParallelExternalSort::shuffle_items(const int64_t task_id, const int64_t
 {
   int ret = OB_SUCCESS;
   const int64_t total_item_cnt = total_items.size();
-  const int64_t start_idx = std::max<int64_t>(0, total_item_cnt * task_id / task_cnt);
-  const int64_t end_idx = std::min<int64_t>(total_item_cnt - 1,
-                                            total_item_cnt * (task_id + 1) / task_cnt - 1);
+  int64_t start_idx = std::max(0L, total_item_cnt * task_id / task_cnt);
+  int64_t end_idx = std::min(total_item_cnt - 1, total_item_cnt * (task_id + 1) / task_cnt - 1);
   task_items.reset();
   for (int64_t i = start_idx; i <= end_idx; ++i) {
     if (OB_FAIL(task_items.push_back(total_items[i]))) {

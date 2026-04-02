@@ -17,9 +17,8 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_tenant_info_proxy.h"
-#include "share/ls/ob_ls_status_operator.h"//get_tenant max ls id
 #include "rootserver/ob_root_utils.h"//ObRootUtils
-#include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" // ObTenantSnapshotUtil
+#include "rootserver/ob_rs_event_history_table_operator.h" // for ROOTSERVICE_EVENT_ADD
 #include "share/restore/ob_log_restore_source_mgr.h"  // ObLogRestoreSourceMgr
 
 using namespace oceanbase;
@@ -380,19 +379,6 @@ int ObAllTenantInfoProxy::load_tenant_info(const uint64_t tenant_id,
     if (OB_FAIL(tenant_info.init(tenant_id, share::PRIMARY_TENANT_ROLE))) {
       LOG_WARN("failed to init tenant info", KR(ret), K(tenant_id));
     }
-  } else {
-    if (OB_FAIL(load_pure_tenant_info_(tenant_id, proxy, for_update, ora_rowscn, tenant_info))) {
-      LOG_WARN("failed to load purge tenant info", KR(ret), K(tenant_id), K(for_update));
-    } else if (DEFAULT_MAX_LS_ID == tenant_info.get_max_ls_id().id()) {
-      //get ls from __all_ls_status
-      share::ObLSStatusOperator ls_op;
-      ObLSID max_ls_id;
-      if (OB_FAIL(ls_op.get_tenant_max_ls_id(tenant_id, max_ls_id, *proxy))) {
-        LOG_WARN("failed to get tenant max ls id", KR(ret), K(tenant_id));
-      } else {
-        tenant_info.set_max_ls_id(max_ls_id);
-      }
-    }
   }
   return ret;
 }
@@ -694,7 +680,6 @@ int ObAllTenantInfoProxy::update_tenant_role_in_trans(
   int64_t affected_rows = 0;
   ObTimeoutCtx ctx;
   ObAllTenantInfo cur_tenant_info;
-  ObConflictCaseWithClone case_to_check(ObConflictCaseWithClone::MODIFY_TENANT_ROLE_OR_SWITCHOVER_STATUS);
 
   if (OB_UNLIKELY(!is_user_tenant(tenant_id)
     || OB_INVALID_VERSION == old_switchover_epoch
@@ -706,8 +691,6 @@ int ObAllTenantInfoProxy::update_tenant_role_in_trans(
                                        K(new_role), K(new_status));
   } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id, &trans, true, cur_tenant_info))) {
     LOG_WARN("failed to load all tenant info", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id, case_to_check))) {
-    LOG_WARN("fail to check whether tenant is in cloning procedure", KR(ret), K(tenant_id));
   } else if (OB_FAIL(get_new_switchover_epoch_(old_switchover_epoch, old_status, new_status, 
                                                new_switchover_ts))) {
     LOG_WARN("fail to get_new_switchover_epoch_", KR(ret), K(old_switchover_epoch), K(old_status), 
@@ -866,7 +849,6 @@ int ObAllTenantInfoProxy::update_tenant_status(
   ObTimeoutCtx ctx;
   int64_t new_switchover_epoch = OB_INVALID_VERSION;
   ObLogRestoreSourceMgr restore_source_mgr;
-  ObConflictCaseWithClone case_to_check(ObConflictCaseWithClone::MODIFY_TENANT_ROLE_OR_SWITCHOVER_STATUS);
 
   if (OB_UNLIKELY(!is_user_tenant(tenant_id)
     || !new_role.is_valid()
@@ -882,8 +864,6 @@ int ObAllTenantInfoProxy::update_tenant_status(
     LOG_WARN("tenant_info is invalid", KR(ret), K(tenant_id), K(new_role), K(old_status),
                 K(new_status), K(sync_scn), K(replayable_scn), K(readable_scn), K(recovery_until_scn), 
                 K(old_switchover_epoch));
-  } else if (OB_FAIL(ObTenantSnapshotUtil::check_tenant_not_in_cloning_procedure(tenant_id, case_to_check))) {
-    LOG_WARN("fail to check whether tenant is in cloning procedure", KR(ret), K(tenant_id));
   } else if (OB_FAIL(get_new_switchover_epoch_(old_switchover_epoch, old_status, new_status, 
                                                new_switchover_epoch))) {
     LOG_WARN("fail to get_new_switchover_epoch_", KR(ret), K(old_switchover_epoch), K(old_status), 

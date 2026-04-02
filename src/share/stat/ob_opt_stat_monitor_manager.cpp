@@ -174,50 +174,33 @@ int ObOptStatMonitorManager::flush_database_monitoring_info(sql::ObExecContext &
 {
   int ret = OB_SUCCESS;
   int64_t timeout = -1;
-  ObSEArray<ObServerLocality, 4> all_server_arr;
-  bool has_read_only_zone = false; // UNUSED;
   if (OB_ISNULL(ctx.get_my_session()) ||
-      OB_ISNULL(GCTX.srv_rpc_proxy_) ||
-      OB_ISNULL(GCTX.locality_manager_)) {
+      OB_ISNULL(GCTX.srv_rpc_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(GCTX.srv_rpc_proxy_),
-                                    K(GCTX.locality_manager_), K(ctx.get_my_session()));
+                                    K(ctx.get_my_session()));
   } else {
     obrpc::ObFlushOptStatArg arg(ctx.get_my_session()->get_effective_tenant_id(),
                                  is_flush_col_usage,
                                  is_flush_dml_stat);
-    if (OB_FAIL(GCTX.locality_manager_->get_server_locality_array(all_server_arr,
-                                                                  has_read_only_zone))) {
-      LOG_WARN("fail to get server locality", K(ret));
-    } else {
-      ObSEArray<ObServerLocality, 4> failed_server_arr;
-      for (int64_t i = 0; OB_SUCC(ret) && i < all_server_arr.count(); i++) {
-        timeout = std::min(MAX_OPT_STATS_PROCESS_RPC_TIMEOUT, THIS_WORKER.get_timeout_remain());
-        if (!all_server_arr.at(i).is_active()
-            || ObServerStatus::OB_SERVER_ACTIVE != all_server_arr.at(i).get_server_status()
-            || 0 == all_server_arr.at(i).get_start_service_time()
-            || 0 != all_server_arr.at(i).get_server_stop_time()) {
-        //server may not serving
-        } else if (0 >= timeout) {
-          ret = OB_TIMEOUT;
-          LOG_WARN("query timeout is reached", K(ret), K(timeout));
-        } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(all_server_arr.at(i).get_addr())
-                                                  .timeout(timeout)
-                                                  .by(ctx.get_my_session()->get_rpc_tenant_id())
-                                                  .flush_local_opt_stat_monitoring_info(arg))) {
-          LOG_WARN("failed to flush opt stat monitoring info caused by unknow error",
-                                                K(ret), K(all_server_arr.at(i).get_addr()), K(arg));
-          //ignore flush cache failed, TODO @jiangxiu.wt can aduit it and flush cache manually later.
-          if (ignore_failed) {
-            LOG_USER_WARN(OB_ERR_DBMS_STATS_PL, "failed to flush opt stat monitoring info");
-            if (OB_FAIL(failed_server_arr.push_back(all_server_arr.at(i)))) {
-              LOG_WARN("failed to push back", K(ret));
-            }
-          }
-        }
+    timeout = std::min(MAX_OPT_STATS_PROCESS_RPC_TIMEOUT, THIS_WORKER.get_timeout_remain());
+    if (0 >= GCTX.start_service_time_) {
+      //server may not serving
+    } else if (0 >= timeout) {
+      ret = OB_TIMEOUT;
+      LOG_WARN("query timeout is reached", K(ret), K(timeout));
+    } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(GCTX.self_addr())
+                                              .timeout(timeout)
+                                              .by(ctx.get_my_session()->get_rpc_tenant_id())
+                                              .flush_local_opt_stat_monitoring_info(arg))) {
+      LOG_WARN("failed to flush opt stat monitoring info caused by unknow error", K(ret), K(arg));
+      //ignore flush cache failed, TODO @jiangxiu.wt can aduit it and flush cache manually later.
+      if (ignore_failed) {
+        ret = OB_SUCCESS;
+        LOG_USER_WARN(OB_ERR_DBMS_STATS_PL, "failed to flush opt stat monitoring info");
       }
-      LOG_TRACE("flush database monitoring info cache", K(arg), K(failed_server_arr), K(all_server_arr));
     }
+    LOG_TRACE("flush database monitoring info cache", K(arg));
   }
   return ret;
 }

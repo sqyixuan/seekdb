@@ -40,7 +40,6 @@ public:
   static int get_zone_list(
       common::ObISQLClient &sql_client, common::ObIArray<common::ObZone> &zone_list);
 
-  static int get_zone_lease_info(common::ObISQLClient &sql_client, ObZoneLeaseInfo &info);
   // check_zone_exists is a newly added arg.
   // If the zone not exists,
   // in the previous implementation, OB_SUCCESS will be returned.

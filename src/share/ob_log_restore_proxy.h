@@ -28,7 +28,6 @@
 #include "lib/mysqlclient/ob_mysql_connection_pool.h"
 #include "share/ob_ls_id.h"
 #include "share/ob_tenant_role.h"
-#include "share/ob_root_addr_agent.h"//ObRootAddr
 #include "share/schema/ob_schema_struct.h"
 #include "share/ob_tenant_switchover_status.h"
 #include "logservice/palf/palf_options.h"

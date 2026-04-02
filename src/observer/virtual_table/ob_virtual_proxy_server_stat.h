@@ -33,7 +33,6 @@ class ObMultiVersionSchemaService;
 namespace common
 {
 class ObMySQLProxy;
-class ObServerConfig;
 }
 namespace observer
 {
@@ -43,49 +42,17 @@ public:
   ObVirtualProxyServerStat();
   virtual ~ObVirtualProxyServerStat();
 
-  int init(share::schema::ObMultiVersionSchemaService &schema_service,
-           common::ObMySQLProxy *sql_proxy,
-           common::ObServerConfig *config);
+  int init(share::schema::ObMultiVersionSchemaService &schema_service);
 
   virtual int inner_get_next_row(common::ObNewRow *&row);
 
 private:
-  struct ObServerStateInfo
-  {
-    ObServerStateInfo();
-    ~ObServerStateInfo() {}
-    bool is_valid() const;
-    void reset();
-    TO_STRING_KV(K_(svr_ip_buf), K_(svr_ip_len), K_(svr_port),
-                 K_(zone_name_buf), K_(zone_name_len),
-                 K_(status_buf), K_(status_len),
-                 K_(start_service_time), K_(stop_time));
-
-    char svr_ip_buf_[common::MAX_IP_ADDR_LENGTH+1];
-    int64_t svr_ip_len_;
-    int64_t svr_port_;
-    char zone_name_buf_[common::MAX_ZONE_LENGTH + 1];
-    int64_t zone_name_len_;
-    char status_buf_[common::OB_SERVER_STATUS_LENGTH+1];
-    int64_t status_len_;
-    int64_t start_service_time_;
-    int64_t stop_time_;
-  };
-
   int get_full_row(const share::schema::ObTableSchema *table,
-                   const ObServerStateInfo &server_state,
                    common::ObIArray<Column> &columns);
-  int get_next_server_state();
-  int get_all_server_state();
 
   bool is_inited_;
-  bool is_queried_;
-  const share::schema::ObTableSchema *table_schema_;
-  common::ObMySQLProxy* sql_proxy_;
-  ObServerStateInfo server_state_;
   int64_t server_idx_;
-  common::ObArray<ObServerStateInfo> server_states_;
-  common::ObServerConfig *config_;
+  const share::schema::ObTableSchema *table_schema_;
   DISALLOW_COPY_AND_ASSIGN(ObVirtualProxyServerStat);
 };
 
