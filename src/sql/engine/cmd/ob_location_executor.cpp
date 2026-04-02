@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+#define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/cmd/ob_location_executor.h"
 #include "sql/resolver/ddl/ob_create_location_stmt.h"
 #include "sql/resolver/ddl/ob_drop_location_stmt.h"
 #include "sql/engine/ob_exec_context.h"
-
+ 
 namespace oceanbase
 {
 namespace sql
@@ -48,7 +48,7 @@ int ObCreateLocationExecutor::execute(ObExecContext &ctx, ObCreateLocationStmt &
   SQL_ENG_LOG(INFO, "finish execute create location.", K(ret), K(stmt));
   return ret;
 }
-
+ 
 int ObDropLocationExecutor::execute(ObExecContext &ctx, ObDropLocationStmt &stmt)
 {
   int ret = OB_SUCCESS;
@@ -82,3 +82,4 @@ int ObDropLocationExecutor::execute(ObExecContext &ctx, ObDropLocationStmt &stmt
 }
 } // namespace sql
 } // namespace oceanbase
+

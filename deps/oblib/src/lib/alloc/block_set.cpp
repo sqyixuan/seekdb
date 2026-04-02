@@ -17,6 +17,12 @@
 
 #include "block_set.h"
 #include "lib/alloc/ob_tenant_ctx_allocator.h"
+#ifdef _WIN32
+#include <windows.h>
+#ifndef MADV_DONTNEED
+#define MADV_DONTNEED 4
+#endif
+#endif
 
 // macOS sys/param.h defines isset macro which conflicts with method calls
 #ifdef isset
@@ -71,6 +77,14 @@ ABlock *BlockSet::alloc_block(const uint64_t size, const ObMemAttr &attr)
   const uint64_t all_size   = alloc_size;
   const uint32_t cls        = (uint32_t)(1 + (all_size - 1) / ABLOCK_SIZE);
   ABlock *block             = NULL;
+#ifdef _WIN32
+  static int diag_count = 0;
+  if (diag_count < 5) {
+    fprintf(stderr, "[DIAG] BlockSet::alloc_block enter, size=%lu, cls=%u, tallocator_=%p\n",
+            (unsigned long)size, cls, tallocator_); fflush(stderr);
+    diag_count++;
+  }
+#endif
 
   if (size >= UINT32_MAX) {
     // not support
@@ -257,6 +271,12 @@ void BlockSet::take_off_free_block(ABlock *block, int nblocks, AChunk *chunk)
 AChunk *BlockSet::alloc_chunk(const uint64_t size, const ObMemAttr &attr)
 {
   AChunk *chunk = NULL;
+#ifdef _WIN32
+  if (OB_ISNULL(tallocator_)) {
+    fprintf(stderr, "[DIAG] BlockSet::alloc_chunk tallocator_=NULL, chunk_mgr_=%p\n",
+            chunk_mgr_); fflush(stderr);
+  }
+#endif
   if (OB_NOT_NULL(tallocator_)) {
     const uint64_t all_size = AChunkMgr::aligned(size);
     chunk = chunk_mgr_->alloc_chunk(static_cast<int64_t>(size), attr);
@@ -321,6 +341,16 @@ void BlockSet::free_chunk(AChunk *const chunk)
   }
 }
 
+#ifdef _WIN32
+inline int ob_madvise(void* addr, size_t length, int advice) {
+  // virtual free is like MADV_DONTNEED: release physical pages but keep virtual address space
+  if (advice == MADV_DONTNEED) {   // define a constant
+      return ::VirtualFree(addr, length, MEM_DECOMMIT) ? 0 : -1;
+  }
+  return 0; // other advice in Windows is ignored
+}
+#endif
+
 int64_t BlockSet::sync_wash(int64_t wash_size)
 {
 #if !defined(MADV_DONTNEED)
@@ -359,7 +389,11 @@ int64_t BlockSet::sync_wash(int64_t wash_size)
           } else {
             int result = 0;
             do {
+#ifndef _WIN32
               result = ::madvise(data, len, MADV_DONTNEED);
+#else
+              result = ob_madvise(data, len, MADV_DONTNEED);
+#endif
             } while (result == -1 && errno == EAGAIN);
             if (-1 == result) {
               _OB_LOG_RET(WARN, OB_ERR_SYS, "madvise failed, errno: %d", errno);

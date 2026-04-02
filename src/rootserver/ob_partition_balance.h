@@ -110,7 +110,7 @@ public:
     ObArray<ObTransferPartGroup *> part_groups_;
   };
 
-  static const int64_t PART_BALANCE_THRESHOLD_SIZE =  50 * 1024L * 1024L * 1024L; // 50GB
+  static const int64_t PART_BALANCE_THRESHOLD_SIZE = 50LL * 1024LL * 1024LL * 1024LL; // 50GB
 
 private:
   int prepare_balance_group_();

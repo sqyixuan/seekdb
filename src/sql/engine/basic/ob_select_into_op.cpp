@@ -274,18 +274,6 @@ int ObSelectIntoOp::calc_url_and_set_access_info()
     file_location_ = IntoFileLocation::REMOTE_S3;
   } else if (path.prefix_match_ci(OB_AZBLOB_PREFIX)) {
     file_location_ = IntoFileLocation::REMOTE_AZBLOB;
-  } else if (path.prefix_match_ci(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    LOG_WARN("OSS storage is not supported", K(ret));
-  } else if (path.prefix_match_ci(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    LOG_WARN("COS storage is not supported", K(ret));
-  } else if (path.prefix_match_ci(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    LOG_WARN("HDFS storage is not supported", K(ret));
   } else {
     file_location_ = IntoFileLocation::SERVER_DISK;
   }
@@ -2577,7 +2565,11 @@ int ObSelectIntoOp::check_secure_file_path(ObString file_name)
   int64_t tenant_id = MTL_ID();
   if (OB_FAIL(sql_str.append(file_path.empty() ? "." : file_path))) {
     LOG_WARN("failed to append string", K(ret));
+#ifdef _WIN32
+  } else if (OB_ISNULL(actual_path = _fullpath(full_path_buf, sql_str.ptr(), PATH_MAX))) {
+#else
   } else if (OB_ISNULL(actual_path = realpath(sql_str.ptr(), full_path_buf))) {
+#endif
     ret = OB_FILE_NOT_EXIST;
     LOG_WARN("file not exist", K(ret), K(sql_str));
   } else if (OB_FAIL(ObSchemaUtils::get_tenant_varchar_variable(tenant_id,

@@ -17,7 +17,13 @@
 #define USING_LOG_PREFIX COMMON
 
 #include "lib/alloc/memory_dump.h"
+#ifndef _WIN32
 #include <setjmp.h>
+#else
+#define sigjmp_buf    jmp_buf
+#define sigsetjmp(env, savemask)    setjmp(env)
+#define siglongjmp(env, val)        longjmp(env, val)
+#endif
 #include "lib/signal/ob_signal_struct.h"
 #include "lib/thread/thread_mgr.h"
 #include "lib/container/ob_vector.h"
@@ -642,7 +648,11 @@ void ObMemoryDump::handle(void *task)
       struct timeval tv;
       gettimeofday(&tv, NULL);
       struct tm tm;
+#ifndef _WIN32
       ::localtime_r((const time_t *) &tv.tv_sec, &tm);
+#else
+      ::localtime_s(&tm, (const time_t *) &tv.tv_sec);
+#endif
       ret = databuff_printf(print_buf_, PRINT_BUF_LEN, print_pos,
           "\n###################%04d-%02d-%02d %02d:%02d:%02d.%06ld###################\n",
           tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,

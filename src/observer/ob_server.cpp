@@ -217,7 +217,6 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
   init_arches();
   scramble_rand_.init(static_cast<uint64_t>(start_time_), static_cast<uint64_t>(start_time_ / 2));
 
-  // server parameters be inited here.
   if (OB_SUCC(ret) && OB_FAIL(init_config(opts))) {
     LOG_ERROR("init config failed", KR(ret));
   }
@@ -235,15 +234,11 @@ int ObServer::init(const ObServerOptions &opts, const ObPLogWriterCfg &log_cfg)
   LOG_DBA_INFO_V2(OB_SERVER_INIT_BEGIN,
                   DBA_STEP_INC_INFO(server_start),
                   "observer init begin.");
-
-  //check os params
   if (OB_SUCC(ret) && OB_FAIL(check_os_params(GCONF.strict_check_os_params))) {
     LOG_ERROR("check OS params failed", K(GCONF.strict_check_os_params));
   }
-  // set large page param
   ObLargePageHelper::set_param(config_.use_large_pages);
 
-  // start ObTimerService first, because some timers depend on it
   if (OB_SUCC(ret)) {
     if (OB_FAIL(ObSimpleThreadPoolDynamicMgr::get_instance().init())) {
       LOG_ERROR("init queue_thread dynamic mgr failed", KR(ret));
@@ -2126,7 +2121,6 @@ int ObServer::init_config_module(const char *optstr)
   {
     multi_tenant_.update_tenant_config(tenant_id);
   };
-  // initialize configure module
   if (!self_addr_.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_ERROR("local address isn't valid", K(self_addr_), KR(ret));

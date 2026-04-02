@@ -17,7 +17,30 @@
 #ifndef OCEANBASE_OB_SERVER_UTILS_
 #define OCEANBASE_OB_SERVER_UTILS_
 
+#ifndef _WIN32
 #include <sys/statvfs.h>
+#else
+#include <windows.h>
+struct statvfs {
+  unsigned long f_bsize;
+  unsigned long f_blocks;
+  unsigned long f_bfree;
+  unsigned long f_bavail;
+  unsigned long f_fsid;
+};
+static inline int statvfs(const char *path, struct statvfs *buf) {
+  ULARGE_INTEGER free_bytes_available, total_bytes, total_free_bytes;
+  if (!GetDiskFreeSpaceExA(path, &free_bytes_available, &total_bytes, &total_free_bytes)) {
+    return -1;
+  }
+  buf->f_bsize = 4096;
+  buf->f_blocks = static_cast<unsigned long>(total_bytes.QuadPart / buf->f_bsize);
+  buf->f_bfree = static_cast<unsigned long>(total_free_bytes.QuadPart / buf->f_bsize);
+  buf->f_bavail = static_cast<unsigned long>(free_bytes_available.QuadPart / buf->f_bsize);
+  buf->f_fsid = 0;
+  return 0;
+}
+#endif
 #include "lib/allocator/ob_allocator.h"
 #include "lib/string/ob_string.h"
 

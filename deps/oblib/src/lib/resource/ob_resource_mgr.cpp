@@ -49,6 +49,10 @@ AChunk *ObTenantMemoryMgr::alloc_chunk(const int64_t size, const ObMemAttr &attr
   if (tenant_id_ != attr.tenant_id_) {
     ret = OB_INVALID_ARGUMENT;
     LOG_ERROR("tenant_id not match", K(ret), K_(tenant_id), K(attr));
+#ifdef _WIN32
+    fprintf(stderr, "[DIAG] ObTenantMemoryMgr::alloc_chunk tenant mismatch: mgr=%lu attr=%lu\n",
+            (unsigned long)tenant_id_, (unsigned long)attr.tenant_id_); fflush(stderr);
+#endif
   } else if (size <= 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid size", K(ret), K(size));
@@ -59,8 +63,19 @@ AChunk *ObTenantMemoryMgr::alloc_chunk(const int64_t size, const ObMemAttr &attr
       chunk = alloc_chunk_(size, attr);
       if (NULL == chunk) {
         update_hold(-hold_size, attr.ctx_id_, attr.label_, reach_ctx_limit);
+#ifdef _WIN32
+        fprintf(stderr, "[DIAG] ObTenantMemoryMgr::alloc_chunk alloc_chunk_ returned NULL, size=%ld\n",
+                (long)size); fflush(stderr);
+#endif
       }
     }
+#ifdef _WIN32
+    else {
+      fprintf(stderr, "[DIAG] ObTenantMemoryMgr::alloc_chunk update_hold failed,"
+              " hold_size=%ld, sum_hold=%ld, hard_limit=%ld, reach_ctx_limit=%d\n",
+              (long)hold_size, (long)sum_hold_, (long)hard_limit_, (int)reach_ctx_limit); fflush(stderr);
+    }
+#endif
     BASIC_TIME_GUARD_CLICK("ALLOC_CHUNK_END");
     if (!reach_ctx_limit && NULL != cache_washer_ && NULL == chunk && hold_size < cache_hold_) {
       // try wash memory from cache

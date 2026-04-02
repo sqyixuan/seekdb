@@ -20,6 +20,24 @@
 #ifdef __APPLE__
 #include <fcntl.h>                              // For fcntl, F_PREALLOCATE on macOS
 #include <unistd.h>                             // For ftruncate
+#elif defined(_WIN32)
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <direct.h>
+#include <windows.h>
+static int openat(int, const char *path, int flags, ...) {
+  int mode = 0;
+  if (flags & _O_CREAT) { mode = _S_IREAD | _S_IWRITE; }
+  return ::_open(path, flags, mode);
+}
+static int unlinkat(int, const char *path, int flag) {
+  if (flag) { return ::_rmdir(path); }
+  return ::_unlink(path);
+}
+static int fallocate(int fd, int, off_t, off_t len) {
+  return ::_chsize_s(fd, len);
+}
 #endif
 #include "observer/ob_server.h"                 // OBSERVER
 #include "observer/ob_server_utils.h"           // get_log_disk_info_in_config

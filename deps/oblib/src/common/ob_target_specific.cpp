@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX COMMON
 #include "common/ob_target_specific.h"
+#include <cstdio>
 
 namespace oceanbase
 {
@@ -25,11 +26,14 @@ namespace common
 uint32_t arches;
 void init_arches()
 {
+  fprintf(stderr, "[TRACE] init_arches: enter\n"); fflush(stderr);
   arches = 0;
   const CpuFlagSet flags;
+  fprintf(stderr, "[TRACE] init_arches: CpuFlagSet constructed, checking flags\n"); fflush(stderr);
   if (flags.have_flag(CpuFlag::SSE4_2)) {
     arches |= static_cast<uint32_t>(ObTargetArch::SSE42);
   }
+  fprintf(stderr, "[TRACE] init_arches: SSE42 done\n"); fflush(stderr);
   if (flags.have_flag(CpuFlag::AVX)) {
     arches |= static_cast<uint32_t>(ObTargetArch::AVX);
   }
@@ -42,6 +46,7 @@ void init_arches()
   if (flags.have_flag(CpuFlag::NEON)) {
     arches |= static_cast<uint32_t>(ObTargetArch::NEON);
   }
+  fprintf(stderr, "[TRACE] init_arches: all flags done, arches=%u, returning\n", arches); fflush(stderr);
 }
 
 } // namespace common

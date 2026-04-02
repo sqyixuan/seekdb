@@ -251,6 +251,14 @@ AChunk *ObTenantCtxAllocator::alloc_chunk(const int64_t size, const ObMemAttr &a
   }
   if (nullptr == chunk) {
     chunk = ctx_allocator_.alloc_chunk(size, attr);
+#ifdef _WIN32
+    if (nullptr == chunk) {
+      fprintf(stderr, "[DIAG] ObTenantCtxAllocator::alloc_chunk ctx_allocator_.alloc_chunk returned NULL,"
+              " size=%ld, tenant=%lu, ctx=%lu, rh_valid=%d\n",
+              (long)size, (unsigned long)tenant_id_, (unsigned long)ctx_id_,
+              (int)ctx_allocator_.resource_handle_valid()); fflush(stderr);
+    }
+#endif
   }
 
   if (OB_NOT_NULL(chunk)) {

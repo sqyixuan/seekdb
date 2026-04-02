@@ -17,6 +17,10 @@
 #include "ob_async_log_struct.h"
 #include "deps/oblib/src/lib/allocator/ob_slice_alloc.h"
 
+#if defined(_WIN32) && !defined(O_CLOEXEC)
+#define O_CLOEXEC 0
+#endif
+
 
 namespace oceanbase
 {

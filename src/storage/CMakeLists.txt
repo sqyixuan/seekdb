@@ -1091,7 +1091,7 @@ ob_set_subtarget(ob_storage_simd common
 
 ob_server_add_target(ob_storage_simd)
 
-if (${ARCHITECTURE} STREQUAL "x86_64")
+if (${ARCHITECTURE} STREQUAL "x86_64" OR ${ARCHITECTURE} STREQUAL "amd64")
   target_compile_options(ob_storage_simd
     PRIVATE
       -mtune=core-avx2 -mavx2 -mfma -mbmi2 -mavx512vl -mavx512bw

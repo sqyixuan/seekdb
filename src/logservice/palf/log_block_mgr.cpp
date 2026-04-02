@@ -18,6 +18,23 @@
 #include "log_writer_utils.h"                           // LogWriteBuf
 #include "log_io_utils.h"                               // openat_with_retry
 #include "log_io_adapter.h"                             // LogIOAdapter
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#ifndef O_DIRECTORY
+#define O_DIRECTORY 0
+#endif
+#ifndef O_RDONLY
+#define O_RDONLY _O_RDONLY
+#endif
+static int ob_win_truncate(const char *path, int64_t length) {
+  int fd = ::_open(path, _O_RDWR | _O_BINARY);
+  if (fd == -1) return -1;
+  int rc = ::_chsize_s(fd, length);
+  ::_close(fd);
+  return rc == 0 ? 0 : -1;
+}
+#endif
 
 namespace oceanbase
 {
@@ -538,7 +555,11 @@ int LogBlockMgr::try_recovery_last_block_(const char *log_dir,
     PALF_LOG(WARN, "get_file_size failed", K(ret), K(block_path));
   } else if (file_size == log_block_size) {
     PALF_LOG(INFO, "last block no need to recovery", K(block_id));
+#ifdef _WIN32
+  } else if (-1 == ob_win_truncate(block_path, log_block_size)) {
+#else
   } else if (-1 == ::truncate(block_path, log_block_size)) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(ERROR, "ftruncate failed", K(ret), KPC(this), K(file_size));
   } else {

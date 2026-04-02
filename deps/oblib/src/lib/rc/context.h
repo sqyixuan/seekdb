@@ -417,8 +417,16 @@ public:
     // change tenant_id
     ObMemAttr inner_attr = param_.attr_;
     auto *ma = ObMallocAllocator::get_instance();
+#ifdef _WIN32
+    fprintf(stderr, "[DIAG] MemCtx::init ma=%p\n", ma); fflush(stderr);
+#endif
     // tenant_allocator is created synchronously when the tenant is built, and 500 tenant memory is used when there is no such tenant
     auto ta = ma->get_tenant_ctx_allocator(inner_attr.tenant_id_, inner_attr.ctx_id_);
+#ifdef _WIN32
+    fprintf(stderr, "[DIAG] MemCtx::init ta=%p tenant=%lu ctx=%lu\n",
+            ta.ref_allocator(), (unsigned long)inner_attr.tenant_id_, (unsigned long)inner_attr.ctx_id_);
+    fflush(stderr);
+#endif
     if (nullptr == ta) {
       inner_attr.tenant_id_ = common::OB_SERVER_TENANT_ID;
     }
@@ -437,6 +445,10 @@ public:
     }
 #else
     ret = init_alloc(alloc_, thread_safe, ablock_size);
+#endif
+#ifdef _WIN32
+    fprintf(stderr, "[DIAG] MemCtx::init init_alloc ret=%d thread_safe=%d freeable=%p\n",
+            ret, (int)thread_safe, freeable_alloc_); fflush(stderr);
 #endif
     if (OB_SUCC(ret)) {
       // init arena allocator
@@ -457,7 +469,14 @@ public:
     int ret = common::OB_SUCCESS;
     if (OB_UNLIKELY(thread_safe)) {
       p_alloc_ = new (&allocator) common::ObAllocator(this, attr_, false/*use_pm*/, ablock_size);
+#ifdef _WIN32
+      fprintf(stderr, "[DIAG] init_alloc: ObAllocator constructed, calling alloc(%zu)\n",
+              sizeof(common::ObParallelAllocator)); fflush(stderr);
+#endif
       void *ptr = allocator.alloc(sizeof(common::ObParallelAllocator));
+#ifdef _WIN32
+      fprintf(stderr, "[DIAG] init_alloc: alloc returned %p\n", ptr); fflush(stderr);
+#endif
       if (OB_UNLIKELY(nullptr == ptr)) {
         ret = common::OB_ALLOCATE_MEMORY_FAILED;
       } else {

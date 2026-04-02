@@ -20,6 +20,12 @@
 #include "ob_io_calibration.h"
 #include "observer/ob_server.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_file_manager.h"
 #endif
@@ -361,7 +367,11 @@ int ObIOBenchRunner::do_benchmark(const ObIOBenchLoad &load, const int64_t threa
     } else if (OB_FAIL(TG_START(tg_id_))) {
       LOG_WARN("start thread failed", K(ret));
     } else {
+#ifdef _WIN32
+      Sleep(static_cast<DWORD>(BENCHMARK_TIMEOUT_S * 1000));
+#else
       sleep(BENCHMARK_TIMEOUT_S);
+#endif
       TG_STOP(tg_id_);
       TG_WAIT(tg_id_);
       TG_DESTROY(tg_id_);

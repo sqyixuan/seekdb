@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+#define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/cmd/ob_resource_executor.h"
 #include "sql/resolver/cmd/ob_resource_stmt.h"

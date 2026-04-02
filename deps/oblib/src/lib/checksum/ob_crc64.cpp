@@ -360,8 +360,19 @@ for RHEL4 support (GCC 3 doesn't support this instruction) */
 #include "arm_acle.h"
 #define crc32_sse42_quadword crc = __crc32cd(crc, *(int64_t*)buf); len -= 8, buf += 8
 #define crc32_sse42_byte crc = __crc32cb(crc, (uint8_t)*buf); len--, buf++
+#elif defined(_WIN32) && defined(_M_X64)
+#include <nmmintrin.h>
+#define crc32_sse42_byte \
+  crc = _mm_crc32_u8((uint32_t)crc, (uint8_t)*buf); \
+  len--, buf++
+#define crc32_sse42_quadword \
+  crc = _mm_crc32_u64(crc, *(uint64_t*)buf); \
+  len -= 8, buf += 8
 #endif /* defined(__GNUC__) && defined(__x86_64__) */
 
+#if defined(_WIN32) && defined(_M_X64)
+__attribute__((target("sse4.2")))
+#endif
 uint64_t crc64_sse42(uint64_t uCRC64, const char* buf, int64_t len)
 {
   uint64_t crc = uCRC64;
@@ -1051,7 +1062,7 @@ uint64_t ob_crc64_isal(uint64_t uCRC64, const char* buf, int64_t cb)
   }
 #ifdef __linux__
   return crc32_iscsi((unsigned char*)(buf), cb, uCRC64);
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(_WIN32)
   // macOS: ISA-L is not available, use crc64_sse42 implementation
   return crc64_sse42(uCRC64, buf, cb);
 #endif

@@ -32,7 +32,7 @@ const double ObjectSet::BLOCK_CACHE_RATIO = 0.0;
 
 const static int BT_BUF_LEN = 256;
 
-void __attribute__((weak)) has_unfree_callback(char *info)
+void OB_WEAK_SYMBOL has_unfree_callback(char *info)
 {
   _OB_LOG_RET(ERROR, OB_ERROR, "HAS UNFREE PTR!!! %s", info);
 }
@@ -62,6 +62,15 @@ AObject *ObjectSet::alloc_object(
   const uint64_t all_size = align_up2(adj_size + meta_size, 16);
 
   const int64_t ctx_id = blk_mgr_->get_ctx_id();
+#ifdef _WIN32
+  static int diag_count = 0;
+  if (diag_count < 5) {
+    fprintf(stderr, "[DIAG] ObjectSet::alloc_object size=%lu, all_size=%lu, ablock_size=%u, ctx_id=%ld, attr.ctx_id=%lu, blk_mgr=%p\n",
+            (unsigned long)size, (unsigned long)all_size, ablock_size_,
+            (long)ctx_id, (unsigned long)attr.ctx_id_, blk_mgr_); fflush(stderr);
+    diag_count++;
+  }
+#endif
   abort_unless(ctx_id == attr.ctx_id_);
   if (OB_UNLIKELY(enable_dirty_list_)) {
     do_free_dirty_list();

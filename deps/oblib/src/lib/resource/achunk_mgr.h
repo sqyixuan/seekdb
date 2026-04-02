@@ -20,7 +20,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <functional>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 #include "lib/alloc/alloc_struct.h"
 #include "lib/alloc/abit_set.h"
 #include "lib/atomic/ob_atomic.h"

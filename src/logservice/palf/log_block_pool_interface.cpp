@@ -15,6 +15,14 @@
  */
 
 #include "log_block_pool_interface.h"
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#ifndef O_DIRECTORY
+#define O_DIRECTORY 0
+#endif
+#endif
 
 namespace oceanbase
 {
@@ -26,7 +34,11 @@ int is_block_used_for_palf(const int fd, const char *path, bool &result)
   int ret = OB_SUCCESS;
   result = false;
   struct stat st;
+#ifdef _WIN32
+  if (-1 == ::stat(path, &st)) {
+#else
   if (-1 == ::fstatat(fd, path, &st, 0)) {
+#endif
     ret = convert_sys_errno();
     PALF_LOG(ERROR, "::fstat failed", K(ret), K(path), K(errno));
   } else if (st.st_size == PALF_PHY_BLOCK_SIZE) {

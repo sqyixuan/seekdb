@@ -19,11 +19,100 @@
 // common system headers
 #include <stdint.h>  // for int64_t etc.
 #include <stdio.h>
+#ifndef _WIN32
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <netinet/in.h>
-// Platform-specific headers
-#ifdef __APPLE__
+#else
+// Windows headers
+// Prevent ERROR macro conflict - Windows defines ERROR as 0, which conflicts with log levels
+#ifdef ERROR
+#undef ERROR
+#endif
+// Prevent IGNORE macro conflict - Windows winbase.h defines IGNORE as 0,
+// which conflicts with template parameter names in OceanBase code
+#ifdef IGNORE
+#undef IGNORE
+#endif
+// Prevent S_NORMAL macro conflict - Windows winbase.h defines S_NORMAL as 0,
+// which conflicts with enum values in OceanBase parser code
+#ifdef S_NORMAL
+#undef S_NORMAL
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <processthreadsapi.h>
+#include <io.h>       // for _commit (fsync equivalent)
+#include <direct.h>   // for _mkdir
+// Windows doesn't have POSIX fsync(); _commit() is the equivalent for file descriptors
+#ifndef fsync
+#define fsync(fd) _commit(fd)
+#endif
+// Windows setsockopt() expects 'const char*' for optval; POSIX uses 'const void*'
+// Provide a wrapper so callers can use void*/const void* naturally
+static inline int ob_win_setsockopt(SOCKET s, int level, int optname,
+                                    const void *optval, int optlen) {
+  return setsockopt(s, level, optname, (const char *)optval, optlen);
+}
+// Redefine setsockopt only if not already wrapped (e.g. in ob_sql_nio.cpp)
+#ifdef setsockopt
+#undef setsockopt
+#endif
+#define setsockopt(fd, level, opt, val, len) \
+  ob_win_setsockopt((SOCKET)(fd), (level), (opt), (val), (int)(len))
+
+// typeof is a GCC extension; map it to decltype for MSVC/Clang-cl
+#ifndef typeof
+#define typeof(x) decltype(x)
+#endif
+// Windows doesn't have strtok_r(); strtok_s() has the same signature
+#ifndef strtok_r
+#define strtok_r(str, delim, saveptr) strtok_s(str, delim, saveptr)
+#endif
+// Windows doesn't support O_DIRECT (direct/unbuffered I/O via open flags)
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+// POSIX file permission bits - map to Windows equivalents or 0
+#ifndef S_IRUSR
+#define S_IRUSR _S_IREAD   // owner read
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR _S_IWRITE  // owner write
+#endif
+#ifndef S_IRGRP
+#define S_IRGRP 0          // group read (no concept on Windows)
+#endif
+#ifndef S_IROTH
+#define S_IROTH 0          // other read (no concept on Windows)
+#endif
+#ifndef S_IWGRP
+#define S_IWGRP 0
+#endif
+#ifndef S_IWOTH
+#define S_IWOTH 0
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR 0
+#endif
+#ifndef S_IXGRP
+#define S_IXGRP 0
+#endif
+#ifndef S_IXOTH
+#define S_IXOTH 0
+#endif
+#ifndef S_IRWXU
+#define S_IRWXU (S_IRUSR | S_IWUSR | S_IXUSR)
+#endif
+#ifndef S_IRWXG
+#define S_IRWXG (S_IRGRP | S_IWGRP | S_IXGRP)
+#endif
+#ifndef S_IRWXO
+#define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)
+#endif
+#endif
+// Platform-specific headers - pthread
+#if defined(__APPLE__) || defined(_WIN32)
 #include <pthread.h>
 #endif
 // Define __INT64_C if not available (e.g., on macOS)
@@ -377,7 +466,7 @@ const int64_t OB_MAX_TABLET_LIST_NUMBER = 64;
 const int64_t OB_MAX_DISK_NUMBER = 32;
 const int64_t OB_MAX_TIME_STR_LENGTH = 64;
 const int64_t OB_IP_STR_BUFF = MAX_IP_ADDR_LENGTH; //TODO: xiyu  uniform IP/PORR length
-const int64_t OB_IP_PORT_STR_BUFF = 64;
+const int64_t OB_IP_PORT_STR_BUFF = MAX_IP_PORT_LENGTH + 1;
 const int64_t OB_RANGE_STR_BUFSIZ = 512;
 const int64_t OB_MAX_FETCH_CMD_LENGTH = 2048;
 const int64_t OB_MAX_EXPIRE_INFO_STRING_LENGTH = 4096;
@@ -2674,12 +2763,16 @@ OB_INLINE void reset_tid_cache()
 // Platform-specific thread ID getter
 OB_INLINE int64_t ob_syscall_gettid()
 {
-#ifdef __APPLE__
+#ifdef _WIN32
+  // Windows: use GetCurrentThreadId
+  return static_cast<int64_t>(GetCurrentThreadId());
+#elif defined(__APPLE__)
   // macOS doesn't have gettid, use pthread_threadid_np instead
   uint64_t thread_id = 0;
   pthread_threadid_np(NULL, &thread_id);
   return static_cast<int64_t>(thread_id);
 #else
+  // Linux: use syscall to get thread ID
   return static_cast<int64_t>(syscall(__NR_gettid));
 #endif
 }

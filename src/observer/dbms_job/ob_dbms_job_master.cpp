@@ -17,8 +17,11 @@
 #define USING_LOG_PREFIX RS
 
 #include "ob_dbms_job_master.h"
-
-
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include "share/ob_all_server_tracer.h"
 
 namespace oceanbase
@@ -292,7 +295,11 @@ int ObDBMSJobMaster::stop()
   scheduler_task_.stop();
   stoped_ = true;
   while (running_) {
+#ifdef _WIN32
+    Sleep(1000);
+#else
     sleep(1);
+#endif
   }
   stoped_ = false;
   LOG_INFO("dbms job master stoped", K(ret), K(lbt()));

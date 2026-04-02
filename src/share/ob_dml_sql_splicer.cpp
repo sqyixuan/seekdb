@@ -62,6 +62,12 @@ int ObDMLSqlSplicer::append_value(const long value, bool &is_null)
   // Convert long to int64_t and use the int64_t implementation
   return append_value(static_cast<int64_t>(value), is_null);
 }
+#elif defined(_WIN32)
+// Windows: long is 32-bit and distinct from int64_t, need explicit overload for long
+int ObDMLSqlSplicer::append_value(const long value, bool &is_null)
+{
+  return append_value(static_cast<int64_t>(value), is_null);
+}
 #endif
 
 int ObDMLSqlSplicer::append_value(const uint32_t value, bool &is_null)

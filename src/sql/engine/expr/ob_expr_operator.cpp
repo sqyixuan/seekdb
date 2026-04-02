@@ -238,9 +238,15 @@ bool ObExprOperator::is_default_expr_cg() const
   union {
     CGFunc func_;
     int64_t val_;
+#if !defined(_WIN32)
     int64_t values_[2];
+#endif
   } func_val;
+#ifdef _WIN32
+  static_assert(sizeof(int64_t) == sizeof(CGFunc), "size mismatch");
+#else
   static_assert(sizeof(int64_t) * 2  == sizeof(CGFunc), "size mismatch");
+#endif
   func_val.func_ = &ObExprOperator::cg_expr;
   const int64_t func_idx = func_val.val_ / sizeof(void *);
   return (*(void ***)(&base))[func_idx] == (*(void ***)(this))[func_idx];

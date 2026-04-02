@@ -57,7 +57,11 @@ private:
   int refresh_schema_();
 
   const static int64_t DEFAULT_IDLE_TIME = 1000 * 1000;  // 1s
+#ifdef _WIN32
+  static constexpr int64_t MAX_IDLE_TIME = 3600000000LL;  // 3600s
+#else
   const static int64_t MAX_IDLE_TIME = 3600L * 1000 * 1000;  // 3600s
+#endif
 
 public:
  TO_STRING_KV(K_(is_inited), K_(tenant_id), KP_(sql_proxy), K_(schema_broadcasted), K_(idle_time));

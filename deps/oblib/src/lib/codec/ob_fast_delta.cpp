@@ -5,6 +5,11 @@
 
 #include "ob_fast_delta.h"
 #include "ob_sse_to_neon.h"
+#ifdef _WIN32
+#include <emmintrin.h>   // SSE2 basic extensions
+#include <tmmintrin.h>   // SSE3/SSSE3 extensions
+#include <smmintrin.h>   // SSE4.1 extensions
+#endif
 
 namespace oceanbase
 {

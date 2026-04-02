@@ -18,11 +18,79 @@
 
 #include "observer/ob_command_line_parser.h"
 
-#include <getopt.h>
+#ifdef _WIN32
+#include <windows.h>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#define no_argument 0
+#define required_argument 1
+struct option {
+  const char *name;
+  int has_arg;
+  int *flag;
+  int val;
+};
+static char *optarg_ptr = nullptr;
+static int optind_val = 1;
+#define optarg optarg_ptr
+#define optind optind_val
+static int getopt_long(int argc, char *const argv[], const char *short_opts,
+                       const struct option *long_opts, int *long_index) {
+  (void)long_index;
+  optarg_ptr = nullptr;
+  if (optind_val >= argc || argv[optind_val] == nullptr) return -1;
+  char *arg = argv[optind_val];
+  if (arg[0] != '-') return -1;
+  if (arg[1] == '-') {
+    arg += 2;
+    for (int i = 0; long_opts[i].name != nullptr; i++) {
+      const char *name = long_opts[i].name;
+      size_t nlen = strlen(name);
+      if (strncmp(arg, name, nlen) != 0) continue;
+      if (arg[nlen] == '=') {
+        if (long_opts[i].has_arg == required_argument) {
+          optarg_ptr = arg + nlen + 1;
+          optind_val++;
+          return long_opts[i].val;
+        }
+      } else if (arg[nlen] == '\0') {
+        if (long_opts[i].has_arg == required_argument && optind_val + 1 < argc) {
+          optarg_ptr = argv[optind_val + 1];
+          optind_val += 2;
+          return long_opts[i].val;
+        } else if (long_opts[i].has_arg == no_argument) {
+          optind_val++;
+          return long_opts[i].val;
+        }
+      }
+    }
+    return '?';
+  }
+  char c = arg[1];
+  if (c == '\0') return -1;
+  const char *p = strchr(short_opts, c);
+  if (!p) return '?';
+  if (p[1] == ':') {
+    if (arg[2] != '\0') {
+      optarg_ptr = arg + 2;
+    } else if (optind_val + 1 < argc) {
+      optarg_ptr = argv[optind_val + 1];
+      optind_val++;
+    } else {
+      return '?';
+    }
+  }
+  optind_val++;
+  return (unsigned char)c;
+}
+#else
+#include <getopt.h>
 #include <unistd.h>
+#endif
+#include <cstdlib>
+#include <cstring>
+#include <cstdio>
 
 #ifdef __APPLE__
 // macOS: use _exit instead of exit to skip static destructors
@@ -53,12 +121,33 @@ const char *COPYRIGHT  = "Copyright (c) 2011-present OceanBase Inc.";
 static int get_executable_name(ObSqlString &exe_name)
 {
   int ret = OB_SUCCESS;
-  char buf[PATH_MAX] = {0};
+  char buf[4096] = {0};
+#ifdef _WIN32
+  DWORD len = GetModuleFileNameA(nullptr, buf, sizeof(buf) - 1);
+  if (len == 0 || len >= sizeof(buf)) {
+    ret = OB_ERROR;
+    LOG_WARN("fail to get self exe path", K(ret));
+  } else {
+    const char *last_slash = strrchr(buf, '\\');
+    if (nullptr == last_slash) {
+      last_slash = strrchr(buf, '/');
+    }
+    if (nullptr == last_slash) {
+      last_slash = buf;
+    } else {
+      last_slash++;
+    }
+    if (OB_FAIL(exe_name.assign(last_slash))) {
+      LOG_WARN("fail to assign exe name to `sql string`", K(ret));
+    }
+  }
+#else
   ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
   if (-1 == len) {
     ret = OB_ERROR;
     LOG_WARN("fail to get self exe path", KCSTRING(strerror(errno)));
   } else {
+    buf[len] = '\0';
     const char *last_slash = strrchr(buf, '/');
     if (nullptr == last_slash) {
       last_slash = buf;
@@ -69,6 +158,7 @@ static int get_executable_name(ObSqlString &exe_name)
       LOG_WARN("fail to assign exe name to `sql string`", K(ret));
     }
   }
+#endif
   return ret;
 }
 

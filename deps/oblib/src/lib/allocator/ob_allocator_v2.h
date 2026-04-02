@@ -88,14 +88,33 @@ private:
     virtual ABlock *alloc_block(uint64_t size, const ObMemAttr &attr) override
     {
       ABlock *block = NULL;
-      if (OB_NOT_NULL(ta_)) {
+      if (ta_.ref_allocator() != nullptr) {
         block = ta_->get_block_mgr().alloc_block(size, attr);
+#ifdef _WIN32
+        if (OB_ISNULL(block)) {
+          static bool diag_once = false;
+          if (!diag_once) {
+            fprintf(stderr, "[DIAG] ObAllocator::blk_mgr_::alloc_block ta_=%p, block=NULL, size=%lu\n",
+                    ta_.ref_allocator(), (unsigned long)size); fflush(stderr);
+            diag_once = true;
+          }
+        }
+#endif
       }
+#ifdef _WIN32
+      else {
+        static bool diag_once = false;
+        if (!diag_once) {
+          fprintf(stderr, "[DIAG] ObAllocator::blk_mgr_::alloc_block ta_=NULL!\n"); fflush(stderr);
+          diag_once = true;
+        }
+      }
+#endif
       return block;
     }
     virtual void free_block(ABlock *block) override
     {
-      if (OB_NOT_NULL(ta_)) {
+      if (ta_.ref_allocator() != nullptr) {
         ta_->get_block_mgr().free_block(block);
       } else {
         OB_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "tenant ctx allocator is null", K(tenant_id_), K(ctx_id_));
@@ -104,7 +123,7 @@ private:
     virtual int64_t sync_wash(int64_t wash_size) override
     {
       int64_t washed_size = 0;
-      if (OB_NOT_NULL(ta_)) {
+      if (ta_.ref_allocator() != nullptr) {
         washed_size = ta_->sync_wash(wash_size);
       }
       return washed_size;
