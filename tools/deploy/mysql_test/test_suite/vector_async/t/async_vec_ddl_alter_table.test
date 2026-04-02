@@ -1,0 +1,481 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: ALTER TABLE tests for tables with async vector index
+#  Covers: modify table structure, partition operations, auto_increment columns
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+drop table if exists t8;
+drop table if exists t9;
+drop table if exists t10;
+drop table if exists t11;
+drop table if exists t12;
+--enable_warnings
+
+--echo
+--echo ========== 1. Modify table structure ==========
+--echo
+--echo === 1.1 Add regular column (should not affect async index) ===
+create table t1 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+--echo --- Insert test data ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]');
+insert into t1 values (2, '[2.0, 2.0, 2.0]');
+
+--echo --- Create async index ---
+create vector index idx1 on t1(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works ---
+select id from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Add regular column ---
+alter table t1 add column name varchar(50);
+show create table t1;
+
+--echo --- Update new column ---
+update t1 set name = 'item1' where id = 1;
+update t1 set name = 'item2' where id = 2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify async index still works ---
+select id, name from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Insert new data with new column ---
+insert into t1 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify all data is searchable ---
+select id, name from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t1;
+
+--echo
+--echo === 1.2 Drop regular column (should not affect async index) ===
+create table t2 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50),
+  score int
+) organization heap;
+
+--echo --- Insert test data ---
+insert into t2 values (1, '[1.0, 1.0, 1.0]', 'item1', 100);
+insert into t2 values (2, '[2.0, 2.0, 2.0]', 'item2', 200);
+
+--echo --- Create async index ---
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works ---
+select id, name, score from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Drop regular column ---
+alter table t2 drop column score;
+show create table t2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify async index still works ---
+select id, name from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+drop table t2;
+
+--echo
+--echo === 1.3 Modify regular column type (should not affect async index) ===
+create table t3 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+--echo --- Insert test data ---
+insert into t3 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t3 values (2, '[2.0, 2.0, 2.0]', 'item2');
+
+--echo --- Create async index ---
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works ---
+select id, name from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Modify column type ---
+alter table t3 modify column name varchar(100);
+show create table t3;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify async index still works ---
+select id, name from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+drop table t3;
+
+--echo
+--echo === 1.4 Add second vector column with async index ===
+create table t4 (
+  id int primary key,
+  vec1 vector(3)
+) organization heap;
+
+--echo --- Insert test data ---
+insert into t4 values (1, '[1.0, 1.0, 1.0]');
+insert into t4 values (2, '[2.0, 2.0, 2.0]');
+
+--echo --- Create async index on first vector column ---
+create vector index idx4_1 on t4(vec1) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify first index works ---
+select id from t4 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Add second vector column ---
+alter table t4 add column vec2 vector(3);
+show create table t4;
+
+--echo --- Update second vector column ---
+update t4 set vec2 = '[10.0, 10.0, 10.0]' where id = 1;
+update t4 set vec2 = '[20.0, 20.0, 20.0]' where id = 2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Create async index on second vector column ---
+create vector index idx4_2 on t4(vec2) with (distance=cosine, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify both indexes work ---
+select id from t4 order by l2_distance(vec1, '[1.0, 1.0, 1.0]') approximate limit 2;
+select id from t4 order by cosine_distance(vec2, '[10.0, 10.0, 10.0]') approximate limit 2;
+
+drop table t4;
+
+--echo
+--echo ========== 2. Partition operations ==========
+--echo
+--echo === 2.1 Add partition to RANGE partitioned table ===
+create table t6 (
+  id int primary key,
+  vec vector(3)
+) organization heap
+partition by range(id) (
+  partition p0 values less than (100),
+  partition p1 values less than (200)
+);
+
+--echo --- Insert test data ---
+insert into t6 values (10, '[1.0, 1.0, 1.0]');
+insert into t6 values (110, '[2.0, 2.0, 2.0]');
+
+--echo --- Create async index ---
+create vector index idx6 on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works ---
+select id from t6 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Add new partition ---
+alter table t6 add partition (partition p2 values less than (300));
+show create table t6;
+
+--echo --- Insert data into new partition ---
+insert into t6 values (210, '[3.0, 3.0, 3.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works across all partitions ---
+select count(*) from t6;
+select id from t6 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t6;
+
+--echo
+--echo === 2.2 Drop partition from RANGE partitioned table ===
+create table t7 (
+  id int primary key,
+  vec vector(3)
+) organization heap
+partition by range(id) (
+  partition p0 values less than (100),
+  partition p1 values less than (200),
+  partition p2 values less than (300)
+);
+
+--echo --- Insert test data ---
+insert into t7 values (10, '[1.0, 1.0, 1.0]');
+insert into t7 values (110, '[2.0, 2.0, 2.0]');
+insert into t7 values (210, '[3.0, 3.0, 3.0]');
+
+--echo --- Create async index ---
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works ---
+select count(*) from t7;
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Drop partition p2 ---
+alter table t7 drop partition p2;
+show create table t7;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify data in dropped partition is gone ---
+select count(*) from t7;
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- Insert new data and verify async consumption still works ---
+insert into t7 values (20, '[4.0, 4.0, 4.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify new data is searchable ---
+select count(*) from t7;
+select id from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t7;
+
+--echo
+--echo === 2.3 Truncate partition ===
+create table t8 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap
+partition by range(id) (
+  partition p0 values less than (100),
+  partition p1 values less than (200)
+);
+
+--echo --- Insert test data ---
+insert into t8 values (10, '[1.0, 1.0, 1.0]', 'item1');
+insert into t8 values (20, '[1.5, 1.5, 1.5]', 'item2');
+insert into t8 values (110, '[2.0, 2.0, 2.0]', 'item3');
+
+--echo --- Create async index ---
+create vector index idx8 on t8(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify all data is searchable ---
+select count(*) from t8;
+select id, name from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Truncate partition p0 ---
+alter table t8 truncate partition p0;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify data in p0 is gone, p1 data remains ---
+select count(*) from t8;
+select id, name from t8 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 1;
+
+--echo --- Insert new data into truncated partition ---
+insert into t8 values (30, '[3.0, 3.0, 3.0]', 'item4');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify new data is searchable ---
+select count(*) from t8;
+select id, name from t8 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 2;
+
+drop table t8;
+
+--echo
+--echo ========== 3. Auto-increment column tests ==========
+--echo
+--echo === 3.1 Table with AUTO_INCREMENT primary key ===
+create table t9 (
+  id int auto_increment primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+--echo --- Insert data without specifying id ---
+insert into t9 (vec, name) values ('[1.0, 1.0, 1.0]', 'item1');
+insert into t9 (vec, name) values ('[2.0, 2.0, 2.0]', 'item2');
+insert into t9 (vec, name) values ('[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Verify auto-increment values ---
+select id, name from t9 order by id;
+
+--echo --- Create async index ---
+create vector index idx9 on t9(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works with auto-increment ids ---
+select id, name from t9 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Insert more data ---
+insert into t9 (vec, name) values ('[4.0, 4.0, 4.0]', 'item4');
+insert into t9 (vec, name) values ('[5.0, 5.0, 5.0]', 'item5');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify all data is searchable ---
+select count(*) from t9;
+select id, name from t9 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+drop table t9;
+
+--echo
+--echo === 3.2 Modify AUTO_INCREMENT starting value ===
+create table t10 (
+  id int auto_increment primary key,
+  vec vector(3)
+) organization heap;
+
+--echo --- Insert initial data ---
+insert into t10 (vec) values ('[1.0, 1.0, 1.0]');
+insert into t10 (vec) values ('[2.0, 2.0, 2.0]');
+
+--echo --- Create async index ---
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify current data ---
+select id from t10 order by id;
+
+--echo --- Modify AUTO_INCREMENT value ---
+alter table t10 auto_increment = 1000;
+
+--echo --- Insert new data ---
+insert into t10 (vec) values ('[3.0, 3.0, 3.0]');
+insert into t10 (vec) values ('[4.0, 4.0, 4.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify auto-increment change worked and index still works ---
+select id from t10 order by id;
+select count(*) from t10;
+select id from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+
+drop table t10;
+
+--echo
+--echo === 3.3 AUTO_INCREMENT with partitioned table ===
+create table t11 (
+  id int auto_increment,
+  part_key int,
+  vec vector(3),
+  primary key(id, part_key)
+) organization heap
+partition by hash(part_key) partitions 4;
+
+--echo --- Insert data without specifying id ---
+insert into t11 (part_key, vec) values (1, '[1.0, 1.0, 1.0]');
+insert into t11 (part_key, vec) values (2, '[2.0, 2.0, 2.0]');
+insert into t11 (part_key, vec) values (3, '[3.0, 3.0, 3.0]');
+insert into t11 (part_key, vec) values (4, '[4.0, 4.0, 4.0]');
+
+--echo --- Verify auto-increment values ---
+select id, part_key from t11 order by id;
+
+--echo --- Create async index ---
+create vector index idx11 on t11(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify index works across partitions ---
+select count(*) from t11;
+select id, part_key from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+
+drop table t11;
+
+--echo
+--echo ========== 4. Complex ALTER TABLE scenarios ==========
+--echo
+--echo === 4.1 Multiple ALTER operations in sequence ===
+create table t12 (
+  id int primary key,
+  vec vector(3),
+  col1 int
+) organization heap;
+
+--echo --- Insert test data ---
+insert into t12 values (1, '[1.0, 1.0, 1.0]', 10);
+insert into t12 values (2, '[2.0, 2.0, 2.0]', 20);
+
+--echo --- Create async index ---
+create vector index idx12 on t12(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, col1 from t12 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 2;
+
+--echo --- ALTER 1: Add column ---
+alter table t12 add column col2 varchar(50);
+
+--echo --- ALTER 2: Modify existing column ---
+alter table t12 modify column col1 bigint;
+
+--echo --- ALTER 3: Add another column ---
+alter table t12 add column col3 double;
+
+--echo --- Insert new data ---
+insert into t12 values (3, '[3.0, 3.0, 3.0]', 30, 'test', 3.14);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify async index still works after multiple ALTERs ---
+select count(*) from t12;
+select id, col1, col2, col3 from t12 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t12;
+
+--echo
+--echo ========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;

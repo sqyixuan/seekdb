@@ -1,0 +1,483 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: Transaction and concurrency tests for async vector index
+#  Covers: transaction isolation, frequent DML, concurrent operations
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+--enable_warnings
+
+SET ob_trx_timeout = 10000000000;
+SET ob_query_timeout = 10000000000;
+
+--echo
+--echo ========== 4.1 Transaction Isolation ==========
+--echo
+--echo === 4.1.1 Uncommitted transaction ===
+create table t1 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx1 on t1(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t1 values (2, '[2.0, 2.0, 2.0]', 'item2');
+
+call dbms_index_manager.refresh();
+
+--echo --- Start transaction and INSERT without commit ---
+start transaction;
+insert into t1 values (3, '[3.0, 3.0, 3.0]', 'item3');
+insert into t1 values (4, '[4.0, 4.0, 4.0]', 'item4');
+
+--echo --- Query in current session (should see uncommitted data) ---
+select id, name from t1 order by id;
+select count(*) from t1;
+
+--echo --- Create another connection to verify isolation ---
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn1;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo --- Query in other session (should NOT see uncommitted data) ---
+select id, name from t1 order by id;
+select count(*) from t1;
+
+--echo --- Wait for CDC sync (should not sync uncommitted data) ---
+call dbms_index_manager.refresh();
+
+--echo --- Vector search in other session (should not find uncommitted data) ---
+select id, name from t1 order by l2_distance(vec, '[3.0, 3.0, 3.0]') approximate limit 5;
+
+connection default;
+
+--echo --- Rollback transaction ---
+rollback;
+
+--echo --- Verify rollback in current session ---
+select count(*) from t1;
+select id, name from t1 order by id;
+
+--echo --- Wait for CDC sync after rollback ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify data after rollback (should not have rolled back data) ---
+select count(*) from t1;
+select id, name from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+disconnect conn1;
+drop table t1;
+
+--echo
+--echo === 4.1.2 Committed transaction ===
+create table t2 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t2 values (1, '[1.0, 1.0, 1.0]');
+insert into t2 values (2, '[2.0, 2.0, 2.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Start transaction and INSERT with commit ---
+start transaction;
+insert into t2 values (3, '[3.0, 3.0, 3.0]');
+insert into t2 values (4, '[4.0, 4.0, 4.0]');
+insert into t2 values (5, '[5.0, 5.0, 5.0]');
+commit;
+
+--echo --- Wait for CDC sync after commit ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify committed data is visible ---
+select count(*) from t2;
+select id from t2 order by id;
+
+--echo --- Verify committed data is searchable ---
+select id from t2 order by l2_distance(vec, '[3.0, 3.0, 3.0]') approximate limit 5;
+
+--echo --- Create another connection to verify visibility ---
+connect (conn2,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn2;
+
+--echo --- Other session should see committed data ---
+select count(*) from t2;
+select id from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+disconnect conn2;
+connection default;
+drop table t2;
+
+--echo
+--echo === 4.1.3 Transaction with UPDATE and DELETE ===
+create table t3 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t3 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t3 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t3 values (3, '[3.0, 3.0, 3.0]', 'item3');
+insert into t3 values (4, '[4.0, 4.0, 4.0]', 'item4');
+
+call dbms_index_manager.refresh();
+
+--echo --- Start transaction with mixed DML ---
+start transaction;
+update t3 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+delete from t3 where id = 2;
+insert into t3 values (5, '[5.0, 5.0, 5.0]', 'item5');
+
+--echo --- Query in transaction (should see uncommitted changes) ---
+select id, name from t3 order by id;
+
+--echo --- Rollback ---
+rollback;
+
+--echo --- Verify rollback ---
+select count(*) from t3;
+select id, name from t3 order by id;
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector search after rollback ---
+select id, name from t3 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+--echo --- Now commit changes ---
+start transaction;
+update t3 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+delete from t3 where id = 2;
+insert into t3 values (5, '[5.0, 5.0, 5.0]', 'item5');
+commit;
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify committed changes ---
+select count(*) from t3;
+select id, name from t3 order by id;
+select id, name from t3 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+
+drop table t3;
+
+--echo
+--echo === 4.1.4 Large transaction ===
+create table t4 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx4 on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Start large transaction (insert 200 rows) ---
+start transaction;
+--disable_query_log
+let $i = 1;
+while ($i <= 200) {
+  eval insert into t4 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+commit;
+
+--echo --- Wait for CDC sync after large transaction ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify all data committed and searchable ---
+select count(*) from t4;
+select id from t4 order by l2_distance(vec, '[100.0, 100.0, 100.0]') approximate limit 5;
+select id from t4 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+drop table t4;
+
+--echo
+--echo ========== 4.2 Frequent DML Operations ==========
+--echo
+--echo === 4.2.1 Consecutive INSERT → UPDATE → DELETE ===
+create table t5 (
+  id int primary key,
+  vec vector(3),
+  value int
+) organization heap;
+
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Frequent DML: INSERT ---
+insert into t5 values (1, '[1.0, 1.0, 1.0]', 100);
+insert into t5 values (2, '[2.0, 2.0, 2.0]', 200);
+insert into t5 values (3, '[3.0, 3.0, 3.0]', 300);
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify after INSERT ---
+select id, value from t5 order by id;
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Frequent DML: UPDATE ---
+update t5 set vec = '[10.0, 10.0, 10.0]', value = 1000 where id = 1;
+update t5 set vec = '[20.0, 20.0, 20.0]', value = 2000 where id = 2;
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify after UPDATE ---
+select id, value from t5 order by id;
+select id from t5 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 3;
+
+--echo --- Frequent DML: DELETE ---
+delete from t5 where id = 1;
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify after DELETE ---
+select count(*) from t5;
+select id, value from t5 order by id;
+select id from t5 order by l2_distance(vec, '[20.0, 20.0, 20.0]') approximate limit 3;
+
+--echo --- Verify final consistency ---
+select count(*) from t5;
+select id from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t5;
+
+--echo
+--echo === 4.2.2 Mixed DML operations in rapid succession ===
+create table t6 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx6 on t6(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Rapid mixed DML operations ---
+insert into t6 values (1, '[1.0, 1.0, 1.0]');
+insert into t6 values (2, '[2.0, 2.0, 2.0]');
+insert into t6 values (3, '[3.0, 3.0, 3.0]');
+update t6 set vec = '[11.0, 11.0, 11.0]' where id = 1;
+insert into t6 values (4, '[4.0, 4.0, 4.0]');
+delete from t6 where id = 2;
+insert into t6 values (5, '[5.0, 5.0, 5.0]');
+update t6 set vec = '[33.0, 33.0, 33.0]' where id = 3;
+insert into t6 values (6, '[6.0, 6.0, 6.0]');
+
+--echo --- Wait for CDC to sync all operations ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify final state after all operations ---
+select count(*) from t6;
+select id from t6 order by id;
+select id from t6 order by l2_distance(vec, '[11.0, 11.0, 11.0]') approximate limit 5;
+
+--echo --- Verify deleted data not searchable ---
+select id from t6 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 5;
+
+drop table t6;
+
+--echo
+--echo === 4.2.3 Mixed DML on partitioned table ===
+create table t7 (
+  id int primary key,
+  vec vector(3)
+) organization heap
+partition by hash(id) partitions 4;
+
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Mixed DML across partitions ---
+insert into t7 values (1, '[1.0, 1.0, 1.0]');
+insert into t7 values (101, '[2.0, 2.0, 2.0]');
+insert into t7 values (201, '[3.0, 3.0, 3.0]');
+insert into t7 values (301, '[4.0, 4.0, 4.0]');
+update t7 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+delete from t7 where id = 101;
+insert into t7 values (102, '[5.0, 5.0, 5.0]');
+update t7 set vec = '[30.0, 30.0, 30.0]' where id = 201;
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify CDC sync correctness across partitions ---
+select count(*) from t7;
+select id from t7 order by id;
+select id from t7 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 5;
+
+drop table t7;
+
+--echo
+--echo ========== 4.3 Concurrent Operations ==========
+--echo
+--echo === 4.3.1 Multi-session concurrent INSERT ===
+create table t8 (
+  id int primary key,
+  vec vector(3),
+  session_id int
+) organization heap;
+
+create vector index idx8 on t8(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Session 1: INSERT data ---
+insert into t8 values (1, '[1.0, 1.0, 1.0]', 1);
+insert into t8 values (2, '[2.0, 2.0, 2.0]', 1);
+insert into t8 values (3, '[3.0, 3.0, 3.0]', 1);
+
+--echo --- Create concurrent connection ---
+connect (conn3,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn3;
+
+--echo --- Session 2: INSERT different data ---
+insert into t8 values (10, '[10.0, 10.0, 10.0]', 2);
+insert into t8 values (20, '[20.0, 20.0, 20.0]', 2);
+insert into t8 values (30, '[30.0, 30.0, 30.0]', 2);
+
+connection default;
+
+--echo --- Session 1: INSERT more data ---
+insert into t8 values (4, '[4.0, 4.0, 4.0]', 1);
+insert into t8 values (5, '[5.0, 5.0, 5.0]', 1);
+
+connection conn3;
+
+--echo --- Session 2: INSERT more data ---
+insert into t8 values (40, '[40.0, 40.0, 40.0]', 2);
+
+connection default;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify all concurrent INSERTs are synced ---
+select count(*) from t8;
+select id, session_id from t8 order by id;
+select id, session_id from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10;
+
+disconnect conn3;
+drop table t8;
+
+--echo
+--echo === 4.3.3 DML and query concurrency ===
+create table t10 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t10 values (1, '[1.0, 1.0, 1.0]');
+insert into t10 values (2, '[2.0, 2.0, 2.0]');
+insert into t10 values (3, '[3.0, 3.0, 3.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Create concurrent connection for queries ---
+connect (conn5,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+--echo --- Session 1: Perform DML operations ---
+connection default;
+insert into t10 values (4, '[4.0, 4.0, 4.0]');
+
+--echo --- Session 2: Query (may not see new data yet) ---
+connection conn5;
+select count(*) as count_before_sync from t10;
+
+--echo --- Session 1: Continue DML ---
+connection default;
+insert into t10 values (5, '[5.0, 5.0, 5.0]');
+update t10 set vec = '[11.0, 11.0, 11.0]' where id = 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Session 2: Query after sync (should see all data) ---
+connection conn5;
+select count(*) as count_after_sync from t10;
+select id from t10 order by l2_distance(vec, '[11.0, 11.0, 11.0]') approximate limit 5;
+
+--echo --- Session 1: More DML ---
+connection default;
+delete from t10 where id = 2;
+insert into t10 values (6, '[6.0, 6.0, 6.0]');
+
+call dbms_index_manager.refresh();
+
+--echo --- Session 2: Query evolution ---
+connection conn5;
+select count(*) as final_count from t10;
+select id from t10 order by id;
+select id from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10;
+
+disconnect conn5;
+connection default;
+drop table t10;
+
+--echo
+--echo === 4.3.4 Concurrent operations on partitioned table ===
+create table t11 (
+  id int primary key,
+  vec vector(3),
+  session_id int
+) organization heap
+partition by hash(id) partitions 4;
+
+create vector index idx11 on t11(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Create concurrent connections ---
+connect (conn6,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (conn7,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+
+--echo --- Session 1: INSERT into partition 1 ---
+connection default;
+insert into t11 values (1, '[1.0, 1.0, 1.0]', 1);
+insert into t11 values (5, '[5.0, 5.0, 5.0]', 1);
+
+--echo --- Session 2: INSERT into partition 2 ---
+connection conn6;
+insert into t11 values (101, '[101.0, 101.0, 101.0]', 2);
+insert into t11 values (105, '[105.0, 105.0, 105.0]', 2);
+
+--echo --- Session 3: INSERT into partition 3 ---
+connection conn7;
+insert into t11 values (201, '[201.0, 201.0, 201.0]', 3);
+insert into t11 values (205, '[205.0, 205.0, 205.0]', 3);
+
+--echo --- Session 1: INSERT into partition 4 ---
+connection default;
+insert into t11 values (301, '[301.0, 301.0, 301.0]', 1);
+
+call dbms_index_manager.refresh();
+
+--echo --- Verify concurrent operations across partitions ---
+select count(*) from t11;
+select id, session_id from t11 order by id;
+select id, session_id from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 10;
+
+disconnect conn6;
+disconnect conn7;
+connection default;
+drop table t11;
+
+--echo
+--echo ========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;
