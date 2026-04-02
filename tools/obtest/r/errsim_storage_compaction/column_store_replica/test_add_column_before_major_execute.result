@@ -1,0 +1,51 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=4);
+ob1.z1.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z2.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.z3.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+ob1.reboot;
+===============================================================
+=================  Step 0: prepare env   ======================
+===============================================================
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+===============================================================
+=================  Step 1: create tenant   ====================
+===============================================================
+CREATE RESOURCE UNIT user_unit_config MAX_CPU = 1, MEMORY_SIZE = '2G', MAX_IOPS = 1024, LOG_DISK_SIZE = '3G';
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create TENANT $tenant_name resource_pool_list=('cs_replica_pool'), locality = "F@z1, F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+===============================================================
+==== Step 2: create table, do major, add column, do minor  ====
+===============================================================
+create table t1 (k int primary key, v1 int, v2 int, v3 varchar(20));
+alter table t1 modify v3 varchar(21);
+insert into t1 values (1, 1, 1, '1');
+insert into t1 values (2, 2, 2, '2');
+insert into t1 values (3, 3, 3, '3');
+select * from t1 order by k;
+k	v1	v2	v3
+1	1	1	1
+2	2	2	2
+3	3	3	3
+ob1.mysql alter system set_tp tp_no = 706, error_code = 4023, frequency = 1;
+alter system major freeze;
+alter table t1 add v0 bit after k;
+insert into t1 (k, v1, v2) values (4, 4, 4), (5, 5, 5);
+alter system minor freeze;
+ob1.mysql alter system set_tp tp_no = 706, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where compaction_scn = $compaction_scn and tenant_id = $tenant_id and tablet_id = $tablet_id, 2, 600;
+===============================================================
+=================  Step 3: add C replica ======================
+===============================================================
+ob1.mysql alter tenant $tenant_name set locality = "F{1}@z1,F{1}@z2,C{1}@z3";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "INPROGRESS", 1, 100;
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+select count(*) from GV$OB_SSTABLES where (tenant_id, tablet_id) = (select tenant_id, tablet_id from __all_virtual_table where table_name = 't1') and table_type in ('CO_MAJOR');
+count(*)
+1

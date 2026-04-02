@@ -1,0 +1,126 @@
+# owner: dachuan.sdc
+# owner group: sql2
+# tags: optimizer,px
+
+--result_format 4
+--disable_warnings
+drop table if exists t1;
+drop table if exists t1_1;
+drop table if exists t1_2;
+drop table if exists t2;
+drop table if exists t3;
+--enable_warnings
+
+CREATE TABLE T1 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T1_1 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T1_2 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 3;
+CREATE TABLE T2 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 4;
+CREATE TABLE T3 (C1 INT, C2 INT) PARTITION BY HASH(C1) PARTITIONS 5;
+insert into t1 values(1, 1), (2,2), (3,3), (4,4);
+insert into t1_1 values(1, 1), (2,2), (3,3), (4,4);
+insert into t2 values(1, 1), (2,2), (4,4), (5,5), (6,6);
+insert into t3 values(2,2), (4,4), (5,5), (6,6);
+--explain_protocol 2
+
+
+######################################## pkey to simple pw ######################################
+## pw hash join
+select /*+ use_hash(t1_1) leading(t2 (t1 t1_1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+
+## pw nlj
+select  /*+ use_nl(t1) leading(t2 (t1_1 t1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+
+## pw merge join
+create index idx_t1 on t1(c1, c2);
+create index idx_t1_1 on t1_1(c1, c2);
+select /*+ use_merge(t1_1) leading(t2 (t1 t1_1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+alter table t1_1 drop index idx_t1_1;
+
+### pw nlj with push-down param
+select  /*+ index(t1 idx_t1) use_nl(t1) leading(t2 (t1_1 t1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+
+
+### pw nlj with push-down param and table lookup
+alter table t1 drop index idx_t1;
+create index idx_t1 on t1(c1) global;
+select  /*+ index(t1 idx_t1) use_nl(t1) leading(t2 (t1_1 t1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+alter table t1 drop index idx_t1;
+
+
+create index idx_t1 on t1(c1) partition by hash(c1) partitions 3;
+select  /*+ index(t1 idx_t1) use_nl(t1) leading(t2 (t1_1 t1))) */ * from t2 join t1 join t1_1 on t1.c1 = t1_1.c1 and t2.c2 = t1.c1;
+alter table t1 drop index idx_t1;
+
+
+
+######################################## pkey to complicated pw ######################################
+## child of pwj is pkey
+--sorted_result
+select /*+ parallel(2) leading(t3 (t1_1 (t1 t2))) pq_distribute(t2 none partition) */ * from t1 join t1_1 join t2 join t3 on t1.c1 = t1_1.c1 and t1.c1 = t2.c2 and t3.c2 = t1.c1;
+
+## child of pwj is broadcast
+--sorted_result
+select /*+ parallel(2) leading(t3 (t1_1 (t1 t2))) pq_distribute(t2 none broadcast) */ * from t1 join t1_1 join t2 join t3 on t1.c1 = t1_1.c1 and t1.c1 = t2.c2 and t3.c2 = t1.c1;
+
+
+
+
+######################################## pkey to pkey/broadcast ######################################
+select /*+ leading(t3 (t1 t2))*/ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+select /*+ leading(t3 (t2 t1))*/ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+select /*+ leading((t1 t2) t3)*/ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+select /*+ leading((t2 t1) t3)*/ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+
+--sorted_result
+select /*+ parallel(2) leading(t3 (t1 t2)) pq_distribute(t2 none broadcast) */ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+--sorted_result
+select /*+ parallel(2) leading((t1 t2) t3) pq_distribute(t2 none broadcast) */ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+--sorted_result
+select /*+ parallel(2) leading((t2 t1) t3) pq_distribute(t3 none broadcast) */ * from t1 join t2 join t3 on t1.c1 = t2.c2 and t1.c1 = t3.c2;
+
+
+
+
+###################################### pkey to set ###################################
+## pkey to pw except
+insert into t1 values(5,5), (6,6), (7,7);
+select * from t2 join (select * from t1 except select * from t1_1) t11 on t11.c1 = t2.c2;
+
+## pkey to pw union
+select * from t2 join (select * from t1 union select * from t1_1) t11 on t11.c1 = t2.c2;
+
+
+## pkey to pkey except
+select * from t2 join (select * from t1 except select * from t3) t11 on t11.c1 = t2.c2;
+
+## pkey to pkey union
+select * from t2 join (select * from t1 union select * from t3) t11 on t11.c1 = t2.c2;
+
+
+#################################  pkey to subplan filter ###################################
+## pw subplan filter
+select /*+ leading(t11 t2) use_hash(t2) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c1 = t1_1.c1)) t11 on t2.c2 = t11.c1;
+select /*+ leading(t2 t11) use_hash(t11) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c1 = t1_1.c1)) t11 on t2.c2 = t11.c1;
+
+select /*+ leading(t11 t2) use_nl(t2) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c1 = t1_1.c1)) t11 on t2.c2 = t11.c1;
+select /*+ leading(t2 t11) use_nl(t11) */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c1 = t1_1.c1)) t11 on t2.c2 = t11.c1;
+
+## pkey subplan filter
+select /*+ leading(t11 t2)  */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c2 = t1_1.c1)) t11 on t2.c2 = t11.c2;
+select /*+ leading(t2 t11)  */* from t2 join (select /*+ no_rewrite */ * from t1 where exists (select 1 from t1_1 where t1.c2 = t1_1.c1)) t11 on t2.c2 = t11.c2;
+
+drop table if exists t1;
+drop table if exists t1_1;
+drop table if exists t1_2;
+drop table if exists t2;
+drop table if exists t3;
+
+##bugfix: 
+create table t1(c1 int, c2 int) partition by hash(c1) partitions 5;
+create table t2(c1 int);
+create table t3(c1 int);
+explain select /*+parallel(2) leading(t3,(t2 t1)) use_merge(t1)*/ count(*) from t1, (select /*+no_merge*/ * from t2) t2, t3 where t1.c1 = t2.c1 and t3.c1 = t1.c1;
+select /*+parallel(2) leading(t3,(t2 t1)) use_merge(t1)*/ count(*) from t1, (select /*+no_merge*/ * from t2) t2, t3 where t1.c1 = t2.c1 and t3.c1 = t1.c1;
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;

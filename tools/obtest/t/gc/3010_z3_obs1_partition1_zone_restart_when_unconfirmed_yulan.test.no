@@ -1,0 +1,103 @@
+##
+# owner:yulan.way
+# owner group:transaction
+# description:
+# 测试功能点：多机单partition，集群重启
+# 用例描述：日志存在未确认的情况下集群重启
+# 这个case会不稳定，因为51这条数据如果重启之后仍然还是原来的leader被选为主，那么这条日志是被提交的，否则就是被回滚的，这样result文件就有可能不一致
+##
+ob1=OBI(cluster=2:2:2,init_unit_cpu=11,init_unit_num=1,proxy_num=0);
+ob1.reboot;
+sleep 15;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+
+let $ip=deploy_get_value(ob1.z1.obs1.ip);
+let $port=deploy_get_value(ob1.z1.obs1.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+
+##数据准备
+create database obtest;
+use obtest;
+create table t1(pk int primary key, c1 int, c2 varchar(20));
+
+--disable_query_log
+let $cnt=50;
+while($cnt>0)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+ob1.z1.obs1.switch_partition obtest:obtest:t1;
+
+sleep 5;
+
+--enable_query_log
+select * from t1;
+
+##停掉一台server，使其日志与leader不同步
+ob1.z2.obs1.force_stop;
+ob1.z3.obs1.force_stop;
+
+##写入数据
+--error 4012
+insert into t1 values(51,51,'c51');
+
+##集群重启
+ob1.force_stop;
+sleep 2;
+ob1.nstart;
+
+sleep 100;
+
+let $ip=deploy_get_value(ob1.z1.obs1.ip);
+let $port=deploy_get_value(ob1.z1.obs1.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,obtest,$port);
+connection conn1;
+
+##验证数据正确性
+--enable_query_log
+select * from t1;
+
+--disable_query_log
+let $cnt=30;
+while($cnt>0)
+{
+	eval update t1 set c2='c$cnt$cnt' where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=50;
+while($cnt>30)
+{
+	eval delete from t1 where pk=$cnt;
+	dec $cnt;
+}
+
+let $cnt=60;
+while($cnt>51)
+{
+	eval insert into t1 values($cnt,$cnt,'c$cnt');
+	dec $cnt;
+}
+
+select * from t1;
+
+##进行一次主备切换
+ob1.z2.obs1.switch_partition obtest:obtest:t1;
+
+sleep 5;
+
+select * from t1;
+
+
+
+
+
+
+
+
+
+
+

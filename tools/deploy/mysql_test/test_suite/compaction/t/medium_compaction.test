@@ -1,0 +1,147 @@
+# owner : fengjingkun.fjk
+# owner group : storage
+# tags : compaction
+# description: check whether medium compaction is working
+#
+
+
+#
+# parameter settings
+#
+connect (obsys, $OBMYSQL_MS0, root@sys, , oceanbase, $OBMYSQL_PORT);
+connection obsys;
+
+alter system set _enable_adaptive_compaction = True tenant sys;
+alter system set _enable_adaptive_compaction = True tenant all_user;
+alter system set _enable_adaptive_compaction = True tenant all_meta;
+alter system set minor_compact_trigger = 10 tenant sys;
+alter system set minor_compact_trigger = 10 tenant all_user;
+alter system set minor_compact_trigger = 10 tenant all_meta;
+disconnect obsys;
+
+
+#
+# create table which medium compaction should be scheduled
+#
+connect (obmysql, $OBMYSQL_MS0, root, , test, $OBMYSQL_PORT);
+connection obmysql;
+
+--disable_warnings
+drop table if exists tomb_table;
+--enable_warnings
+
+create table tomb_table (c1 int, c2 int, c3 int, c4 int, PRIMARY KEY (`c1`));
+
+
+#
+# insert data && do mini compaction
+#
+--let $insert_sql_prefix = insert into tomb_table values
+--let $value = (0,0,0,0)
+--let $loop = 1
+while ($loop < 5000)
+{
+  --let $value = $value, ($loop, $loop, $loop, $loop)
+  inc $loop;
+}
+--let $insert_sql = $insert_sql_prefix$value
+
+--disable_query_log
+eval $insert_sql;
+--enable_query_log
+
+select count(1) from tomb_table;
+
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+
+#
+# insert/update data && do mini compaction
+#
+--let $value = (5000,5000,5000,5000)
+inc $loop;
+while ($loop < 10000)
+{
+  --let $value = $value, ($loop, $loop, $loop, $loop)
+  inc $loop;
+}
+--let $insert_sql = $insert_sql_prefix$value
+
+--disable_query_log
+eval $insert_sql;
+--enable_query_log
+
+select count(1) from tomb_table;
+update tomb_table set c3 = c3 + 1, c4 = c4 + 2 where c1 < 5000;
+
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+
+#
+# delete/update data && do mini compaction
+#
+delete from tomb_table where c1 < 2000;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+
+update tomb_table set c2 = c2 + 4 where c1 < 4000;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+
+select count(1) from tomb_table where c1 < 6000;
+delete from tomb_table where c1 < 8000;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+
+disconnect obmysql;
+
+
+#
+# check medium compaction is scheduled or not
+#
+connect (obsys, $OBMYSQL_MS0, root@sys, , oceanbase, $OBMYSQL_PORT);
+connection obsys;
+let $tomb_table_id = query_get_value(select table_id from __all_virtual_table where tenant_id = 1 and table_name like '%tomb_table%', table_id, 1);
+let $tomb_tablet_id = query_get_value(select tablet_id from __all_virtual_tablet_to_ls where tenant_id = 1 and table_id = $tomb_table_id, tablet_id, 1);
+
+let $idx = 300;
+while ($idx > 0)
+{
+  sleep 1;
+  dec $idx;
+  let $medium_cnt = query_get_value(select count(*) as cnt from __all_virtual_tablet_compaction_history where tenant_id = 1 and tablet_id = $tomb_tablet_id and type like '%MEDIUM%', cnt, 1);
+  if ($medium_cnt > 0)
+  {
+    let $idx = -5;
+  }
+}
+
+if ($idx != -5)
+{
+  --echo medium compaction unexpected scheduled
+}
+
+alter system set _enable_adaptive_compaction = False tenant sys;
+alter system set _enable_adaptive_compaction = False tenant all_user;
+alter system set _enable_adaptive_compaction = False tenant all_meta;
+alter system set minor_compact_trigger = 2 tenant sys;
+alter system set minor_compact_trigger = 2 tenant all_user;
+alter system set minor_compact_trigger = 2 tenant all_meta;
+
+disconnect obsys;
+
+
+#
+# drop table
+#
+connect (obmysql, $OBMYSQL_MS0, root, , test, $OBMYSQL_PORT);
+connection obmysql;
+
+--disable_warnings
+drop table if exists tomb_table;
+--enable_warnings

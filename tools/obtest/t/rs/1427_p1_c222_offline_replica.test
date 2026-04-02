@@ -1,0 +1,81 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试pt表中加了一个列status;
+
+###新增offline副本；不影响合并，不影响迁移； 不影响checksum
+
+ob1=OBI(cluster=3:3:3,proxy_num=0,init_unit_cpu=1);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time='10s' ;
+ob1.mysql alter system set server_permanent_offline_time ='1800s';
+ob1.mysql alter system set server_data_copy_in_concurrency=30;
+ob1.mysql alter system set server_data_copy_out_concurrency=200;
+ob1.mysql alter system set data_copy_concurrency=6000;
+ob1.source include/merge.inc;
+
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn_sys,$ip,root@sys,,oceanbase,$port);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name ='obtest', tenant_id,1);
+let $resource_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id,resource_pool_id,1);
+let $tt1ip= deploy_get_value(ob1.select select svr_ip from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_ip, 1);
+let $svr_port= deploy_get_value(ob1.select select svr_port from __all_unit where zone='z1' and resource_pool_id = $resource_id limit 1, svr_port, 1);
+let $tt1port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$tt1ip' and svr_port=$svr_port, inner_port, 1);
+connect(conn_obtest, $tt1ip, root@obtest,,test, $tt1port);
+connection conn_obtest;
+
+create table test(c1 int);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'test', table_id, 1);
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'obtest', tenant_id,1);
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+let $ip = deploy_get_value(ob1.z2.obs1.ip);
+let $port = deploy_get_value(ob1.z2.obs1.port);
+let $sql_port = deploy_get_value(ob1.z2.obs1.mysql_port);
+connection conn_sys;
+ob1.mysql alter system change tenant obtest;
+eval INSERT INTO oceanbase.__all_tenant_meta_table (tenant_id, table_id, partition_id, svr_ip, svr_port,    sql_port, unit_id, zone, partition_cnt, role, member_list, row_count, data_size, data_version,    data_checksum, create_time, is_previous_leader, row_checksum, column_checksum,    replica_type,required_size, status) VALUES ($tenant_id, $table_id, 0, '$ip', $port, $sql_port, 1, 'z2',      0, 1, '127.0.0.1:16824:1505416850447999,127.0.0.2:16828:1505416850447999', 0, 0, 2, 0, 0, 1505416851968252, 122, '', 16, 0, 'REPLICA_STATUS_OFFLINE');
+
+eval INSERT INTO oceanbase.__all_root_table (tenant_id, table_id, partition_id, svr_ip, svr_port, sql_port, unit_id, zone, partition_cnt, role, member_list, row_count, data_size, data_version,data_checksum, create_time, is_previous_leader, row_checksum, column_checksum, replica_type,required_size, status) VALUES ($tenant_id, 1099511627891, 0, '$ip', $port, $sql_port, 1,'z2', 0, 1, '127.0.0.1:16824:1505416850447999,127.0.0.2:16828:1505416850447999', 0, 0, 2, 0, 0, 1505416851968252, 34, '', 16, 0, 'REPLICA_STATUS_OFFLINE');
+
+
+let $ip = deploy_get_value(ob1.z2.obs2.ip);
+let $port = deploy_get_value(ob1.z2.obs2.port);
+let $sql_port = deploy_get_value(ob1.z2.obs2.mysql_port);
+
+eval INSERT INTO oceanbase.__all_tenant_meta_table (tenant_id, table_id, partition_id, svr_ip, svr_port,    sql_port, unit_id, zone, partition_cnt, role, member_list, row_count, data_size, data_version,    data_checksum, create_time, is_previous_leader, row_checksum, column_checksum,    replica_type,required_size, status) VALUES ($tenant_id, $table_id, 0, '$ip', $port, $sql_port, 1, 'z2',      0, 1, '127.0.0.1:16824:1505416850447999,127.0.0.2:16828:1505416850447999', 0, 0, 2, 0, 0, 1505416851968252, 122, '', 16, 0, 'REPLICA_STATUS_OFFLINE');
+
+eval INSERT INTO oceanbase.__all_root_table (tenant_id, table_id, partition_id, svr_ip, svr_port, sql_port, unit_id, zone, partition_cnt, role, member_list, row_count, data_size, data_version,data_checksum, create_time, is_previous_leader, row_checksum, column_checksum, replica_type,required_size, status) VALUES ($tenant_id, 1099511627891, 0, '$ip', $port, $sql_port, 1,'z2', 0, 1, '127.0.0.1:16824:1505416850447999,127.0.0.2:16828:1505416850447999', 0, 0, 2, 0, 0, 1505416851968252, 34, '', 16, 0, 'REPLICA_STATUS_OFFLINE');
+
+
+ob1.mysql alter system major freeze;
+ob1.check_version 3;
+
+##检查有四个version = 1的只读副本；
+let $count = deploy_get_value(ob1.select select count(*)c from gv\$partition where data_version = 2 and replica_type = 16, c, 1);
+if ($count == 0) 
+{
+  echo "success to find no version = 1 in partition view";
+}
+let $count = deploy_get_value(ob1.select select count(*)c from __all_virtual_meta_table where data_version = 2 and replica_type = 16, c, 1);
+if ($count == 2) 
+{
+  echo "success to find two version = 1 in meta_table";
+}
+let $count = deploy_get_value(ob1.select select count(*)c from __all_root_table where data_version = 2 and replica_type = 16, c, 1);
+if ($count == 2) 
+{
+  echo "success to find two version = 1 in root_table";
+}
+
+ob1.mysql_p select status from __all_virutal_core_meta_table; 
+ob1.mysql_p select status from __all_virutal_core_root_table; 
+ob1.mysql_p select status from __all_virtual_partition_info where table_id = 1099511627891 and partition_id = 0;
+ob1.mysql_p select status from  __all_virtual_partition_info where table_id =$table_id and partition_id = 0;
+
+
+##迁移；
+ob1.mysql alter system migrate unit 2 destination '$ip:$port';
+##等待迁移做完；
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 360;
+

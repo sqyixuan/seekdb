@@ -1,0 +1,87 @@
+# owner: liquanhong.lqh
+# owner group: storage
+# description: check reorder filter when ObCOSSTableRowsFilter is not unique in column store
+
+--disable_query_log
+connect (conn1, $OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (syscon, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection syscon;
+set @@session.explicit_defaults_for_timestamp=off;
+set session ob_trx_timeout=100000000000;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 1;
+sleep 2;
+set @@recyclebin = off;
+--enable_query_log
+
+connection conn1;
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+CREATE TABLE `t1` (
+  `pk` int(11) NOT NULL,
+  `c1` int(11) DEFAULT NULL,
+  `c2` int(10) unsigned DEFAULT NULL,
+  `c3` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`pk`)
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 2048 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by hash(pk)
+(partition `p0`,
+partition `p1`,
+partition `p2`,
+partition `p3`) WITH COLUMN GROUP(all columns, each column);
+
+--disable_query_log
+
+--let $pk = 11
+--let $c1 = 3
+--let $c2 = 4
+--let $c3 = 1
+--let $c3_cnt = 0
+
+while($pk <= 10010)
+{
+    eval insert into t1 values
+    ($pk, $c1, $c2, concat('abcdefg', $c3) );
+    inc $pk;
+    inc $c1;
+    if ($c1 > 3)
+    {
+        let $c1 = 0;
+    }
+    inc $c2;
+    if ($c2 > 7)
+    {
+        let $c2 = 0;
+    }
+    inc $c3_cnt;
+    if ($c3_cnt == 10)
+    {
+        let $c3_cnt = 0;
+        inc $c3;
+        if ($c3 > 2)
+        {
+            let $c3 = 0;
+        }
+    }
+}
+
+--enable_query_log
+
+connection default;
+alter system major freeze;
+alter system flush plan cache;
+# alter system set _enable_filter_reordering = 1;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+
+set ob_query_timeout=1000000000;
+select /*+ no_rewrite*/ exists(select pk from (select pk, c1 from t1 where pk not like '1%' and c1=1 group by pk, c1 order by pk desc) A where A.pk >= B.pk), B.pk from t1 b ORDER BY 1, 2 limit 10;
+
+drop table t1;
+--disable_query_log
+connection syscon;
+set @@recyclebin = on;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_ROW_COL_SWITCH", error_code = 4016, frequency = 0;
+--enable_query_log

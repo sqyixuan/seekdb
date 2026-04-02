@@ -1,0 +1,121 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: laibingzheng.lbz
+# owner group: IMF
+# description: foobar
+# tags: dml
+#
+# test of heap_table update part_key
+#
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system set _enable_defensive_check = 2;
+sleep 2;
+connection default;
+
+--disable_warnings
+drop table if exists t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12, t13;
+--enable_warnings
+--result_format 4
+
+set @@binlog_row_image = 'MINIMAL';
+# 基本测试, 更新主键，记录完整列
+create table t1(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+insert into t1(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t1 set c1 = c1 + 100;
+select * from t1;
+
+# 基本测试, 不更新主键，不记录完整列
+create table t2(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2));
+insert into t2(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t2 set c3 = c3 + 100;
+select * from t2;
+
+# 基本测试, 更新UK，记录完整列
+create table t3(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2)) partition by hash(c1) partitions 4;
+create unique index t3_idx_01 on t3(c3) global;
+insert into t3(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t3 set c3 = c3 + 100;
+select * from t3 order by c1;
+
+# 基本测试, 不更新UK，记录完整列
+create table t4(c1 int, c2 int, c3 int, c4 int, primary key(c1, c2)) partition by hash(c1) partitions 4;
+create index t4_idx_01 on t4(c3, c4) global;
+insert into t4(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t4 set c3 = c3 + 100;
+select * from t4 order by c1;
+
+# 基本测试, 堆表且不包含not null 的UK，记录完整列
+create table t5(c1 int, c2 int, c3 int, c4 int);
+create unique index t5_idx_01 on t5(c3, c4) local;
+insert into t5(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t5 set c2 = c2 + 100;
+select * from t5;
+
+# 基本测试，堆表且包含not null 的UK，不记录完整列
+create table t6(c1 int, c2 int not null, c3 int not null, c4 int);
+create unique index t6_idx_01 on t6(c2, c3) local;
+insert into t6(c1,c2,c3,c4) values(1,2,3,4),(5,6,7,8),(9,10,11,12),(13,14,15,16),(17,18,19,20);
+update t6 set c4 = c4 + 100;
+select * from t6;
+
+# 基本测试日期类型
+create table t7(c1 int, c2 datetime, c3 timestamp(6) not null default '2012-10-12', c4 timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, c5 int, primary key(c1));
+insert into t7(c1,c2,c3, c4, c5) values(1, '2020-01-01','2012-10-11','2023-12-11 20:24:20',1),(2, '2020-01-02','2012-10-12','2023-12-15 20:24:20',2),(3, '2020-01-03','2012-10-14','2023-12-13 20:24:20',3),(4, '2020-01-04','2012-10-14','2023-12-14 20:24:20',4);
+update t7 set c2 = c2 + 1;
+select c1,c2,c3,c5 from t7;
+
+
+# 所有的UK列都需要被记录
+create table t8(c1 int primary key, c2 int, c3 int, c4 int unique, c5 int unique);
+insert into t8 values(1,1,1,1,1),(2,2,2,2,2),(3,3,3,3,3),(4,4,4,4,4),(5,5,5,5,5);
+update t8 set c2 = c2 + 1;
+select * from t8;
+
+# 无主键表，包含not_null UK，测试需要包含分区建以及分区键的依赖列
+create table t9(c1 int, c2 int, c3 int, c4 int not null, c5 int as (c1 + c2) not null, c6 int) partition by hash(c5) partitions 4;
+create unique index t9_idx_01 on t9(c4, c5) global;
+insert into t9(c1,c2,c3,c4, c6) values(1,2,3,4, 44),(5,6,7,8,88),(9,10,11,12,122),(13,14,15,16,166),(17,18,19,20,200);
+update t9 set c3 = c3 + 100 where c2 < 10;
+select * from t9 order by c1;
+explain select /*+index(t9 t9_idx_01)*/ c4, c5 from t9;
+select /*+index(t9 t9_idx_01)*/ c4, c5 from t9;
+
+
+# 更新UK，并且UK是全局索引
+create table t10(c1 int, c2 int, c3 int, c4 int not null, c5 int as (c1 + c2) not null, c6 int) partition by hash(c5) partitions 4;
+create unique index t10_idx_01 on t10(c4, c5) global;
+insert into t10(c1,c2,c3,c4, c6) values(1,2,3,4, 44),(5,6,7,8,88),(9,10,11,12,122),(13,14,15,16,166),(17,18,19,20,200);
+update t10 set c4 = c4 + 100 where c2 < 10;
+select * from t10 order by c1;
+explain select /*+index(t10 t10_idx_01)*/ c4, c5 from t10;
+select /*+index(t10 t10_idx_01)*/ c4, c5 from t10;
+
+# 更新分区键，update被拆分为 delete + insert
+create table t11(c1 int, c2 int, c3 int, c4 int not null, c5 int as (c1 + c2) not null, c6 int, primary key(c1, c2)) partition by hash(c5) partitions 4;
+insert into t11(c1,c2,c3,c4, c6) values(1,2,3,4, 44),(5,6,7,8,88),(9,10,11,12,122),(13,14,15,16,166),(17,18,19,20,200);
+update t11 set c1 = c1 + 100, c2 = c2 + 100;
+select * from t11 order by c1;
+explain select /*+index(t11 t11_idx_01)*/ c4, c5 from t11;
+select /*+index(t11 t11_idx_01)*/ c4, c5 from t11;
+
+# 无主键表,无UK，记录完整列
+create table t12(c1 int, c2 int, c3 int, c4 int, c5 int);
+insert into t12 values(1,1,1,1,1),(2,2,2,2,2),(3,3,3,3,3),(4,4,4,4,4);
+update t12 set c1 = c1+1, c2 = c2 + 1;
+select * from t12;
+
+# test shadow_pk check
+create table t13(c1 int, c2 int, c3 int, c4 int , primary key(c1, c2)) partition by hash(c1) partitions 4;
+create unique index t13_idx_01 on t13(c3) global;
+insert into t13(c1, c2,c3,c4) values(1,1,null,1),(2,2,2,2),(3,3,3,3);
+update t13 set c1 = 11  where c2 = 1;
+
+drop table if exists t1,t2,t3,t4,t5,t6,t7,t8,t9, t10, t11, t12, t13;
+set @@binlog_row_image = 'FULL';
+
+connection obsys;
+alter system set _enable_defensive_check = 0;
+connection default;

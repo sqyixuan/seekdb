@@ -1,0 +1,90 @@
+# owner: saitong.zst
+# description: test for filter pushdown correctness under condensed row_format
+
+--disable_query_log
+set global max_allowed_packet=60000000;
+set global ob_sql_work_area_percentage=80;
+disconnect default;
+sleep 1;
+connect (default,$OBMYSQL_MS0,admin,admin,test,$OBMYSQL_PORT);
+set @@recyclebin = off;
+set ob_query_timeout=1000000000;
+set ob_trx_timeout=1000000000;
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+create table t1 (a int auto_increment primary key, b bigint, c decimal(10, 5), d decimal(10, 5), e double, f char(50)) row_format = condensed block_size = 1024;
+insert into t1(b, c, d, e, f) values(1, 111.11, 111.11, 111.11, 'condensed manual dict row 1');
+insert into t1(b, c, d, e, f) values(2, 222.22, 222.22, 222.22, 'condensed manual dict row 1');
+insert into t1(b, c, d, e, f) values(3, 333.33, 333.33, 333.33, 'condensed manual dict row 1');
+insert into t1(b, c, d, e, f) values(4, 444.44, 444.44, 444.44, 'condensed manual dict row 1');
+insert into t1(b, c, d, e, f) values(5, 555.55, 555.55, 555.55, 'condensed manual dict row 2');
+insert into t1(b, c, d, e, f) values(6, 666.66, 666.66, 666.66, 'condensed manual dict row 2');
+insert into t1(b, c, d, e, f) values(7, 777.77, 777.77, 777.77, 'condensed manual dict row 2');
+insert into t1(b, c, d, e, f) values(8, 888.88, 888.88, 888.88, 'condensed manual dict row 2');
+--let  $loop=10
+while($loop > 0)
+{
+  insert into t1 (b, c, d, e, f) select b * 2, c, d + a * 0.7, e + a * 0.7, f from t1;
+  dec $loop;
+}
+select count(1) from t1;
+
+--disable_query_log
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system flush plan cache global;
+--enable_query_log
+
+alter system major freeze tenant sys;
+alter system major freeze tenant all_user;
+alter system major freeze tenant all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+--let $loop=7
+while($loop > 0)
+{
+  insert into t1 (b, c, d, e, f) values(9, 999.99, 99999.99999, 99999.99999, 'condensed row in minor');
+  dec $loop;
+}
+select count(1) from t1;
+
+connection obsys;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+--let $loop=3
+while($loop > 0)
+{
+  insert into t1 (b, c, d, e, f) values(10, 10.10, 1010.10101, 1010.10101, 'condensed row in memtable');
+  dec $loop;
+}
+select count(1) from t1;
+
+# filter test, will run with SIMD if AVX512 instr is availiable on test machine
+select count(1) from t1 where b > 8;
+select count(1) from t1 where b != 9;
+select count(1) from t1 where b = 10;
+select count(1) from t1 where b between 8 and 512;
+select count(1) from t1 where c < 600.00;
+select count(1) from t1 where c = 555.55;
+select count(1) from t1 where c != 111.11;
+select count(1) from t1 where c between 222.22 and 777.77;
+select count(1) from t1 where d > 5000;
+select count(1) from t1 where d between 1000 and 6000;
+select count(1) from t1 where e < 5000;
+select count(1) from t1 where e between 1000 and 6000;
+
+drop table t1;
+
+--disable_query_log
+set global max_allowed_packet=16777216;
+set global ob_sql_work_area_percentage=5;
+set @@recyclebin = on;
+connection obsys;
+alter system flush plan cache global;
+--enable_query_log

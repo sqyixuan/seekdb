@@ -1,0 +1,1 @@
+--replace_regex /unique constraint '[0-9]*' for key/unique constraint 'xxx' for key/g /OBIDX_[0-9]*/OBIDX_1234/g /OBCHECK_[0-9]*/OBCHECK_1234/g /OBFK_[0-9]*/OBFK_1234/g /OBPK_[0-9]*/OBPK_1234/g /OBUNIQUE_[0-9]*/OBUNIQUE_1234/g /RECYCLE_\$_[0-9]*_[0-9]*_OBCHECK_[0-9]*/RECYCLE_$_1_2_OBCHECK_3/g

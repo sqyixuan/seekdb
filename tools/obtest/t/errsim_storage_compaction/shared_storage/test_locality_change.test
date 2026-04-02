@@ -1,0 +1,68 @@
+# owner: huhaosheng.hhs
+# owner group: storage [shared_storage]
+# description: this case is use for test locality change
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.reboot;
+sleep 10;
+
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set default_compress_func='none';
+ob1.mysql alter system set debug_sync_timeout='100000s';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# set EN_ENABLE_SHARED_STORAGE_COLUMN_GROUP to enable column group under shared-storage mode
+ob1.mysql alter system set_tp tp_no = 2502, error_code = 4016, frequency = 1;
+
+connection sys_conn;
+CREATE RESOURCE UNIT large_unit_1 MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit_1, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+--disable_all_result_log
+CREATE TENANT test_tenant RESOURCE_POOL_LIST = ('large_pool_1'), locality='F@z1,F@z2,R@z3', primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+--enable_all_result_log
+
+ob1.mysql alter system set ob_compaction_schedule_interval='3s' tenant test_tenant;
+ob1.mysql alter system set merger_check_interval='10s' tenant test_tenant;
+ob1.mysql alter system set compaction_low_thread_score=20 tenant test_tenant;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@test_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression= 'none';
+
+let $tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='test_tenant', tenant_id, 1);
+let $ls_id=deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$tenant_id and tablet_id=$tablet_id, ls_id, 1);
+
+#########################################################################
+# TEST_1: add z3 into locality in INDEX_VERIFY state
+#########################################################################
+connection conn_mysql;
+--disable_query_log
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# EN_SHARED_STORAGE_DONT_UPDATE_LS_STATE=(REFRESH)
+# block ls merge at REFRESH state
+ob1.mysql alter system set_tp tp_no=746, error_code=6, frequency=1;
+# ignore svr 3
+ob1.mysql alter system set_tp tp_no=750, error_code=3, frequency=1;
+
+ob1.mysql alter system major freeze tenant test_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_shared_storage_compaction_info where tenant_id=$tenant_id and tablet_id=0 and ls_id=$ls_id and obj_type="LS_COMPACTION_STATUS" and info like "%REFRESH%", 1, 600;
+
+# resume svr 3
+ob1.mysql alter system set_tp tp_no=750, error_code=3, frequency=0;
+
+# clear EN_SHARED_STORAGE_DONT_UPDATE_LS_STATE=(REFRESH)
+# resume ls merge from INDEX_VERIFY state
+ob1.mysql alter system set_tp tp_no=746, error_code=4, frequency=0;
+
+source include/compaction/wait_tenant_major_finish_on_ss.inc;

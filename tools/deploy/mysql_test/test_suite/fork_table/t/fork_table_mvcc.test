@@ -1,0 +1,275 @@
+##owner: fankun.fan
+##owner group: 底层引擎部-轻量版
+##description: Fork Table 在 WAIT_FREEZE_END 阶段多次 minor merge 的 MVCC 行版本测试
+##tags: fork_table mvcc wait_freeze_end minor_merge
+##author: fankun.fan
+
+--disable_warnings
+drop database if exists db_fork_mvcc;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_mvcc;
+use db_fork_mvcc;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '120s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo # 加速major freeze
+--source mysql_test/test_suite/fork_table/include/quick_major.inc
+
+--echo ============================================
+--echo Case 1: WAIT_FREEZE_END阶段多次minor merge + MVCC行版本
+--echo 预期迭代出的行是：first:1, uncommitted:0, shadow:1, compact:1, ghost:0, last:0, reserved:0, flag:13
+--echo ============================================
+
+drop table if exists t1;
+drop table if exists t1_fork;
+
+create table t1 (
+    id int primary key,
+    c1 int,
+    c2 varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # Step 1: insert一行并触发minor merge
+insert into t1 values (1, 10, 'v1');
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 2: update并触发minor merge
+update t1 set c1 = 20, c2 = 'v2' where id = 1;
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 3: 再次update
+update t1 set c1 = 30, c2 = 'v3' where id = 1;
+
+--echo # Step 4: 新连接开启事务并插入一行（不提交）
+connect (conn_mvcc,$OBMYSQL_MS0,root@sys,,db_fork_mvcc,$OBMYSQL_PORT);
+connection conn_mvcc;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+insert into t1 values (2, 40, 'txn_v1');
+connection default;
+
+--echo # Step 5: 提交前触发minor merge
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 6: 新连接提交事务
+connection conn_mvcc;
+commit;
+disconnect conn_mvcc;
+connection default;
+
+--echo # Step 7: fork table
+fork table t1 to t1_fork;
+--echo # 等待fork任务完成
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证源表与fork表数据
+select * from t1 order by id;
+select * from t1_fork order by id;
+
+--echo ============================================
+--echo Case 2: 未提交事务minor freeze后再提交
+--echo ============================================
+
+drop table if exists t2;
+drop table if exists t2_fork;
+
+create table t2 (
+    id int primary key,
+    c1 int,
+    c2 varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo 预期迭代出的行是first:1, uncommitted:0, shadow:0, compact:0, ghost:0, last:1, reserved:0, flag:33
+
+--echo # Step 1: insert一行并触发minor freeze
+insert into t2 values (1, 10, 'v1');
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 2: 新连接开启事务并update（不提交）
+connect (conn_mvcc2,$OBMYSQL_MS0,root@sys,,db_fork_mvcc,$OBMYSQL_PORT);
+connection conn_mvcc2;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+update t2 set c1 = 20, c2 = 'v2' where id = 1;
+connection default;
+
+--echo # Step 3: default session触发minor freeze
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 4: 提交事务
+connection conn_mvcc2;
+commit;
+disconnect conn_mvcc2;
+connection default;
+
+--echo # Step 5: fork table
+fork table t2 to t2_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证源表与fork表数据
+select * from t2 order by id;
+select * from t2_fork order by id;
+
+--echo ============================================
+--echo Case 3: 多版本行 + 3张mini sstable触发minor merge
+--echo ============================================
+
+drop table if exists t3;
+drop table if exists t3_fork;
+
+create table t3 (
+    id int primary key,
+    c1 int,
+    c2 varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo 预期迭代出的行是first:1, uncommitted:0, shadow:0, ghost:0, last:0
+
+--echo # Step 1: 第一次insert并触发minor freeze
+insert into t3 values (1, 10, 'v1');
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 2: 第二次insert并触发minor freeze
+insert into t3 values (2, 20, 'v2');
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 3: 新连接事务update（不提交）
+connect (conn_mvcc3,$OBMYSQL_MS0,root@sys,,db_fork_mvcc,$OBMYSQL_PORT);
+connection conn_mvcc3;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+update t3 set c1 = 30, c2 = 'v3' where id = 1;
+connection default;
+
+--echo # Step 4: default session触发minor freeze（形成第3张mini sstable）
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 5: 提交事务
+connection conn_mvcc3;
+commit;
+disconnect conn_mvcc3;
+connection default;
+
+--echo # Step 6: fork table
+fork table t3 to t3_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证源表与fork表数据
+select * from t3 order by id;
+select * from t3_fork order by id;
+
+--echo ============================================
+--echo Case 4: WAIT_FREEZE_END阶段触发major freeze
+--echo ============================================
+
+drop table if exists t4;
+drop table if exists t4_fork;
+
+create table t4 (
+    id int primary key,
+    c1 int,
+    c2 varchar(50)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # Step 1: 插入两行数据
+insert into t4 values (1, 10, 'v1');
+insert into t4 values (2, 20, 'v2');
+
+--echo # Step 2: 执行minor freeze
+alter system minor freeze;
+--source mysql_test/include/wait_minor_merge.inc
+
+--echo # Step 3: 更新一行数据
+update t4 set c1 = 30, c2 = 'v3' where id = 1;
+
+--echo # Step 4: fork table卡在WAIT_FREEZE_END阶段
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_WAIT_FREEZE_END wait_for mvcc_signal_4 execute 10000';
+sleep 1;
+connection default;
+fork table t4 to t4_fork;
+
+--echo # 等待fork进入WAIT_FREEZE_END阶段
+let $wait_status= WAIT_FROZE_END;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Step 5: 更新另一行数据
+update t4 set c1 = 40, c2 = 'v4' where id = 2;
+
+--echo # Step 6: 执行major freeze
+connection obsys;
+alter system major freeze;
+connection default;
+
+--echo # Step 7: 继续fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_WAIT_FREEZE_END clear';
+set ob_global_debug_sync = 'now signal mvcc_signal_4';
+connection default;
+
+--echo # 等待fork任务完成
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+--source mysql_test/test_suite/fork_table/include/wait_daily_merge.inc
+
+
+--echo # 验证源表与fork表数据
+select * from t4 order by id;
+select * from t4_fork order by id;
+
+--echo ============================================
+--echo 清理
+--echo ============================================
+
+drop table if exists t1;
+drop table if exists t1_fork;
+drop table if exists t2;
+drop table if exists t2_fork;
+drop table if exists t3;
+drop table if exists t3_fork;
+drop table if exists t4;
+drop table if exists t4_fork;
+drop database if exists db_fork_mvcc;
+
+connection obsys;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+

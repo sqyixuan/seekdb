@@ -1,0 +1,97 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT backup_oracle_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+create tenant finished
+alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+===============================================================
+==================     create table T1/T3  ====================
+===============================================================
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+create table t1(a int, b int, c int, CONSTRAINT "c1" PRIMARY KEY ("A"));
+insert into t1(a, b) values(1, 1);
+insert into t1(a, b) values(2, 2);
+create table t3(c1 int, c2 int, c3 varchar(4096), c4 int);
+===============================================================
+==================     start archive   ========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 1200;
+===============================================================
+==================     start backup data   ====================
+===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+begin;
+insert into t1(a, b) values(3, 3);
+insert into t1(a, b) values(4, 4);
+update t1 set c=1;
+update t1 set b=b+1;
+commit;
+begin;
+update t1 set c=2;
+delete from t1 where a=1;
+commit;
+create table t2(a int, b int, c int, CONSTRAINT "c2" PRIMARY KEY ("A"));
+insert into t2(a, b) values(1, 1);
+insert into t2(a, b) values(2, 2);
+begin;
+insert into t2(a, b) values(3, 3);
+insert into t2(a, b) values(4, 4);
+update t2 set c=1;
+update t2 set b=b+1;
+commit;
+ob1.mysql alter system major freeze tenant = '$backup_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 1200;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$backup_oracle_tenant_id and type="MAJOR_MERGE" and compaction_scn=$major_scn and exec_mode="EXEC_MODE_OUTPUT", 1, 10;
+use oceanbase;
+===============================================================
+===============  CALC RESTORE POINT  ==========================
+===============================================================
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint_ts' from CDB_OB_ARCHIVELOG, 1, 600;
+===============================================================
+===============  START RESTORE  ===============================
+===============================================================
+ob1.mysql alter system restore $restore_oracle_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_1&primary_zone=z1,z2';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $restore_tenant_id and restore_status = 0, 9, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = $restore_tenant_id, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+select * from t1;
+A	B	C
+2	3	2
+3	4	2
+4	5	2
+select * from t2;
+A	B	C
+1	2	1
+2	3	1
+3	4	1
+4	5	1
+ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT $restore_oracle_tenant;
+ob1.check_until_timeout select count(*) > 0 as c from oceanbase.DBA_OB_TENANTS where tenant_id=$restore_tenant_id and TENANT_ROLE = "PRIMARY", 1, 1200;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant $restore_oracle_tenant;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$restore_tenant_id, 0, 1200;
+ob1.mysql alter system major freeze tenant = '$restore_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$restore_tenant_id, 0, 1200;

@@ -1,0 +1,713 @@
+result_format: 4
+##控制 Hybrid Hash DM 是否开启的开关##
+alter system set _px_join_skew_handling = 1;
+##设置并行 join 中倾斜值必须满足的最低频率，出现比例小于该频率的值都不算倾斜值##
+alter system set _px_join_skew_minfreq = 10;
+##ADD_DATA##
+drop procedure if exists insert_data;
+create PROCEDURE insert_data(tab_nam varchar(100),var int)
+begin
+	set @i = 1;
+	
+	while @i <= var do
+		SET @IN_VA_SQL = CONCAT(
+		"INSERT INTO ",tab_nam," VALUES (",@i,",",@i,");");
+		
+		PREPARE STMT FROM @IN_VA_SQL;
+		EXECUTE STMT;
+		
+		set @i = @i+1;
+	end while;
+	deallocate PREPARE STMT;
+end;
+//
+drop procedure if exists insert_data_oneval;
+create PROCEDURE insert_data_oneval(tab_nam varchar(20),var int)
+begin
+	set @i = 1;
+	SET @IN_VA_SQL = CONCAT("INSERT INTO ",tab_nam," VALUES (1,1);");
+	PREPARE STMT FROM @IN_VA_SQL;
+	while @i <= var do
+		EXECUTE STMT;
+		set @i = @i+1;
+	end while;
+	deallocate PREPARE STMT;
+end;
+//
+drop procedure if exists insert_data_onecol;
+create PROCEDURE insert_data_onecol(tab_nam varchar(20),col varchar(20),var int)
+begin
+	set @i = 1;
+	SET @IN_VA_SQL = CONCAT("INSERT INTO ",tab_nam,"(",col,") VALUES (1);");
+	PREPARE STMT FROM @IN_VA_SQL;
+	while @i <= var do
+		EXECUTE STMT;
+		set @i = @i+1;
+	end while;
+	deallocate PREPARE STMT;
+end;
+//
+drop table if exists FF1;
+drop table if exists FF2;
+create table FF1 (A1 int , B1 int);
+call insert_data('FF1',10);
+create table FF2 (A2 INT , B2 INT);
+call insert_data('FF2',66);
+call insert_data_oneval('FF2',10);
+##统计直方图##
+call dbms_stats.gather_table_stats(NULL,'FF2',method_opt=>'for all columns size 100');
+##except:hybrid hash##
+##pq_distribute控制连接的分发方式##
+####SELF_JOIN####
+##HASH JOIN##
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L RIGHT JOIN FF2 R ON R.A2 = L.A2 AND R.A2 = L.B2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.A2 OR R.B2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L , FF2 R WHERE R.A2 = L.B2 OR L.B2 = R.A2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+##MERGE JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L RIGHT JOIN FF2 R ON R.A2 = L.A2 AND R.A2 = L.B2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.A2 OR R.B2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L , FF2 R WHERE R.A2 = L.B2 OR L.B2 = R.A2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+##AND join_condition##
+##RIGHT JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND L.B1 IS NOT NULL;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.B2 = L.A1 AND R.A2 LIKE 1;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON L.B1 = R.A2 AND R.A2 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.B2 = L.B1 AND L.B1 > R.B2;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND L.A1 > R.A2;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON L.A1 = R.B2 AND R.B2 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON L.B1 = R.B2 AND L.A1 NOT BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND L.B1 IS NULL;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND L.A1 IS NULL;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.A1 AND L.B1 NOT LIKE '%1%';
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+##INNER JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.B1 AND L.B1 IS NOT NULL;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.B2 = L.A1 AND R.A2 LIKE 1;
++----------+
+| COUNT(*) |
++----------+
+|       11 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON L.B1 = R.A2 AND R.A2 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.B1 AND L.B1 > R.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.A2 = L.B1 AND L.A1 > R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.A1 = R.B2 AND R.B2 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.B2 AND L.A1 NOT BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.A2 = L.B1 AND L.B1 IS NULL;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.B1 AND L.A1 IS NULL;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.A1 AND L.B1 NOT LIKE '%1%';
++----------+
+| COUNT(*) |
++----------+
+|        8 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.B2 AND L.B1 IS NULL;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON L.B1 = R.B2 AND R.B2 <> L.A1;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.A1 = R.B2 AND R.A2 IS NOT NULL;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.A2 = L.B1 AND R.A2 NOT BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.A1 AND L.B1 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.A1 AND L.B1 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON L.A1 = R.A2 AND L.B1 BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.A2 = L.A1 AND R.A2 LIKE 1;
++----------+
+| COUNT(*) |
++----------+
+|       11 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.B1 AND R.A2 LIKE 1;
++----------+
+| COUNT(*) |
++----------+
+|       11 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.B1 AND L.B1 NOT BETWEEN -10 AND 10;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+##complex##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.B2 = L.A1
+OR L.A1 IS NOT NULL
+AND R.B2 != L.A1
+AND R.A2 >= L.B1
+OR R.A2 NOT LIKE '%1%'
+AND R.B2 NOT BETWEEN -10
+AND 10 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      625 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.A2 OR R.B2 <> L.A1 AND R.B2 LIKE 1 AND R.A2 < L.B1 AND L.A1 IS NOT NULL OR R.B2 NOT BETWEEN -10 AND 10 ORDER BY R.B2;
++----------+
+| COUNT(*) |
++----------+
+|      679 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.B2 AND L.B1 NOT LIKE '%1%' OR L.A1 BETWEEN -10 AND 10 OR L.B1 > R.A2 OR R.A2 NOT LIKE '%1%' OR L.A1 NOT BETWEEN -10 AND 10 ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|      760 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.A2 = L.B1 OR L.B1 BETWEEN -10 AND 10 OR R.B2 NOT BETWEEN -10 AND 10 OR L.B1 LIKE 1 AND L.B1 <> L.B1 OR R.B2 LIKE 1 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      760 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON L.A1 = R.B2 OR L.B1 >= R.A2 AND R.B2 BETWEEN -10 AND 10 AND R.A2 BETWEEN -10 AND 10 OR R.A2 LIKE 1 OR L.A1 BETWEEN -10 AND 10 ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|      760 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.A1 AND L.A1 LIKE 1 AND R.B2 LIKE 1 AND R.A2 BETWEEN -10 AND 10 OR R.B2 NOT LIKE '%1%' OR L.A1 BETWEEN -10 AND 10 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      760 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON L.A1 = R.A2 OR R.A2 <> R.A2 OR R.A2 != R.B2 OR L.A1 BETWEEN -10 AND 10 OR L.B1 NOT LIKE '%1%' AND L.A1 NOT LIKE '%1%' ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|      760 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.B1 OR L.B1 >= L.A1 AND L.A1 NOT BETWEEN -10 AND 10 OR L.B1 NOT BETWEEN -10 AND 10 AND R.B2 > L.A1 OR R.B2 <> R.A2 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.A1 OR L.B1 NOT LIKE '%1%' OR L.A1 NOT LIKE '%1%' OR L.B1 NOT LIKE '%1%' AND R.B2 IS NOT NULL AND R.B2 BETWEEN -10 AND 10 ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|      620 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 OR L.B1 BETWEEN -10 AND 10 AND R.B2 BETWEEN -10 AND 10 OR R.B2 BETWEEN -10 AND 10 OR L.A1 NOT LIKE '%1%' OR R.A2 LIKE 1 ORDER BY R.B2;
++----------+
+| COUNT(*) |
++----------+
+|      648 |
++----------+
+####group by####
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L RIGHT JOIN FF2 R ON R.A2 = L.B2 GROUP BY L.A2 HAVING MAX(L.A2) = 1;
++----------+
+| COUNT(*) |
++----------+
+|      121 |
++----------+
+####order by####
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.B2 = L.A1 WHERE R.B2 IS NOT NULL ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 R ON R.A2 = L.A1 WHERE R.A2 = R.B2 ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.A2 = L.B1 WHERE L.B1 IS NOT NULL ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.A1 = R.A2 AND R.B2 LIKE 1 ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       11 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.B2 = L.A1 WHERE L.B1 NOT BETWEEN -10 AND 10 ORDER BY R.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.B2 OR L.A1 NOT LIKE '%1%' ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|      620 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON R.B2 = L.A1 WHERE R.B2 BETWEEN -10 AND 10 ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE R.B2 = L.A1 OR L.A1 NOT LIKE '%1%' ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      620 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 R WHERE L.B1 = R.B2 OR L.B1 NOT BETWEEN -10 AND 10 ORDER BY L.B1;
++----------+
+| COUNT(*) |
++----------+
+|       20 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L RIGHT JOIN FF2 R ON L.B1 = R.B2 WHERE R.A2 NOT BETWEEN -10 AND 10 ORDER BY L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       56 |
++----------+
+####limit####
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L , FF2 R WHERE R.B2 = L.A2 LIMIT 1;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L , FF2 R WHERE R.B2 = L.B2 LIMIT 1;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.A2 LIMIT 1;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L RIGHT JOIN FF2 R ON R.A2 = L.B2 LIMIT 1;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+####partition####
+###RANGE PARTITION###
+drop table if exists FF2;
+create table FF2 (A2 int , B2 int) PARTITION BY RANGE(A2)
+(PARTITION P0 VALUES LESS THAN (10),
+ PARTITION P1 VALUES LESS THAN (20),
+ PARTITION P2 VALUES LESS THAN (30),
+ PARTITION P3 VALUES LESS THAN (40),
+ PARTITION P4 VALUES LESS THAN (50),
+ PARTITION P5 VALUES LESS THAN (60),
+ PARTITION P6 VALUES LESS THAN (MAXVALUE));
+call insert_data('FF2',66);
+call insert_data_oneval('FF2',10);
+##统计直方图##
+call dbms_stats.gather_table_stats(NULL,'FF2',method_opt=>'for all columns size 100');
+##HASH JOIN##
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P0) L RIGHT JOIN FF2 PARTITION(P0) R ON R.A2 = L.B2 AND R.A2 = L.A2 ;
++----------+
+| COUNT(*) |
++----------+
+|      129 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L INNER JOIN FF2 PARTITION(P0) R ON R.B2 = L.A1;
++----------+
+| COUNT(*) |
++----------+
+|       19 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L , FF2 PARTITION(P0) R WHERE R.A2 = L.B2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF1 L , FF2 PARTITION(P1) R WHERE R.A2 = L.B1 AND L.A1 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        1 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P6) L RIGHT JOIN FF2 PARTITION(P0) R ON R.A2 = L.B2 ;
++----------+
+| COUNT(*) |
++----------+
+|       19 |
++----------+
+##MERGE JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L RIGHT JOIN FF2 R ON R.A2 = L.B2 AND R.A2 = L.B2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.B2 AND L.A2 = R.B2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L , FF2 R WHERE R.A2 = L.B2 AND L.B2 = R.B2 OR R.A2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+###hash PRATITION###
+drop table if exists FF2;
+create table FF2 (A2 int , B2 int) PARTITION BY HASH(A2) PARTITIONS 6 ;
+call insert_data('FF2',66);
+call insert_data_oneval('FF2',10);
+##统计直方图##
+call dbms_stats.gather_table_stats(NULL,'FF2',method_opt=>'for all columns size 100');
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P4) L INNER JOIN FF2 PARTITION(P5) R ON L.B2 = R.B2 WHERE L.A2 IS NOT NULL ORDER BY L.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P4) L INNER JOIN FF2 PARTITION(P0) R ON L.B2 = R.B2 WHERE R.A2 NOT LIKE '%1%' ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P4) L , FF2 PARTITION(P1) R WHERE L.B2 = R.B2 AND L.A2 BETWEEN -10 AND 10 ORDER BY R.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L RIGHT JOIN FF2 PARTITION(P0) R ON L.A2 = R.B2 WHERE L.A2 < L.A2 ORDER BY L.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L , FF2 PARTITION(P5) R WHERE L.B2 = R.B2 OR L.A2 IS NOT NULL ORDER BY L.B2;
++----------+
+| COUNT(*) |
++----------+
+|      231 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L INNER JOIN FF2 PARTITION(P5) R ON L.A2 = R.B2 WHERE R.A2 NOT LIKE '%1%' ORDER BY L.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P0) L RIGHT JOIN FF2 PARTITION(P2) R ON R.A2 = L.B2 WHERE L.A2 BETWEEN -10 AND 10 ORDER BY L.B2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P5) L , FF2 PARTITION(P1) R WHERE L.A2 = R.A2 OR L.B2 NOT BETWEEN -10 AND 10 ORDER BY L.B2;
++----------+
+| COUNT(*) |
++----------+
+|      210 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P4) L , FF2 PARTITION(P4) R WHERE L.A2 = R.B2 AND R.B2 BETWEEN -10 AND 10 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        2 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P0) L , FF2 PARTITION(P4) R WHERE R.A2 = L.A2 AND L.B2 NOT BETWEEN -10 AND 10 ORDER BY R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+###SUBPARTITION###
+drop table if exists FF2;
+create table FF2 (A2 int , B2 int) PARTITION BY RANGE(A2)
+SUBPARTITION BY HASH(B2)
+(PARTITION P1 VALUES LESS THAN (10)
+ (SUBPARTITION SP1,SUBPARTITION SP2),
+ PARTITION P2 VALUES LESS THAN (20)
+ (SUBPARTITION SP3,SUBPARTITION SP4),
+ PARTITION P3 VALUES LESS THAN (30)
+ (SUBPARTITION SP5,SUBPARTITION SP6),
+ PARTITION P4 VALUES LESS THAN (40)
+ (SUBPARTITION SP7,SUBPARTITION SP8),
+ PARTITION P5 VALUES LESS THAN (50)
+ (SUBPARTITION SP9,SUBPARTITION SP10),
+ PARTITION P6 VALUES LESS THAN (MAXVALUE)
+ (SUBPARTITION SP11,SUBPARTITION SP12));
+call insert_data('FF2',66);
+call insert_data_oneval('FF2',10);
+##统计直方图##
+call dbms_stats.gather_table_stats(NULL,'FF2',method_opt=>'for all columns size 100');
+##HASH JOIN##
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP10) L RIGHT JOIN FF2 R ON R.A2 = L.B2 AND R.A2 = L.A2 ;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP7) L INNER JOIN FF2 PARTITION(P1) R ON L.B2 = R.B2 WHERE R.A2 IS NULL ORDER BY L.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP1) L , FF2 PARTITION(SP2) R WHERE R.A2 = L.B2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L RIGHT JOIN FF2 PARTITION(SP1) R ON R.A2 = L.B2 ;
++----------+
+| COUNT(*) |
++----------+
+|        4 |
++----------+
+##MERGE JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP10) L RIGHT JOIN FF2 R ON R.A2 = L.B2 AND R.A2 = L.A2 ;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 L INNER JOIN FF2 R ON R.B2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP7) L INNER JOIN FF2 PARTITION(P1) R ON L.B2 = R.B2 WHERE R.A2 IS NULL ORDER BY L.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(SP1) L , FF2 PARTITION(SP2) R WHERE R.A2 = L.B2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|        0 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM FF2 PARTITION(P1) L RIGHT JOIN FF2 PARTITION(SP1) R ON R.A2 = L.B2 ;
++----------+
+| COUNT(*) |
++----------+
+|        4 |
++----------+
+####VIEW####
+###VIEW不能统计信息，所以不能作为右表进行hybrid###
+drop table if exists FF1;
+drop table if exists FF2;
+create table FF1 (A1 int , B1 int);
+call insert_data('FF1',10);
+create table FF2 (A2 INT , B2 INT);
+call insert_data('FF2',66);
+call insert_data_oneval('FF2',10);
+##统计直方图##
+call dbms_stats.gather_table_stats(NULL,'FF2',method_opt=>'for all columns size 100');
+drop VIEW if exists VV01;
+drop VIEW if exists VV02;
+CREATE VIEW VV01 AS SELECT * FROM FF1;
+CREATE VIEW VV02 AS SELECT * FROM FF2;
+##HASH JOIN##
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM VV01 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND R.A2 = L.A1 ;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM VV02 L INNER JOIN FF2 R ON R.B2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_HASH(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM VV02 L , FF2 R WHERE R.A2 = L.B2 AND L.A2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+##MERGE JOIN##
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM VV01 L RIGHT JOIN FF2 R ON R.A2 = L.B1 AND R.A2 = L.B1;
++----------+
+| COUNT(*) |
++----------+
+|       76 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM  VV02 L INNER JOIN FF2 R ON R.B2 = L.B2 AND L.A2 = R.A2 WHERE L.B2 = R.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+SELECT /*+ LEADING(L R) USE_MERGE(R) PQ_DISTRIBUTE(R HASH HASH) PARALLEL(4)*/ COUNT(*) FROM VV02 L , FF2 R WHERE R.A2 = L.B2 AND R.A2 = L.A2;
++----------+
+| COUNT(*) |
++----------+
+|      186 |
++----------+
+drop VIEW if exists VV01;
+drop VIEW if exists VV02;
+drop table if exists FF1;
+drop table if exists FF2;

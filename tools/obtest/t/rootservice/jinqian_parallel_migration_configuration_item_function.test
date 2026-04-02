@@ -1,0 +1,263 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试并行迁移中新增的replica_parallel_migration_mode配置项
+#    分别测试主租户和备租户是否允许并行迁移
+#    无论是否允许并行迁移，非迁移任务都与迁移任务互相冲突
+#######################################################################
+#                        create inital objects
+#######################################################################
+ob1=OBI(cluster=2:2:2, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='2G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT oracle_tenant RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle_tenant', tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,SYS@oracle_tenant,,SYS,,USE_OB_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $oracle_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+
+connection sys_conn;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 3;
+#停掉备库的均衡逻辑，保证日志流创建在哪个unit组上不会被改变
+ob1.mysql set ob_global_debug_sync = 'STOP_RECOVERY_LS_THREAD0 wait_for continue_signal_1 execute 10000';
+
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_oracle_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@oracle_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1,F@z2,F@z3', comment='aaaaaaaa';
+--enable_all_result_log
+sleep 10;
+
+# get servers' addr in z1, z2, z3
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $primary_tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "oracle_tenant", tenant_id, 1);
+let $standby_tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "standby_oracle_tenant", tenant_id, 1);
+let $primary_tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1 AND tenant_id = $primary_tenant_id, ls_id_tmp, 1);
+let $standby_tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1 AND tenant_id = $standby_tenant_id, ls_id_tmp, 1);
+let $standby_tenant_ls_id2 = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs1_ip' AND svr_port = $z1_obs1_port AND ls_id > 1 AND tenant_id = $standby_tenant_id, ls_id_tmp, 1);
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+--disable_query_log
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+
+--echo ========================================================================
+--echo ||               [MILESTONE] case 1: 配置项基本设置能力                  ||
+--echo ========================================================================
+
+# 默认值为auto
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'auto', 6, 10;
+
+# 设置oracle_tenant为on
+alter system set replica_parallel_migration_mode = 'on' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'on', 6, 10;
+
+
+# 设置oracle_tenant为off
+alter system set replica_parallel_migration_mode = 'off' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'off', 6, 10;
+
+# 设置oracle_tenant为outo
+alter system set replica_parallel_migration_mode = 'auto' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.__all_virtual_tenant_parameter_stat WHERE name = "replica_parallel_migration_mode" and tenant_id = 1002 and value = 'auto', 6, 10;
+
+
+--echo ========================================================================
+--echo ||               [MILESTONE] case 2: 主库默认不能并行迁移                 ||
+--echo ========================================================================
+
+# 删除内部表和内存步骤卡住，使得第一个任务常驻内存和内部表
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal1';
+
+# 添加zone1的副本迁移任务，该任务执行卡住
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z1_obs0' destination = '$z1_obs1' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z1_obs1%', 1, 40;
+sleep 10;
+
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'oracle_tenant';
+
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'oracle_tenant';
+
+# 补副本任务冲突报错
+--error 4017
+eval alter system add replica ls=$primary_tenant_ls_id server = '$z2_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'oracle_tenant';
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 3: 主库关闭配置项不能并行迁移              ||
+--echo ========================================================================
+# 并行迁移配置项置为off
+alter system set replica_parallel_migration_mode = 'off' tenant = 'oracle_tenant';
+sleep 4;
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'oracle_tenant';
+
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'oracle_tenant';
+
+# 补副本任务冲突报错
+--error 4017
+eval alter system add replica ls=$primary_tenant_ls_id server = '$z2_obs1' replica_type = 'F' paxos_replica_num = 4 tenant = 'oracle_tenant';
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 4: 主库打开配置项可以并行迁移              ||
+--echo ========================================================================
+# 并行迁移配置项置为on
+alter system set replica_parallel_migration_mode = 'on' tenant = 'oracle_tenant';
+sleep 4;
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z2_obs1%', 1, 40;
+sleep 10;
+
+eval alter system migrate replica ls=$primary_tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $primary_tenant_id AND ls_id = $primary_tenant_ls_id AND role = "LEADER" AND learner_list LIKE '%$z3_obs1%', 1, 40;
+sleep 10;
+
+# modify副本任务冲突报错
+--error 4017
+eval alter system modify replica ls=$primary_tenant_ls_id server = '$z2_obs0' replica_type = 'R' paxos_replica_num = 2 tenant = 'oracle_tenant';
+
+# 查看正在执行的容灾任务，应该有三个
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $primary_tenant_id, 3, 20;
+
+# 放开任务的清理
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $primary_tenant_id, 0, 20;
+
+
+--echo ========================================================================
+--echo ||             [MILESTONE] case 5: 备库关闭配置项不能并行迁移              ||
+--echo ========================================================================
+# 并行迁移配置项置为off
+alter system set replica_parallel_migration_mode = 'off' tenant = 'standby_oracle_tenant';
+sleep 4;
+# 删除内部表和内存步骤卡住，使得第一个任务常驻内存和内部表
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal2';
+
+# 添加zone1的副本迁移任务，该任务执行卡住
+eval alter system migrate replica ls=$standby_tenant_ls_id source = '$z1_obs0' destination = '$z1_obs1' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z1_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z1_obs1_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $standby_tenant_id AND ls_id = $standby_tenant_ls_id AND role = "LEADER", 1, 20;
+sleep 10;
+
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$standby_tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'standby_oracle_tenant';
+
+# 迁移其他zone的副本任务报错
+--error 4017
+eval alter system migrate replica ls=$standby_tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'standby_oracle_tenant';
+
+--echo ========================================================================
+--echo ||               [MILESTONE] case 6: 备库默认可以并行迁移                 ||
+--echo ========================================================================
+# 并行迁移配置项置为auto
+alter system set replica_parallel_migration_mode = 'auto' tenant = 'standby_oracle_tenant';
+sleep 5;
+
+# 添加zone2的副本迁移任务
+eval alter system migrate replica ls=$standby_tenant_ls_id source = '$z2_obs0' destination = '$z2_obs1' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z2_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z2_obs1_port, 1, 20;
+sleep 10;
+
+# 添加zone3的副本迁移任务
+eval alter system migrate replica ls=$standby_tenant_ls_id source = '$z3_obs0' destination = '$z3_obs1' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 3, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z3_obs1_ip' and TARGET_REPLICA_SVR_PORT = $z3_obs1_port, 1, 20;
+sleep 10;
+
+# 放开任务的清理
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 0, 100;
+--echo ========================================================================
+--echo ||             [MILESTONE] case 7: 备库打开配置项可以并行迁移              ||
+--echo ========================================================================
+# 并行迁移配置项置为on
+alter system set replica_parallel_migration_mode = 'on' tenant = 'standby_oracle_tenant';
+sleep 5;
+
+# 删除内部表和内存步骤卡住，模拟延长迁移任务执行时间
+ob1.mysql set ob_global_debug_sync = 'BEFORE_WAIT_LOG_REPLAY_SYNC wait_for signal3';
+
+# 添加zone1的副本迁移任务，该任务执行卡住
+eval alter system migrate replica ls=$standby_tenant_ls_id2 source = '$z1_obs1' destination = '$z1_obs0' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z1_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z1_obs0_port, 1, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $standby_tenant_id AND ls_id = $standby_tenant_ls_id AND role = "LEADER", 1, 20;
+sleep 10;
+
+# 添加zone2的副本迁移任务
+eval alter system migrate replica ls=$standby_tenant_ls_id2 source = '$z2_obs1' destination = '$z2_obs0' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 2, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z2_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z2_obs0_port, 1, 20;
+sleep 10;
+
+# 添加zone3的副本迁移任务
+eval alter system migrate replica ls=$standby_tenant_ls_id2 source = '$z3_obs1' destination = '$z3_obs0' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id, 3, 20;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $standby_tenant_id and TARGET_REPLICA_SVR_IP = '$z3_obs0_ip' and TARGET_REPLICA_SVR_PORT = $z3_obs0_port, 1, 20;
+sleep 10;
+
+
+# 放开任务的清理
+ob1.mysql set ob_global_debug_sync = 'now signal signal3';
+

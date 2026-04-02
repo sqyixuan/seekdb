@@ -1,0 +1,406 @@
+#
+# owner:修铭
+# owner group:liboblog
+# description:
+# 测试点：测试"验证参与者状态"功能是否正常，能否正常检测出“未来分区”、“分区删除”、“分区存在”等场景
+#
+# 场景：
+# 1. 各种分区类型: hash/key/range/range_column/list/list_column
+# 2. 分区动态增加
+# 3. 分区动态删除
+# 4. 分区分裂
+# 5. 一级分区、二级分区
+# 6. 表动态添加和删除
+# 7. 指定ID新建分区：采用单独的case验证
+# 8. 和1.x版本兼容性：采用单独case验证
+#
+# TODO:
+# 1. list/list columns分区分裂场景
+# 2. list/list columns分区动态添加和删除
+# 3. 二级分区分裂、动态添加和删除
+# 4. 各种类型的二级分区组合
+##
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_tenant_with_gts.inc;
+
+--disable_warnings
+drop database if exists oblog_db;
+create database oblog_db;
+use oblog_db;
+
+# 关闭回收站
+set recyclebin=off;
+
+####### 场景1: 表动态添加
+# 动态添加一张非分区表，liboblog识别是未来表
+#
+# 1.1 创建一个基本表
+create table t_base (pk int primary key);
+# 1.2 保存启动时刻时间戳
+# 因为启动时间戳是秒级别的，为了保证越过上一个操作，此处要sleep 1秒
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 1.3 插入干扰DDL
+create table ts1(pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+alter table ts1 add partition (partition p3 values less than (30));
+alter table ts1 add partition (partition p4 values less than (40));
+# 1.4 创建非分区表
+create table t_single (pk int primary key);
+# 1.5 开启一个事务
+begin;
+insert into t_base values (1),(2),(3);
+insert into t_single values (1),(2),(3);
+commit;
+# 1.6 回拉数据，t_single大概率是未来表
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+# 只拉取"t"开头的表
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_on=1 test_mode_block_alter_table_ddl_sec=3 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 1.7 验证日志
+# 验证liboblog是否有检测到"未来表"
+#ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+# 验证liboblog是否有检测到"分区存在"
+#ob1.oblog.check_log "STATUS=PART_EXIST";
+# 1.8 清理环境
+drop table t_base, t_single, ts1;
+
+######## 场景2: 表动态删除
+# 动态删除一张非分区表，liboblog识别是历史上删除的表
+# 2.1 保存启动时刻时间戳
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 2.2 创建非分区表
+create table t_single_1 (pk int primary key);
+create table t_single_2 (pk int primary key);
+# 2.3 构建分布式事务
+begin;
+replace into t_single_1 values (1),(2),(3);
+replace into t_single_2 values (1),(2),(3);
+commit;
+# 2.4 立即删除表，让__all_ddl_operation尽快看到这个删除操作，liboblog尽快提前删除这张表
+drop table t_single_1;
+# 2.5 回拉数据
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+# 设置测试模式，并且阻塞参与者列表确认过程，保证在确认参与者时，分区已经删除成功。
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_on=1 test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 2.6 验证日志
+# 验证liboblog是否有检测到"分区删除"
+#ob1.oblog.check_log "STATUS=PART_DELETED";
+# 2.7 清理环境
+drop table if exists t_single_2;
+
+######### 场景3: hash分区，分区存在，但是不服务场景
+# 让liboblog拉取部分分区，以partition group划分任务
+# 验证数据正常拉取
+#
+# 3.1 创建tablegroup和table
+create tablegroup tg1;
+create table t_hash_1 (pk int primary key) tablegroup tg1 partition by hash(pk) partitions 10;
+# 3.2 保存启动时刻时间戳
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 3.3 插入数据
+insert into t_hash_1 values (1),(2),(3),(4),(5),(6),(7),(8),(9),(10);
+# 3.4 回拉数据，设置liboblog多实例模式
+# 两个实例，第一个实例
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO instance_index=0 instance_num=2 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 3.5 回拉数据，设置liboblog多实例模式
+# 两个实例，第二个实例
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO instance_index=1 instance_num=2 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 3.6 验证日志
+# 不服务的分区，也会加入PartMgr: InfoMap中, 因此需要查询trans ctx打印不服务
+#ob1.oblog.check_log "[PREPARE_PART] [PART_NOT_SERVE]";
+# 3.7 清理环境
+drop table t_hash_1;
+
+########## 场景4: hash分区分裂
+## 在哈希分区分裂场景下，liboblog检测分裂后的分区是未来分区
+##
+## 4.1 创建table
+#create table t_base (pk int primary key);
+#create table t_hash_for_split (pk int primary key);
+## 4.2 保存启动时刻时间戳
+## 因为启动时间戳是秒级别的，为了保证越过上一个操作，此处要sleep 1秒
+#sleep 1;
+#let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+## 4.3 插入干扰DDL项，阻塞DDL解析
+#let $cnt=$DISTURB_TABLE_COUNT;
+#--disable_query_log
+#while ($cnt > 0)
+#{
+#  eval create table x$tidx (pk int primary key);
+#  inc $tidx;
+#  dec $cnt;
+#}
+#--enable_query_log
+## 4.4 分裂表
+#alter table t_hash_for_split modify partition by hash(pk) partitions 10;
+## 4.5 插入数据
+#begin;
+#insert into t_base values (1);
+#insert into t_hash_for_split values (8),(9),(10);
+#commit;
+## 4.6 回拉数据
+#ob1.oblog.gen_conf tb_white_list=sys.test.t* sort_trans_participants=1 log_level=INFO skip_ob_version_compat_check=1;
+#ob1.oblog.set_start_tstamp $start_tstamp;
+#ob1.oblog.restart;
+#ob1.oblog.next_dml;
+#ob1.oblog.stop;
+## 4.7 验证日志
+## 验证liboblog是否有检测到"未来表"
+#ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+## 验证liboblog是否有检测到"分区存在"
+#ob1.oblog.check_log "STATUS=PART_EXIST";
+## 4.7 清理环境
+#drop table t_base, t_hash_for_split;
+#
+########## 场景5: key分区分裂
+## 在key分区分裂场景下，liboblog检测分裂后的分区是未来分区
+##
+## 5.1 创建table
+#create table t_base (pk int primary key);
+#create table t_key_split (pk int primary key);
+## 5.2 保存启动时刻时间戳
+## 因为启动时间戳是秒级别的，为了保证越过上一个操作，此处要sleep 1秒
+#sleep 1;
+#let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+## 5.3 插入干扰DDL项，阻塞DDL解析
+#--disable_query_log
+#let $cnt=$DISTURB_TABLE_COUNT;
+#while ($cnt > 0)
+#{
+#  eval create table x$tidx (pk int primary key);
+#  inc $tidx;
+#  dec $cnt;
+#}
+#--enable_query_log
+## 5.4 分裂表
+#alter table t_key_split modify partition by key(pk) partitions 10;
+## 5.5 插入数据
+#begin;
+#insert into t_base values (1);
+#insert into t_key_split values (8),(9),(10);
+#commit;
+## 5.6 回拉数据
+#ob1.oblog.gen_conf tb_white_list=sys.test.t* sort_trans_participants=1 log_level=INFO skip_ob_version_compat_check=1;
+#ob1.oblog.set_start_tstamp $start_tstamp;
+#ob1.oblog.restart;
+#ob1.oblog.next_dml;
+#ob1.oblog.stop;
+## 5.7 验证日志
+## 验证liboblog是否有检测到"未来表"
+#ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+## 验证liboblog是否有检测到"分区存在"
+#ob1.oblog.check_log "STATUS=PART_EXIST";
+## 5.8 清理环境
+#drop table t_base, t_key_split;
+
+######### 场景6: range分区和range columns分区动态添加
+# 在range分区和range columns分区动态添加场景下，liboblog检测新添加的分区是未来分区
+#
+# 6.1 创建table
+create table t_base (pk int primary key, c1 int);
+create table t_range_1 (pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+# 6.2 保存启动时刻时间戳
+# 因为启动时间戳是秒级别的，为了保证越过上一个操作，此处要sleep 1秒
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 插入干扰ddl
+create table ts1(pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+alter table ts1 add partition (partition p3 values less than (30));
+alter table ts1 add partition (partition p4 values less than (40));
+# 6.4 添加分区
+alter table t_range_1 add partition (partition p3 values less than (30));
+# 6.5 插入数据
+begin;
+insert into t_base values (1,1);
+insert into t_range_1 values (28,28),(19,19),(9,9);
+commit;
+# 6.6 range columns分区表
+create table t_range_2 (c1 int, c2 int, primary key (c1,c2)) partition by range columns (c1,c2) (partition p1 values less than (10, 10), partition p2 values less than (20, 20));
+# 6.7 插入干扰DDL项，阻塞DDL解析
+create table ts2(pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+alter table ts2 add partition (partition p3 values less than (30));
+alter table ts2 add partition (partition p4 values less than (40));
+# 6.8 添加range columns分区
+alter table t_range_2 add partition (partition p3 values less than (30, 30));
+# 6.9 插入数据
+begin;
+update t_base set c1=c1+1 where pk=1;
+insert into t_range_2 values (28, 28), (19, 19), (9, 9);
+commit;
+# 6.10 回拉数据，上面有两条有效事务
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_block_alter_table_ddl_sec=3 test_mode_on=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.next_dml;
+# 6.11 验证日志
+# 验证liboblog是否有检测到"未来表"
+#ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+# 验证liboblog是否有检测到"分区存在"
+#ob1.oblog.check_log "STATUS=PART_EXIST";
+ob1.oblog.stop;
+# 6.12 清理环境
+drop table t_base, t_range_1, t_range_2, ts2;
+
+######### 场景7: range分区和range columns分区动态删除
+# 在range分区和range columns分区动态删除场景下，liboblog能够尽快删除分区，
+# 然后在判断参与者逻辑下，能够正常判定分区被删除。
+#
+# 7.1 首先保存启动时刻时间戳，让后面的表的日志拉取时间晚点，让DDL早点生效
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 7.2 创建table，range分区和range columns分区
+create table t_base (pk int primary key, c1 int);
+create table t_range_1 (pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+create table t_range_2 (c1 int, c2 int, primary key (c1,c2)) partition by range columns (c1,c2) (partition p1 values less than (10, 10), partition p2 values less than (20, 20));
+# 7.3 执行分布式事务，包含即将被删除的分区
+begin;
+insert into t_base values (1,1);
+# 插入p1分区
+insert into t_range_1 values (9,9);
+# 插入p2分区
+insert into t_range_2 values (19,19);
+commit;
+# 7.4 删除分区
+# 删除p1分区
+alter table t_range_1 drop partition (p1);
+# 删除p2分区
+alter table t_range_2 drop partition (p2);
+# 7.6 回拉数据
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+# 设置测试模式，并且阻塞参与者列表确认过程，保证在确认参与者时，分区已经删除成功。
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_on=1 test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 7.7 验证日志
+# 验证liboblog是否有检测到"分区删除"
+#ob1.oblog.check_log "STATUS=PART_DELETED";
+# 7.8 清理环境
+drop table t_base, t_range_1, t_range_2;
+
+######### 场景8: 二级分区的一级动态添加
+# 以一级range、二级hash为例，验证二级分区的一级分区动态添加场景
+# 要求能够判定出动态添加的分区是未来分区
+#
+# 8.1 创建table
+create table t_base (pk int primary key);
+create table t_second_part (pk int primary key, c1 int) partition by range(pk) subpartition by hash(pk) subpartitions 4 (partition p1 values less than (10), partition p2 values less than (20));
+# 8.2 保存启动时刻时间戳
+# 因为启动时间戳是秒级别的，为了保证越过上一个操作，此处要sleep 1秒
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 8.3 插入干扰DDL项，阻塞DDL解析
+create table ts3(pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+alter table ts3 add partition (partition p3 values less than (30));
+alter table ts3 add partition (partition p4 values less than (40));
+# 8.4 添加分区
+alter table t_second_part add partition (partition p3 values less than (30));
+# 8.5 插入数据
+begin;
+insert into t_base values (1);
+insert into t_second_part values (28,28),(19,19),(9,9);
+commit;
+# 8.6 回拉数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_block_alter_table_ddl_sec=3 test_mode_on=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+# 8.7 验证日志
+# 验证liboblog是否有检测到"未来分区"
+#ob1.oblog.check_log "STATUS=PART_NOT_CREATE";
+# 验证liboblog是否有检测到"分区存在"
+#ob1.oblog.check_log "STATUS=PART_EXIST";
+ob1.oblog.stop;
+# 8.8 清理环境
+drop table t_base, t_second_part, ts3;
+
+######### 场景9: 二级分区的一级动态删除
+# 以一级range、二级hash为例，验证二级分区的一级分区动态删除场景
+# 要求能够判定出动态删除的分区已删除
+#
+# 9.1 首先保存启动时刻时间戳，让后面的表的日志拉取时间晚点，让DDL早点生效
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+# 9.2 创建table，range分区和range columns分区
+create table t_base (pk int primary key);
+create table t_second_part (pk int primary key, c1 int) partition by range(pk) subpartition by hash(pk) subpartitions 4 (partition p1 values less than (10), partition p2 values less than (20));
+# 9.3 执行分布式事务，包含即将被删除的分区
+begin;
+insert into t_base values (1);
+# 插入p1分区
+insert into t_second_part values (9,9);
+# 插入p2分区
+insert into t_second_part values (11,11);
+commit;
+# 9.4 删除分区
+# 删除p1分区
+alter table t_second_part drop partition (p1);
+# 9.5 回拉数据
+# 设置排序事务内参与者列表配置项为true，保证集群重启情况下，多分区事务语句顺序一致
+# 设置测试模式，并且阻塞参与者列表确认过程，保证在确认参与者时，分区已经删除成功。
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO test_mode_on=1 test_mode_block_verify_participants_time_sec=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+# 9.6 验证日志
+# 验证liboblog是否有检测到"分区删除"
+#ob1.oblog.check_log "STATUS=PART_DELETED";
+# 9.7 清理环境
+drop table t_base, t_second_part;
+
+## 验证添加不服务的分区
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.t* sort_trans_participants=1 log_level=INFO instance_index=0 instance_num=2 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create table t1 (pk int primary key, c1 int);
+ob1.oblog.next;
+create table t2 (pk int primary key, c1 int);
+ob1.oblog.next;
+#ob1.oblog.check_log "ADD_NOT_SERVED_PART";
+
+begin;
+insert into t1 values(1, 1);
+insert into t2 values(1, 1);
+commit;
+ob1.oblog.next;
+
+create table t_range_1 (pk int primary key, c1 int) partition by range(pk) (partition p1 values less than (10), partition p2 values less than (20));
+ob1.oblog.next;
+#ob1.oblog.check_log "ADD_NOT_SERVED_PART";
+
+begin;
+insert into t_range_1 values(1, 1);
+insert into t_range_1 values(11, 11);
+commit;
+ob1.oblog.next;
+
+create table t_list_1 (c1 int primary key ,c2 int ,c3 int) partition by list (c1)(partition p0 values in (1,2,3,4,5,6,7,10),partition p1 values in (11,20,30,40,50,100));
+ob1.oblog.next;
+#ob1.oblog.check_log "ADD_NOT_SERVED_PART";
+
+begin;
+insert into t_list_1 values(1, 2, 3);
+insert into t_list_1 values(11, 2, 3);
+commit;
+ob1.oblog.next;
+ob1.oblog.stop;

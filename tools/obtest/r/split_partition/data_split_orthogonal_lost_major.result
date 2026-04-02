@@ -1,0 +1,200 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE UNIT mine_unit MAX_CPU=8, MEMORY_SIZE='8G';
+ob1.mysql CREATE RESOURCE POOL mine_pool UNIT mine_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2');
+ob1.mysql CREATE TENANT backup_mysql_tenant resource_pool_list=('mine_pool'), locality = "F@z1,F@z2", primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+create tenant finished
+alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+===============================================================
+==================     create table ===========================
+===============================================================
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+===============================================================
+==================     start create table v1   ================
+===============================================================
+create sequence seq_pk_small INCREMENT BY 1 start with 1 minvalue 1 maxvalue 5000000 nocycle noorder nocache;
+create sequence seq_pk_large INCREMENT BY 1 start with 5001 minvalue 1 maxvalue 5000000 nocycle noorder nocache;
+create table test_with_restore(c1 bigint, c2 bigint, c3 varchar(4096), c4 varchar(4096), c5 varchar(4096), c6 longtext, primary key(c1)) row_format = redundant, compression = 'none'
+partition by range(c1) (
+partition p0 values less than (1),
+partition p1 values less than (10000),
+partition p2 values less than MAXVALUE);
+SET SESSION _FORCE_PARALLEL_DDL_DOP = 32;
+insert /*+ append query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(2000));
+insert /*+ append query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(2000));
+===============================================================
+==================     start archive   ========================
+===============================================================
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+===============================================================
+==================     start backup data   ====================
+===============================================================
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select count(*) from __all_virtual_mem_leak_checker_info where mod_name like 'BackupIO', 0, 60;
+===============================================================
+==================     start inc load data v2  ================
+===============================================================
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+===============================================================
+==================     start inc load data v3  ================
+===============================================================
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+===============================================================
+==================     start inc load data, minor  ============
+===============================================================
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_small.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+insert /*+ query_timeout(100000000000) parallel(16) enable_parallel_dml */ into test_with_restore
+select seq_pk_large.nextval, random(10), randstr(4096, random(10)), randstr(4096, random(10)), randstr(4096, random(10)), randstr(10240, random(10)) from table(generator(100));
+===============================================================
+==================     split partition  =======================
+===============================================================
+alter table test_with_restore reorganize partition p1 into ( partition p1_0 values less than (5000), partition p1_1 values less than (10000));
+===============================================================
+==================     major merge final check  ===============
+===============================================================
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+use oceanbase;
+===============================================================
+===============  CALC RESTORE POINT  ==========================
+===============================================================
+ob1.check_until_timeout select checkpoint_scn > $now from CDB_OB_ARCHIVELOG where tenant_id = $backup_mysql_tenant_id, 1, 600;
+===============================================================
+===============  FULL RESTORE  ===============================
+===============================================================
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until scn=$now with 'pool_list=small_pool_1&primary_zone=z1,z2';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 600;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 9, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 600;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 600;
+use oceanbase;
+select (tablet_count-inner_table_cnt) as tablet_count,(finish_tablet_count-inner_table_cnt) as finish_tablet_count from cdb_ob_restore_history a inner join (select tenant_id, count(1) as inner_table_cnt from CDB_OB_TABLET_TO_LS where tenant_id=1004 and ls_id=1) b on a.tenant_id=b.tenant_id;
+tablet_count	finish_tablet_count
+9	9
+select ls_id, tablet_count as total_tablet_count, finish_tablet_count from __all_virtual_ls_restore_history where tenant_id=1004 and ls_id!=1 order by ls_id;
+ls_id	total_tablet_count	finish_tablet_count
+1001	6	6
+1001	6	6
+1001	6	6
+1002	3	3
+1002	3	3
+1002	3	3
+select count(*) as cnt from __all_virtual_ls_restore_history where tenant_id = 1004 and total_bytes = 0 or finish_bytes = 0;
+cnt
+0
+select count(*) as cnt from __all_virtual_ls_restore_history where tenant_id = 1004 and (total_bytes-finish_bytes) != 0;
+cnt
+0
+select count(*) as cnt from cdb_ob_restore_history where tenant_id = 1004 and total_bytes > 0 and finish_bytes > 0 and (total_bytes-finish_bytes)=0;
+cnt
+1
+select restore_data_mode from oceanbase.DBA_OB_TENANTS where tenant_id = 1;
+restore_data_mode
+NORMAL
+select restore_data_mode from oceanbase.DBA_OB_TENANTS where tenant_id = 1003;
+restore_data_mode
+NORMAL
+select restore_data_mode from oceanbase.DBA_OB_TENANTS where tenant_id = 1004;
+restore_data_mode
+NORMAL
+select count(*) as cnt FROM __all_virtual_table_mgr where tenant_id=1004 and ls_id=1 and table_flag in (1, 3);
+cnt
+0
+select count(*) as cnt FROM __all_virtual_table_mgr where tenant_id=1004 and ls_id!=1 and table_flag in (1, 3);
+cnt
+0
+===============================================================
+===============  CHECK RESTORE TENANT OK  =====================
+===============================================================
+use test;
+ob1.check_until_timeout select count(*) from __all_virtual_mem_leak_checker_info where mod_name like 'BackupIO', 0, 60;
+
+check data rows normal.
+select c1, c2, md5(c3), md5(c4), md5(c5), md5(c6) from test_with_restore partition (p1_0) order by c1 asc limit 10;
+c1	c2	md5(c3)	md5(c4)	md5(c5)	md5(c6)
+1	1868343560109015986	9f47249612302639f7dde048de0a63e9	9f47249612302639f7dde048de0a63e9	9f47249612302639f7dde048de0a63e9	88fd0c474b3145bc4c13551db9822fad
+2	7631498515874435890	73f0d862cc1693109f55f12a20a9ec48	73f0d862cc1693109f55f12a20a9ec48	73f0d862cc1693109f55f12a20a9ec48	f4a926d9d40df8025a0d34de2b0f1a26
+3	-4303036035879298696	1e788a80ac00df3fd01ca3f2cfbd5964	1e788a80ac00df3fd01ca3f2cfbd5964	1e788a80ac00df3fd01ca3f2cfbd5964	7e4be02c32bb832f4321eb05a71eb79e
+4	1980548971733901990	04571871e78e0ca6822acdaab64d1379	04571871e78e0ca6822acdaab64d1379	04571871e78e0ca6822acdaab64d1379	1f3920ce0ef3e96f10e30ff5c8db14be
+5	-8557930259251412769	febed7197cc42f2d9caf4e20f0ba8671	febed7197cc42f2d9caf4e20f0ba8671	febed7197cc42f2d9caf4e20f0ba8671	a7fe161410fe18362e15b4b5e370dbf2
+6	4670347475323090446	5236c13b043e405045aabe81d66246ac	5236c13b043e405045aabe81d66246ac	5236c13b043e405045aabe81d66246ac	663526eb60a09f19719ada0ed39bc40a
+7	-753131570489399391	1c9c1edbb1d40bf2a3bbf73478ee4a93	1c9c1edbb1d40bf2a3bbf73478ee4a93	1c9c1edbb1d40bf2a3bbf73478ee4a93	744b18c24a9aae59069cd28d23faf0d5
+8	7483832157514401344	67d6b065680ba961046dcee5fa86c165	67d6b065680ba961046dcee5fa86c165	67d6b065680ba961046dcee5fa86c165	dc970427dcb7a54a411f8e2ff6b1b364
+9	-3441487748239508200	515e3d34d4a87b322a49eaabd63be23e	515e3d34d4a87b322a49eaabd63be23e	515e3d34d4a87b322a49eaabd63be23e	64377dfc3c49a8b72b2554546b6bf48c
+10	-2295621689785986371	cc9337a1c7e6445a48b4e9cf9e517554	cc9337a1c7e6445a48b4e9cf9e517554	cc9337a1c7e6445a48b4e9cf9e517554	a011893b761dc279610fe81787d4052e
+select c1, c2, md5(c3), md5(c4), md5(c5), md5(c6) from test_with_restore partition (p1_0) order by c1 desc limit 10;
+c1	c2	md5(c3)	md5(c4)	md5(c5)	md5(c6)
+2300	-7387642984052728335	8d182d0d7cfd6f151c066db0cc9f725c	8d182d0d7cfd6f151c066db0cc9f725c	8d182d0d7cfd6f151c066db0cc9f725c	75683e84453dbb0da567450e1ab86ae7
+2299	-6181924184597207194	5a28b3e4f92064f6860ccff908e45276	5a28b3e4f92064f6860ccff908e45276	5a28b3e4f92064f6860ccff908e45276	a4ddf9d0c2ad37cf7988a54758284d94
+2298	-1176372791882855771	b0634921a42a38ea6ae4f0112bdcf5b9	b0634921a42a38ea6ae4f0112bdcf5b9	b0634921a42a38ea6ae4f0112bdcf5b9	ae38948b0e2cad1c8d30b302c121260c
+2297	81530486930317027	3987f01c6e5f1d4c502757ec168f7ef6	3987f01c6e5f1d4c502757ec168f7ef6	3987f01c6e5f1d4c502757ec168f7ef6	745dd00d193cd8d5d8159b8c3f985218
+2296	8989898442626348880	da0a3b92ca56767ba44bd7b8fb58e458	da0a3b92ca56767ba44bd7b8fb58e458	da0a3b92ca56767ba44bd7b8fb58e458	0bf73478e5a49d31539c74ad6a5acd02
+2295	6444570492016361799	15586a0669add112e35c95f231541100	15586a0669add112e35c95f231541100	15586a0669add112e35c95f231541100	9533e79f8d422eed958c3f5eac12c840
+2294	-5136746666869862216	d136f7e1c8f3375cfd2258f6bf523db2	d136f7e1c8f3375cfd2258f6bf523db2	d136f7e1c8f3375cfd2258f6bf523db2	4e37105363acac47901c70e86fc09aa6
+2293	3284435052661155082	01164f6ca4a35130ac59a0244ecd93a4	01164f6ca4a35130ac59a0244ecd93a4	01164f6ca4a35130ac59a0244ecd93a4	cce2dd310fc5fc008c84f2fa12710c1f
+2292	4734494653005898433	3043e320f68f28569a55acb9b69864cd	3043e320f68f28569a55acb9b69864cd	3043e320f68f28569a55acb9b69864cd	e04afbf4d9724e0e7bab69cecc02c918
+2291	1206724297170821447	e71331a56480756f8bae6b1dcec8aa9f	e71331a56480756f8bae6b1dcec8aa9f	e71331a56480756f8bae6b1dcec8aa9f	08dcc2db988688cac8fdbe2e378c63ba
+select c1, c2, md5(c3), md5(c4), md5(c5), md5(c6) from test_with_restore partition (p1_1) order by c1 asc limit 10;
+c1	c2	md5(c3)	md5(c4)	md5(c5)	md5(c6)
+5001	1868343560109015986	9f47249612302639f7dde048de0a63e9	9f47249612302639f7dde048de0a63e9	9f47249612302639f7dde048de0a63e9	88fd0c474b3145bc4c13551db9822fad
+5002	7631498515874435890	73f0d862cc1693109f55f12a20a9ec48	73f0d862cc1693109f55f12a20a9ec48	73f0d862cc1693109f55f12a20a9ec48	f4a926d9d40df8025a0d34de2b0f1a26
+5003	-4303036035879298696	1e788a80ac00df3fd01ca3f2cfbd5964	1e788a80ac00df3fd01ca3f2cfbd5964	1e788a80ac00df3fd01ca3f2cfbd5964	7e4be02c32bb832f4321eb05a71eb79e
+5004	1980548971733901990	04571871e78e0ca6822acdaab64d1379	04571871e78e0ca6822acdaab64d1379	04571871e78e0ca6822acdaab64d1379	1f3920ce0ef3e96f10e30ff5c8db14be
+5005	-8557930259251412769	febed7197cc42f2d9caf4e20f0ba8671	febed7197cc42f2d9caf4e20f0ba8671	febed7197cc42f2d9caf4e20f0ba8671	a7fe161410fe18362e15b4b5e370dbf2
+5006	4670347475323090446	5236c13b043e405045aabe81d66246ac	5236c13b043e405045aabe81d66246ac	5236c13b043e405045aabe81d66246ac	663526eb60a09f19719ada0ed39bc40a
+5007	-753131570489399391	1c9c1edbb1d40bf2a3bbf73478ee4a93	1c9c1edbb1d40bf2a3bbf73478ee4a93	1c9c1edbb1d40bf2a3bbf73478ee4a93	744b18c24a9aae59069cd28d23faf0d5
+5008	7483832157514401344	67d6b065680ba961046dcee5fa86c165	67d6b065680ba961046dcee5fa86c165	67d6b065680ba961046dcee5fa86c165	dc970427dcb7a54a411f8e2ff6b1b364
+5009	-3441487748239508200	515e3d34d4a87b322a49eaabd63be23e	515e3d34d4a87b322a49eaabd63be23e	515e3d34d4a87b322a49eaabd63be23e	64377dfc3c49a8b72b2554546b6bf48c
+5010	-2295621689785986371	cc9337a1c7e6445a48b4e9cf9e517554	cc9337a1c7e6445a48b4e9cf9e517554	cc9337a1c7e6445a48b4e9cf9e517554	a011893b761dc279610fe81787d4052e
+select c1, c2, md5(c3), md5(c4), md5(c5), md5(c6) from test_with_restore partition (p1_1) order by c1 desc limit 10;
+c1	c2	md5(c3)	md5(c4)	md5(c5)	md5(c6)
+7300	-7387642984052728335	8d182d0d7cfd6f151c066db0cc9f725c	8d182d0d7cfd6f151c066db0cc9f725c	8d182d0d7cfd6f151c066db0cc9f725c	75683e84453dbb0da567450e1ab86ae7
+7299	-6181924184597207194	5a28b3e4f92064f6860ccff908e45276	5a28b3e4f92064f6860ccff908e45276	5a28b3e4f92064f6860ccff908e45276	a4ddf9d0c2ad37cf7988a54758284d94
+7298	-1176372791882855771	b0634921a42a38ea6ae4f0112bdcf5b9	b0634921a42a38ea6ae4f0112bdcf5b9	b0634921a42a38ea6ae4f0112bdcf5b9	ae38948b0e2cad1c8d30b302c121260c
+7297	81530486930317027	3987f01c6e5f1d4c502757ec168f7ef6	3987f01c6e5f1d4c502757ec168f7ef6	3987f01c6e5f1d4c502757ec168f7ef6	745dd00d193cd8d5d8159b8c3f985218
+7296	8989898442626348880	da0a3b92ca56767ba44bd7b8fb58e458	da0a3b92ca56767ba44bd7b8fb58e458	da0a3b92ca56767ba44bd7b8fb58e458	0bf73478e5a49d31539c74ad6a5acd02
+7295	6444570492016361799	15586a0669add112e35c95f231541100	15586a0669add112e35c95f231541100	15586a0669add112e35c95f231541100	9533e79f8d422eed958c3f5eac12c840
+7294	-5136746666869862216	d136f7e1c8f3375cfd2258f6bf523db2	d136f7e1c8f3375cfd2258f6bf523db2	d136f7e1c8f3375cfd2258f6bf523db2	4e37105363acac47901c70e86fc09aa6
+7293	3284435052661155082	01164f6ca4a35130ac59a0244ecd93a4	01164f6ca4a35130ac59a0244ecd93a4	01164f6ca4a35130ac59a0244ecd93a4	cce2dd310fc5fc008c84f2fa12710c1f
+7292	4734494653005898433	3043e320f68f28569a55acb9b69864cd	3043e320f68f28569a55acb9b69864cd	3043e320f68f28569a55acb9b69864cd	e04afbf4d9724e0e7bab69cecc02c918
+7291	1206724297170821447	e71331a56480756f8bae6b1dcec8aa9f	e71331a56480756f8bae6b1dcec8aa9f	e71331a56480756f8bae6b1dcec8aa9f	08dcc2db988688cac8fdbe2e378c63ba
+
+test major merge normal.
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$restore_mysql_tenant_id, 0, 600;

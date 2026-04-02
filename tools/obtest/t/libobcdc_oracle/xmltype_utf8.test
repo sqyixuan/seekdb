@@ -1,0 +1,79 @@
+#
+# owner: zhichen
+# owner group: shenzhen
+# description:
+#  xmltype utf8 test compare with xmltype gbk test
+##
+# NOTICE: USE LATEST mytest.jar to run this case to prevent garbled characters when outputting Chinese.
+# prepare cluster and tenant
+ob1=OBI(cluster=1);
+ob1.reboot;
+ob1.create_client;
+
+source include/liboblog/create_oracle_tenant.inc;
+
+connection conn_sys;
+alter tenant oracle set variables max_allowed_packet=1073741824;
+let $restart_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_oracle_obtest;
+
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=oracle.*.*  test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection conn_oracle_obtest;
+
+create table simple_xml_test(pk int primary key, x xmltype);
+ob1.oblog.next;
+
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB('<data>中文</data>')))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB('<data>中文</data>'),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB(convert('<data>中文</data>', 'UTF8'))))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB(convert('<data>中文</data>', 'UTF8')),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+# select xmltype的列的输出, 会格式化, 多一些换行和缩减, 而CDC输出的没有格式化, 所以MD5会不一样, 所以这里仅使用输入文本的MD5对比
+# select pk, x, RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB(X),DBMS_CRYPTO.HASH_MD5)) as xml_md5 from simple_xml_test;
+
+insert into simple_xml_test values(1, '<data>中文</data>');
+ob1.oblog.next;
+insert into simple_xml_test values(2, convert('<data>中文</data>', 'UTF8'));
+ob1.oblog.next;
+
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB('<data>english</data>')))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB('<data>english</data>'),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+select
+  LOWER(RAWTOHEX(UTL_RAW.CAST_TO_RAW(TO_CLOB(convert('<data>english</data>', 'UTF8'))))) as hex,
+  LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(TO_CLOB(convert('<data>english</data>', 'UTF8')),DBMS_CRYPTO.HASH_MD5))) as md5
+from dual;
+update simple_xml_test set x = '<data>english</data>' where pk = 1;
+ob1.oblog.next;
+
+delete from simple_xml_test where pk=1;
+ob1.oblog.next;
+
+drop table simple_xml_test;
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# restart from restart_usec
+ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_on=1 test_mode_ignore_redo_count=10 sort_trans_participants=1 skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_usec;
+ob1.oblog.restart;
+ob1.oblog.waitUntilRealtime 2400;
+# first insert
+ob1.oblog.next_dml;
+# second insert
+ob1.oblog.next_dml;
+# update
+ob1.oblog.next_dml;
+# delete
+ob1.oblog.next_dml;
+
+ob1.oblog.stop;
+ob1.force_stop;

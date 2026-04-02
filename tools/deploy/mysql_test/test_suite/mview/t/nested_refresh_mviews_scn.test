@@ -1,0 +1,113 @@
+# owner: wyh329796 
+# owner group: mv
+# tags: 
+# descriotion: 验证级联刷新调度，物化视图刷新获取SCN的基础逻辑
+
+connect (sys, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connect (conn1, $OBMYSQL_MS0, root,,test, $OBMYSQL_PORT);
+connect (conn2, $OBMYSQL_MS0, root,,test, $OBMYSQL_PORT);
+
+connection sys;
+alter system set debug_sync_timeout = '100000s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_GET_SCN clear';
+sleep 3;
+
+connection default;
+set recyclebin = OFF;
+set ob_query_timeout = 10000000000;
+
+--disable_warnings
+drop database if exists test_mv_nested_sync_refresh_views;
+--enable_warnings
+create database test_mv_nested_sync_refresh_views;
+use test_mv_nested_sync_refresh_views;
+
+create table ta(id int primary key, name varchar(30));
+create table tb(id int primary key, age int);
+create table tc(id int primary key, salary int);
+
+create materialized view log on ta with primary key (name) including new values;
+create materialized view log on tb with primary key (age) including new values;
+create materialized view log on tc with primary key (salary) including new values;
+
+create materialized view mv1 (primary key (id_a)) refresh fast as select ta.id id_a, tb.id as ib_b, ta.name, tb.age from ta, tb where ta.id = tb.id;
+create materialized view log on mv1 with primary key (name, age) including new values;
+
+create materialized view mv2 (primary key (id_a)) refresh fast as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+create materialized view log on mv2 with primary key (name, salary) including new values;
+
+create materialized view mv3 refresh fast as select count(*) cnt, count(age) age_cnt, sum(age) age_sum, count(salary) salary_cnt, sum(salary) salary_sum from mv1 , mv2 where mv1.id_a = mv2.id_a;
+
+create materialized view mv4 (primary key (id_a)) refresh fast as select mv1.id_a, tc.id id_c, mv1.name, tc.salary from mv1, tc where mv1.id_a = tc.id;
+
+insert into ta values (1, 'j');
+insert into tb values (1, 21);
+insert into tc values (1, 10000);
+
+##### 验证物化视图刷新时, 长时间无法获取目标位点失败, 无需目标位点的MV可以正常刷新
+connection sys;
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_GET_SCN wait_for signalxxx execute 10000';
+sleep 3;
+
+connection default;
+use test_mv_nested_sync_refresh_views;
+send CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+connection conn1;
+use test_mv_nested_sync_refresh_views;
+## 不需要目标位点，正常刷新
+CALL DBMS_MVIEW.REFRESH('mv4', 'f');
+send CALL DBMS_MVIEW.REFRESH('mv1', 'f');
+sleep 35;
+--error 4012
+reap;
+
+connection sys;
+set ob_global_debug_sync = 'now signal signalxxx';
+sleep 3;
+
+connection default;
+reap;
+
+##### 清理debug sync
+connection sys;
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_GET_SCN clear';
+set ob_global_debug_sync = 'now broadcast signalxxx';
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH wait_for signalyyy execute 10000';
+sleep 3;
+
+##### 测试点2: 级联刷新中途部分mv被全量刷新,无法检查位点,直接报错失败
+connection default;
+use test_mv_nested_sync_refresh_views;
+send CALL DBMS_MVIEW.REFRESH('mv3', 'f', nested=>true, nested_refresh_mode=>'CONSISTENT');
+
+connection conn1;
+use test_mv_nested_sync_refresh_views;
+send CALL DBMS_MVIEW.REFRESH('mv2', 'C');
+
+connection sys;
+set ob_global_debug_sync = 'now signal signalyyy';
+sleep 1;
+
+connection conn1;
+reap;
+
+connection sys;
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'now broadcast signalyyy';
+
+connection default;
+--error 9812
+reap;
+
+### 清理debug sync
+connection sys;
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_GET_SCN clear';
+set ob_global_debug_sync = 'BEFORE_NESTED_MV_REFRESH clear';
+set ob_global_debug_sync = 'reset';
+
+connection default;
+drop database test_mv_nested_sync_refresh_views;

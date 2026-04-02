@@ -1,0 +1,115 @@
+# owner: rongxuan.lc
+# description: 本case是为了在带readonly的场景下，一个zone有多个副本。 
+# 在pg balance的时候，需要考虑到目的机器上已经有该partition的其他类型的副本；
+###case 1: 租户在每个zone上有两个unit;两个副本；验证不产生tg_pg_balance的任务
+###case 2: 租户在每个zone上有3个unit;
+ob1=OBI(cluster=3:3:3, init_unit_cpu=2, proxy_num=0, ct_num = 0);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+###case 1: 租户在每个zone上有两个unit;两个副本；验证不产生tg_pg_balance的任务
+#额外增加一个只有f的tg。 用来制造不均衡；
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3,R@z3', primary_zone='z1' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1); 
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create tablegroup tg1 partition by hash partitions 20;
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+create table test3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test2" and tenant_id = "$tenant_id", table_id, 1);
+let $t3_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test3" and tenant_id = "$tenant_id", table_id, 1);
+
+##预期：f副本对齐；R对齐；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and zone='z3' and partition_id = 0 and replica_type = 0 group by svr_ip, svr_port, 2, 120;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and zone='z3' and partition_id = 0 and replica_type = 16 group by svr_ip, svr_port, 2, 120;
+ob1.check_until_timeout select count(*) c from __all_virtual_rebalance_task_stat, 0, 60;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+###新建表test1/test4；将其全部迁往z3.obs0;
+create tablegroup tg2 locality = 'F@z1,F@z2,F@z3' partition by hash partitions 20;
+create table test1(c1 int primary key, c2 int) tablegroup = 'tg2' locality='F@z1,F@z2,F@z3' partition by hash(c1) partitions 20;
+create table test4(c1 int primary key, c2 int) tablegroup = 'tg2' locality='F@z1,F@z2,F@z3' partition by hash(c1) partitions 20;
+create table test5(c1 int primary key, c2 int) tablegroup = 'tg2' locality='F@z1,F@z2,F@z3' partition by hash(c1) partitions 20;
+let $t1_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test1" and tenant_id = "$tenant_id", table_id, 1);
+let $t4_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test4" and tenant_id = "$tenant_id", table_id, 1);
+let $t5_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test5" and tenant_id = "$tenant_id", table_id, 1);
+--disable_all_result_log
+let $partition_id= 0;
+let $dest_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $dest_port = deploy_get_value(ob1.z3.obs0.port);
+while ($partition_id < 20)
+{
+##获取partition_id = $count 在z3上的副本，如果不在z3.obs0上面，则做一次迁移；
+  let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t1_id and zone = 'z3' and partition_id = $partition_id and svr_ip = '$dest_ip' and svr_port= $dest_port, c, 1);
+#找到源端；
+  if ($count == 0)
+  {
+    let $src_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t1_id and zone = 'z3' and partition_id = $partition_id, addr, 1);
+    ob1.mysql alter system move replica partition_id '$partition_id%20@$t1_id' source '$src_addr' destination '$dest_ip:$dest_port';
+  }
+  inc $partition_id;
+}
+
+##迁移t4到z3.obs0
+let $partition_id= 0;
+while ($partition_id < 20)
+{
+##获取partition_id = $count 在z3上的副本，如果不在z3.obs0上面，则做一次迁移；
+  let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t4_id and zone = 'z3' and partition_id = $partition_id and svr_ip = '$dest_ip' and svr_port= $dest_port, c, 1);
+#找到源端；
+  if ($count == 0)
+  {
+    let $src_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t4_id and zone = 'z3' and partition_id = $partition_id, addr, 1);
+    ob1.mysql alter system move replica partition_id '$partition_id%20@$t4_id' source '$src_addr' destination '$dest_ip:$dest_port';
+  }
+  inc $partition_id;
+}
+##迁移t5到z3.obs0
+let $partition_id= 0;
+while ($partition_id < 20)
+{
+##获取partition_id = $count 在z3上的副本，如果不在z3.obs0上面，则做一次迁移；
+  let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t5_id and zone = 'z3' and partition_id = $partition_id and svr_ip = '$dest_ip' and svr_port= $dest_port, c, 1);
+#找到源端；
+  if ($count == 0)
+  {
+    let $src_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t5_id and zone = 'z3' and partition_id = $partition_id, addr, 1);
+    ob1.mysql alter system move replica partition_id '$partition_id%20@$t5_id' source '$src_addr' destination '$dest_ip:$dest_port';
+  }
+  inc $partition_id;
+}
+--enable_all_result_log
+
+##开启负载均衡
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+##验证test1在zone3之间是均衡的；通过看priamry partition的分布；
+ob1.check_until_timeout select min(c) from (select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t1_id and zone='z3' and data_version != -1 group by svr_ip, svr_port) s, 6, 120;
+
+##验证test1/test4/test5的pg coordinate是正确的；
+let $partition_id = 0;
+while ($partition_id < 20)
+{
+  ob1.check_until_timeout select count(*) from (select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and zone='z3' and data_version != -1 and svr_ip ='$dest_ip' and svr_port='$dest_port' and partition_id =$partition_id and table_id in ($t1_id, $t4_id, $t5_id) having c = 0 or c = 3)s, 1, 60;
+   inc $partition_id;
+}
+

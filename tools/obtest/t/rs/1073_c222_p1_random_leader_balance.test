@@ -1,0 +1,101 @@
+# owner: rongxuan.lc
+# owner group: STORAGE
+
+ob1=OBI(cluster=2:2:2,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+
+sleep 2;
+
+ob1.mysql create resource pool xx1  unit = 'sys_unit_config',unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create resource pool xx2  unit = 'sys_unit_config',unit_num = 2, zone_list = ('z1', 'z2', 'z3');
+# tenant xx1 is a SMALL tenant
+ob1.mysql create tenant xx1 replica_num 3, resource_pool_list ('xx1') set ob_tcp_invited_nodes='%';
+ob1.mysql create tenant xx2 replica_num 3, resource_pool_list ('xx2') set ob_tcp_invited_nodes='%';
+
+let $ip = deploy_get_value(ob1.proxy0.ip);
+let $port = deploy_get_value(ob1.proxy0.port);
+
+connect(xx1_conn,$ip,root@xx1,,test, $port);
+connect(xx2_conn,$ip,root@xx2,,test, $port);
+
+connection xx1_conn;
+
+let $cnt = 0;
+while ($cnt < 25)
+{
+  eval create tablegroup tg$cnt;
+  inc $cnt;
+}
+let $cnt = 0;
+while ($cnt < 100)
+{
+  let $tg = math($cnt / 4 );
+  eval create table tg_t$cnt (k int primary key, v int) tablegroup tg$tg;
+  inc $cnt;
+}
+let $cnt = 0;
+while ($cnt < 100)
+{
+  eval create table t$cnt (k int primary key, v int);
+  inc $cnt;
+}
+
+connection xx2_conn;
+let $cnt = 0;
+while ($cnt < 25)
+{
+  eval create tablegroup tg$cnt;
+  inc $cnt;
+}
+let $cnt = 0;
+while ($cnt < 100)
+{
+  let $tg = math($cnt / 4 );
+  eval create table tg_t$cnt (k int primary key, v int) tablegroup tg$tg;
+  inc $cnt;
+}
+let $cnt = 0;
+while ($cnt < 100)
+{
+  eval create table t$cnt (k int primary key, v int);
+  inc $cnt;
+}
+
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.group_id, m.unit_id, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt;
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.zone, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_server u where m.role = 1 and u.svr_ip = m.svr_ip and u.svr_port = m.svr_port group by m.tenant_id, u.zone order by cnt;
+ob1.mysql_p select /*+ read_consistency(weak) */ if(cnt <= 48 && cnt >= 16, 1, 0) from (select m.tenant_id tid, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where tenant_id = 1002 and m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt) a;
+
+let $base = deploy_get_value(ob1.select select /*+ read_consistency(weak) */ group_concat(concat(tid, cnt)) v from (select m.tenant_id tid, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt) a, v, 1);
+
+# enable leader coordinate
+ob1.mysql alter system set enable_auto_leader_switch = 'true';
+
+sleep 120;
+
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.group_id, m.unit_id, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt;
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.zone, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_server u where m.role = 1 and u.svr_ip = m.svr_ip and u.svr_port = m.svr_port group by m.tenant_id, u.zone order by cnt;
+let $ret = deploy_get_value(ob1.select select /*+ read_consistency(weak) */ group_concat(concat(tid, cnt)) v from (select m.tenant_id tid, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt) a, v, 1);
+
+if ($ret == $base)
+{
+  echo coordinate leader position same with initialized;
+}
+
+# restart
+ob1.restart;
+sleep 180;
+
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.group_id, m.unit_id, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt;
+ob1.mysql_p select /*+ read_consistency(weak) */ m.tenant_id tid, u.zone, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_server u where m.role = 1 and u.svr_ip = m.svr_ip and u.svr_port = m.svr_port group by m.tenant_id, u.zone order by cnt;
+let $ret = deploy_get_value(ob1.select select /*+ read_consistency(weak) */ group_concat(concat(tid, cnt)) v from (select m.tenant_id tid, count(*) cnt from oceanbase.__all_virtual_meta_table m, oceanbase.__all_unit u where m.role = 1 and u.svr_ip = m.svr_ip and m.unit_id = u.unit_id group by m.tenant_id, u.group_id, m.unit_id order by cnt) a, v, 1);
+
+if ($ret == $base)
+{
+  echo coordinate leader position to old position;
+}
+
+# check primary zone tenant(sys tenant) leader switch back
+ob1.mysql_p select zone from (select zone, count(*) cnt from oceanbase.__all_root_table where tenant_id = 1 and role = 1 group by 1) a;

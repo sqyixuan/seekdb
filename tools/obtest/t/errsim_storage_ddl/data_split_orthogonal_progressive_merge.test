@@ -1,0 +1,67 @@
+# owner: liujixiong.ljx
+# owner group:storage
+# description: to test split ssatbles with progressive merge.
+# 1. create tablet with 2 columns major sstable.
+# 2. online add another 3 columns, will trigger progressive merge.
+# 3. split partition, will generate major sstable with 2 columns but with greater schema version.
+ 
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+ 
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+ 
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant sys;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_user;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_meta;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant sys;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_user;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_meta;
+ 
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+ 
+connect (conn1,$ip,root@obtest,,test,$port);
+connect(conn_sys,$ip,root@sys,,oceanbase,$port);
+connection conn1;
+
+# 1. EN_MEDIUM_COMPACTION_SUBMIT_CLOG_FAILED = 4016, to block progressive major merge.
+ob1.mysql alter system set_tp tp_no = 703, error_code = 4016, frequency = 1;
+
+# 2. create table with 2 columns major sstable.
+create sequence seq INCREMENT BY 1 start with 4990 minvalue 1 maxvalue 100000 nocycle noorder nocache;
+create table test_sstables(c1 bigint, c2 varchar(20), primary key(c1)) compression = 'none'
+  partition by range(c1) (
+    partition p0 values less than (1), 
+    partition p1 values less than (10000), 
+    partition p2 values less than (MAXVALUE));
+alter table test_sstables set progressive_merge_num=2;
+
+insert /*+ query_timeout(100000000000) append parallel(2) enable_parallel_dml */ into test_sstables select seq.nextval, randstr(20, random(10)) from table(generator(20));
+
+# 3. online add column to trigger progressive major merge.
+alter table test_sstables add column c3 char(20) default ' oceanbase ', add column c4 char(20) default 'oracle        ', add column c5 bigint;
+insert into test_sstables values(1000, 'test-c2', 'test-c3', 'test-c4', 1000);
+insert into test_sstables values(999, 'test-c2', 'test-c3', 'test-c4', 999);
+ob1.mysql alter system major freeze tenant = 'obtest';
+
+# 4. partition split.
+alter table test_sstables reorganize partition p1 into ( partition p1_0 values less than (5000), partition p1_1 values less than (10000));
+
+# 5. clear error, can submit new medium clog, to execute progressive major merge after data split.
+ob1.mysql alter system set_tp tp_no = 703, error_code = 4016, frequency = 0;
+sleep 3;
+
+# 6. wait progressive major merge end.
+source include/wait_tenant_major_merge.inc;
+
+# 7. to delete some rows of split-middle point macro.
+# delete from test_sstables where c1 < 5002 and c1 > 4998;
+ob1.mysql alter system major freeze tenant = 'obtest';
+
+#8. wait inc major merge end.
+source include/wait_tenant_major_merge.inc;

@@ -1,0 +1,71 @@
+#
+# owner: bohou.ws
+# owner group:liboblog
+# description:
+# 测试点: 测试SYS_LS切主时字典的生成逻辑
+
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=5);
+ob1.reboot;
+
+# 准备环境
+source include/liboblog/create_tenant_multiple_zone.inc;
+# 切主信息
+let $tenant_name="oblog_tt";
+let $ls_id=1;
+let $tenant_id=query_get_value(select tenant_id from DBA_OB_TENANTS where tenant_name=$tenant_name, tenant_id, 1);
+
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+
+ob1.check_until_timeout select count(1) as cnt from oceanbase.CDB_OB_DATA_DICTIONARY_IN_LOG where tenant_id = $tenant_id, 1, 20;
+
+# 在oblog_tt租户下操作
+
+# 创建database和表
+create database obcdc_db;
+use obcdc_db;
+create table t1 (a int primary key, b int);
+create table t2 (a int, b int);
+
+# enable debug sync
+connection oblog_conn_sys;
+alter system set debug_sync_timeout = '1000s';
+sleep 5;
+source include/liboblog/check_schema_fast_sync.inc;
+set ob_global_debug_sync = 'BEFORE_DATA_DICT_DUMP_FINISH wait_for signal execute 1';
+
+connection oblog_conn_tt;
+alter system set dump_data_dictionary_to_log_interval = '10s';
+sleep 10;
+source include/liboblog/switch_replica_leader.inc;
+let $restart_ts_usec1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+connection oblog_conn_sys;
+set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(1) as cnt from oceanbase.CDB_OB_DATA_DICTIONARY_IN_LOG where tenant_id = $tenant_id, 2, 20;
+
+connection oblog_conn_tt;
+alter system set dump_data_dictionary_to_log_interval = '1h';
+let $restart_ts_usec2 = query_get_value(select ceil(max(snapshot_scn) / 1000) as now from oceanbase.DBA_OB_DATA_DICTIONARY_IN_LOG, now, 1);
+ob1.z1.obs0.check_log_until_success -c "dump_succ_tb_cnt=1";
+
+begin;
+insert into t1 values (1, 1);
+insert into t2 values (1, 1);
+commit;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=DEBUG;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec2;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;

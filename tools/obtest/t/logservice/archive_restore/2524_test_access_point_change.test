@@ -1,0 +1,58 @@
+#####################
+# owner : duotian
+# owner group : Log
+# description : test whole access point chnaged
+#####################
+
+ob1=OBI(cluster=2:2:2,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=10,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='50G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+set @@session.ob_query_timeout = 1000000000;
+
+--echo # create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE RESOURCE POOL if not exists pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality="F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'backup_mysql_tenant', tenant_id, 1);
+let $mysql_leader_ip_port=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from __all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id and ls_id =  1 and role = 1 limit 1, host, 1);
+let $mysql_leader_obs =deploy_get_value(ob1.get_obs_by_addr $mysql_leader_ip_port);
+
+ob_connect(primary_tenant_conn, $mysql_leader_obs, root@backup_mysql_tenant, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.* to mytest;
+
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_ACCESS_POINT where tenant_id = 1002 order by svr_ip, sql_port limit 1;, host, 1);
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT standby_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_2'),locality='F@z1,F@z2,F@z3';
+--enable_all_result_log
+
+let $z1_dest = deploy_get_value(ob1.select select concat(svr_ip, ':',svr_port) as host from __all_server where zone = 'z1' and (svr_ip, svr_port) not in (select svr_ip, svr_port from __all_virtual_ls_meta_table where zone = 'z1' and tenant_id = 1002 and ls_id = 1), host, 1);
+let $z2_dest = deploy_get_value(ob1.select select concat(svr_ip, ':',svr_port) as host from __all_server where zone = 'z2' and (svr_ip, svr_port) not in (select svr_ip, svr_port from __all_virtual_ls_meta_table where zone = 'z2' and tenant_id = 1002 and ls_id = 1), host, 1);
+let $z3_dest = deploy_get_value(ob1.select select concat(svr_ip, ':',svr_port) as host from __all_server where zone = 'z3' and (svr_ip, svr_port) not in (select svr_ip, svr_port from __all_virtual_ls_meta_table where zone = 'z3' and tenant_id = 1002 and ls_id = 1), host, 1);
+
+let $unit_num_1 = deploy_get_value(ob1.select select unit_id from  gv\$ob_units where tenant_id = 1002 and zone = 'z1', unit_id, 1);
+let $unit_num_2 = deploy_get_value(ob1.select select unit_id from  gv\$ob_units where tenant_id = 1002 and zone = 'z2', unit_id, 1);
+let $unit_num_3 = deploy_get_value(ob1.select select unit_id from  gv\$ob_units where tenant_id = 1002 and zone = 'z3', unit_id, 1);
+
+ob1.mysql alter system migrate unit  $unit_num_1 destination '$z1_dest';
+ob1.mysql alter system migrate unit  $unit_num_2 destination '$z2_dest';
+ob1.mysql alter system migrate unit  $unit_num_3 destination '$z3_dest';
+
+ob1.check_until_timeout select count(*) as num from __all_virtual_log_stat where tenant_id = 1002 and ls_id = 1 and concat(svr_ip,':',svr_port) in ('$z1_dest', '$z2_dest', '$z3_dest'), 3, 600;
+
+let $current = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(sync_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = 1004, 1, 600;

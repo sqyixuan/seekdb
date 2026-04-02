@@ -1,0 +1,393 @@
+#owner: yibo.tyf
+#owner group: 技术部-SQL-优化器
+#description: list分区裁剪强化  LIST COLUMNS一级分区 list一级分区 区间比较条件 join 视图
+#tags:
+#author: wb-lyq858317
+
+--result_format 4
+purge recyclebin;
+
+--echo  LIST COLUMNS一级分区，区间比较的查询条件(如 between...and, >, <,  >=, <= ,<> ,!=,  in , not in , exists
+--echo  LIST COLUMNS一级分区,分区键为date_col
+--error 0,1051
+drop table lyq_test;
+CREATE TABLE lyq_test (
+    id INT AUTO_INCREMENT,
+    tiny_int_col TINYINT,
+    small_int_col SMALLINT,
+    medium_int_col MEDIUMINT,
+    int_col INT,
+    big_int_col BIGINT,
+    float_col FLOAT,
+    double_col DOUBLE,
+    decimal_col DECIMAL(10,2),
+    numeric_col NUMERIC(10,2),
+    date_col DATE,
+    time_col TIME,
+    datetime_col DATETIME,
+    char_col CHAR(10),
+    varchar_col VARCHAR(255),
+    binary_col BINARY(16),
+    varbinary_col VARBINARY(255)
+) PARTITION BY LIST COLUMNS (date_col) (
+    PARTITION p0 VALUES IN ('2023-01-01', '2023-01-02'),
+    PARTITION p1 VALUES IN ('2023-02-01', '2023-02-02'),
+    PARTITION p2 VALUES IN ('2023-03-01', '2023-03-02'),
+    PARTITION p3 VALUES IN ('2023-04-01', '2023-04-02')
+);
+
+INSERT INTO lyq_test (tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, time_col, 
+    datetime_col, char_col, varchar_col, binary_col, varbinary_col)
+VALUES
+    (1, 123, 12345, 123456, 1234567890, 
+    1.23, 1.234567, 12345.67, 12345.67, '2023-01-01', '12:34:56', 
+    '2023-01-01 12:34:56', 'char_data', 'varchar_data', BINARY('binary_data'), BINARY('varbinary_data'));
+INSERT INTO lyq_test (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    2, 20, 200, 2000, 20000, 
+    2.2, 2.22, 222.22, 222.22, '2023-02-01', 
+    '12:02:02', '2023-02-01 12:02:02', 'char2', 'varchar2', BINARY('binary2'), BINARY('varbinary2')
+);  
+
+INSERT INTO lyq_test (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    3, 30, 300, 3000, 30000, 
+    3.3, 3.33, 333.33, 333.33, '2023-03-01', 
+    '12:03:03', '2023-03-01 12:03:03', 'char3', 'varchar3', BINARY('binary3'), BINARY('varbinary3')
+);
+
+INSERT INTO lyq_test (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    4, 40, 400, 4000, 40000, 
+    4.4, 4.44, 444.44, 444.44, '2023-04-01', 
+    '12:04:04', '2023-04-01 12:04:04', 'char4', 'varchar4', BINARY('binary4'), BINARY('varbinary4')
+);
+
+INSERT INTO lyq_test (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    5, 50, 500, 5000, 50000, 
+    5.5, 5.55, 555.55, 555.55, '2023-01-02', 
+    '12:05:05', '2023-01-02 12:05:05', 'char5', 'varchar5', BINARY('binary5'), BINARY('varbinary5')
+);
+
+
+--echo select语句，区间比较的查询条件  exists ,all, any
+--echo 不会裁剪  含有子查询的表达式不会用于分区裁剪
+select id,date_col from lyq_test where exists (select id,date_col from lyq_test where date_col > '2023-02-01') limit 5;
+explain basic select id,date_col from lyq_test where exists (select id,date_col from lyq_test where date_col > '2023-02-01') limit 5;
+select id,date_col from lyq_test where date_col > (select date_col from lyq_test where int_col = 2000) limit 5;
+explain basic select id,date_col from lyq_test where date_col > (select date_col from lyq_test where int_col = 2000) limit 5;
+select id,date_col from lyq_test where date_col > any(select date_col from lyq_test) limit 5;
+explain basic select id,date_col from lyq_test where date_col > any(select date_col from lyq_test) limit 5;
+--echo 含有子查询的表达式不会用于分区裁剪，但子查询会裁剪
+select id,date_col from lyq_test where date_col > all(select date_col from lyq_test where date_col < '2023-03-01') limit 5;
+explain basic select id,date_col from lyq_test where date_col > all(select date_col from lyq_test where date_col < '2023-03-01') limit 5;
+
+--echo select语句，区间比较的查询条件 between...and, >, in ，not in
+--echo 可以裁剪
+select id,date_col from lyq_test where date_col = '2023-01-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col = '2023-01-01' limit 5;
+select id,date_col from lyq_test where date_col > '2023-01-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col > '2023-01-01' limit 5;
+select id,date_col from lyq_test where date_col > '2023-01-01' and tiny_int_col = 2 limit 5;
+explain basic select id,date_col from lyq_test where date_col > '2023-01-01' and tiny_int_col = 2 limit 5;
+select id,date_col from lyq_test group by date_col having date_col > '2023-01-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test group by date_col having date_col > '2023-01-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col > '2023-01-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col > '2023-01-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col between '2023-01-02' and '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col between '2023-01-02' and '2023-03-01' limit 5;
+select id,date_col from lyq_test where (date_col between '2023-01-02' and '2023-03-01') or date_col < '2023-01-02' limit 5;
+explain basic select id,date_col from lyq_test where (date_col between '2023-01-02' and '2023-03-01') or date_col < '2023-01-02' limit 5;
+select id,date_col from lyq_test where date_col in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col = 1 order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col = 1 order by date_col limit 5;
+select id,date_col from lyq_test where date_col not in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col <> 1 order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col not in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col <> 1 order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col not in ('2023-02-01','2023-02-02') order by date_col limit 5;
+
+--echo select语句，区间比较的查询条件, <,  >=, <= ,<> ,!=
+--echo 可以裁剪
+select id,date_col from lyq_test where date_col < '2023-01-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col < '2023-01-01' limit 5;
+select id,date_col from lyq_test where date_col like '2023-01%' limit 5;
+explain basic select id,date_col from lyq_test where date_col like '2023-01%' limit 5;
+select id,date_col from lyq_test where date_col like '%-02-%' limit 5;
+explain basic select id,date_col from lyq_test where date_col like '%-02-%' limit 5;
+select id,date_col from lyq_test where date_col < '2023-01-02' and tiny_int_col = 2 limit 5;
+explain basic select id,date_col from lyq_test where date_col < '2023-01-02' and tiny_int_col = 2 limit 5;
+select id,date_col from lyq_test group by date_col having date_col < '2023-03-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test group by date_col having date_col < '2023-03-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col < '2023-03-01' group by date_col having date_col > '2023-01-02' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col < '2023-03-01' group by date_col having date_col > '2023-01-02' order by date_col limit 5;
+select id,date_col from lyq_test where date_col >= '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col >= '2023-03-01' limit 5;
+select id,date_col from lyq_test where date_col >= '2023-02-02' and tiny_int_col = 2 limit 5;
+explain basic select id,date_col from lyq_test where date_col >= '2023-02-02' and tiny_int_col = 2 limit 5;
+select id,date_col from lyq_test group by date_col having date_col >= '2023-03-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test group by date_col having date_col >= '2023-03-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col >= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col >= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col >= all(select date_col from lyq_test where date_col < '2023-03-01') limit 5;
+explain basic select id,date_col from lyq_test where date_col >= all(select date_col from lyq_test where date_col < '2023-03-01') limit 5;
+select id,date_col from lyq_test where date_col <= '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-03-01' limit 5;
+select id,date_col from lyq_test where date_col <= '2023-02-02' and tiny_int_col = 2 limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-02-02' and tiny_int_col = 2 limit 5;
+select id,date_col from lyq_test where date_col <= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+select id,date_col from lyq_test where date_col <= '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-03-01' limit 5;
+select id,date_col from lyq_test where date_col <= '2023-02-02' and tiny_int_col = 2 limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-02-02' and tiny_int_col = 2 limit 5;
+select id,date_col from lyq_test where date_col <= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col <= '2023-03-01' group by date_col having date_col > '2023-02-01' order by date_col limit 5;
+
+select id,date_col from lyq_test where date_col <> '2023-02-02' and date_col <> '2023-02-01' limit 5;
+explain basic select id,date_col from lyq_test where date_col <> '2023-02-02' and date_col <> '2023-02-01' limit 5;
+select id,date_col from lyq_test where date_col <> '2023-03-01' group by date_col having date_col != '2023-03-02' order by date_col limit 5;
+explain basic select id,date_col from lyq_test where date_col <> '2023-03-01' group by date_col having date_col != '2023-03-02' order by date_col limit 5;
+
+--echo 复杂查询(c1,c2) > (1,2)、c1 + c2 < 1、func(c1) < 1
+--echo func(c1) < 1
+select id,date_col from lyq_test where date_col > DATE('2023-02-02 12:00:00') limit 5;
+explain basic select id,date_col from lyq_test where date_col > DATE('2023-02-02 12:00:00') limit 5;
+select id,date_col from lyq_test where DATE(date_col) < '2023-02-01' limit 5;
+explain basic select id,date_col from lyq_test where DATE(date_col) < '2023-02-01' limit 5;
+select id,date_col from lyq_test where MONTH(date_col) >= 2 limit 5;
+explain basic select id,date_col from lyq_test where MONTH(date_col) >= 2  limit 5;
+select id,date_col from lyq_test where DATE_ADD(date_col, INTERVAL 7 DAY) <= '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where DATE_ADD(date_col, INTERVAL 7 DAY) <= '2023-03-01' limit 5;
+select id,date_col from lyq_test where DATE_SUB(date_col, INTERVAL 7 DAY) <= '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where DATE_SUB(date_col, INTERVAL 7 DAY) <= '2023-03-01' limit 5;
+select id,date_col from lyq_test where DATEDIFF(date_col,DATE_SUB(date_col, INTERVAL 7 DAY)) in (1,2,7) and DATE_SUB(date_col, INTERVAL 7 DAY) <= '2023-03-01' order by 1;
+explain basic select id,date_col from lyq_test where DATEDIFF(date_col,DATE_SUB(date_col, INTERVAL 7 DAY)) in (1,2,7) and DATE_SUB(date_col, INTERVAL 7 DAY) <= '2023-03-01' order by 1;
+select id,date_col from lyq_test where DATE_FORMAT(date_col,'%Y-%m-%d') < '2023-03-01' limit 5;
+explain basic select id,date_col from lyq_test where DATE_FORMAT(date_col,'%Y-%m-%d') < '2023-03-01' limit 5;
+
+
+--echo dml语句
+update lyq_test set small_int_col = 11 where date_col > '2023-03-01';
+explain basic update lyq_test set small_int_col = 11 where date_col > '2023-03-01';
+update lyq_test set small_int_col = 22  where date_col < '2023-03-02' and tiny_int_col = 2 limit 5;
+explain basic update lyq_test set small_int_col = 22 where date_col < '2023-03-02' and tiny_int_col = 2 limit 5;
+update lyq_test set small_int_col = 33 where exists (select id,date_col from lyq_test where date_col > '2023-02-01');
+explain basic update lyq_test set small_int_col = 33 where exists (select id,date_col from lyq_test where date_col > '2023-02-01');
+update lyq_test set small_int_col = 77 where date_col between '2023-01-02' and '2023-03-01' ;
+explain basic update lyq_test set small_int_col = 77 where date_col between '2023-01-02' and '2023-03-01' ;
+update lyq_test set small_int_col = 88 where (date_col between '2023-01-02' and '2023-03-01') or date_col < '2023-01-02' ;
+explain basic update lyq_test set small_int_col = 88 where (date_col between '2023-01-02' and '2023-03-01') or date_col < '2023-01-02' ;
+update lyq_test set small_int_col = 99 where date_col in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col = 1 order by date_col ;
+explain basic update lyq_test set small_int_col = 99 where date_col in ('2023-01-01','2023-01-02','2023-04-01') and tiny_int_col = 1 order by date_col ;
+select small_int_col from lyq_test order by 1;
+explain basic delete from lyq_test where date_col > '2023-03-01';
+explain basic delete from lyq_test where date_col > '2023-01-01' and tiny_int_col = 2;
+explain basic delete from lyq_test where (date_col between '2023-01-02' and '2023-03-01') or date_col < '2023-01-02';
+insert into lyq_test(int_col,float_col,time_col,varchar_col,date_col) select int_col,float_col,time_col,varchar_col,date_col from lyq_test where date_col > '2023-03-01' limit 5;
+explain basic insert into lyq_test(int_col,float_col,time_col,varchar_col,date_col) select int_col,float_col,time_col,varchar_col,date_col from lyq_test where date_col > '2023-03-01' limit 5;
+
+--echo join
+--echo LIST 一级分区
+--error 0,1051
+drop table lyq_test2;
+CREATE TABLE lyq_test2 (
+    id INT AUTO_INCREMENT,
+    tiny_int_col TINYINT,
+    small_int_col SMALLINT,
+    medium_int_col MEDIUMINT,
+    int_col INT,
+    big_int_col BIGINT,
+    float_col FLOAT,
+    double_col DOUBLE,
+    decimal_col DECIMAL(10,2),
+    numeric_col NUMERIC(10,2),
+    date_col DATE,
+    time_col TIME,
+    datetime_col DATETIME,
+    char_col CHAR(10),
+    varchar_col VARCHAR(255),
+    binary_col BINARY(16),
+    varbinary_col VARBINARY(255)
+) PARTITION BY LIST (tiny_int_col) (
+    PARTITION p0 VALUES IN (1, 2),
+    PARTITION p1 VALUES IN (3, 4),
+    PARTITION p2 VALUES IN (5, 6),
+    PARTITION p3 VALUES IN (7, 8),
+    PARTITION p4 VALUES IN (9, 10)
+);
+
+INSERT INTO lyq_test2 (tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, time_col, 
+    datetime_col, char_col, varchar_col, binary_col, varbinary_col)
+VALUES
+    (1, 123, 12345, 123456, 1234567890, 
+    1.23, 1.234567, 12345.67, 12345.67, '2023-01-01', '12:34:56', 
+    '2023-01-01 12:34:56', 'char_data', 'varchar_data', BINARY('binary_data'), BINARY('varbinary_data'));
+INSERT INTO lyq_test2 (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    2, 20, 200, 2000, 20000, 
+    2.2, 2.22, 222.22, 222.22, '2023-02-01', 
+    '12:02:02', '2023-02-01 12:02:02', 'char2', 'varchar2', BINARY('binary2'), BINARY('varbinary2')
+);  
+
+INSERT INTO lyq_test2 (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    3, 30, 300, 3000, 30000, 
+    3.3, 3.33, 333.33, 333.33, '2023-03-01', 
+    '12:03:03', '2023-03-01 12:03:03', 'char3', 'varchar3', BINARY('binary3'), BINARY('varbinary3')
+);
+
+INSERT INTO lyq_test2 (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    4, 40, 400, 4000, 40000, 
+    4.4, 4.44, 444.44, 444.44, '2023-04-01', 
+    '12:04:04', '2023-04-01 12:04:04', 'char4', 'varchar4', BINARY('binary4'), BINARY('varbinary4')
+);
+
+INSERT INTO lyq_test2 (
+    tiny_int_col, small_int_col, medium_int_col, int_col, big_int_col, 
+    float_col, double_col, decimal_col, numeric_col, date_col, 
+    time_col, datetime_col, char_col, varchar_col, binary_col, varbinary_col
+) VALUES (
+    5, 50, 500, 5000, 50000, 
+    5.5, 5.55, 555.55, 555.55, '2023-01-02', 
+    '12:05:05', '2023-01-02 12:05:05', 'char5', 'varchar5', BINARY('binary5'), BINARY('varbinary5')
+);
+
+
+--echo inner join 
+--echo 分区裁剪条件放在on中
+--echo ****** 分区裁剪条件包含主/副表分区键   (两个表都走分区裁剪)
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 (左边表 v，右边表 x)
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 (左边表 x，右边表 v)
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+
+
+--echo ******  (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键  (两个表都走分区裁剪)
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 主表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id where  t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 副表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id  where t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id  where t2.tiny_int_col > 4;
+
+--echo left outer join 
+--echo ******  (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 主表未裁剪，  副表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 不裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id and  t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 副表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+
+--echo ****** (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 (两个表都走分区裁剪)
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 主表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id where  t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 副表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id  where t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 left outer join lyq_test2 t2 on t1.id = t2.id  where t2.tiny_int_col > 4;
+
+--echo right outer join 
+--echo ****** (分区裁剪条件放在on中)
+--echo ****** 分区裁剪条件包含主/副表分区键 左表裁剪，右表未裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 左表裁剪，右表未裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 都不裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id  and t2.tiny_int_col > 4;
+
+
+--echo ****** (分区裁剪条件放在where中)
+--echo ****** 分区裁剪条件包含主/副表分区键 都裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+--echo ****** 分区裁剪条件只包含主表分区键 左表裁剪，右表未裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01';
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where t1.date_col < '2023-03-01';
+
+--echo ****** 分区裁剪条件只包含副表分区键 左表未裁剪，右表裁剪
+select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where t2.tiny_int_col > 4;
+explain basic select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 right outer join lyq_test2 t2 on t1.id = t2.id where  t2.tiny_int_col > 4;
+
+--echo  视图
+--error 0,1051
+drop view v1;
+CREATE VIEW v1 AS SELECT * FROM lyq_test where date_col > '2023-03-01';
+
+SELECT * FROM v1;
+explain basic SELECT * FROM v1;
+
+SELECT * FROM v1 where date_col >= '2023-04-01';
+explain basic SELECT * FROM v1 where date_col >= '2023-04-01';
+
+--error 0,1051
+drop view v2;
+CREATE VIEW v2 AS select t1.id, t1.date_col,t2.tiny_int_col from lyq_test t1 inner join lyq_test2 t2 on t1.id = t2.id and t1.date_col < '2023-03-01' and t2.tiny_int_col > 4;
+
+SELECT * FROM v2;
+explain basic SELECT * FROM v2;
+
+SELECT * FROM v2 left outer join lyq_test t1 on v2.id = t1.id where t1.date_col <= '2023-01-02' and v2.tiny_int_col >= 5;
+explain basic SELECT * FROM v2 left outer join lyq_test t1 on v2.id = t1.id where t1.date_col <= '2023-01-02' and v2.tiny_int_col >= 5;
+
+
+
+--error 0,1051
+drop view v1;
+--error 0,1051
+drop view v2;
+--error 0,1051
+drop table lyq_test;
+--error 0,1051
+drop table lyq_test2;
+

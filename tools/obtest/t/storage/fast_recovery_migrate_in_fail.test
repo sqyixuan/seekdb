@@ -1,0 +1,94 @@
+# owner: jiahua.cjh
+# owner group: storage
+# description: this case is used for test fast recovery a failed migrate in partition to src server
+#
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=1, init_unit_num=1);
+
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = true;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set enable_rebalance = true;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set sys_bkgd_migration_change_member_list_timeout='0s';
+ob1.mysql alter system set server_data_copy_in_concurrency=10;
+ob1.mysql alter system set server_data_copy_out_concurrency=10;
+
+ob1.mysql alter resource pool obtestpool unit_num 1;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+let $sys_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $sys_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(mysql_conn, $ip, root@obtest,,test, $port);
+connect(sys_conn, $sys_ip, root@sys,,oceanbase, $sys_port);
+
+connection mysql_conn;
+
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+--disable_warnings
+drop table if exists tt;
+--enable_warnings
+
+create table tt(a int primary key);
+
+let $cnt = 1;
+
+while ($cnt <= 100) 
+{
+  eval insert into tt values($cnt);
+  inc $cnt;
+}
+
+select count(*) from tt;
+
+# start test migrate in hung
+connection sys_conn;
+ob1.mysql alter system set server_permanent_offline_time = 20;
+
+let $table_id = query_get_value(select * from __all_virtual_table where table_name='tt', table_id, 1);
+let $timeout = 30;
+--echo timeout = $timeout
+
+# get src_ip, src_port, dest_ip, dest_port
+let $unit_id = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and zone = "z3", unit_id, 1);
+let $src_ip = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and zone = "z3", svr_ip, 1);
+let $src_port = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and zone = "z3" and svr_ip = "$src_ip", svr_port, 1);
+let $dest_ip = query_get_value(select * from __all_server where zone = "z3" and (svr_ip != "$src_ip" or svr_port != $src_port), svr_ip, 1);
+let $dest_port = query_get_value(select * from __all_server where zone = "z3" and (svr_ip != "$src_ip" or svr_port != $src_port) and svr_ip = "$dest_ip", svr_port, 1);
+
+# let migrate replica hang before change member list
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHANGE_MEMBER_LIST wait_for signal1';
+sleep 20;
+
+# trigger partition move
+--disable_query_log
+eval update __all_unit set migrate_from_svr_ip = "$src_ip", migrate_from_svr_port = $src_port where unit_id = $unit_id;
+eval update __all_unit set svr_ip = "$dest_ip", svr_port = $dest_port where unit_id = $unit_id;
+eval alter system reload unit;
+
+# make sure migrate start
+ob1.check_until_timeout select module from __all_rootservice_event_history where module='balancer' and event='start_migrate_replica' limit 1, balancer, 6000000;
+sleep 30;
+
+# stop dest server and trigger fast recovery
+let $stop_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where svr_ip = "$dest_ip" and svr_port = "$dest_port", addr, 1);
+let $stop_obs = deploy_get_value(ob1.get_obs_by_addr $stop_addr);
+let $part_cnt = deploy_get_value(ob1.select select count(*) count from __all_virtual_meta_table where zone = "z1", count, 1);
+$stop_obs.force_stop;
+sleep 30;
+
+# ob1.mysql set ob_global_debug_sync = 'BEFORE_CHANGE_MEMBER_LIST clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$dest_ip:$dest_port%' and event = 'finish_recovery', 1, 60000000;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z1", $part_cnt, 60000000;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z2", $part_cnt, 60000000;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where zone = "z3", $part_cnt, 60000000;

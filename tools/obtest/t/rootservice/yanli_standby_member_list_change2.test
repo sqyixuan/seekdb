@@ -1,0 +1,88 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+
+ob1=OBI(cluster=2, proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 2;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 2;
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance = false;
+
+# create mysql tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%';
+let $mysql_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='mysql', tenant_id, 1);
+ob1.mysql alter system set log_storage_compress_all = true tenant = ALL;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@mysql,,oceanbase,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+# 准备一些数据
+use test;
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 5;
+insert into t1(a, b) values(1, 1);
+use oceanbase;
+create user mytest identified by "test";
+GRANT SELECT on oceanbase.* to mytest;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $mysql_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+--disable_all_result_log
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1 USER=mytest@mysql PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_1'),locality='F@z1', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_mysql_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+
+let $gts = deploy_get_value(ob1.select select ts_value from oceanbase.V\$OB_TIMESTAMP_SERVICE where tenant_id = $mysql_id, ts_value, 1);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_mysql_tenant', 1, 100;
+
+#单副本迁移目的端可读点落后
+#超过成员列表变更超时的时间，否则会成功的
+ob1.mysql alter system set internal_sql_execute_timeout = '5m';
+sleep 2;
+let $ls_id = 1001;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id, host, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where concat(svr_ip,':',svr_port) != '$src', host, 1);
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_OLD, error_code= 1234, frequency = 1 server = '$dest';
+
+ob1.mysql alter system migrate replica ls=$ls_id source='$src' destination='$dest' tenant ='standby_mysql_tenant';
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_status = 'FAILED' and execute_result like "%OB_MEMBER_CHANGE_FAILED%" and task_type = 'MIGRATE REPLICA' and task_id = '$task_id', 1, 100;
+#TODO上层已经返回任务失败了，但是底层成员列表变更还在继续
+sleep 20;
+#目的端不在落后，可以迁移成功
+ob1.mysql alter system set internal_sql_execute_timeout = '30s';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_info where tenant_id = $tenant_id and ls_id = $ls_id, 1, 100;
+sleep 10;
+ob1.mysql alter system migrate replica ls=$ls_id source='$src' destination='$dest' tenant ='standby_mysql_tenant';
+
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_status = 'COMPLETED' and task_id = '$task_id', 1, 100;
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_OLD, error_code= 1234, frequency = 0 server = '$dest';
+
+#补R副本落后,不能影响
+let $ls_id = 1002;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $ls_id, host, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from oceanbase.__all_server where concat(svr_ip,':',svr_port) != '$src', host, 1);
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_OLD, error_code= 1234, frequency = 1 server = '$dest';
+
+ob1.mysql alter system add replica ls=$ls_id server='$dest' replica_type = 'R' tenant ='standby_mysql_tenant';
+# 添加副本语法错误
+let $task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, task_id, 1);
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task_history where task_status = 'COMPLETED' and task_id = '$task_id', 1, 100;
+

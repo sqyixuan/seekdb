@@ -1,0 +1,156 @@
+# owner: gaishun.gs
+# owner group: storage : index and ddl
+# description: rename add lock
+# note: ob do mysqltest --suite=ddl --test_set=rename_table_with_table_lock -n table_rename_patch
+
+--result_format  4
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection obsys;
+alter system set debug_sync_timeout = '10000s';
+sleep 15;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_SET_NEW_SCHEMA_VERSION clear';
+set ob_global_debug_sync = 'now signal signal1';
+set ob_global_debug_sync = 'RENAME_TABLE_BEFORE_PUBLISH_SCHEMA clear';
+set ob_global_debug_sync = 'now signal signal2';
+
+connect (obmysql,$OBMYSQL_MS0,root,,*NO-ONE*,$OBMYSQL_PORT);
+connect (obmysql2,$OBMYSQL_MS0,root,,*NO-ONE*,$OBMYSQL_PORT);
+
+connection obmysql;
+
+set autocommit=false;
+
+--disable_warnings
+drop database if exists rename_1;
+drop database if exists rename_2;
+--enable_warnings
+create database rename_1;
+create database rename_2;
+
+--disable_warnings
+drop table if exists rename_1.t1;
+drop table if exists rename_1.t2;
+drop table if exists rename_1.t3;
+drop table if exists rename_1.t4;
+--enable_warnings
+create table rename_1.t3 (a int);
+create table rename_1.t1 (a int);
+start transaction;
+insert into rename_1.t1 values (1);
+
+connection obmysql2;
+# 验证有活跃事务的时候的锁行为
+send rename table rename_1.t1 to rename_1.t2;
+
+connection obmysql;
+insert into rename_1.t1 values (2);
+insert into rename_1.t1 values (3);
+insert into rename_1.t1 values (4);
+insert into rename_1.t1 values (5);
+insert into rename_1.t1 values (6);
+insert into rename_1.t1 values (7);
+commit;
+
+connection obmysql2;
+reap
+
+connection obmysql;
+# 验证数据写入t1
+--error 1146
+select * from rename_1.t1;
+select * from rename_1.t2;
+
+rename table rename_1.t2 to rename_2.t3;
+# 验证不能重命名为已存在的表
+--error 1050
+rename table rename_2.t3 to rename_1.t3;
+
+start transaction;
+insert into rename_2.t3 values (8);
+insert into rename_1.t3 values (333);
+
+connection obmysql2;
+# 交换 rename_1.t3, rename_2.t3;
+send rename table rename_2.t3 to rename_1.t4, rename_1.t3 to rename_2.t3, rename_1.t4 to rename_1.t3;
+
+connection obmysql;
+insert into rename_2.t3 values (9);
+insert into rename_1.t3 values (3333);
+commit;
+
+connection obmysql2;
+reap
+
+connection obmysql;
+select * from rename_2.t3;
+select * from rename_1.t3;
+
+start transaction;
+insert into rename_2.t3 values (10001);
+connection obmysql2;
+send alter table rename_2.t3 rename to rename_1.t1;
+connection obmysql;
+insert into rename_2.t3 values (10002);
+commit;
+connection obmysql2;
+reap;
+connection obmysql;
+--error 1146
+select * from rename_2.t3;
+select * from rename_1.t1;
+
+connection obsys;
+alter system set debug_sync_timeout = '10000s';
+sleep 15;
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_SET_NEW_SCHEMA_VERSION wait_for signal1 execute 10000';
+set ob_global_debug_sync = 'RENAME_TABLE_BEFORE_PUBLISH_SCHEMA wait_for signal2 execute 10000';
+
+connection obmysql;
+--disable_warnings
+drop database if exists rename_1;
+--enable_warnings
+
+create database rename_1;
+use rename_1;
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+--enable_warnings
+
+create table t1 (a int, i int, t text);
+create index idx_t1_i on t1(i);
+set autocommit=false;
+start transaction;
+insert into t1 values (1, 1, 'happy new year');
+
+
+connection obmysql2;
+use rename_1;
+send rename table t1 to t2;
+
+connection obmysql;
+insert into t1 values (2, 2, 'happy new year');
+commit;
+sleep 15;
+
+--error 4012
+insert into t1 values (3, 3, 'happy new year');
+
+connection obsys;
+set ob_global_debug_sync = 'BEFORE_SET_NEW_SCHEMA_VERSION clear';
+set ob_global_debug_sync = 'now signal signal1';
+
+connection obmysql;
+--error 1146
+insert into t1 values (4, 4, 'happy new year');
+insert into t2 values (5, 5, 'happy new year');
+
+connection obsys;
+set ob_global_debug_sync = 'RENAME_TABLE_BEFORE_PUBLISH_SCHEMA clear';
+set ob_global_debug_sync = 'now signal signal2';
+
+connection obmysql2;
+reap;

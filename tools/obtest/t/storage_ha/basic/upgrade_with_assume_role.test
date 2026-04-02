@@ -1,0 +1,142 @@
+# owner      : baonian.wcx-忽略
+# owner group: cloud_storage
+# description: When upgrade to 4_3_5_release, in the upgrade process, assume role is not allowed to be used
+##
+
+ob1=OBI(cluster=1:1:1, version=4_3_0_0, proxy_num=1);
+ob1.reboot;
+sleep 5;
+
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest_by_assume_role $backup_oracle_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest_by_assume_role $backup_oracle_tenant);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+
+ob_connect(conn_sys,$ip,root@sys,,oceanbase,$port);
+use oceanbase;
+source sql/physical_backup/prepare_multi_zone_resource.sql;
+
+# create oracle tenant, test create tenant before major freeze
+ob1.mysql CREATE TENANT $backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+let $backup_oracle_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_oracle_tenant', tenant_id, 1);
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+set global wait_timeout = 288000;
+sleep 5;
+
+# 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+
+# 执行升级SQL
+ob1.upgrade_commond_for_server pre;
+#sleep 5;
+
+# 升级z2
+connection conn_sys;
+ob1.mysql alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader',0,20;
+ob1.z2.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z2';
+sleep 2;
+
+# 验证版本混部情况下设置assume role模式
+ob_connect(conn_obtest_z1, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection conn_obtest_z1;
+--disable_all_result_log
+--disable_abort_on_error
+--error 600
+eval alter system set data_backup_dest='$data_backup_dest';
+--error 600
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+
+ob_connect(conn_obtest_z2, ob1.z2.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection conn_obtest_z2;
+--disable_all_result_log
+--error 1235
+eval alter system set data_backup_dest='$data_backup_dest';
+--error 1235
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+
+ob_connect(conn_obtest_z3, ob1.z3.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection conn_obtest_z3;
+--disable_all_result_log
+--error 600
+eval alter system set data_backup_dest='$data_backup_dest';
+--error 600
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+
+# 升级z1
+connection conn_sys;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ob1.mysql alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader',0,20;
+ob1.z1.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time <= 0 or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+sleep 2;
+
+# 升级z3
+connection conn_sys;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ob1.mysql alter system stop zone 'z3';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z3',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z3' and role='leader',0,20;
+ob1.z3.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z3' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time <= 0 or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z3';
+ob1.mysql alter system set enable_ddl=True;
+ob1.check_until_timeout select count(*) from gv\$ob_parameters where name='enable_ddl' and value='False', 0, 600;
+alter system end rolling upgrade;
+--disable_query_log
+select count(*) as cnt from oceanbase.GV$OB_PARAMETERS where name='min_observer_version' and value = '4.3.0.0';
+--enable_query_log
+
+# 之前版本没有 upgrade_begin_data_version，在执行UPGRADE_BEGIN时需要初始化为升级前的版本
+ob1.mysql alter system run upgrade job 'UPGRADE_BEGIN';
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_type='UPGRADE_BEGIN' order by job_id desc limit 1, SUCCESS, 600;
+
+let $min_observer_version = deploy_get_value(ob1.select select value from gv\$ob_parameters where name='min_observer_version', value, 1);
+# 执行 upgrade_all, 等到所有机器 compatible 被推高
+ob1.mysql alter system run upgrade job 'UPGRADE_ALL';
+ob1.check_until_timeout select count(*) from oceanbase.gv\$ob_parameters where name='compatible' and value!='$min_observer_version', 0, 1200;
+ob1.mysql update oceanbase.__all_rootservice_job set job_status='FAILED' where job_type like 'UPGRADE_%' and job_status='INPROGRESS';
+ob1.upgrade_commond_for_server post;
+
+
+# 验证升级完成情况下设置assume role模式
+ob1.clean_backup_dest;
+let $sts_credential = deploy_get_value(ob1.get_sts_credential $backup_oracle_tenant);
+connection conn_sys;
+--disable_all_result_log
+eval alter system set sts_credential='$sts_credential';
+--enable_all_result_log
+
+ob_connect(conn_obtest_z1, ob1.z1.obs0, SYS@$backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection conn_obtest_z1;
+--disable_all_result_log
+eval alter system set sts_credential='$sts_credential';
+
+sleep 5;
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest';

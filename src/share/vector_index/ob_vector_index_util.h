@@ -171,6 +171,7 @@ struct ObVectorIndexParam
     nlist_(0), sample_per_nlist_(0), extra_info_max_size_(0), extra_info_actual_size_(0),
     refine_type_(0), bq_bits_query_(DEFAULT_BQ_BITS_QUERY),
     refine_k_(DEFAULT_REFINE_K), bq_use_fht_(false), sync_interval_type_(VSIT_MAX), sync_interval_value_(0),
+    sync_mode_async_(false),
     nbits_(0), prune_(false), refine_(false), ob_sparse_drop_ratio_build_(0), window_size_(DEFAULT_WINDOW_SIZE),
     ob_sparse_drop_ratio_search_(0), similarity_threshold_(0)
   {
@@ -194,6 +195,7 @@ struct ObVectorIndexParam
     bq_use_fht_ = false;
     sync_interval_type_ = VSIT_MAX;
     sync_interval_value_ = 0;
+    sync_mode_async_ = false;
     prune_ = false;
     refine_ = false;
     ob_sparse_drop_ratio_build_ = 0;
@@ -223,6 +225,7 @@ struct ObVectorIndexParam
     nbits_ = other.nbits_;
     sync_interval_type_ = other.sync_interval_type_;
     sync_interval_value_ = other.sync_interval_value_;
+    sync_mode_async_ = other.sync_mode_async_;
     prune_ = other.prune_;
     refine_ = other.refine_;
     ob_sparse_drop_ratio_build_ = other.ob_sparse_drop_ratio_build_;
@@ -251,6 +254,7 @@ struct ObVectorIndexParam
   bool bq_use_fht_;
   ObVectorIndexSyncIntervalType sync_interval_type_;
   int64_t sync_interval_value_;  // used when sync_interval_type_ is VSIT_NUMERIC
+  bool sync_mode_async_;         // true when sync_mode=ASYNC
   char endpoint_[OB_MAX_ENDPOINT_LENGTH];
   int64_t nbits_;
   // param for sparse vector
@@ -262,10 +266,10 @@ struct ObVectorIndexParam
   float similarity_threshold_;
   OB_UNIS_VERSION(1);
 public:
-  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search),
+  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search), 
     K_(nlist), K_(sample_per_nlist), K_(extra_info_max_size), K_(extra_info_actual_size),
     K_(refine_type), K_(bq_bits_query), K_(refine_k), K_(bq_use_fht), K_(sync_interval_type), K_(sync_interval_value),
-    K_(endpoint), K_(nbits), K_(prune), K_(refine), K_(ob_sparse_drop_ratio_build),K_(window_size), K_(ob_sparse_drop_ratio_search),
+    K_(sync_mode_async), K_(endpoint), K_(nbits), K_(prune), K_(refine), K_(ob_sparse_drop_ratio_build),K_(window_size), K_(ob_sparse_drop_ratio_search),
     K_(similarity_threshold));
 
 public:
@@ -369,23 +373,30 @@ public:
   ObExprVecIvfCenterIdCache()
     : table_id_(ObCommonID::INVALID_ID),
       tablet_id_(),
+      center_prefix_(0),
       centers_(),
       allocator_("IvfCIdCache", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID())
   {}
   virtual ~ObExprVecIvfCenterIdCache() {}
   bool hit(ObTableID table_id, ObTabletID tablet_id) { return table_id == table_id_ && tablet_id == tablet_id_; }
   int get_centers(ObIArray<float*> &centers) { return centers.assign(centers_); }
-  int update_cache(ObTableID table_id, ObTabletID tablet_id, ObIArray<float*> &centers)
+  int update_cache(ObTableID table_id, ObTabletID tablet_id, ObIArray<float*> &centers, uint64_t center_prefix)
   {
     table_id_ = table_id;
     tablet_id_ = tablet_id;
+    center_prefix_ = center_prefix;
     return centers_.assign(centers);
   }
+  void set_center_prefix(uint64_t center_prefix) { center_prefix_ = center_prefix; }
+  uint64_t get_center_prefix() const { return center_prefix_; }
+  ObCenterId get_center_id(int64_t center_idx) const { return ObCenterId(center_prefix_, center_idx); }
   ObArenaAllocator &get_allocator() { return allocator_; }
-  void reuse() { table_id_ = ObCommonID::INVALID_ID; tablet_id_.reset(); centers_.reuse(); allocator_.reuse(); }
+  void reuse() { table_id_ = ObCommonID::INVALID_ID; tablet_id_.reset(); center_prefix_ = 0; centers_.reuse(); allocator_.reuse(); }
+  TO_STRING_KV(K_(table_id), K_(tablet_id), K_(center_prefix), K_(centers));
 private:
   ObTableID table_id_;
   ObTabletID tablet_id_;
+  uint64_t center_prefix_; // prefix of center_id, now, it is tablet_id stored in centroid table
   ObSEArray<float*, 8> centers_;
   ObArenaAllocator allocator_;
 };
@@ -423,7 +434,7 @@ public:
       const ObTableSchema &table_schema,
       ObDocIDType &vid_type);
   static int check_need_vid(
-      const ObTableSchema &table_schema,
+      const ObTableSchema &table_schema, 
       bool &need_vid);
   static int construct_rebuild_index_param(
       const ObTableSchema &data_table_schema,
@@ -451,6 +462,8 @@ public:
       ObVectorIndexType vector_index_type,
       ObVectorIndexParam &param,
       const bool set_default=true);
+  static bool is_sync_mode_async(const ObString &index_params);
+  static bool is_sync_mode_async(const ObString &index_params, bool is_hnsw_heap_table);
   static int parse_time_string_to_seconds(const ObString &time_str, int64_t &seconds);
   static int resolve_query_param(
       const ParseNode *option_node,
@@ -500,8 +513,8 @@ public:
       bool &has_fts_index,
       bool &has_vec_index);
   static int check_table_has_vector_index(
-      const ObTableSchema &data_table_schema,
-      ObSchemaGetterGuard &schema_guard,
+      const ObTableSchema &data_table_schema, 
+      ObSchemaGetterGuard &schema_guard, 
       bool &has_vec_index);
   static int check_column_has_vector_index(
       const ObTableSchema &data_table_schema,
@@ -768,7 +781,8 @@ public:
                                     ObTabletID &tablet_id,
                                     ObVectorIndexDistAlgorithm &dis_algo,
                                     bool &contain_null,
-                                    ObIArrayType *&arr);
+                                    ObIArrayType *&arr,
+                                    uint64_t &center_prefix);
   static int estimate_hnsw_memory(
       uint64_t num_vectors,
       const ObVectorIndexParam &param,
@@ -777,7 +791,7 @@ public:
   );
   static int estimate_sparse_memory(
       uint64_t num_vectors,
-      const ObVectorIndexParam &param,
+      const ObVectorIndexParam &param, 
       uint64_t &est_mem
   );
   static int estimate_ivf_memory(uint64_t num_vectors,
@@ -794,8 +808,12 @@ public:
                                   ObExprVecIvfCenterIdCache *cache,
                                   const ObTableID &table_id,
                                   const ObTabletID &tablet_id,
+                                  const ObTabletID &cent_tablet_id,
+                                  const bool is_pq_cache,
                                   common::ObIAllocator &allocator,
-                                  ObIArray<float*> &centers);
+                                  ObIArray<float*> &centers,
+                                  uint64_t &center_prefix,
+                                  int64_t m = 0);
   static int split_vector(ObIAllocator &alloc, int pq_m, int dim, float *vector, ObIArray<float *> &splited_arrs);
   static int split_vector(int pq_m, int dim, float *vector, ObIArray<float *> &splited_arrs);
   static bool column_id_asc_compare(uint64_t lhs, uint64_t rhs) { return lhs < rhs; }
@@ -812,6 +830,7 @@ public:
       const ObTableSchema &index_schema,
       const uint64_t tenant_id,
       const int64_t row_count);
+  static bool check_ivf_vector_index_memory(ObSchemaGetterGuard &schema_guard, const uint64_t tenant_id, const ObTableSchema &index_schema, const int64_t row_count);
   static int estimate_vector_memory_used(
       ObSchemaGetterGuard &schema_guard,
       const ObTableSchema &index_schema,
@@ -832,6 +851,13 @@ public:
                                                const ObString &new_idx_params,
                                                const ObTableSchema &index_table_schema,
                                                bool &need_embedding_when_rebuild);
+  static int get_partition_name_by_tablet(
+    const ObTableSchema &table_schema,
+    const ObTableSchema &data_table_schema,
+    const ObTabletID index_tablet_id,
+    ObPartitionLevel &part_level,
+    ObString &partition_name);
+
 private:
   static void save_column_schema(
       const ObColumnSchemaV2 *&old_column,

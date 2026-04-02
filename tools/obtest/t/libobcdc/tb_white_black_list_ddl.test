@@ -1,0 +1,178 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description: flashback ddl
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant_with_gts.inc;
+
+--disable_warnings
+create user if not exists __oceanbase_inner_drc_user;
+grant all privileges on *.* to __oceanbase_inner_drc_user;
+--enable_warnings
+
+connect (conn_drc,$ip,__oceanbase_inner_drc_user@oblog_tt,,oceanbase,$port);
+connection conn_drc;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+
+let $restart_ts_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $ddl_stmt_count = 0;
+
+set @@recyclebin = off;
+
+set @__oceanbase_ddl_id = '1_1_12345678901';
+create database oblog_db1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+set @__oceanbase_ddl_id = '1_1_12345678902';
+create database oblog_db2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+use oblog_db1;
+
+set @__oceanbase_ddl_id = '1_1_12345678903';
+create table white1(c1 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+set @__oceanbase_ddl_id = '1_1_12345678904';
+create table white2(c1 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+set @__oceanbase_ddl_id = '1_1_12345678905';
+create table white3(c1 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+set @__oceanbase_ddl_id = '1_1_12345678906';
+create table white4(c1 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 正常删除
+set @__oceanbase_ddl_id = '1_1_12345678907';
+drop table if exists white1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+ob1.oblog.check_log "delete table_id from cache success(tic_update_info={tic_update_reason:\"DROP_TABLE\", database_id:18446744073709551615, table_id:500005})";
+
+set @@recyclebin = on;
+
+set @__oceanbase_ddl_id = '1_1_12345678908';
+drop table if exists white2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+let $white2_recycle_table_name = query_get_value(select OBJECT_NAME from oceanbase.__all_recyclebin order by gmt_create desc limit 1, OBJECT_NAME, 1);
+set @__oceanbase_ddl_id = '1_1_12345678909';
+eval purge table $white2_recycle_table_name;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+ob1.oblog.check_log "delete table_id from cache success(tic_update_info={tic_update_reason:\"DROP_TABLE\", database_id:18446744073709551615, table_id:500006})";
+
+set @@recyclebin = off;
+
+set @__oceanbase_ddl_id = '1_1_12345678910';
+drop database oblog_db1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+ob1.oblog.check_log "delete table_id from cache success(tic_update_info={tic_update_reason:\"DROP_TABLE\", database_id:18446744073709551615, table_id:500007})";
+ob1.oblog.check_log "delete table_id from cache success(tic_update_info={tic_update_reason:\"DROP_TABLE\", database_id:18446744073709551615, table_id:500008})";
+
+set @@recyclebin = on;
+
+set @__oceanbase_ddl_id = '1_1_12345678911';
+drop database oblog_db2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+let $db2_recycle_database_name = query_get_value(select OBJECT_NAME from oceanbase.__all_recyclebin order by gmt_create desc limit 1, OBJECT_NAME, 1);
+set @__oceanbase_ddl_id = '1_1_12345678912';
+eval purge database $db2_recycle_database_name;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+connection oblog_conn_tt;
+
+# offline ddl
+create database oblog_db3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+use oblog_db3;
+
+create table white5(c1 char(5));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+alter table white5 add column OMS_PK_INCRMT bigint;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+create index if not exists c1 on white5(c1 ASC);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+alter table white5 drop column OMS_PK_INCRMT;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 重新启动libobcdc
+ob1.oblog.stop;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+
+create table white6(c1 char(5));
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.black* tb_black_list=oblog_tt.*.white* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+
+# output
+let $idx = 0;
+while ($idx < $ddl_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+# 重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.black* tb_black_list=oblog_tt.*.white* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+
+# output
+let $idx = 0;
+while ($idx < $ddl_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+ob1.oblog.stop;

@@ -1,0 +1,77 @@
+# owner: baonian.wcx
+# group: cloud storage
+# desc: test prewarming hot tablet
+
+let $table_name = basic_sc;
+
+connect (ob_mysql,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection ob_mysql;
+let $tenant_id = `select effective_tenant_id()`;
+
+# disable major compaction prewarm
+alter system set _ss_major_compaction_prewarm_level = 2;
+
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+
+create table basic_sc(c1 bigint, c2 varchar(1000), c3 bigint) storage_cache_policy = (global = "auto");
+let $tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_table where table_name = '$table_name', tablet_id, 1);
+
+let $storage_cache_policy = query_get_value(select storage_cache_policy from oceanbase.__all_virtual_table where table_name = '$table_name', storage_cache_policy, 1);
+if ($storage_cache_policy != '{"GLOBAL":"AUTO"}')
+{
+  --echo $storage_cache_policy
+  --echo storage_cache_policy is wrong when create table
+}
+
+--echo "=========== 1. insert data ==========="
+--disable_query_log
+set ob_query_timeout = 100000000;
+eval insert into $table_name select random() c1, randstr(1000, random()) c2, normal(0, 1, random()) c3 from table(generator(500000));
+--enable_query_log
+
+--echo "=========== 2. launch and wait major freeze ==========="
+alter system major freeze;
+let $frozen_scn = query_get_value(select max(frozen_scn) as v from oceanbase.__all_freeze_info, v, 1);
+let $i=600;
+while($i > 0)
+{
+  dec $i;
+  sleep 1;
+  let $last_scn = query_get_value(select last_scn from oceanbase.DBA_OB_MAJOR_COMPACTION, last_scn, 1);
+  if ($last_scn == $frozen_scn)
+  {
+    let $i = -5;
+  }
+}
+if ($i != -5)
+{
+  --echo fail to do major freeze
+}
+
+--echo "=========== 3. basic: trigger prewarm task ==========="
+eval alter table $table_name storage_cache_policy= (global = "hot");
+let $i=60;
+while($i > 0)
+{
+  dec $i;
+  sleep 1;
+  let $doing_task_count = query_get_value(select count(*) as doing_task_count from oceanbase.__all_virtual_storage_cache_task where tenant_id = $tenant_id and tablet_id = $tablet_id and status = "DOING", doing_task_count, 1);
+  if ($doing_task_count > 1)
+  {
+    --echo doing_task_count: $doing_task_count is unexpected
+  }
+  if ($doing_task_count == 1)
+  {
+    let $speed_valid = `select cast(regexp_substr(speed, '[-]?[0-9]+\.?[0-9]*') as float) > 0 from oceanbase.__all_virtual_storage_cache_task where tenant_id = $tenant_id and tablet_id = $tablet_id and status = "DOING"`;
+    if ($speed_valid)
+    {
+      let $i = -5;
+    }
+  }
+}
+if ($i != -5)
+{
+  --echo fail to get storage cache task status
+}

@@ -1,0 +1,50 @@
+#rs
+#msy164651
+#测试点：备库创建租户失败时，切换的处理
+#case 1: 在事务二失败，补偿删除失败；
+#case 2: 在事务3失败，补偿删除失败
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.z1.obs0.set extra_config=schema_drop_gc_delay_time='10s';
+ob2.z1.obs0.set extra_config=schema_drop_gc_delay_time='10s';
+ob1.reboot;
+ob2.reboot;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection conn1;
+ob2.mysql alter system set balancer_idle_time = '10s';
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set data_copy_concurrency = 60;
+#控制主库不做巡检,并且删除租户报错
+#控制主库创建租户1在事务二失败,TODO
+#控制主库在创建租户2在事务3失败
+connection conn1;
+alter system set_tp tp_no = 104, error_code = 4013, frequency = 1;
+#alter system set_tp tp_no = 105, error_code = 4013, frequency = 1;
+CREATE RESOURCE POOL pool_1 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1');
+alter system set_tp tp_no = 64, error_code = 4013, frequency = 1;
+--error 4013
+CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql_p select status from oceanbase.__all_tenant where tenant_name = 'tt';
+alter system set_tp tp_no = 64, error_code = 4013, frequency = 0;
+alter system set_tp tp_no = 75, error_code = 4013, frequency = 1;
+CREATE RESOURCE POOL pool_2 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1');
+--error 4013
+CREATE TENANT tt2 RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql_p select status from oceanbase.__all_tenant where tenant_name = 'tt2';
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 300;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;
+connection conn1;
+alter system set_tp tp_no = 75, error_code = 4013, frequency = 0;
+alter system set_tp tp_no = 105, error_code = 4013, frequency = 0;
+alter system set_tp tp_no = 104, error_code = 4013, frequency = 0;
+#新备库会删除租户tt，然后tt2的状态会变成normal
+ob2.check_until_timeout select status from oceanbase.__all_tenant where tenant_name = 'tt2', TENANT_STATUS_NORMAL, 30;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 50;
+ob1.mysql_p select status from oceanbase.__all_tenant where tenant_name = 'tt2';
+ob1.mysql_p select status from oceanbase.__all_tenant where tenant_name = 'tt';
+

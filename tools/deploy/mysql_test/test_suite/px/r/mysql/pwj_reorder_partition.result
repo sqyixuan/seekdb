@@ -1,0 +1,198 @@
+drop table if exists t1, t2, t3, t4;
+create table t1(c1 bigint) partition by key(c1) partitions 7;
+create table t2(c1 bigint) partition by key(c1) partitions 7;
+create table t3(c1 bigint) partition by key(c1) partitions 33;
+create table t4(c1 bigint) partition by key(c1) partitions 33;
+insert into t1 select random(1) % 5000 from table(generator(200));
+insert into t2 select random(2) % 5000 from table(generator(200));
+insert into t3 select random(3) % 5000 from table(generator(200));
+insert into t4 select random(4) % 5000 from table(generator(200));
+explain basic (select * from t3 join t4 on t3.c1=t4.c1) union all (select * from t1 join t2 on t1.c1=t2.c1) ;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR             |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─UNION ALL              |        |
+|3 |    ├─PX PARTITION ITERATOR|        |
+|4 |    │ └─HASH JOIN          |        |
+|5 |    │   ├─TABLE FULL SCAN  |t3      |
+|6 |    │   └─TABLE FULL SCAN  |t4      |
+|7 |    └─PX PARTITION ITERATOR|        |
+|8 |      └─HASH JOIN          |        |
+|9 |        ├─TABLE FULL SCAN  |t1      |
+|10|        └─TABLE FULL SCAN  |t2      |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(UNION([1]), UNION([2]))]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(UNION([1]), UNION([2]))]), filter(nil), rowset=256
+      dop=1
+  2 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=256
+  3 - output([t3.c1], [t4.c1]), filter(nil), rowset=256
+      partition wise, force partition granule
+  4 - output([t3.c1], [t4.c1]), filter(nil), rowset=256
+      equal_conds([t3.c1 = t4.c1]), other_conds(nil)
+  5 - output([t3.c1]), filter(nil), rowset=256
+      access([t3.c1]), partitions(p[0-32])
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([t4.c1]), filter(nil), rowset=256
+      access([t4.c1]), partitions(p[0-32])
+      is_index_back=false, is_global_index=false, 
+      range_key([t4.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([t1.c1], [t2.c1]), filter(nil), rowset=256
+      partition wise, force partition granule
+  8 - output([t1.c1], [t2.c1]), filter(nil), rowset=256
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  9 - output([t1.c1]), filter(nil), rowset=256
+      access([t1.c1]), partitions(p[0-6])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output([t2.c1]), filter(nil), rowset=256
+      access([t2.c1]), partitions(p[0-6])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+(select * from t3 join t4 on t3.c1=t4.c1) union all (select * from t1 join t2 on t1.c1=t2.c1) ;
+c1	c1
+4202	4202
+-545	-545
+-945	-945
+-2930	-2930
+-3711	-3711
+472	472
+-4408	-4408
+-4408	-4408
+335	335
+drop table if exists t1, t2, t3, t4;
+create table t1(c1 bigint,c2 bigint,c3 bigint);
+insert into t1 select random(123), random(456), random(789) from table(generator(1));
+CREATE TABLE t2 (C1 int) PARTITION BY LIST(C1)
+(
+PARTITION P0 VALUES IN (1),
+PARTITION P1 VALUES IN (3),
+PARTITION P2 VALUES IN (5),
+PARTITION P3 VALUES IN (7)
+);
+CREATE TABLE t3 (C1 int) PARTITION BY LIST(C1)
+(
+PARTITION P0 VALUES IN (1),
+PARTITION P1 VALUES IN (3),
+PARTITION P2 VALUES IN (5),
+PARTITION P3 VALUES IN (7)
+);
+ALTER TABLE t2 DROP PARTITION p0;
+ALTER TABLE t2 ADD PARTITION (partition p5 VALUES in(1));
+insert into t2 values(1), (3), (5);
+insert into t3 values(1), (3), (5);
+explain basic
+select max(c1) from
+(
+select /*+ parallel(2)*/ a.* from 
+(select
+(select c1 from (select distinct t2.c1 as c1, c.c2 from t2 join t3 on t2.c1=t3.c1) limit 1 ) c1
+from t1 c
+)a, t1 b
+where a.c1 = b.c1
+);
+Query Plan
+========================================================================
+|ID|OPERATOR                                           |NAME           |
+------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                                    |               |
+|1 |└─PX COORDINATOR                                   |               |
+|2 |  └─EXCHANGE OUT DISTR                             |:EX10002       |
+|3 |    └─MERGE GROUP BY                               |               |
+|4 |      └─SHARED HASH JOIN                           |               |
+|5 |        ├─EXCHANGE IN DISTR                        |               |
+|6 |        │ └─EXCHANGE OUT DISTR (BC2HOST)           |:EX10001       |
+|7 |        │   └─MATERIAL                             |               |
+|8 |        │     └─SUBPLAN SCAN                       |a              |
+|9 |        │       └─SUBPLAN FILTER                   |               |
+|10|        │         ├─MATERIAL                       |               |
+|11|        │         │ └─EXCHANGE IN DISTR            |               |
+|12|        │         │   └─EXCHANGE OUT DISTR         |:EX10000       |
+|13|        │         │     └─PX BLOCK ITERATOR        |               |
+|14|        │         │       └─TABLE FULL SCAN        |c              |
+|15|        │         └─LIMIT                          |               |
+|16|        │           └─PX COORDINATOR               |               |
+|17|        │             └─EXCHANGE OUT DISTR         |:EX20000       |
+|18|        │               └─LIMIT                    |               |
+|19|        │                 └─SUBPLAN SCAN           |ANONYMOUS_VIEW1|
+|20|        │                   └─PX PARTITION ITERATOR|               |
+|21|        │                     └─HASH DISTINCT      |               |
+|22|        │                       └─HASH JOIN        |               |
+|23|        │                         ├─TABLE FULL SCAN|t2             |
+|24|        │                         └─TABLE FULL SCAN|t3             |
+|25|        └─PX BLOCK ITERATOR                        |               |
+|26|          └─TABLE FULL SCAN                        |b              |
+========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_MAX(T_FUN_MAX(a.c1))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_MAX(T_FUN_MAX(a.c1))])
+  1 - output([T_FUN_MAX(a.c1)]), filter(nil), rowset=16
+  2 - output([T_FUN_MAX(a.c1)]), filter(nil), rowset=16
+      dop=2
+  3 - output([T_FUN_MAX(a.c1)]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_MAX(a.c1)])
+  4 - output([a.c1]), filter(nil), rowset=16
+      equal_conds([a.c1 = b.c1]), other_conds(nil)
+  5 - output([a.c1]), filter(nil), rowset=16
+  6 - output([a.c1]), filter(nil), rowset=16
+      is_single, dop=1
+  7 - output([a.c1]), filter(nil), rowset=16
+  8 - output([a.c1]), filter(nil), rowset=16
+      access([a.c1])
+  9 - output([subquery(1)]), filter(nil), rowset=16
+      exec_params_([c.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 10 - output([c.c2]), filter(nil), rowset=16
+ 11 - output([c.c2]), filter(nil), rowset=16
+ 12 - output([c.c2]), filter(nil), rowset=16
+      dop=2
+ 13 - output([c.c2]), filter(nil), rowset=16
+ 14 - output([c.c2]), filter(nil), rowset=16
+      access([c.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([c.__pk_increment]), range(MIN ; MAX)always true
+ 15 - output([ANONYMOUS_VIEW1.c1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+ 16 - output([ANONYMOUS_VIEW1.c1]), filter(nil), rowset=16
+ 17 - output([ANONYMOUS_VIEW1.c1]), filter(nil), rowset=16
+      dop=2
+ 18 - output([ANONYMOUS_VIEW1.c1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+ 19 - output([ANONYMOUS_VIEW1.c1]), filter(nil), rowset=16
+      access([ANONYMOUS_VIEW1.c1])
+ 20 - output([t2.C1], [:0]), filter(nil), rowset=16
+      partition wise, force partition granule
+ 21 - output([t2.C1]), filter(nil), rowset=16
+      distinct([t2.C1])
+ 22 - output([t2.C1]), filter(nil), rowset=16
+      equal_conds([t2.C1 = t3.C1]), other_conds(nil)
+ 23 - output([t2.C1]), filter(nil), rowset=16
+      access([t2.C1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+ 24 - output([t3.C1]), filter(nil), rowset=16
+      access([t3.C1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t3.__pk_increment]), range(MIN ; MAX)always true
+ 25 - output([b.c1]), filter(nil), rowset=16
+ 26 - output([b.c1]), filter(nil), rowset=16
+      access([b.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([b.__pk_increment]), range(MIN ; MAX)always true
+select max(c1) from
+(
+select /*+ parallel(2)*/ a.* from 
+(select
+(select c1 from (select distinct t2.c1 as c1, c.c2 from t2 join t3 on t2.c1=t3.c1) limit 1 ) c1
+from t1 c
+)a, t1 b
+where a.c1 = b.c1
+);
+max(c1)
+NULL
+drop table if exists t1, t2, t3;

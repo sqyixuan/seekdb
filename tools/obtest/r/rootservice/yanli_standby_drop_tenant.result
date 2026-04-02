@@ -1,0 +1,75 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob2.set extra_config=$mini_ob_config;
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+set global wait_timeout = 288000;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG_PIECE_FILES where tenant_id=$backup_mysql_tenant_id and piece_id=1, FROZEN, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+use oceanbase;
+ob1.mysql alter tenant $backup_mysql_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=1 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_mysql_tenant_id, 1, 100;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.mysql alter system noarchivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG_SUMMARY where tenant_id=$backup_mysql_tenant_id, STOP, 600;
+ob1.check_until_timeout select count(*)=0 from oceanbase.CDB_OB_ARCHIVELOG_PIECE_FILES where tenant_id=$backup_mysql_tenant_id and status!='FROZEN', 1, 60;
+ob2.reboot;
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+ob2.mysql alter system set enable_async_syslog=false;
+ob2.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_2&primary_zone=z1';
+ob2.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1001, NORMAL, 200;
+ob2.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1002 and restore_status = 0, 2, 600;
+ob2.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1002, NORMAL, 200;
+ob2.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+select tenant_role from __all_virtual_tenant_info where tenant_id = 1002;
+tenant_role
+STANDBY
+set recyclebin= off;
+drop tenant backup_mysql_tenant;
+select tenant_role from oceanbase.__all_virtual_tenant_info where tenant_id = 1002;
+tenant_role
+STANDBY
+select status, in_recyclebin from __all_tenant WHERE tenant_id = 1002;
+status	in_recyclebin
+NORMAL	0
+set recyclebin= on;
+drop tenant restore_mysql_tenant;
+select status, in_recyclebin from __all_tenant WHERE tenant_id = 1002;
+status	in_recyclebin
+NORMAL	1
+purge tenant restore_mysql_tenant;
+select status, in_recyclebin from __all_tenant WHERE tenant_id = 1002 - 1;
+status	in_recyclebin
+select status, in_recyclebin from __all_tenant WHERE tenant_id = 1002;
+status	in_recyclebin
+ob2.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_2&primary_zone=z1';
+ob2.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob2.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 2, 600;
+ob2.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob2.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+set recyclebin= off;
+ob2.mysql alter system set_tp tp_name = ERRSIM_SKIP_TENANT_THREAD_STOP, error_code = 4016, frequency = 1;
+drop tenant restore_mysql_tenant;
+select status, in_recyclebin from __all_tenant WHERE tenant_id = 1004;
+status	in_recyclebin
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where tenant_id =  $restore_mysql_tenant_id and ls_id = 1, 0, 100;
+ob2.mysql alter system set_tp tp_name = ERRSIM_SKIP_TENANT_THREAD_STOP, error_code = 4016, frequency = 0;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id =  $restore_mysql_tenant_id, 0, 100;

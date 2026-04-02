@@ -1,0 +1,34 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+alter system set syslog_level = 'TRACE';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+===============================================================
+==================     create tenant   ========================
+===============================================================
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+===============================================================
+==================     create table ===========================
+===============================================================
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+create tablegroup tg1 sharding='PARTITION';
+create table mv_tt(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+create table mv_tg(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+insert into mv_tt values(1,1), (2,1),(3,1);
+insert into mv_tg values(1,1), (2,1),(3,2);
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat  where tenant_id = 1002 and ls_id = 1002 and role = 'leader' and svr_ip = '$z2_ip' and svr_port = $z2_rpc_port, 1, 60;
+create materialized view mv1 (primary key(mv_tt_c1,mv_tt_c2)) tablegroup='tg1' partition by hash(mv_tt_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+use oceanbase;
+$dst.check_log_until_success -c "is_dynamic_replica_select_table()=true";
+$dst.check_log_until_success -c "$sub_trace_id.*print check read allowed, scan param.*$broadcast_tablet_id";

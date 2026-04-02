@@ -1,0 +1,159 @@
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+#############################
+# create mysql tenant
+set @@session.ob_query_timeout = 1000000000;
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 60;
+ob1.mysql alter system set _transfer_task_tablet_count_threshold = 100 tenant mysql;
+############################
+# create table with lob and idx
+############################
+# primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 180;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED', 10, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 10;
+############################
+# batch transfer result
+ob1.mysql select part_count, tablet_count, status, result from oceanbase.__all_virtual_transfer_task_history order by task_id;
+# part with 128 index transfer alone
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where part_list = '$t_with_max_index_id:$t_with_max_index_part_id' and status = 'COMPLETED' order by create_time limit 1, 1, 5;
+# no lock remains
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_obj_lock as a join oceanbase.__all_virtual_transfer_task_history as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and a.lock_mode = 'RS' and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls), 1, 5;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time;
+part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_count
+1	NULL	NULL	200002	99
+1	NULL	NULL	200006	53
+20	NULL	NULL	200008,200030,200034,200040,200044,200046,200048,200050,200052,200054	99
+25	NULL	NULL	200036,200042,200058,200060,200062,200064,200068,200070,200072,200074,200076,200086,200102,200104,200106,200108,200110,200112,200114,200120,200124,200126,200128,200132,200134	100
+25	NULL	NULL	200032,200038,200066,200080,200084,200090,200092,200094,200100,200116,200130,200136,200138,200140,200142,200144,200146,200148,200150,200152,200154,200156,200158,200160,200162	100
+1	NULL	NULL	200004	131
+25	NULL	NULL	200056,200078,200082,200088,200096,200098,200118,200122,200164,200166,200168,200170,200172,200174,200176,200178,200180,200182,200184,200186,200188,200190,200192,200194,200196	100
+25	NULL	NULL	200198,200200,200202,200204,200206,200208,200210,200212,200214,200216,200218,200220,200222,200224,200226,200228,200230,200232,200234,200236,200238,200240,200242,200244,200246	100
+25	NULL	NULL	200248,200250,200252,200254,200256,200258,200260,200262,200264,200266,200268,200270,200272,200274,200276,200278,200280,200282,200284,200286,200288,200290,200292,200294,200296	100
+16	NULL	NULL	200298,200300,200302,200304,200306,200308,200310,200312,200314,200316,200318,200320,200322,200324,200326,200328	64
+###########################
+# test location after transfer
+select * from t_part_1 order by c1;
+c1	c2
+1	1
+2	2
+select * from t_subpart_1 order by c1;
+c0	c1	c2
+1	1	1
+2	2	2
+3	3	3
+4	4	4
+select * from t_part_2 order by c1;
+c1	c2
+1	1
+2	2
+select * from t_subpart_2 order by c1;
+c0	c1	c2
+1	1	1
+2	2	2
+3	3	3
+4	4	4
+select * from t_part_3 order by c1;
+c1	c2
+1	1
+2	2
+select * from t_subpart_3 order by c1;
+c0	c1	c2
+1	1	1
+2	2	2
+3	3	3
+4	4	4
+select * from t_part_4 as a join t_part_5 as b where a.c1 = b.c1 order by a.c1;
+c1	c2	c1	c2
+1	1	1	1
+2	2	2	2
+select * from t_subpart_4 as a join t_subpart_5 as b where a.c1 = b.c1 order by a.c1;
+c0	c1	c2	c0	c1	c2
+1	1	1	1	1	1
+2	2	2	2	2	2
+3	3	3	3	3	3
+4	4	4	4	4	4
+#############################
+# test _transfer_process_lock_tx_timeout
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 100;
+ob1.mysql alter system set internal_sql_execute_timeout = '100s';
+ob1.mysql alter system set _transfer_process_lock_tx_timeout = '30s' tenant 'mysql';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_lock execute 1000';
+# primary zone 2->1
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'INIT' and comment = '', 1, 60;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock';
+# process init task transaction timeout
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'INIT' and comment = 'Unable to process task due to transaction timeout', 1, 10;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART clear';
+# process init task normally
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and comment = 'Unable to process task due to transaction timeout', 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 60;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time;
+part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_count
+1	NULL	NULL	200002	99
+1	NULL	NULL	200006	53
+20	NULL	NULL	200008,200030,200034,200040,200044,200046,200048,200050,200052,200054	99
+25	NULL	NULL	200036,200042,200058,200060,200062,200064,200068,200070,200072,200074,200076,200086,200102,200104,200106,200108,200110,200112,200114,200120,200124,200126,200128,200132,200134	100
+25	NULL	NULL	200032,200038,200066,200080,200084,200090,200092,200094,200100,200116,200130,200136,200138,200140,200142,200144,200146,200148,200150,200152,200154,200156,200158,200160,200162	100
+1	NULL	NULL	200004	131
+25	NULL	NULL	200056,200078,200082,200088,200096,200098,200118,200122,200164,200166,200168,200170,200172,200174,200176,200178,200180,200182,200184,200186,200188,200190,200192,200194,200196	100
+25	NULL	NULL	200198,200200,200202,200204,200206,200208,200210,200212,200214,200216,200218,200220,200222,200224,200226,200228,200230,200232,200234,200236,200238,200240,200242,200244,200246	100
+25	NULL	NULL	200248,200250,200252,200254,200256,200258,200260,200262,200264,200266,200268,200270,200272,200274,200276,200278,200280,200282,200284,200286,200288,200290,200292,200294,200296	100
+16	NULL	NULL	200298,200300,200302,200304,200306,200308,200310,200312,200314,200316,200318,200320,200322,200324,200326,200328	64
+25	NULL	NULL	200130,200132,200134,200136,200138,200140,200142,200144,200146,200148,200150,200152,200154,200156,200158,200160,200162,200164,200166,200168,200170,200172,200174,200176,200178	100
+25	NULL	NULL	200080,200082,200084,200086,200088,200090,200092,200094,200096,200098,200100,200102,200104,200106,200108,200110,200112,200114,200116,200118,200120,200122,200124,200126,200128	100
+25	NULL	NULL	200030,200032,200034,200036,200038,200040,200042,200044,200046,200048,200050,200052,200054,200056,200058,200060,200062,200064,200066,200068,200070,200072,200074,200076,200078	100
+1	NULL	NULL	200002	99
+1	NULL	NULL	200004	131
+1	NULL	NULL	200006	53
+20	NULL	NULL	200008,200180,200182,200184,200186,200188,200190,200192,200194,200196	99
+25	NULL	NULL	200198,200200,200202,200204,200206,200208,200210,200212,200214,200216,200218,200220,200222,200224,200226,200228,200230,200232,200234,200236,200238,200240,200242,200244,200246	100
+25	NULL	NULL	200248,200250,200252,200254,200256,200258,200260,200262,200264,200266,200268,200270,200272,200274,200276,200278,200280,200282,200284,200286,200288,200290,200292,200294,200296	100
+16	NULL	NULL	200298,200300,200302,200304,200306,200308,200310,200312,200314,200316,200318,200320,200322,200324,200326,200328	64
+###############################
+# test _transfer_task_tablet_count_threshold
+alter system set _transfer_task_tablet_count_threshold = 645 tenant mysql;
+ERROR HY000: Incorrect arguments to _transfer_task_tablet_count_threshold of tenant 1002, it cannot be greater than 518
+alter system set _transfer_task_tablet_count_threshold = 32 tenant mysql;
+# primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED' and task_id > $last_transfer_task_id, 24, 120;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time desc limit 22;
+part_count	not_exist_part_list	lock_conflict_part_list	table_lock_tablet_list	tablet_count
+1	NULL	NULL	200328	4
+8	NULL	NULL	200312,200314,200316,200318,200320,200322,200324,200326	32
+8	NULL	NULL	200296,200298,200300,200302,200304,200306,200308,200310	32
+8	NULL	NULL	200078,200282,200284,200286,200288,200290,200292,200294	32
+8	NULL	NULL	200096,200118,200122,200180,200194,200242,200244,200280	32
+1	NULL	NULL	200004	131
+8	NULL	NULL	200056,200066,200082,200088,200098,200192,200224,200230	32
+8	NULL	NULL	200038,200080,200094,200142,200150,200274,200276,200278	32
+8	NULL	NULL	200100,200116,200130,200156,200232,200240,200270,200272	32
+8	NULL	NULL	200032,200084,200090,200092,200138,200220,200266,200268	32
+8	NULL	NULL	200036,200062,200124,200190,200218,200246,200262,200264	32
+8	NULL	NULL	200042,200058,200072,200106,200140,200148,200188,200260	32
+8	NULL	NULL	200108,200134,200162,200166,200216,200254,200256,200258	32
+8	NULL	NULL	200046,200050,200144,200182,200184,200248,200250,200252	32
+8	NULL	NULL	200064,200076,200104,200128,200164,200172,200228,200238	32
+8	NULL	NULL	200030,200160,200202,200204,200222,200226,200234,200236	32
+8	NULL	NULL	200040,200048,200060,200102,200110,200210,200212,200214	32
+14	NULL	NULL	200186,200196,200198,200200,200206,200208	32
+9	NULL	NULL	200154,200158,200168,200170,200174,200176,200178	30
+8	NULL	NULL	200086,200114,200120,200126,200132,200136,200146,200152	32
+1	NULL	NULL	200008	53
+1	NULL	NULL	200002	99

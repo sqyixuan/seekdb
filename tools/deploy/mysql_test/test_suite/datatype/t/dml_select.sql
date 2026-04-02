@@ -1,0 +1,9 @@
+select col_int64 from t where col_int64 is not null order by id;
+select col_uint64 from t where col_uint64 is not null order by id;
+select col_year from t where col_year is not null order by id;
+select hex(col_varchar) from t where col_varchar is not null order by id;
+select hex(col_char) from t where col_char is not null order by id;
+select hex(col_varbinary) from t where col_varbinary is not null order by id;
+select hex(col_binary) from t where col_binary is not null order by id;
+select hex(col_varchar0) from t where col_varchar0 is not null order by id;
+select hex(col_varbinary0) from t where col_varbinary0 is not null order by id;

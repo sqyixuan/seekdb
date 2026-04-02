@@ -67,7 +67,6 @@ datatype.null2
 static_engine.expr_regexp
 static_engine.expr_length
 column_store.tile_project
-tenant.check_unsupported_tenant_name
 static_engine.expr_assign
 geometry.st_area_mysql
 inner_table.all_virtual_sys_parameter_stat
@@ -350,7 +349,6 @@ static_engine.expr_trim
 trx.bug_different_tranid_intrx
 static_engine.expr_coalesce
 static_engine.merge_join
-view.dba_ob_tenants
 static_engine.expr_abs
 system_variable.autocommit
 static_engine.expr_from_unixtime
@@ -384,7 +382,6 @@ expr.func_regexp
 groupby.group_by_4
 pl.pl_function_ddl_negative_mysql
 func_group_7
-unit.unit_config_basic
 inner_table.desc_sys_views_in_sys
 inner_table.show_sys_tables_in_sys
 driver5114_bug
@@ -420,7 +417,6 @@ except
 column_store_encoding.cs_add_column
 merge_uncommitted.lock_uncommitted_data
 pl.pl_basic_recursion_depth_mysql
-inner_table.all_virtual_upgrade_inspection
 select_basic
 type_date.type_modify_time
 merge_uncommitted.rollback_and_major

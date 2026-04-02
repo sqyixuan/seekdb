@@ -1,0 +1,242 @@
+# owner: chaser.ch
+# owner group: transaction
+# description: 本case是为了测试在含未提交事务的BufMerge，频繁改变其Queuing表的属性
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+set GLOBAL ob_query_timeout = 1000000000000;
+set GLOBAL ob_trx_timeout = 10000000000000;
+set GLOBAL ob_trx_idle_timeout = 10000000000;
+
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn0;
+alter system set enable_auto_leader_switch = false;
+
+connection conn1;
+--disable_warnings
+drop table if exists test_alter_several_times_table;
+--enable_warnings
+
+#建表
+create table test_alter_several_times_table(c1 int primary key, c2 varchar(50), c3 int, c4 datetime(6), c5 datetime(6));
+
+connection conn0;
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 'test_alter_several_times_table', table_id, 1);
+let $__svr_cnt__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ count(*) as c from oceanbase.__all_server, c, 1);
+
+connection conn1;
+--echo insert 30 rows
+--disable_query_log
+
+let $i=0;
+while($i < 30) 
+{
+    eval insert into test_alter_several_times_table values($i + 1000, 'Hello OceanBase & Happy New Year', $i, '2012-10-10 12:00:00','2012-10-10');
+    inc $i;
+}
+--enable_query_log
+
+# version 2
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+sleep 3;
+
+connection conn0;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+# change table into Queuing Mode
+connection conn1;
+alter table test_alter_several_times_table table_mode='queuing';
+
+connection conn1;
+--echo insert 30 rows, 60 rows in total
+--disable_query_log
+
+let $i=0;
+while($i < 30) 
+{
+    eval insert into test_alter_several_times_table values($i + 2000, 'Hello OceanBase & Happy New Year', $i, '2012-10-10 12:00:00','2012-10-10');
+    inc $i;
+}
+--enable_query_log
+
+connection conn1;
+begin;
+delete from test_alter_several_times_table where c1 % 2 = 0;
+# remain 30 rows
+
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+# for log sync to alter twice
+sleep 5;
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection conn0;
+--echo 1st minor finish
+
+connection conn0;
+--source mysql_test/include/wait_buf_minor_merge_for_table.inc
+
+connection conn1;
+#insert 30 rows, 60 rows in total
+--disable_query_log
+--echo insert 30 rows
+let $i=0;
+while($i < 30) 
+{
+    eval insert into test_alter_several_times_table values($i, 'Hello OceanBase & Happy New Year', $i, '2012-10-10 12:00:00','2012-10-10');
+    inc $i;
+}
+--enable_query_log
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection conn1;
+# should be 60 rows
+select count(*) from test_alter_several_times_table;
+
+connection conn1;
+rollback;
+# should remain 60 rows
+
+# change table into Normal Mode
+connection conn1;
+alter table test_alter_several_times_table table_mode='normal';
+
+begin;
+connection conn1;
+#insert 30 rows, 90 rows in total
+--disable_query_log
+--echo insert 30 rows
+let $i=0;
+while($i < 30) 
+{
+    eval insert into test_alter_several_times_table values($i, 'Hello OceanBase & Happy New Year', $i, '2012-10-10 12:00:00','2012-10-10');
+    inc $i;
+}
+--enable_query_log
+update test_alter_several_times_table set c3 = c1 + 1;
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+# no more Buf minor SSTable
+connection conn0;
+let $i=200;
+while ($i > 0)
+{
+  sleep 1;
+  dec $i;
+  let $minor_count = query_get_value(select count(1) as c from oceanbase.__all_virtual_table_mgr where table_type = 13 and table_id = $__table_id__, c, 1);
+  if ($minor_count == 0) 
+  {
+    let $i = -5;
+  }
+}
+
+if ($i != -5)
+{
+  --echo buf minor failed 222
+  --echo $__table_id__
+  --echo $minor_count
+}
+
+connection conn1;
+# should be 90 rows
+select count(*) from test_alter_several_times_table;
+commit;
+
+connection conn0;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+# change table into Queuing Mode
+connection conn1;
+alter table test_alter_several_times_table table_mode='queuing';
+
+connection conn1;
+begin;
+--disable_query_log
+--echo insert 10 rows, 100 rows in total
+let $i=0;
+while($i < 10) 
+{
+    eval insert into test_alter_several_times_table values($i + 4000, 'Hello OceanBase & Happy New Year', $i, '2012-10-10 12:00:00','2012-10-10');
+    inc $i;
+}
+--enable_query_log
+update test_alter_several_times_table set c3 = c3 + 1;
+
+connection conn1;
+# should be 100 rows
+select count(*) from test_alter_several_times_table;
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+connection conn1;
+delete from test_alter_several_times_table where c1 % 2 != 0;
+# remain 50 rows
+
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+--source mysql_test/include/wait_buf_minor_merge_for_table.inc
+
+connection conn1;
+# should be 60 rows
+select count(*) from test_alter_several_times_table;
+
+connection conn1;
+select * from test_alter_several_times_table;
+rollback;
+
+connection conn1;
+# should be 60 rows
+select count(*) from test_alter_several_times_table;
+
+# version 3
+connection conn0;
+alter system major freeze tenant = sys;
+alter system major freeze tenant = all_user;
+alter system major freeze tenant = all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection conn1;
+select count(*) from test_alter_several_times_table;
+select * from test_alter_several_times_table;
+drop table test_alter_several_times_table;

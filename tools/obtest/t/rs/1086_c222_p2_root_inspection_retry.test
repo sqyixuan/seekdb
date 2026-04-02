@@ -1,0 +1,86 @@
+# owner: rongxuan.lc
+# owner group: STORAGE
+#
+# Retry root inspection when get schema fail.
+#
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set resource_hard_limit = 500;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+
+sleep 2;
+
+ob1.mysql alter resource pool sys_pool unit_num = 2;
+
+sleep 2;
+
+# make __all_column, all_column_history no leader
+let $t0 = deploy_get_value(ob1.select select table_id v from oceanbase.__all_virtual_core_all_table where table_name = '__all_column", v, 1);
+let $t1 = deploy_get_value(ob1.select select table_id v from oceanbase.__all_virtual_table where table_name = '__all_column_history", v, 1);
+
+let $z3obs0ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3obs0port = deploy_get_value(ob1.z3.obs0.port);
+
+let $z3obs1ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3obs1port = deploy_get_value(ob1.z3.obs1.port);
+
+let $z2obs0ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2obs0port = deploy_get_value(ob1.z2.obs0.port);
+
+let $z2obs1ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2obs1port = deploy_get_value(ob1.z2.obs1.port);
+
+let $i = 0;
+--disable_query_log
+while ($i < 16)
+{
+  ob1.mysql alter system move replica partition_id = '$i%16@$t0' source = '$z3obs0ip:$z3obs0port' destination = '$z3obs1ip:$z3obs1port';
+  ob1.mysql alter system move replica partition_id = '$i%16@$t1' source = '$z3obs0ip:$z3obs0port' destination = '$z3obs1ip:$z3obs1port';
+  inc $i;
+}
+--enable_query_log
+ob1.check_rebalance_task;
+
+let $i = 0;
+--disable_query_log
+while ($i < 16)
+{
+  ob1.mysql alter system move replica partition_id = '$i%16@$t0' source = '$z2obs0ip:$z2obs0port' destination = '$z2obs1ip:$z2obs1port';
+  ob1.mysql alter system move replica partition_id = '$i%16@$t1' source = '$z2obs0ip:$z2obs0port' destination = '$z2obs1ip:$z2obs1port';
+  inc $i;
+}
+--enable_query_log
+ob1.check_rebalance_task;
+
+ob1.z1.obs0.mysql alter system flush kvcache tenant = sys cache = 'schema_cache';
+ob1.z2.obs0.mysql alter system flush kvcache tenant = sys cache = 'schema_cache';
+ob1.z3.obs0.mysql alter system flush kvcache tenant = sys cache = 'schema_cache';
+
+# make sure __all_virtual_upgrade_inspection table cached.
+ob1.z1.obs0.mysql_p select * from oceanbase.__all_virtual_upgrade_inspection;
+ob1.z2.obs0.mysql_p select * from oceanbase.__all_virtual_upgrade_inspection;
+ob1.z3.obs0.mysql_p select * from oceanbase.__all_virtual_upgrade_inspection;
+
+
+ob1.z2.obs1.force_stop;
+ob1.z3.obs1.force_stop;
+
+sleep 15;
+
+ob1.mysql_p select count(*) from oceanbase.__all_root_table where table_id = $t0 and role = 1;
+ob1.mysql_p select count(*) from oceanbase.__all_root_table where table_id = $t1 and role = 1;
+
+ob1.mysql alter system switch rootservice leader zone = 'z2';
+
+sleep 10;
+
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+
+sleep 20;
+ob1.mysql_p select * from oceanbase.__all_virtual_upgrade_inspection;

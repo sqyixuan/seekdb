@@ -1,0 +1,350 @@
+#
+# owner:Qianxi
+# owner group:libobcdc
+# description:
+# LOB类型与对应的长度限制：
+# - tinyetext tinyblob
+#   - 256 byte
+# - text blob
+#   - 64 KB
+# - mediumtext mediumblob
+#   - 16 MB
+# - longtext longblob
+#   - 48MB
+#
+# 一行长度限制：60M
+##
+
+ob1=OBI(cluster=1);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+
+connection oblog_conn_sys;
+
+# create tenant, 创建oblog_tt租户
+create resource unit oblog_box_mysql max_cpu 2, memory_size='10G';
+create resource pool oblog_pool_mysql unit = 'oblog_box_mysql', unit_num = 1, zone_list = ('z1');
+create tenant oblog_tt replica_num = 1, primary_zone='z1', resource_pool_list=('oblog_pool_mysql') set ob_tcp_invited_nodes='%';
+
+connection oblog_conn_sys;
+alter tenant oblog_tt set variables max_allowed_packet=1073741824;
+
+sleep 2;
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+connection oblog_conn_tt;
+# 设置最大包大小 1G
+set global max_allowed_packet=1073741824;
+
+connection oblog_conn_tt;
+
+# 设置事务超时时间: 100秒
+set ob_trx_timeout=100000000;
+set ob_default_lob_inrow_threshold=4096;
+
+# 创建database 1
+create database oblog_db1;
+use oblog_db1;
+
+set ob_default_lob_inrow_threshold=4096;
+
+# 启动liboblog
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=DEBUG;
+ob1.oblog.restart;
+
+#insert/delete
+create table t1 (pk int primary key, c1 longtext);
+
+#inset inrow
+insert into t1 values (1, repeat('a', 1000));
+select md5(c1) from t1 where  pk = 1;
+ob1.oblog.next_dml;
+
+#insert outrow
+insert into t1 values (2, repeat('b', 1200000));
+select md5(c1) from t1 where  pk = 2;
+ob1.oblog.next_dml;
+
+#insert 空串
+insert into t1 values (3, '');
+select md5(c1) from t1 where  pk = 3;
+ob1.oblog.next_dml;
+
+#insert NULL
+insert into t1 values (4, NULL);
+select md5(c1) from t1 where  pk = 4;
+ob1.oblog.next_dml;
+
+# delete inrow
+delete from t1 where pk = 1;
+ob1.oblog.next_dml;
+
+# delete outrow
+delete from t1 where pk = 2;
+ob1.oblog.next_dml;
+
+#delete 空串
+delete from t1 where pk = 3;
+ob1.oblog.next_dml;
+
+#delete NULL
+delete from t1 where pk = 4;
+ob1.oblog.next_dml;
+
+drop table t1;
+
+# update 更新lob列
+create table t2 (pk int primary key, c1 longtext);
+
+insert into t2 values (1, repeat('a', 1000));
+select md5(c1) from t2 where  pk = 1;
+ob1.oblog.next_dml;
+
+# inrow -> inrow
+update t2 set c1 = repeat('b', 1024) where pk = 1;
+select md5(c1) from t2 where  pk = 1;
+ob1.oblog.next_dml;
+
+# inrow -> outrow
+update t2 set c1 = repeat('c', 1024000) where pk = 1;
+select md5(c1) from t2 where  pk = 1;
+ob1.oblog.next_dml;
+
+# inrow -> ''
+insert into t2 values (2, repeat('d', 3000));
+select md5(c1) from t2 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t2 set c1 = '' where pk = 2;
+select md5(c1) from t2 where  pk = 2;
+ob1.oblog.next_dml;
+
+# inrow -> NULL
+insert into t2 values (3, repeat('e', 2222));
+select md5(c1) from t2 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t2 set c1 = NULL where pk = 3;
+select md5(c1) from t2 where  pk = 3;
+ob1.oblog.next_dml;
+
+drop table t2;
+
+create table t3 (pk int primary key, c1 longtext);
+
+# outrow -> inrow
+insert into t3 values (1, repeat('a', 5000));
+select md5(c1) from t3 where  pk = 1;
+ob1.oblog.next_dml;
+
+update t3 set c1 = repeat('b', 1234) where pk = 1;
+select md5(c1) from t3 where  pk = 1;
+ob1.oblog.next_dml;
+
+# outrow -> outrow
+insert into t3 values (2, repeat('c', 5024));
+select md5(c1) from t3 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t3 set c1 = repeat('d', 12340) where pk = 2;
+select md5(c1) from t3 where  pk = 2;
+ob1.oblog.next_dml;
+
+# outrow -> ''
+insert into t3 values (3, repeat('e', 6000));
+select md5(c1) from t3 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t3 set c1 = '' where pk = 3;
+select md5(c1) from t3 where  pk = 3;
+ob1.oblog.next_dml;
+
+# outrow -> NULL
+insert into t3 values (4, repeat('f', 7000));
+select md5(c1) from t3 where pk = 4;
+ob1.oblog.next_dml;
+
+update t3 set c1 = NULL where pk = 4;
+select md5(c1) from t3 where  pk = 4;
+ob1.oblog.next_dml;
+
+drop table t3;
+
+
+create table t4 (pk int primary key, c1 longtext);
+
+# '' -> inrow
+insert into t4 values (1, '');
+select md5(c1) from t4 where  pk = 1;
+ob1.oblog.next_dml;
+update t4 set c1 = repeat('a', 123) where pk = 1;
+select md5(c1) from t4 where pk = 1;
+ob1.oblog.next_dml;
+
+# '' -> outorw
+insert into t4 values (2, '');
+select md5(c1) from t4 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t4 set c1 = repeat('b', 20000) where pk = 2;
+select md5(c1) from t4 where  pk = 2;
+ob1.oblog.next_dml;
+
+# '' -> ''
+insert into t4 values (3, '');
+select md5(c1) from t4 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t4 set c1 = '' where pk = 3;
+select md5(c1) from t4 where  pk = 3;
+# no update
+#ob1.oblog.next_dml;
+
+# '' -> NULL
+update t4 set c1 = NULL where pk = 3;
+select md5(c1) from t4 where  pk = 3;
+ob1.oblog.next_dml;
+
+drop table t4;
+
+
+create table t5 (pk int primary key, c1 longtext);
+
+# NULL -> inrow
+insert into t5 values (1, NULL);
+select md5(c1) from t5 where  pk = 1;
+ob1.oblog.next_dml;
+update t5 set c1 = repeat('a', 4) where pk = 1;
+select md5(c1) from t5 where pk = 1;
+ob1.oblog.next_dml;
+
+# NULL -> outrow
+insert into t5 values (2, NULL);
+select md5(c1) from t5 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t5 set c1 = repeat('b', 4200) where pk = 2;
+select md5(c1) from t5 where  pk = 2;
+ob1.oblog.next_dml;
+
+# NULL -> NULL
+insert into t5 values (3, NULL);
+select md5(c1) from t5 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t5 set c1 = NULL where pk = 3;
+select md5(c1) from t5 where  pk = 3;
+# no update
+#ob1.oblog.next_dml;
+
+# NULL -> ''
+update t5 set c1 = '' where pk = 3;
+select md5(c1) from t5 where  pk = 3;
+ob1.oblog.next_dml;
+
+drop table t5;
+
+# update 有lob列但是未更新lob列
+create table t6 (pk int primary key, c1 longtext, c2 varchar(4000));
+
+# inrow
+insert into t6 values (1, repeat('a', 222), 'xyzxyzzzzzzzzzz');
+select md5(c1), md5(c2) from t6 where  pk = 1;
+ob1.oblog.next_dml;
+
+update t6 set c2 = repeat('b', 111) where pk = 1;
+select md5(c1), md5(c2) from t6 where  pk = 1;
+ob1.oblog.next_dml;
+
+# outrow
+insert into t6 values (2, repeat('a', 33333), 'xyzxyyyyyyyyyyyyzzy');
+select md5(c1), md5(c2) from t6 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t6 set c2 = repeat('b', 233) where pk = 2;
+select md5(c1), md5(c2) from t6 where  pk = 2;
+ob1.oblog.next_dml;
+
+# 空串
+insert into t6 values (3, '', 'xyzxyyyyyyyyyyyyxyyzz');
+select md5(c1), md5(c2) from t6 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t6 set c2 = repeat('b', 233) where pk = 3;
+select md5(c1), md5(c2) from t6 where  pk = 3;
+ob1.oblog.next_dml;
+
+# NULL
+insert into t6 values (4, NULL, 'xyzxyyyyyyyyyyzz');
+select md5(c1), md5(c2) from t6 where  pk = 4;
+ob1.oblog.next_dml;
+
+update t6 set c2 = repeat('b', 233) where pk = 4;
+select md5(c1), md5(c2) from t6 where  pk = 4;
+ob1.oblog.next_dml;
+
+drop table t6;
+
+# update 更新非LOB列，但LOB列是新旧值相同
+create table t7 (pk int primary key, c1 longtext, c2 varchar(4000));
+
+# inrow
+insert into t7 values (1, repeat('a', 333), 'xyzxyzxxxxxxx');
+select md5(c1), md5(c2) from t7 where  pk = 1;
+ob1.oblog.next_dml;
+
+update t7 set c1 = repeat('a', 333), c2 = repeat('b', 24) where pk = 1;
+select md5(c1), md5(c2) from t7 where  pk = 1;
+ob1.oblog.next_dml;
+
+# outrow
+insert into t7 values (2, repeat('a', 33443), 'xyzxyyyyyyyyyyyyxyz');
+select md5(c1), md5(c2) from t7 where  pk = 2;
+ob1.oblog.next_dml;
+
+update t7 set c2 = repeat('o', 233), c1 = repeat('a', 33443) where pk = 2;
+select md5(c1), md5(c2) from t7 where  pk = 2;
+ob1.oblog.next_dml;
+
+# 空串
+insert into t7 values (3, '', 'xyzxyyyyyyyyyyyyzzz');
+select md5(c1), md5(c2) from t7 where  pk = 3;
+ob1.oblog.next_dml;
+
+update t7 set c2 = repeat('p', 233), c1 = '' where pk = 3;
+select md5(c1), md5(c2) from t7 where  pk = 3;
+ob1.oblog.next_dml;
+
+# NULL
+insert into t7 values (4, NULL, 'xyzxyyyyyyyyyyyyxxxx');
+select md5(c1), md5(c2) from t7 where  pk = 4;
+ob1.oblog.next_dml;
+
+update t7 set c2 = repeat('q', 233), c1 = NULL where pk = 4;
+select md5(c1), md5(c2) from t7 where  pk = 4;
+ob1.oblog.next_dml;
+
+drop table t7;
+
+
+# 
+create table t_1(pk int primary key, data text, c2 varchar(100));
+insert into t_1 values(1, repeat('1', 5000), '123');
+ob1.oblog.next_dml;
+update t_1 set c2 = '345', data = '' where pk = 1;
+ob1.oblog.next_dml;
+update t_1 set c2 = '678', data = '' where pk = 1;
+ob1.oblog.next_dml;
+
+
+ob1.oblog.stop;

@@ -1,0 +1,135 @@
+# owner: bohou.ws
+# test tenant sync mode
+##
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/4_x/create_mysql_tenant.inc;
+let $log_backup_dest_cdc_mysql = deploy_get_value(ob1.get_log_backup_dest cdc_mysql);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_cdc_mysql';
+--enable_all_result_log
+source include/liboblog/create_oracle_tenant.inc;
+let $log_backup_dest_oracle = deploy_get_value(ob1.get_log_backup_dest oracle);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_oracle';
+--enable_all_result_log
+
+ob1.mysql alter system archivelog;
+######## if log_archive_dest is S3, please set archive_lag_target >= '60s'
+source include/liboblog/archive_lag_target.inc;
+
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1006";
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1008";
+let $oracle_record_cnt = 0;
+
+sleep 10;
+
+connection conn_obcdc_mysql;
+source include/liboblog/archive_lag_target.inc;
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $record_cnt = 0;
+
+# 1. mysql mode: tenant mode + integrated mode
+ob1.oblog.gen_conf tb_white_list=obcdc_mysql.*.* log_level=DEBUG tenant_user=obcdc@obcdc_mysql tenant_password=obcdc tenant_endpoint=$ip:$port skip_ob_version_compat_check=1 enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.restart;
+ob1.oblog.check_log "WORK_MODE](is_tenant_sync_mode=true";
+
+create database obcdc_db;
+ob1.oblog.next;
+inc $record_cnt;
+use obcdc_db;
+create table t1(pk int primary key, c1 int);
+ob1.oblog.next;
+inc $record_cnt;
+insert into t1 values (1, 1), (2, 2);
+ob1.oblog.next;
+inc $record_cnt;
+
+create table t2(c1 int, c2 varchar(50), c3 int as (c1 + 10)) partition by hash(c3) partitions 2;
+ob1.oblog.next;
+inc $record_cnt;
+insert into t2 (c1, c2) values (1, "test"), (1, "obcdc"), (2, "tenant_endpoint");
+ob1.oblog.next;
+inc $record_cnt;
+alter table t2 add column c4 int before c1;
+ob1.oblog.next;
+inc $record_cnt;
+insert into t2 (c1, c2) values (1, "test"), (1, "obcdc"), (2, "tenant_endpoint");
+ob1.oblog.next;
+inc $record_cnt;
+truncate table t2;
+ob1.oblog.next;
+inc $record_cnt;
+insert into t2 (c1, c2) values (1, "test"), (1, "obcdc"), (2, "tenant_endpoint");
+ob1.oblog.next;
+inc $record_cnt;
+
+ob1.oblog.stop;
+
+# 2. mysql mode: tenant mode + direct mode
+ob1.oblog.gen_conf tb_white_list=obcdc_mysql.*.* log_level=DEBUG tenant_user=obcdc@obcdc_mysql tenant_password=obcdc tenant_endpoint=$ip:$port fetching_log_mode=direct archive_dest=$log_backup_dest_cdc_mysql enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+ob1.oblog.check_log "WORK_MODE](is_tenant_sync_mode=true";
+let $cnt = 0;
+while ($cnt < $record_cnt)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+ob1.oblog.stop;
+
+# test oracle mode
+connection conn_oracle_obtest;
+# 3. oracle mode: tenant mode + integrated mode
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG tenant_user=obtest@oracle tenant_password=obtest tenant_endpoint=$ip:$port skip_ob_version_compat_check=1 enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.restart;
+ob1.oblog.check_log "WORK_MODE](is_tenant_sync_mode=true";
+
+create table t1(pk int primary key, c1 int);
+ob1.oblog.next;
+inc $oracle_record_cnt;
+insert into t1 values (1, 1), (2, 2);
+ob1.oblog.next;
+inc $oracle_record_cnt;
+
+create table t2(c1 int, c2 varchar(50), c3 int as (c1 + 10)) partition by hash(c3) partitions 2;
+ob1.oblog.next;
+inc $oracle_record_cnt;
+insert into t2 (c1, c2) values (1, 'test'), (1, 'obcdc'), (2, 'tenant_endpoint');
+ob1.oblog.next;
+inc $oracle_record_cnt;
+alter table t2 add c4 int;
+ob1.oblog.next;
+inc $oracle_record_cnt;
+insert into t2 (c1, c2) values (1, 'test'), (1, 'obcdc'), (2, 'tenant_endpoint');
+ob1.oblog.next;
+inc $oracle_record_cnt;
+truncate table t2;
+ob1.oblog.next;
+inc $oracle_record_cnt;
+insert into t2 (c1, c2) values (1, 'test'), (1, 'obcdc'), (2, 'tenant_endpoint');
+ob1.oblog.next;
+inc $oracle_record_cnt;
+ob1.oblog.stop;
+
+# 4. oracle mode: tenant mode + direct mode
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG tenant_user=obtest@oracle tenant_password=obtest tenant_endpoint=$ip:$port fetching_log_mode=direct archive_dest=$log_backup_dest_oracle enable_output_by_table_def=1 enable_output_hidden_primary_key=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+ob1.oblog.check_log "WORK_MODE](is_tenant_sync_mode=true";
+let $cnt = 0;
+while ($cnt < $oracle_record_cnt)
+{
+  ob1.oblog.next;
+  inc $cnt;
+}
+ob1.oblog.stop;

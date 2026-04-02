@@ -1,0 +1,50 @@
+# CASE_OWNER:
+#    @wangzhennan.wzn
+# CASE_DESC:
+#    test ObServerMetaTableChecker and ObTenantMetaChecker
+
+ob1=OBI(cluster=1,proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',enable_async_syslog=false,ls_meta_table_check_interval='1s',tablet_meta_table_check_interval='1m'";
+ob1.z1.obs0.set extra_config=_enable_defensive_check=0,$extra_conf;
+
+ob1.reboot;
+sleep 3;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+set @@session.ob_query_timeout = 1000000000;
+
+# create mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1' set ob_tcp_invited_nodes = '%';
+
+# case 1: test tenant meta table checker
+let $user_tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'mysql', tenant_id, 1);
+let $meta_tenant_id = math($user_tenant_id - 1);
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $fake_ls_id = 1234;
+let $fake_tablet_id = 56789;
+
+connection conn_sys;
+--disable_query_log
+eval alter system change tenant tenant_id = $meta_tenant_id;
+eval insert into __all_ls_meta_table (tenant_id, ls_id, svr_ip, svr_port, sql_port, role, member_list, unit_id, zone, data_size) values($user_tenant_id, $fake_ls_id, '$svr_ip', $svr_port, 0, 1, "", 0, "z1", 0);
+eval insert into __all_tablet_meta_table (tenant_id, tablet_id, ls_id, svr_ip, svr_port, compaction_scn, data_size) values($user_tenant_id, $fake_tablet_id, 1, '$svr_ip', $svr_port, 0, 0);
+eval delete from __all_ls_meta_table where tenant_id = $user_tenant_id and ls_id = 1001;
+eval delete from __all_tablet_meta_table where tenant_id = $user_tenant_id and tablet_id = 1;
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $user_tenant_id and ls_id = $fake_ls_id, 0, 65;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_meta_table where tenant_id = $user_tenant_id and tablet_id = $fake_tablet_id, 0, 65;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $user_tenant_id and ls_id = 1001, 1, 65;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_meta_table where tenant_id = $user_tenant_id and tablet_id = 1, 1, 65;
+
+
+# case 2: test server meta table checker
+let $fake_tenant_id = 9876;
+eval insert into __all_ls_meta_table (tenant_id, ls_id, svr_ip, svr_port, sql_port, role, member_list, unit_id, zone, data_size) values($fake_tenant_id, $fake_ls_id, '$svr_ip', $svr_port, 0, 1, "", 0, "z1", 0);
+eval insert into __all_tablet_meta_table (tenant_id, tablet_id, ls_id, svr_ip, svr_port, compaction_scn, data_size) values($fake_tenant_id, $fake_tablet_id, 1, '$svr_ip', $svr_port, 0, 0);
+
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = $fake_tenant_id and ls_id = $fake_ls_id, 0, 65;
+ob1.check_until_timeout select count(*) from __all_virtual_tablet_meta_table where tenant_id = $fake_tenant_id and tablet_id = $fake_tablet_id, 0, 65;

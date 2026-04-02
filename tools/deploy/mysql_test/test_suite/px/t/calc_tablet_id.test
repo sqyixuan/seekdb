@@ -1,0 +1,125 @@
+#owner: dachuan.sdc
+#owner group: sql2
+# tags: optimizer,px
+# desc: 测试join filter和transmit共享calc_tablet_id表达式
+
+--disable_warnings
+drop database if exists px;
+create database px;
+use px;
+--enable_warnings
+--result_format 4
+
+####################### join condition覆盖全部分区键 ##########################
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`, subpartition `p1`, subpartition `p2`, subpartition `p3`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9);
+insert into t1 select c1 + 9, c2 + 9 from t1;
+insert into t1 select c1 + 18, c2 + 18 from t1;
+insert into t1 select c1 + 36, c2 + 36 from t1;
+insert into t1 select c1 + 72, c2 + 72 from t1;
+insert into t1 select c1 + 144, c2 + 144 from t1;
+--echo 可以共享，transmit和join filter都是CALC_NORMAL. 从计划中exchange是否输出了calc_part_id可以判断是否共享了。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and a.c1 = b.c2;
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and a.c1 = b.c2;
+
+
+
+####################### join condition覆盖部分分区键 ##########################
+## 二级分区固定。
+### 二级分区数 = 1
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+--echo 可以共享，transmit和join filter都是CALC_IGNORE_SUB_PART。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c1) subpartition template (subpartition `p0`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+--echo 不可以共享，transmit是CALC_IGNORE_SUB_PART，而join filter是CALC_NORMAL，理论上join filter也可以是CALC_IGNORE_SUB_PART
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ count(*) from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10;
+
+### 二级分区数 > 1
+drop table t1;
+create table t1(c1 int, c2 int) partition by range(c1) subpartition by key(c2) subpartition template (subpartition `p0`, subpartition `p1`, subpartition `p3`)
+(partition `p0` values less than (10),
+partition `p1` values less than (30),
+partition `p2` values less than (100),
+partition `p3` values less than (150),
+partition `p4` values less than (200),
+partition `p5` values less than (250),
+partition `p6` values less than (300));
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+--echo 可以共享，transmit和join filter都是CALC_IGNORE_SUB_PART。
+explain basic select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+
+
+## 一级分区固定。
+drop table t1;
+create table t1(c1 int, c2 int) partition by key(c2) subpartition by range(c1)
+subpartition template
+(
+  subpartition `p0` values less than (10),
+  subpartition `p1` values less than (30),
+  subpartition `p2` values less than (100),
+  subpartition `p3` values less than (150),
+  subpartition `p4` values less than (200),
+  subpartition `p5` values less than (250),
+  subpartition `p6` values less than (300)
+)
+partitions 8;
+
+insert into t1 values(1, 2), (2, 4), (3, 6), (4, 8), (5, 10), (6, 12), (7, 14), (8, 16), (9, 18);
+insert into t1 select c1 + 9, c2 + 18 from t1;
+insert into t1 select c1 + 18, c2 + 36 from t1;
+insert into t1 select c1 + 36, c2 + 72 from t1;
+insert into t1 select c1 + 72, c2 + 144 from t1;
+insert into t1 select c1 + 144, c2 + 288 from t1;
+--echo 当join condition只覆盖一级分区键时可以生成join filter，只覆盖二级分区键时不会生成，因此不存在共享。
+explain select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+select /*+ leading(a b) use_hash(b) parallel(2) px_part_join_filter(b a) pq_distribute(b partition none) */ * from t1 a, t1 b where a.c2 = b.c1 and b.c1 > 10 and b.c2 = 100;
+use test;
+drop database if exists px;

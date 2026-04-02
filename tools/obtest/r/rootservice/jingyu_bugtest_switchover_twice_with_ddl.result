@@ -1,0 +1,92 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+===========================
+bootstrap
+===========================
+ob1.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob2.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob2.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+============================
+create tenant
+============================
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G', LOG_DISK_SIZE='2G';
+CREATE RESOURCE POOL small_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G', LOG_DISK_SIZE='2G';
+CREATE RESOURCE POOL small_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $rs1_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+===========================
+do DDL in RS1
+===========================
+create user test_user identified by "test_user";
+create table t1(a int, b int);
+insert into t1(a, b) values(1, 1);
+===================================
+create net standby tenant
+===================================
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'rs2_mysql_tenant', NORMAL, 10;
+========================================
+check standby tenant can read t1
+========================================
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t1", 1, 60;
+expect (1,1)
+select * from t1;
+a	b
+1	1
+========================================================
+set log_restore_source for rs1_mysql_tenant
+========================================================
+=====================================================
+switch over backup tenant and standby tenant
+=====================================================
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT rs1_mysql_tenant;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT rs2_mysql_tenant;
+==============================
+do DDL in RS2
+==============================
+create user test_user2 identified by "test_user";
+create table t2(c1 int, c2 int);
+insert into t2 values(2,2);
+========================================
+check standby tenant can read t2
+========================================
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t2", 1, 60;
+expect (2,2)
+select * from t2;
+c1	c2
+2	2
+===========================================================
+switch over backup tenant and standby tenant again
+===========================================================
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT rs2_mysql_tenant;
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT rs1_mysql_tenant;
+================================
+do DDL in RS1 again
+================================
+create user test_user3 identified by "test_user";
+create table t3(c1 int, c2 int);
+insert into t3 values(3,3);
+========================================
+check standby tenant can read t3
+========================================
+ob2.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_table where table_name = "t3", 1, 60;
+expect (3,3)
+select * from t3;
+c1	c2
+3	3

@@ -1,0 +1,143 @@
+##
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：测试网络隔离场景下，副本无法跟上游进行keep alive，备机读是否还能执行成功；
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5,init_unit_num=1);
+
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+
+#在zone1上建立连接
+let $l_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $l_inner_port=deploy_get_value(ob1.z1.obs0.port);
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+connect (conn_sys,$l_ip,root@sys,,oceanbase,$l_port);
+
+#在zone2上建立连接
+let $f_ip=deploy_get_value(ob1.z2.obs0.ip);
+let $f_port=deploy_get_value(ob1.z2.obs0.mysql_port);
+let $f_inner_port=deploy_get_value(ob1.z2.obs0.port);
+connect (conn2,$f_ip,root@obtest,,test,$f_port);
+
+let $z3_ip=deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port=deploy_get_value(ob1.z3.obs0.port);
+
+connection conn1;
+--disable_result_log
+drop table if exists t1;
+--enable_result_log
+
+create table t1(pk int primary key, c1 int, c2 varchar(20));
+
+# 切换到SYS租户，获取table id
+connection conn_sys;
+let $t1_id = query_get_value(select table_id from __all_virtual_table where table_name = 't1', table_id, 1);
+connection conn2;
+
+######## 场景一：observer反馈LAGGED_FOLLOWER，落后副本
+#
+# 原理：
+# 1. 将z3加入到liboblog黑名单，让liboblog去访问z2
+# 2. z1和z2网络隔离，z2是follower，很快就会变为落后副本
+# 3. 再次写入一条日志，确保liboblog在z2上拉不到该日志，取日志流延时，触发z2 observer检查自己是否是落后副本，并向liboblog反馈
+# 4. liboblog收到observer反馈信息，切换server
+#
+# 设置特殊配置项
+#
+# 1. 配置server黑名单，将z3加入黑名单，这样只剩下z1和z2的server可用，由于z1是leader，liboblog只能优先访问z2
+# 2. stream_feedback_interval_sec=0: 表示每次都请求feedback信息，及时反馈落后副本和下线副本信息
+# 3. partition_timeout_sec_for_lagged_replica表示liboblog检测落后副本的超时时间，进度落后多长时间后认为是落后副本，这里将其改大，目的是验证observer是否能反馈落后副本信息，否则大概率liboblog会先检测到落后副本
+ob1.oblog.gen_conf tb_white_list=obtest.*.* server_blacklist=$z3_ip:$z3_port partition_timeout_sec_for_lagged_replica=10 stream_feedback_interval_sec=0 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+set autocommit=0;
+insert into t1 values(1,1,'a');
+insert into t1 values(2,2,'b');
+commit;
+ob1.oblog.next;
+
+#阻塞leader和follower之间的网络
+connection conn1;
+ob1.z1.obs0.block_net ob1.z2.obs0;
+ob1.z2.obs0.block_net ob1.z1.obs0;
+
+# 再次写入一条日志
+set autocommit=1;
+delete from t1;
+# 等待liboblog拉到该数据，这个过程中会切换server
+ob1.oblog.next;
+
+# 验证liboblog收到了落后副本反馈信息，并且是切换到了Leader上拉日志
+ob1.oblog.grep_log "DISPATCH_FETCH_TASK.*${t1_id}.*TO.*${l_ip}:${l_inner_port}.*FROM.*${f_ip}:${f_inner_port}.*REASON=\"LAGGED_FOLLOWER\"";
+
+# 清除网络隔离
+connection conn1;
+ob1.z1.obs0.clean_net ob1.z2.obs0;
+ob1.z2.obs0.clean_net ob1.z1.obs0;
+
+# 停止liboblog
+ob1.oblog.stop;
+
+############# 场景二：liboblog能够自动检测落后副本
+#
+# 原理：不依赖observer反馈落后副本信息，liboblog会自动检测是否是落后副本，当一段时间拉不到下一条存在的日志，就认为是落后副本，要求切换server
+#
+# 设置特殊配置项
+# 1. partition_timeout_sec_for_lagged_replica设置为1秒，表示如果副本超过1秒取不到下一条日志就认为是落后副本
+# 2. stream_feedback_interval_sec设置足够大，要求observer不要反馈落后副本信息
+ob1.oblog.gen_conf tb_white_list=obtest.*.* server_blacklist=$z3_ip:$z3_port partition_timeout_sec_for_lagged_replica=1 stream_feedback_interval_sec=1000 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 首先确保当前server正常拉数据
+insert into t1 values (3,3,'c');
+ob1.oblog.next;
+
+# 确保liboblog在z2机器上取日志
+ob1.oblog.grep_log "DISPATCH_FETCH_TASK.*${t1_id}.*TO.*${f_ip}:${f_inner_port}";
+
+# 执行网络隔离，将z2隔离起来
+ob1.z1.obs0.block_net ob1.z2.obs0;
+ob1.z2.obs0.block_net ob1.z1.obs0;
+
+# 再次写入一条数据
+delete from t1;
+# 等待liboblog切换server，到Leader上拉到日志
+ob1.oblog.next;
+# 验证liboblog验证到了落后副本，并且是在Leader上拉日志
+ob1.oblog.grep_log "DISPATCH_FETCH_TASK.*${t1_id}.*TO.*${l_ip}:${l_inner_port}.*FROM.*${f_ip}:${f_inner_port}.*REASON=\"PROGRESS_TIMEOUT_ON_LAGGED_REPLICA\"";
+
+# 停止liboblog
+ob1.oblog.stop;
+
+# 清除网络隔离
+connection conn1;
+ob1.z1.obs0.clean_net ob1.z2.obs0;
+ob1.z2.obs0.clean_net ob1.z1.obs0;
+
+################# 场景三：下线副本
+ob1.oblog.gen_conf tb_white_list=obtest.*.* server_blacklist=$z3_ip:$z3_port partition_timeout_sec_for_lagged_replica=15 stream_feedback_interval_sec=0 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 首先确保当前server正常拉数据
+insert into t1 values (1,1,'a');
+ob1.oblog.next;
+
+# 下线z2副本
+ob1.mysql alter system drop replica partition_id="0%0@${t1_id}" server="${f_ip}:${f_inner_port}";
+# 等待副本下线成功
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id=${t1_id}, 2, 60;
+
+# 再写入一条数据
+delete from t1;
+ob1.oblog.next;
+# 验证observer是否反馈了下线副本
+ob1.oblog.grep_log "DISPATCH_FETCH_TASK.*${t1_id}.*TO.*${l_ip}:${l_inner_port}.*FROM.*${f_ip}:${f_inner_port}.*REASON=\"PARTITION_OFFLINED\"";
+
+# 停止liboblog
+ob1.oblog.stop;

@@ -1,0 +1,83 @@
+##############
+#owner: bohou.ws
+#test point: obcdc handle single ls transaction
+##############
+# prepare cluster and tenant
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+
+ob1.z1.obs1.set status=disable;
+ob1.z2.obs1.set status=disable;
+ob1.z3.obs1.set status=disable;
+
+# case 1. 验证bootstrap
+ob1.reboot;
+sleep 3;
+
+# case 2. 验证创建表和DML/SELECT操作
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob1.mysql alter system set enable_rebalance = false;
+
+# case 3. 验证建租户
+let $cpu = 2;
+let $memory = '10G';
+
+set @@session.ob_query_timeout = 1000000000;
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MEMORY_SIZE=$memory;
+CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+#source include/liboblog/check_schema_fast_sync.inc;
+CREATE TENANT cdc_mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+ob1.check_until_timeout SELECT COUNT(*) c FROM oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = (select tenant_id from __all_tenant where tenant_name = 'cdc_mysql'), 2, 30;
+select tenant_id, ls_id, status from __all_ls_status;
+
+ob_connect(conn_obcdc_mysql, ob1.z1.obs0, root@cdc_mysql, , oceanbase, , USE_MYSQL_CONNECTOR);
+#source include/liboblog/4_x/tx_overall.inc;
+
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+# FOR MULTI LOGSTREAM(DIST TRANSACTION)
+connection conn_sys;
+ob1.z1.obs1.set status=enable;
+ob1.z2.obs1.set status=enable;
+ob1.z3.obs1.set status=enable;
+ob1.z1.obs1.start;
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+ob1.z1.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z2.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z3.obs1.check_log_until_success -c "weak read service thread start";
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where (a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0) and a.tenant_id = 1, 0, 120;
+ob1.z1.obs1.add;
+ob1.z2.obs1.add;
+ob1.z3.obs1.add;
+ob1.check_until_timeout SELECT COUNT(*) c FROM __all_server WHERE start_service_time > 0, 6, 200;
+##创建日志流
+ALTER RESOURCE TENANT cdc_mysql UNIT_NUM = 2;
+connection conn_sys;
+alter system change tenant tenant_id = 1001;
+ob1.check_until_timeout SELECT COUNT(*) c FROM oceanbase.__all_virtual_ls_status where status = 'NORMAL', 5, 30;
+select tenant_id, ls_id, status, ls_group_id, unit_group_id, primary_zone from __all_ls_status;
+source include/liboblog/4_x/basic.inc;
+source include/liboblog/4_x/tx_overall.inc;
+sleep 20;
+ob1.oblog.stop;
+
+# restart from tx_start
+# restart_ts1_usec/restart_ts2_usec get from tx_overall.inc
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts1_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+ob1.oblog.next;
+ob1.oblog.stop;
+# restart from tx_start2
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts2_usec;
+ob1.oblog.set_extra_argument '-c';
+ob1.oblog.restart;
+ob1.oblog.next;
+ob1.oblog.stop;

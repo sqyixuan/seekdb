@@ -1,0 +1,71 @@
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout='100000s';
+ob1.mysql alter system set_tp tp_no=2502, error_code=4016, frequency=1;
+set SESSION ob_query_timeout=600 * 1000 * 1000;
+set SESSION ob_trx_timeout=600 * 1000 * 1000;
+set SESSION ob_trx_idle_timeout=600 * 1000 * 1000;
+CREATE RESOURCE UNIT test_unit MAX_CPU=5, memory_size='10G';
+CREATE RESOURCE POOL test_pool UNIT='test_unit', UNIT_NUM=1, ZONE_LIST=('z1', 'z2');
+ob1.mysql alter system set _enable_adaptive_compaction=false tenant test_tenant;
+ob1.mysql alter system set _ob_enable_truncate_partition_preserve_global_index=true tenant test_tenant;
+set session ob_query_timeout=600 * 1000 * 1000;
+set session ob_trx_timeout=600 * 1000 * 1000;
+set session ob_trx_idle_timeout=600 * 1000 * 1000;
+create table test01(c1 int, c2 int, primary key(c1, c2)) partition by list(c1) (
+partition p0 values in ((100)),
+partition p1 values in ((200), (300)),
+partition p2 values in ((400)),
+partition p3 values in ((500), (700)),
+partition p4 values in (DEFAULT));
+ob1.mysql alter system set_tp tp_name="EN_DIRECT_LOAD_TASK_PROCESS", error_code=4023, frequency=1;
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and tablet_id in(select tablet_id from __all_virtual_tablet_to_ls where tenant_id=$tenant_id and table_id=$data_table_id) and table_type=4 and size>0, 1, 300;
+create unique index idx1 on test01(c2) global;
+insert into test01 values(200, 200);
+ERROR 23000: Duplicate entry '200-200' for key 'PRIMARY'
+alter table test01 truncate partition p0,p1,p2,p3,p4;
+insert /*+ log_level(debug) */ into test01 values(200, 200);
+ob1.mysql alter system set_tp tp_name="EN_DIRECT_LOAD_TASK_PROCESS", error_code=4023, frequency=0;
+ob1.mysql set ob_global_debug_sync='reset';
+ob1.mysql set ob_global_debug_sync='MERGE_TASK_PROCESS wait_for signal1';
+ob1.mysql alter system minor freeze tenant='test_tenant';
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and tablet_id in(select tablet_id from __all_virtual_table where tenant_id=$tenant_id and table_id=$index_table_id) and is_active=1 and size>0, 0, 300;
+insert into test01 values(200, 200), (101, 100);
+ERROR 23000: Duplicate entry '200-200' for key 'PRIMARY'
+alter table test01 truncate partition p0,p1,p2,p3,p4;
+insert /*+ log_level(debug) */ into test01 values(200, 200), (101, 100);
+ob1.mysql set ob_global_debug_sync='reset';
+ob1.mysql set ob_global_debug_sync='now signal signal1';
+alter table test01 truncate partition p1;
+ob1.mysql alter system set_tp tp_name="EN_RS_CHECK_MERGE_PROGRESS", error_code=4023, frequency=1;
+ob1.mysql alter system major freeze tenant='test_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+alter table test01 truncate partition p4;
+ob1.check_until_timeout select count(*) > 0 as c from __all_virtual_table_mgr where tenant_id=$tenant_id and tablet_id in (select tablet_id from __all_virtual_tablet_to_ls where tenant_id=$tenant_id and table_id=$data_table_id) and table_type=10 and end_log_scn>$major_scn1, 1, 100;
+ob1.mysql alter system set_tp tp_name="EN_RS_CHECK_MERGE_PROGRESS", error_code=4023, frequency=0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+ob1.mysql alter system set_tp tp_name="EN_RS_CHECK_MERGE_PROGRESS", error_code=4023, frequency=1;
+ob1.mysql alter system major freeze tenant='test_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id=$tenant_id and tablet_id=$index_tablet_id and compaction_scn<$major_scn2, 0, 600;
+alter table test01 drop partition p1;
+ob1.mysql alter system set_tp tp_name="EN_RS_CHECK_MERGE_PROGRESS", error_code=4023, frequency=0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+ob1.check_until_timeout select count(*) > 0 from __all_server_event_history where module='merge_errsim' and event='ignore_checksum_error' and value1=$tenant_id and value2="partition_num_changed", 1, 100;
+ob1.mysql alter system set_tp tp_name="EN_COMPACTION_SKIP_MDS_WHEN_CHECK", error_code=4023, frequency=1;
+ob1.mysql alter system major freeze tenant='test_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_dag_warning_history where tenant_id=$tenant_id, 1, 300;
+ob1.mysql alter system set_tp tp_name="EN_COMPACTION_SKIP_MDS_WHEN_CHECK", error_code=4023, frequency=0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_RECORD_TRUNCATE_CACHE', error_code = 4023, frequency = 1;
+insert /*+ log_level(debug) */ into test01 values(200, 200), (101, 100);
+alter table test01 truncate partition p0,p2,p3,p4;
+select/*+index(test01 idx1)*/ c1,c2 from test01 order by c1, c2 asc;
+c1	c2
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='record_truncate_cache' and name4='cache_valid' and value4=1 and name5='cache_empty' and value5=0, 1, 60;
+alter table test01 truncate partition p4;
+ob1.mysql alter system set_tp tp_no=802, error_code=1, frequency=1;
+ob1.mysql alter system major freeze tenant='test_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*)>0 as cnt from oceanbase.__all_virtual_dag_warning_history where tenant_id=$tenant_id and ret="OB_ERR_SYS", 1, 300;

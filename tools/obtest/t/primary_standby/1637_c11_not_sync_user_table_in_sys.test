@@ -1,0 +1,74 @@
+#测试点：系统租户下系统表,tablegroup的操作是同步的，普通表不同步
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1, proxy_num = 0, leaderob=ob1);
+ob1.reboot;
+ob2.reboot;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100; 
+#case 1 在主库上建普通表，备库可以正常同步
+ob1.mysql alter system set enable_sys_table_ddl = true;
+ob2.mysql alter system set enable_sys_table_ddl = false;
+ob2.mysql alter system set enable_ddl = false;
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, , test, , USE_MYSQL_CONNECTOR);
+connection conn1;
+create table oceanbase.__test (c1 int primary key,c3 int) table_id = 1099511628476 tablegroup = 'oceanbase';
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation where tenant_id = 1 and operation_type = 4, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+let $count = deploy_get_value(ob1.select select count(*) as count from oceanbase.__all_ddl_operation where schema_version > $primary_schema_version, count, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version > $follower_schema_version, $count, 3;
+ob2.mysql_p select count(*) from oceanbase.__all_virtual_table where table_name = '__test';
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation, schema_version, 1);
+let $follower_schema_version = deploy_get_value(ob2.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation, schema_version, 1);
+
+#case 2 在主库上建用户表，备库上不同步
+create table test(c1 int primary key, c2 int);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation where tenant_id = 1 and operation_type = 4, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_virtual_table where table_name = 'test';
+create database db;
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation where tenant_id = 1 and operation_type = 4, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_database where database_name = 'db';
+use db;
+create table test1(c1 int, c2 int);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation where tenant_id = 1 and operation_type = 4, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_virtual_table where table_name = 'test1';
+
+#case 3 用户同步，权限根据是否是系统表同步
+ob1.mysql create user msy identified by 'wrewgdg';
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_user_history where user_name = 'msy', schema_version, 1);
+let $user_id = deploy_get_value(ob1.select select user_id from oceanbase.__all_user where user_name = 'msy', user_id, 1);
+#检查备库是否同步
+ob2.check_until_timeout select count(*) from oceanbase.__all_user where user_name = 'msy', 1, 10;
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 3;
+let $count = deploy_get_value(ob1.select select count(*) as count from oceanbase.__all_ddl_operation where schema_version > $primary_schema_version, count, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version > $follower_schema_version, $count, 3;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation, schema_version, 1);
+let $follower_schema_version = deploy_get_value(ob2.select select max(schema_version) as schema_version from oceanbase.__all_ddl_operation, schema_version, 1);
+#同步
+ob1.mysql grant select on oceanbase.* to msy;
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_ddl_operation where user_id = $user_id order by schema_version desc, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_database_privilege where user_id =$user_id and database_name = 'oceanbase';
+#同步
+ob1.mysql grant select on oceanbase.__test to msy;
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_ddl_operation where user_id = $user_id order by schema_version desc, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_table_privilege where user_id =$user_id and table_name = '__test';
+#同步
+ob1.mysql grant select on db.* to msy;
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_ddl_operation where user_id = $user_id order by schema_version desc, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_database_privilege where user_id =$user_id and database_name = 'db';
+
+#同步忽略table不存在的错误
+ob1.mysql grant select on db.test1 to msy;
+let $schema_version = deploy_get_value(ob1.select select schema_version from oceanbase.__all_ddl_operation where user_id = $user_id order by schema_version desc, schema_version, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $schema_version, 1, 13;
+ob2.mysql_p select count(*) from oceanbase.__all_table_privilege where user_id =$user_id and table_name = 'test1';
+
+#创建用户tablegroup
+create tablegroup tg;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100; 
+ob2.mysql_p select * from oceanbase.__all_tablegroup where tablegroup_name = 'tg';

@@ -1,0 +1,188 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  1. 无主键表, 隐藏主键列，column id < 16
+#  insert/update/delete
+#  2. 索引
+#
+##
+
+ob1=OBI(cluster=1, init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+--disable_warnings
+drop database if exists oblog_db;
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* log_level=INFO skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+create database oblog_db;
+ob1.oblog.next;
+use oblog_db;
+
+##### 1. 创建一列
+create table t0(c0 int NOT NULL);
+ob1.oblog.next;
+
+let $cnt=5;
+let $idx=0;
+
+let $val=100;
+while($idx < $cnt)
+{
+  eval insert into t0 values($val);
+  ob1.oblog.next;
+  inc $idx;
+  inc $val;
+}
+
+let $idx=0;
+let $val_before_update=100;
+let $val_after_update=200;
+while($idx < $cnt)
+{
+  eval update t0 set c0=$val_after_update where c0=$val_before_update;
+  ob1.oblog.next;
+  inc $idx;
+  inc $val_before_update;
+  inc $val_after_update;
+}
+
+delete from t0 where c0=200;
+ob1.oblog.next;
+delete from t0 where c0=201;
+ob1.oblog.next;
+delete from t0;
+ob1.oblog.next;
+
+##### 2. 创建多列
+# 无主键表
+create table t1(column_auto_inc float auto_increment NOT NULL, c1 varchar(50) NULL default NULL);
+ob1.oblog.next;
+
+insert into t1 values(1, "oblog");
+ob1.oblog.next;
+insert into t1 values(2, "oblog");
+ob1.oblog.next;
+insert into t1 values(3, "oblog");
+ob1.oblog.next;
+
+##### 3. 创建多列, 带索引的表
+create table t2(c1 int, c2 int, c3 int, c4 int, c5 int, index(c1), unique key(c1, c2));
+ob1.oblog.next;
+insert into t2 values(1, 2, 3, 4, 5);
+ob1.oblog.next;
+insert into t2 values(11, 2, 3, 4, 5);
+ob1.oblog.next;
+update t2 set c1=10 where c1=1;
+ob1.oblog.next;
+delete from t2 where c1=10;
+ob1.oblog.next;
+delete from t2;
+ob1.oblog.next;
+
+##### 4. 频繁增减列
+# 偶数列删除
+create table t3(c1 int);
+ob1.oblog.next;
+insert into t3 values(1);
+ob1.oblog.next;
+# add c2, c3, c4
+alter table t3 add column c2 varchar(20) default 'c2_hello_ant';
+ob1.oblog.next;
+begin;
+insert into t3 values(2, "c2");
+update t3 set c1=100 where c1=1;
+commit;
+ob1.oblog.next;
+alter table t3 add column c3 varchar(20) default 'c3_hello_ant';
+ob1.oblog.next;
+begin;
+insert into t3 values(3, "c2", "c3");
+update t3 set c1=101 where c1=100;
+commit;
+ob1.oblog.next;
+alter table t3 add column c4 varchar(20) default 'c4_hello_ant';
+ob1.oblog.next;
+begin;
+insert into t3 values(4, "c2", "c3", "c4");
+update t3 set c1=102 where c1=101;
+commit;
+ob1.oblog.next;
+
+# romove c2, c4
+alter table t3 drop column c2;
+ob1.oblog.next;
+begin;
+insert into t3 values(5, "c3", "c4");
+update t3 set c1=103 where c1=102;
+commit;
+ob1.oblog.next;
+alter table t3 drop column c4;
+ob1.oblog.next;
+begin;
+insert into t3 values(6, "c3");
+update t3 set c1=104 where c1=103;
+commit;
+ob1.oblog.next;
+
+##### t4 最大列
+create table t4(c1 int, c2 int, c3 int, c4 int, c5 int);
+ob1.oblog.next;
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+let $dml_cnt=0;
+
+insert into t4 values(1, 2, 3, 4, 5);
+ob1.oblog.next;
+inc $dml_cnt;
+
+let $cnt=510;
+let $idx=6;
+let $str = alter table t4;
+while($idx < $cnt)
+{
+  let $str = query_get_value(select concat("$str", " add column c", $idx, " int default ", $idx, ', ') as value, value, 1);
+  inc $idx;
+}
+
+let $str = query_get_value(select left("$str",length("$str")-2) as value, value, 1);
+eval $str;
+
+connection oblog_conn_sys;
+use oceanbase;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oblog_tt", tenant_id, 1);
+connection oblog_conn_tt;
+# schema split mode, 在租户本身下面查询
+use oceanbase;
+let $max_ddl_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+
+# stop liboblog
+ob1.oblog.stop;
+
+connection oblog_conn_tt;
+# 启动liboblog, 回拉
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog_db.* log_level=INFO data_start_schema_version=$tenant_id:$max_ddl_schema_version skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $idx=0;
+while($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 清理数据
+--disable_warnings
+drop database if exists oblog_db;

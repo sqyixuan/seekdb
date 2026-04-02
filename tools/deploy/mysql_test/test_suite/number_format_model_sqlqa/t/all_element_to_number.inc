@@ -1,0 +1,4171 @@
+--echo #############所有元素测试number_format_model-2-1及之下所有##############
+
+--echo ##################################, (comma)正常测试number_format_model-2-1-1##################
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9') from dual;
+select to_number('1,2,3,4,5', '9,9,9,9,9') from dual;
+
+select to_number('1,0000,0000', '9,9999,9999') from dual;
+select to_number('1,00000000', '9,99999999') from dual;
+select to_number('10,0000000', '99,9999999') from dual;
+select to_number('100,000,000', '999,999,999') from dual;
+
+select to_number('100,000,000,,,', '999,999,999,,,') from dual;
+select to_number('1,000,,,', '999,999,999,,,') from dual;
+select to_number('1,000', '999,999,999') from dual;
+select to_number('123', '999999999') from dual;
+select to_number('-.10','99.99') from dual;
+select to_number('0.1','0.9')  from dual;
+select to_number('0,0','0,9')  from dual;
+select to_number('0012.0','9990999.9') from dual;
+select to_number('485','999') from dual;
+select to_number('-485','999') from dual;
+select to_number('1,485','9,999') from dual;
+select to_number('1,00', '99999,99') from dual;
+select to_number('100', '9,99999999') from dual;
+select to_number('100', '9,99999999') from dual;
+select to_number('0', '9,99999999') from dual;
+select to_number('100', '999,9999') from dual;
+select to_number('1,00', '999,99') from dual;
+select to_number('0', '9,9999') from dual;
+select to_number('10,0', '999999,9') from dual;
+select to_number('100', '9999,999') from dual;
+select to_number('0', '9999,9') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9') from dual;
+select to_number('0', '9,9,9,9,9') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9') from dual;
+select to_number('', '9,9,9,9,9') from dual;
+select to_number(NULL, '9,9,9,9,9') from dual;
+select to_number('0', '9,9,9,9,9') from dual;
+
+select to_number(123, '999999999') from dual;
+select to_number(-0.1,'99.99') from dual;
+select to_number(485,'999') from dual;
+select to_number(-485,'999') from dual;
+select to_number(100.00, '9,99999999') from dual;
+select to_number(12345-12345, '9,9,9,9,9') from dual;
+select to_number('', '9,9,9,9,9') from dual;
+select to_number(NULL, '9,9,9,9,9') from dual;
+select to_number(0, '9,9,9,9,9') from dual;
+
+--echo ##################################, (comma)异常测试#################
+--error 01722
+select to_number('########', '999,999') from dual;
+--error 01722
+select to_number('#####', '9,99') from dual;
+--error 01722
+select to_number('#######', '99,999') from dual;
+
+--error 01722
+select to_number(0.1,'0.9')  from dual;
+--error 01722
+select to_number(0.1,'0,9')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9') from dual;
+--error 01722
+select to_number(1485,'9,999') from dual;
+--error 01722
+select to_number(100.2356, '99999,99') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999') from dual;
+--error 01722
+select to_number(100.2356, '999,9999') from dual;
+--error 01722
+select to_number(100.00, '999,99') from dual;
+--error 01722
+select to_number(0.2356, '9,9999') from dual;
+--error 01722
+select to_number(100.2356, '999999,9') from dual;
+--error 01722
+select to_number(100.2356, '9999,999') from dual;
+--error 01722
+select to_number(0.2356, '9999,9') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9') from dual;
+
+--error 01722
+select to_number(100000000, '999,999,999,,,') from dual;
+--error 01722
+select to_number(1000, '999,999,999,,,') from dual;
+--error 01722
+select to_number(1000, '999,999,999') from dual;
+--error 01722
+select to_number(100000000, '999,999') from dual;
+--error 01722
+select to_number(100000000, '9,99') from dual;
+--error 01722
+select to_number(100000000, '99,999') from dual;
+
+--error 01481
+select to_number(12345, '9,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,9,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,9,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,9,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,9') from dual;
+--error 01481
+select to_number(12345, '9,,,999,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,9') from dual;
+--error 01481
+select to_number(485,'9 9 9') from dual;
+--error 01481
+select to_number(485,'99,, 9') from dual;
+--error 01481
+select to_number(100000000, '9，99999999') from dual;
+--error 01481
+select to_number(12345, ',,,,,9,,,9,,9,9,9') from dual;
+--error 01481
+select to_number(12345, ',9,9,9,9,9') from dual;
+--error 01481
+select to_number(100.2356, ',999,9999') from dual;
+--error 01481
+select to_number(100.00, ',,,999,99') from dual;
+--error 01481
+select to_number(0.2356, ',,9,9999') from dual;
+--error 01481
+select to_number(20080320, '9,9.9EEEE') from dual;
+--error 01481
+select to_number(20080320, '9.9,9EEEE') from dual;
+--error 01481
+select to_number(20080320, ',9.9,9EEEE') from dual;
+--error 01481
+select to_number(200.80320, '9.9,9EEEE') from dual;
+--error 00904
+select to_number(abcde, '9,,,9,,9,9,9') from dual;
+--error 01722
+select to_number('abcde', '9,9,9,9,9') from dual;
+--error 01722
+select to_number('中文测试呀', '9,9,9,9,9') from dual;
+
+
+
+--echo ##############################. (period)正常测试number_format_model-2-1-2##################
+select to_number('1,2,3,4.34','9,9,9,9.99') from dual;
+select to_number('1,2,34.3','9,9,9,99.9') from dual;
+select to_number('1,,,,,,,,,,2,,,,,,,,,,,,3,4.34','9,,,,,,,,,,9,,,,,,,,,,,,9,9.99') from dual;
+select to_number('1,,,,,,,,,,23,4.34','9,,,,,,,,,,99,9.99') from dual;
+select to_number('.2', '9999,.9') from dual;
+select to_number('1234.34','0000.00') from dual;
+select to_number('41.8','9999.9') from dual;
+select to_number('2,4,6,8.90','9,9,9,9.99') from dual;
+select to_number('6,1,71.7','9,9,9,99.9') from dual;
+select to_number(1234.34,'0000.00') from dual;
+
+--echo ##############################. (period)异常测试#################
+--error 01722
+select to_number(1234.34,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,99.9') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,9,,,,,,,,,,,,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99') from dual;
+--error 01722
+select to_number(0.2356, '9999,.9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999') from dual;
+--error 01722
+select to_number(1234.34,'.') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9') from dual;
+--error 01722
+select to_number('ABCD','9,9,9,9.99') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9') from dual;
+
+--error 01481
+select to_number(0.2356, '9999.,9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99D9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9D99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99d9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9d99') from dual;
+--error 01481
+select to_number(100.2356, '99.9999,9') from dual;
+--error 01481
+select to_number(100.2356, '9.999,999') from dual;
+--error 01481
+select to_number(0.2356, '9999.,9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9..99') from dual;
+--error 01481
+select to_number(1234.34,'9.9.9.9.99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.D99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9D.99') from dual;
+--error 01481
+select to_number(123434,'9,9,9,9..99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.9*9') from dual;
+--error 01481
+select to_number(1234.34,'9*9.9') from dual;
+--error 01481
+select to_number(1234.34,'9**9.9') from dual;
+--error 01481
+select to_number(1234.34,'99**.9') from dual;
+--error 01481
+select to_number(1234.34,'99**9') from dual;
+
+--error 900,936
+select to_number(123**0.34,'9999.9') from dual;
+
+--echo ##############################$正常测试number_format_model-2-1-3##################
+select to_number('$1,2,3,4.34','9,9,9,9.$99') from dual;
+select to_number('$1,2,3,4.34','$9,9,9,9.99') from dual;
+select to_number('$1,2,3,4.34','9,$9,9,9.99') from dual;
+select to_number('$1,2,3,4.34','9,9,$9,9.99') from dual;
+select to_number('$1,2,3,4.34','9,9,9,$9.99') from dual;
+select to_number('$1,2,3,4.34','9,9,9,9.9$9') from dual;
+select to_number('$1,2,3,4.34','9,9,9,9.99$') from dual;
+select to_number('$1,2,3,4.00','9,9,9,9.$99') from dual;
+select to_number('$1,,,2,,3,4,5', '$9,,,9,,9,9,9') from dual;
+select to_number('$1,0000,0000', '9,9999,$9999') from dual;
+select to_number('$100,000,000,,,', '999,$999,999,,,') from dual;
+select to_number('$123', '9999$99999') from dual;
+select to_number('-$.10','99.$99') from dual;
+select to_number('$0.1','0.$9')  from dual;
+select to_number('$0,0','0,$9')  from dual;
+select to_number('$0012.0','9990999.$9') from dual;
+select to_number('$485','999$') from dual;
+select to_number('-$485','99$9') from dual;
+select to_number('$1,485','9,9$99') from dual;
+select to_number('$1,00', '99$999,99') from dual;
+select to_number('$100', '$9,99999999') from dual;
+select to_number('$100', '9,$99999999') from dual;
+select to_number('$0', '9$,99999999') from dual;
+select to_number('$2,4,6,9,0', '$9,9,9,9,9') from dual;
+select to_number('$0', '9,$9,9,9,9') from dual;
+select to_number('$6,1,7,2,5', '9,9,$9,9,9') from dual;
+select to_number('$1,0,4,6,9', '9,9,9,$9,9') from dual;
+select to_number('', '$9,9,9,9,9') from dual;
+select to_number('', '9,9$,9,9,9') from dual;
+select to_number('$0', '9,9,9$,9,9') from dual;
+select to_number('$1,2,3,4.34','9,9,9,9.$99') from dual;
+select to_number('$1,,,,,,,,,,23,4.34','9,,,,,,,,,,99,9.$99') from dual;
+select to_number('$.2', '9999,.$9') from dual;
+select to_number('$1234.34','0000.$00') from dual;
+select to_number('$41.8','9999.$9') from dual;
+select to_number('$2,4,6,8.90','9,9,9,9.$99') from dual;
+select to_number('$6,1,71.7','9,9,9,99.$9') from dual;
+select to_number('$2.0E+07', '9.9$EEEE') from dual;
+select to_number('$2.0E+07', '9.$9EEEE') from dual;
+select to_number('$2.0E+07', '9$.9EEEE') from dual;
+select to_number('$2.0E+07', '$9.9EEEE') from dual;
+
+select to_number('', '$9,9,9,9,9') from dual;
+select to_number(NULL, '9,9$,9,9,9') from dual;
+
+
+--echo ##############################$异常测试#################
+--error 01722
+select to_number(1234.34,'9,9,9,9.$99') from dual;
+--error 01722
+select to_number(1234.34,'$9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,$9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,9,$9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,$9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.9$9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99$') from dual;
+--error 01722
+select to_number(1234,'9,9,9,9.$99') from dual;
+--error 01722
+select to_number(12345, '$9,,,9,,9,9,9') from dual;
+--error 01722
+select to_number(100000000, '9,9999,$9999') from dual;
+--error 01722
+select to_number(100000000, '999,$999,999,,,') from dual;
+--error 01722
+select to_number(123, '9999$99999') from dual;
+--error 01722
+select to_number(-0.1,'99.$99') from dual;
+--error 01722
+select to_number(0.1,'0.$9')  from dual;
+--error 01722
+select to_number(0.1,'0,$9')  from dual;
+--error 01722
+select to_number(12,'9990999.$9') from dual;
+--error 01722
+select to_number(485,'999$') from dual;
+--error 01722
+select to_number(-485,'99$9') from dual;
+--error 01722
+select to_number(1485,'9,9$99') from dual;
+--error 01722
+select to_number(100.2356, '99$999,99') from dual;
+--error 01722
+select to_number(100.2356, '$9,99999999') from dual;
+--error 01722
+select to_number(100.00, '9,$99999999') from dual;
+--error 01722
+select to_number(0.2356, '9$,99999999') from dual;
+--error 01722
+select to_number(12345+12345, '$9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345-12345, '9,$9,9,9,9') from dual;
+--error 01722
+select to_number(12345*5, '9,9,$9,9,9') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,$9,9') from dual;
+--error 01722
+select to_number(0, '9,9,9$,9,9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.$99') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.$99') from dual;
+--error 01722
+select to_number(0.2356, '9999,.$9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.$999') from dual;
+--error 01722
+select to_number(1234.34,'.') from dual;
+--error 01722
+select to_number(1234.34,'0000.$00') from dual;
+--error 01722
+select to_number(123*0.34,'9999.$9') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.$99') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.$99') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.$9') from dual;
+--error 01722
+select to_number(20080320, '9.9$EEEE') from dual;
+--error 01722
+select to_number(20080320, '9.$9EEEE') from dual;
+--error 01722
+select to_number(20080320, '9$.9EEEE') from dual;
+--error 01722
+select to_number(20080320, '$9.9EEEE') from dual;
+
+--error 01722
+select to_number('ABCD','9,9,9,9.$99') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.$9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.$$99') from dual;
+--error 01481
+select to_number(1234.34,'$$9,9,9,9.99') from dual;
+--error 01481
+select to_number(1234.34,'9,$$9,9,9.99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,$$9,9.99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,$$9.99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.9$$9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.99$$') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.$$$99') from dual;
+--error 01481
+select to_number(20080320, '9.9EEEE$') from dual;
+--error 01481
+select to_number(20080320, '9.9EEE$E') from dual;
+--error 01481
+select to_number(20080320, '9.9EE$EE') from dual;
+--error 01481
+select to_number(20080320, '9.9E$EEE') from dual;
+
+
+--echo ##############################0正常测试number_format_model-2-1-4##################
+
+select to_number('1234.00','9999.00') from dual;
+select to_number('1234.00','0000.99') from dual;
+select to_number('1234.00','0000.00') from dual;
+select to_number('1234','999900') from dual;
+select to_number('001234','000000') from dual;
+select to_number('1,,,2,,3,4,5', '0,,,0,,0,0,0') from dual;
+select to_number('1,0000,0000', '0,0000,0000') from dual;
+select to_number('100,000,000,,,', '000,000,000,,,') from dual;
+select to_number('000000123', '000000000') from dual;
+select to_number('-00.10','00.00') from dual;
+select to_number('0.1','0.0')  from dual;
+select to_number('0,0','0,0')  from dual;
+select to_number('0000012.0','0000000.0') from dual;
+select to_number('485','000') from dual;
+select to_number('-485','000') from dual;
+select to_number('1,485','0,000') from dual;
+select to_number('00001,00', '00000,00') from dual;
+select to_number('0,00000100', '0,00000000') from dual;
+select to_number('0,00000100', '0,00000000') from dual;
+select to_number('0,00000000', '0,00000000') from dual;
+select to_number('2,4,6,9,0', '0,0,0,0,0') from dual;
+select to_number('0,0,0,0,0', '0,0,0,0,0') from dual;
+select to_number('6,1,7,2,5', '0,0,0,0,0') from dual;
+select to_number('1,0,4,6,9', '0,0,0,0,0') from dual;
+select to_number('', '0,0,0,0,0') from dual;
+select to_number('', '0,0,0,0,0') from dual;
+select to_number('0,0,0,0,0', '0,0,0,0,0') from dual;
+select to_number('1,2,3,4.34','0,0,0,0.00') from dual;
+select to_number('1,,,,,,,,,,23,4.34','0,,,,,,,,,,00,0.00') from dual;
+select to_number('0000,.2', '0000,.0') from dual;
+select to_number('1234.34','0000.00') from dual;
+select to_number('0041.8','0000.0') from dual;
+select to_number('2,4,6,8.90','0,0,0,0.00') from dual;
+select to_number('0,6,1,71.7','0,0,0,00.0') from dual;
+select to_number('2.01E+07', '9.90EEEE') from dual;
+select to_number('2.01E+07', '0.90EEEE') from dual;
+select to_number('020', '0xx') from dual;
+select to_number('020', '0xX') from dual;
+select to_number('020', '0XX') from dual;
+
+select to_number(1234,'9999.00') from dual;
+select to_number(1234,'0000.99') from dual;
+select to_number(1234,'0000.00') from dual;
+select to_number(1234,'999900') from dual;
+select to_number(485,'000') from dual;
+select to_number(-485,'000') from dual;
+select to_number(1234.34,'0000.00') from dual;
+
+
+
+--echo ##############################0异常测试#################
+--error 01722
+select to_number(1234,'000000') from dual;
+--error 01722
+select to_number(1234,'0') from dual;
+--error 01722
+select to_number(12345, '0,,,0,,0,0,0') from dual;
+--error 01722
+select to_number(100000000, '0,0000,0000') from dual;
+--error 01722
+select to_number(100000000, '000,000,000,,,') from dual;
+--error 01722
+select to_number(123, '000000000') from dual;
+--error 01722
+select to_number(-0.1,'00.00') from dual;
+--error 01722
+select to_number(0.1,'0.0')  from dual;
+--error 01722
+select to_number(0.1,'0,0')  from dual;
+--error 01722
+select to_number(12,'0000000.0') from dual;
+--error 01722
+select to_number(1485,'0,000') from dual;
+--error 01722
+select to_number(100.2356, '00000,00') from dual;
+--error 01722
+select to_number(100.2356, '0,00000000') from dual;
+--error 01722
+select to_number(100.00, '0,00000000') from dual;
+--error 01722
+select to_number(0.2356, '0,00000000') from dual;
+--error 01722
+select to_number(12345+12345, '0,0,0,0,0') from dual;
+--error 01722
+select to_number(12345-12345, '0,0,0,0,0') from dual;
+--error 01722
+select to_number(12345*5, '0,0,0,0,0') from dual;
+--error 01722
+select to_number(52345/5, '0,0,0,0,0') from dual;
+--error 01722
+select to_number(0, '0,0,0,0,0') from dual;
+--error 01722
+select to_number(1234.34,'0,0,0,0.00') from dual;
+--error 01722
+select to_number(1234.34,'0,,,,,,,,,,00,0.00') from dual;
+--error 01722
+select to_number(0.2356, '0000,.0') from dual;
+--error 01722
+select to_number(1234.34,'0,0,0,.000') from dual;
+--error 01722
+select to_number(1234.34,'.') from dual;
+--error 01722
+select to_number(123*0.34,'0000.0') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'0,0,0,0.00') from dual;
+--error 01722
+select to_number(123434/6,'0,0,0,0.00') from dual;
+--error 01722
+select to_number(1234.34*5,'0,0,0,00.0') from dual;
+--error 01722
+select to_number(20080320, '9.90EEEE') from dual;
+--error 01722
+select to_number(20080320, '0.90EEEE') from dual;
+###--error 01722
+###select to_number(32, '0xx') from dual;
+###--error 01722
+###select to_number(32, '0xX') from dual;
+###--error 01722
+###select to_number(32, '0XX') from dual;
+
+--error 01722
+select to_number('ABCD','0,0,0,0.00') from dual;
+--error 01722
+select to_number('中文.中文','0,0,0,00.0') from dual;
+--error 01481
+select to_number(20080320, '9.9EEEE0') from dual;
+--error 01481
+select to_number(20080320, '9.9EEE0E') from dual;
+--error 01481
+select to_number(20080320, '9.9EE0EE') from dual;
+--error 01481
+select to_number(20080320, '9.9E0EEE') from dual;
+--error 01481
+select to_number(32, 'xx0') from dual;
+--error 01481
+select to_number(32, 'x0x') from dual;
+--error 01481
+select to_number(32, 'Xx0') from dual;
+--error 01481
+select to_number(32, 'x0X') from dual;
+--error 01481
+select to_number(32, 'XX0') from dual;
+--error 01481
+select to_number(32, 'X0X') from dual;
+
+--echo ##############################9正常测试number_format_model-2-1-5##################
+select to_number('123.0','99999.9') from dual;
+select to_number('1234.0','99999.9') from dual;
+select to_number('1234.0','99999.0') from dual;
+select to_number('01234.0','00000.9') from dual;
+select to_number('1234','999999') from dual;
+select to_number('001234','000000') from dual;
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9') from dual;
+select to_number('1,9999,9999', '9,9999,9999') from dual;
+select to_number('199,999,999,,,', '999,999,999,,,') from dual;
+select to_number('123', '999999999') from dual;
+select to_number('-9.10','99.99') from dual;
+select to_number('9.1','9.9')  from dual;
+select to_number('9','9,9')  from dual;
+select to_number('12.0','9999999.9') from dual;
+select to_number('485','999') from dual;
+select to_number('-485','999') from dual;
+select to_number('1,485','9,999') from dual;
+select to_number('1,99', '99999,99') from dual;
+select to_number('199', '9,99999999') from dual;
+select to_number('200', '9,99999999') from dual;
+select to_number('9', '9,99999999') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9') from dual;
+select to_number('0', '9,9,9,9,9') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9') from dual;
+select to_number('', '9,9,9,9,9') from dual;
+select to_number('', '9,9,9,9,9') from dual;
+select to_number('9', '9,9,9,9,9') from dual;
+select to_number('1,2,3,4.34','9,9,9,9.99') from dual;
+select to_number('1,,,,,,,,,,23,4.34','9,,,,,,,,,,99,9.99') from dual;
+select to_number('9,.2', '9999,.9') from dual;
+select to_number('1234.34','9999.99') from dual;
+select to_number('1148.8','9999.9') from dual;
+select to_number('2,4,6,8.90','9,9,9,9.99') from dual;
+select to_number('6,1,71.7','9,9,9,99.9') from dual;
+select to_number('3.00E+07', '9.99EEEE') from dual;
+select to_number('3.00E+07', '9.99EEEE') from dual;
+
+select to_number(123,'99999.9') from dual;
+select to_number(1234,'99999.9') from dual;
+select to_number(1234,'99999.0') from dual;
+select to_number(1234,'999999') from dual;
+select to_number(123, '999999999') from dual;
+select to_number(-9.1,'99.99') from dual;
+select to_number(9.1,'9.9')  from dual;
+select to_number(12,'9999999.9') from dual;
+select to_number(485,'999') from dual;
+select to_number(-485,'999') from dual;
+select to_number(12345-12345, '9,9,9,9,9') from dual;
+select to_number('', '9,9,9,9,9') from dual;
+select to_number(NULL, '9,9,9,9,9') from dual;
+select to_number(9, '9,9,9,9,9') from dual;
+select to_number(1234.34,'9999.99') from dual;
+
+
+--echo ##############################9异常测试#################
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9') from dual;
+--error 01722
+select to_number(199999999, '9,9999,9999') from dual;
+--error 01722
+select to_number(199999999, '999,999,999,,,') from dual;
+--error 01722
+select to_number(1234,'00000.9') from dual;
+--error 01722
+select to_number(1234,'000000') from dual;
+--error 01722
+select to_number(1234,'9') from dual;
+--error 01722
+select to_number(9.1,'9,9')  from dual;
+--error 01722
+select to_number(1485,'9,999') from dual;
+--error 01722
+select to_number(199.2356, '99999,99') from dual;
+--error 01722
+select to_number(199.2356, '9,99999999') from dual;
+--error 01722
+select to_number(199.99, '9,99999999') from dual;
+--error 01722
+select to_number(9.2356, '9,99999999') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99') from dual;
+--error 01722
+select to_number(9.2356, '9999,.9') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999') from dual;
+--error 01722
+select to_number(1234.34,'.') from dual;
+--error 01722
+select to_number(123*9.34,'9999.9') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9') from dual;
+--error 01722
+select to_number(29989329, '9.99EEEE') from dual;
+--error 01722
+select to_number(29989329, '9.99EEEE') from dual;
+
+--error 01722
+select to_number('ABCD','9,9,9,9.99') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9') from dual;
+--error 01481
+select to_number(29989329, '9.9EEEE9') from dual;
+--error 01481
+select to_number(29989329, '9.9EEE9E') from dual;
+--error 01481
+select to_number(29989329, '9.9EE9EE') from dual;
+--error 01481
+select to_number(29989329, '9.9E9EEE') from dual;
+--error 01481
+select to_number(32, 'xx9') from dual;
+--error 01481
+select to_number(32, 'x9x') from dual;
+--error 01481
+select to_number(32, 'Xx9') from dual;
+--error 01481
+select to_number(32, 'x9X') from dual;
+--error 01481
+select to_number(32, 'XX9') from dual;
+--error 01481
+select to_number(32, 'X9X') from dual;
+--error 01481
+select to_number(32, '9xx') from dual;
+--error 01481
+select to_number(32, '9xX') from dual;
+--error 01481
+select to_number(32, '9XX') from dual;
+
+
+--echo ##############################B正常测试number_format_model-2-1-6##################
+
+
+select to_number('', '0B') from dual;
+select to_number('', '9,B') from dual;
+select to_number('3', '9B') from dual;
+select to_number('', '9b') from dual;
+select to_number('', '9b') from dual;
+select to_number('', '9b') from dual;
+select to_number('', '9b') from dual;
+select to_number('', '0b') from dual;
+select to_number('', '9,b') from dual;
+
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9B') from dual;
+select to_number('1,0000,0000', '9,9999,9999B') from dual;
+select to_number('100,000,000,,,', '999,999,999B,,,') from dual;
+select to_number('123', '999999999B') from dual;
+select to_number('-.10','99.99B') from dual;
+select to_number('0.1','0.9B')  from dual;
+select to_number('','0,9B')  from dual;
+select to_number('0012.0','9990999.9B') from dual;
+select to_number('485','999B') from dual;
+select to_number('-485','999B') from dual;
+select to_number('1,485','9,999B') from dual;
+select to_number('1,00', '99999,99B') from dual;
+select to_number('100', '9,99999999B') from dual;
+select to_number('100', '9,99999999B') from dual;
+select to_number('', '9,99999999B') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9B') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9B') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9B,9,9') from dual;
+select to_number('', '9,9,9,9B,9') from dual;
+select to_number('', '9,9B,9,9,9') from dual;
+select to_number('', 'B9,9,9,9,9') from dual;
+select to_number('1,2,3,4.34','9,9,9,9.99B') from dual;
+select to_number('1,,,,,,,,,,23,4.34','9,,,,,,,,,,99,9.99B') from dual;
+select to_number('.2', '9999,.9B') from dual;
+select to_number('1234.34','0000.00B') from dual;
+select to_number('41.8','9999.9B') from dual;
+select to_number('2,4,6,8.90','9,9,9,9.99B') from dual;
+select to_number('6,1,71.7','9,9,9,99.9B') from dual;
+
+select to_number(0, '9B') from dual;
+select to_number(0.00, '9B') from dual;
+select to_number(0*0, '9B') from dual;
+select to_number(0+0, '9B') from dual;
+select to_number(0, '0B') from dual;
+select to_number(0+3, '9B') from dual;
+select to_number(0, '9b') from dual;
+select to_number(0.00, '9b') from dual;
+select to_number(0*0, '9b') from dual;
+select to_number(0+0, '9b') from dual;
+select to_number(0, '0b') from dual;
+select to_number(123, '999999999B') from dual;
+select to_number(-0.1,'99.99B') from dual;
+select to_number(485,'999B') from dual;
+select to_number(-485,'999B') from dual;
+select to_number(100.00, '9,99999999B') from dual;
+select to_number(12345-12345, '9,9,9,9,9B') from dual;
+select to_number('', '9,9,9,9,9B') from dual;
+select to_number(NULL, '9,9,9,9,9B') from dual;
+select to_number(0, '9,9,9,9,9B') from dual;
+select to_number(0.00, '9,9,9,9,9B') from dual;
+select to_number(0+0, '9,9,9,9,9B') from dual;
+select to_number(0*0, '9,9,9,9,9B') from dual;
+select to_number(0, '9,9,9B,9,9') from dual;
+select to_number(0.00, '9,9,9,9B,9') from dual;
+select to_number(0+0, '9,9B,9,9,9') from dual;
+select to_number(0*0, 'B9,9,9,9,9') from dual;
+select to_number(1234.34,'0000.00B') from dual;
+
+--echo ##############################B异常测试#################
+--error 01722
+select to_number(0, '9,B') from dual;
+--error 01722
+select to_number(123, '9B') from dual;
+--error 01722
+select to_number(0.012, '9B') from dual;
+--error 01722
+select to_number(1*0.3, '9B') from dual;
+--error 01722
+select to_number(100, '0B') from dual;
+--error 01722
+select to_number(00001, '9,B') from dual;
+--error 01722
+select to_number(0, '9,b') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9B') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999B') from dual;
+--error 01722
+select to_number(100000000, '999,999,999B,,,') from dual;
+--error 01722
+select to_number(0.1,'0.9B')  from dual;
+--error 01722
+select to_number(0.1,'0,9B')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9B') from dual;
+--error 01722
+select to_number(1485,'9,999B') from dual;
+--error 01722
+select to_number(100.2356, '99999,99B') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999B') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999B') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9B') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9B') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9B') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99B') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99B') from dual;
+--error 01722
+select to_number(0.2356, '9999,.9B') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999B') from dual;
+--error 01722
+select to_number(1234.34,'.B') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9B') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99B') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99B') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9B') from dual;
+
+--error 01722
+select to_number('1', '9,B') from dual;
+--error 01722
+select to_number('ABCD','9,9,9,9.99B') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9B') from dual;
+--error 01481
+select to_number(0, '9BB') from dual;
+--error 01481
+select to_number(0.00, '9BB') from dual;
+--error 01481
+select to_number(0*0, '9BB') from dual;
+--error 01481
+select to_number(0+0, '9BB') from dual;
+--error 01481
+select to_number(0, '0BB') from dual;
+--error 01481
+select to_number(0, '9B,B') from dual;
+--error 01481
+select to_number(0, '9Bb') from dual;
+--error 01481
+select to_number(0.00, '9Bb') from dual;
+--error 01481
+select to_number(0*0, '9Bb') from dual;
+--error 01481
+select to_number(0+0, '9Bb') from dual;
+--error 01481
+select to_number(0, '0Bb') from dual;
+--error 01481
+select to_number(0, '9B,b') from dual;
+--error 01481
+select to_number(0.1,'0.9Bb')  from dual;
+--error 01481
+select to_number(0.1,'0b,9B')  from dual;
+--error 01481
+select to_number(12,'9990b999.9B') from dual;
+--error 01481
+select to_number(485,'99b9B') from dual;
+--error 01481
+select to_number(-485,'9b99B') from dual;
+--error 01481
+select to_number(1485,'9b,999B') from dual;
+
+--error 01481
+select to_number(29989329, '9.9EEEEB') from dual;
+--error 01481
+select to_number(29989329, '9.9EEEBE') from dual;
+--error 01481
+select to_number(29989329, '9.9EEBEE') from dual;
+--error 01481
+select to_number(29989329, '9.9EBEEE') from dual;
+
+--echo ##############################C正常测试number_format_model-2-1-7##################
+
+select to_number('USD123.123', 'C999.999') from dual;
+###USD放数据数字后面时，OB有报错01722，ORACLE无报错。
+##select to_number('123.123USD', '999.999C') from dual;
+select to_number('USD123.123', 'c999.999') from dual;
+##select to_number('123.123USD', '999.999c') from dual;
+
+SELECT to_number('<USD10,000.00>', 'C99G999D99PR', 'NLS_ISO_CURRENCY=AMERICA') "Amount" FROM DUAL;
+SELECT to_number('<USD10,000.00>', 'C99G999D99PR', 'NLS_ISO_CURRENCY=america') "Amount" FROM DUAL;
+SELECT to_number('<USD10,000.00>', 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=.,') "Amount" FROM DUAL;
+select to_number('USD23', 'FMC99') from dual;
+
+
+###select to_number('23USD00', '99BC99') from dual;
+###select to_number('23.12USD', '99.99BC') from dual;
+###select to_number('23.12USD', '99.99BCPR') from dual;
+###select to_number('23.12USD+', '99.99BCS') from dual;
+
+###select to_number('1,,,2,,3,4,5USD', '9,,,9,,9,9,9C') from dual;
+###select to_number('1,0000,0000USD', '9,9999,9999C') from dual;
+
+###select to_number('123USD', '999999999C') from dual;
+###select to_number('-.10USD','99.99C') from dual;
+###select to_number('0.1USD','0.9C')  from dual;
+###select to_number('0,0USD','0,9C')  from dual;
+###select to_number('0012.0USD','9990999.9C') from dual;
+###select to_number('485USD','999C') from dual;
+###select to_number('-485USD','999C') from dual;
+###select to_number('1,485USD','9,999C') from dual;
+###select to_number('1,00USD', '99999,99C') from dual;
+###select to_number('100USD', '9,99999999C') from dual;
+###select to_number('100USD', '9,99999999C') from dual;
+###select to_number('0USD', '9,99999999C') from dual;
+###select to_number('2,4,6,9,0USD', '9,9,9,9,9C') from dual;
+###select to_number('0USD', '9,9,9,9,9C') from dual;
+###select to_number('6,1,7,2,5USD', '9,9,9,9,9C') from dual;
+###select to_number('1,0,4,6,9USD', '9,9,9,9,9C') from dual;
+###select to_number('', '9,9,9,9,9C') from dual;
+###select to_number('', '9,9,9,9,9C') from dual;
+###select to_number('0USD', '9,9,9,9,9C') from dual;
+###select to_number('0USD', '9,9,9,9,9C') from dual;
+###select to_number('0USD', '9,9,9,9,9C') from dual;
+###select to_number('0USD', '9,9,9,9,9C') from dual;
+###select to_number('1,2,3,4.34USD','9,9,9,9.99C') from dual;
+###select to_number('1,,,,,,,,,,23,4.34USD','9,,,,,,,,,,99,9.99C') from dual;
+###select to_number('.2USD', '9999,.9C') from dual;
+###select to_number('1234.34USD','0000.00C') from dual;
+###select to_number('41.8USD','9999.9C') from dual;
+###select to_number('2,4,6,8.90USD','9,9,9,9.99C') from dual;
+###select to_number('','9,9,9,9.99C') from dual;
+###select to_number('6,1,71.7USD','9,9,9,99.9C') from dual;
+###
+###select to_number('23USD000', '999BC999') from dual;
+###select to_number('23.12USD', '9999.99BC') from dual;
+select to_number('USD23', 'FMC999') from dual;
+###select to_number('23USD', '99BCPR') from dual;
+###select to_number(23, '99BC99') from dual;
+select to_number('', '9,9,9,9,9C') from dual;
+select to_number(NULL, '9,9,9,9,9C') from dual;
+
+
+--echo ##############################C异常测试#################
+--error 01722
+select to_number('23.12USD', '99.99BCMI') from dual;
+--error 01722
+select to_number('23.12USD', '99.99BCMI') from dual;
+--error 01722
+select to_number(123.123, 'C999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999C') from dual;
+--error 01722
+select to_number(123.123, 'c999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999c') from dual;
+--error 01722
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=AMERICA') "Amount" FROM DUAL;
+--error 01722
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=america') "Amount" FROM DUAL;
+--error 01722
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=.,') "Amount" FROM DUAL;
+--error 01722
+select to_number(23, 'BC99') from dual;
+--error 01722
+select to_number(23.12, '99.99BC') from dual;
+--error 01722
+select to_number(23, 'FMC99') from dual;
+--error 01722
+select to_number(23.12, '99.99BCMI') from dual;
+--error 01722
+select to_number(23.12, '99.99BCPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BCS') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9C') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999C') from dual;
+--error 01722
+select to_number(123, '999999999C') from dual;
+--error 01722
+select to_number(-0.1,'99.99C') from dual;
+--error 01722
+select to_number(0.1,'0.9C')  from dual;
+--error 01722
+select to_number(0.1,'0,9C')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9C') from dual;
+--error 01722
+select to_number(485,'999C') from dual;
+--error 01722
+select to_number(-485,'999C') from dual;
+--error 01722
+select to_number(1485,'9,999C') from dual;
+--error 01722
+select to_number(100.2356, '99999,99C') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999C') from dual;
+--error 01722
+select to_number(100.00, '9,99999999C') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999C') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(0.00, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(0+0, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(0*0, '9,9,9,9,9C') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99C') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99C') from dual;
+--error 01722
+select to_number(0.2356, '9999,.9C') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999C') from dual;
+--error 01722
+select to_number(1234.34,'.C') from dual;
+--error 01722
+select to_number(1234.34,'0000.00C') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9C') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99C') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99C') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9C') from dual;
+--error 01722
+select to_number(23, '9BC9') from dual;
+--error 01722
+select to_number(23.12, '9999.99BC') from dual;
+--error 01722
+select to_number(23, 'FMC999') from dual;
+--error 01722
+select to_number(23.12, '99BCPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BCMI') from dual;
+
+
+###--error 12702
+###SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=''._''') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(100000000, '999,999,999C,,,') from dual;
+--error 01722
+select to_number('ACCD','9,9,9,9.99C') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9C') from dual;
+
+--error 01481
+select to_number(123.123, '9C99.999') from dual;
+--error 01481
+select to_number(123.123, '99C9.999') from dual;
+--error 01481
+select to_number(123.123, '999C.999') from dual;
+--error 01481
+select to_number(123.123, '999.C999') from dual;
+--error 01481
+select to_number(123.123, '999.9C99') from dual;
+--error 01481
+select to_number(123.123, '999.99C9') from dual;
+
+--error 01481
+select to_number(123.123, '9c99.999') from dual;
+--error 01481
+select to_number(123.123, '99c9.999') from dual;
+--error 01481
+select to_number(123.123, '999c.999') from dual;
+--error 01481
+select to_number(123.123, '999.c999') from dual;
+--error 01481
+select to_number(123.123, '999.9c99') from dual;
+--error 01481
+select to_number(123.123, '999.99c9') from dual;
+
+--error 01481
+select to_number(123.123, 'CC999.999') from dual;
+--error 01481
+select to_number(123.123, '9CC99.999') from dual;
+--error 01481
+select to_number(123.123, '99CC9.999') from dual;
+--error 01481
+select to_number(123.123, '999C.99C9') from dual;
+--error 01481
+select to_number(123.123, '9C99.C999') from dual;
+--error 01481
+select to_number(123.123, '999.9C9c9') from dual;
+--error 01481
+select to_number(123.123, '999c.99C9') from dual;
+--error 01481
+select to_number(123.123, '999.999Cc') from dual;
+--error 01481
+select to_number(23.12, '99999BCMI.99') from dual;
+--error 01481
+select to_number(23.12, '99BCS.99') from dual;
+
+--error 01481
+select to_number(29989329, '9.9EEEEC') from dual;
+--error 01481
+select to_number(29989329, '9.9EEECE') from dual;
+--error 01481
+select to_number(29989329, '9.9EECEE') from dual;
+--error 01481
+select to_number(29989329, '9.9ECEEE') from dual;
+
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=UNITED KINGDOM') "Amount" FROM DUAL;
+
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=''UNITED KINGDOM''') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=USA') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=CHINA') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_ISO_CURRENCY=Chinese') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(23.12, '99.99CB') from dual;
+--error 01481
+select to_number(23.12, '9.9CEEEE') from dual;
+
+
+--echo ##############################D正常测试number_format_model-2-1-8##################
+select to_number('1234.34', '9999d99') from dual;
+
+select to_number('','D') from dual;
+select to_number('1234.34','0000D00') from dual;
+select to_number('41.8','9999D9') from dual;
+
+select to_number('.2', '9999d9') from dual;
+select to_number('','d') from dual;
+select to_number('1234.34','0000d00') from dual;
+select to_number('41.8','9999d9') from dual;
+
+select to_number('2468.90','9999d99') from dual;
+select to_number('','9999d99') from dual;
+select to_number('6171.7','99999d9') from dual;
+
+SELECT to_number('<USD10,000.00>', 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=.,') "Amount" FROM DUAL;
+select to_number(1234.34,'0000D00') from dual;
+select to_number(1234.34, '9999d99') from dual;
+select to_number(1234.34,'0000d00') from dual;
+select to_number(1234.34+1234.56,'9999d99') from dual;
+select to_number(1234.34*5,'99999d9') from dual;
+
+
+--echo ##############################D异常测试#################
+--error 01722
+select to_number(1234.34,'D') from dual;
+--error 01722
+select to_number(123*0.34,'9999D9') from dual;
+--error 01722
+select to_number(0.2356, '9999d9') from dual;
+--error 01722
+select to_number(1234.34,'d') from dual;
+--error 01722
+select to_number(123*0.34,'9999d9') from dual;
+--error 01722
+select to_number(123434/6,'9999d99') from dual;
+--error 01722
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=.,') "Amount" FROM DUAL;
+
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=,.') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=,,') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=..') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'C99G999D99PR', 'NLS_NUMERIC_CHARACTERS=$$$') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(1234.34,'9,9,9d999') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,9,,,,,,,,,,,,9,9d99') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,99,9d99') from dual;
+
+--error 01481
+select to_number(1234.34,'9,9,9,9d99') from dual;
+--error 01481
+select to_number(123434,'9,9,9,9d99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99d9') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9,9,9,9D99') from dual;
+--error 01481
+select to_number(123434/6,'9,9,9,9D99') from dual;
+--error 01481
+select to_number(1234.34*5,'9,9,9,99D9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9D99') from dual;
+--error 01481
+select to_number(123434,'9,9,9,9D99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99D9') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,9,,,,,,,,,,,,9,9D99') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,99,9D99') from dual;
+--error 01481
+select to_number(0.2356, '9999,D9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,D999') from dual;
+--error 01481
+select to_number(0.2356, '9999D,9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99d9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9d99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,99D9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9dd99') from dual;
+--error 01481
+select to_number(100.2356, '99d9999,9') from dual;
+--error 01481
+select to_number(100.2356, '9d999,999') from dual;
+--error 01481
+select to_number(0.2356, '9999d,9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9dd99') from dual;
+--error 01481
+select to_number(1234.34,'9.9.9.9DDD99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.d99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9d.99') from dual;
+--error 01481
+select to_number(123434,'9,9,9,9..99') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9D9*9') from dual;
+--error 01481
+select to_number(1234.34,'9*9D9') from dual;
+--error 01481
+select to_number(1234.34,'9**9D9') from dual;
+--error 01481
+select to_number(1234.34,'99**D9') from dual;
+--error 01481
+select to_number(1234.34,'99D**9') from dual;
+
+--error 900,936
+select to_number(123**0.34,'9999D9') from dual;
+--error 01481
+select to_number('ABC.','9,9,9,9D99') from dual;
+--error 01481
+select to_number('中文.中文','9,9,9,99D9') from dual;
+
+###--echo ##############################EEEE正常测试number_format_model-2-1-9##################
+###select to_number('2.0E+07', '9.9EEEE') from dual;
+###select to_number('2.0E+07', '9.9eeee') from dual;
+###select to_number('2.E+07', '9.EEEE') from dual;
+######select to_number('2E+07', '9EEEE') from dual;
+######select to_number('2.0E+07', '9.9EEEE') from dual;
+###select to_number('2.7E-01', '9.9EEEE') from dual;
+###select to_number('-2.6E-01', '9.9EEEE') from dual;
+###select to_number('.0E+00', '9.9EEEE') from dual;
+###select to_number('.0E+00', '9.9EEEE') from dual;
+###select to_number('0.0E+00', '0.0EEEE') from dual;
+###select to_number('2.0E+07', '0.0EEEE') from dual;
+###select to_number('2.0E+07', '0.0eeee') from dual;
+###select to_number('2.E+07', '9.EEEE') from dual;
+###select to_number('2E+07', '0EEEE') from dual;
+###select to_number('2.0E+07', '0.0EEEE') from dual;
+###select to_number('2.7E-01', '0.0EEEE') from dual;
+###select to_number('-2.6E-01', '0.0EEEE') from dual;
+###select to_number('1E+02', '9999999999EEEE') from dual;
+###select to_number('-1.000E-01','99.999EEEE') from dual;
+###select to_number('1.00E-01','0.99EEEE')  from dual;
+###select to_number('1.20E+01','9990999.99EEEE') from dual;
+###select to_number('5E+02','9999EEEE') from dual;
+###select to_number('-5E+02','9999EEEE') from dual;
+
+select to_number('', '9,9,9,9,99EEEE') from dual;
+###select to_number('1.234E+03','0000.009EEEE') from dual;
+###select to_number('','9999.99EEEE') from dual;
+###select to_number(-0.0, '9.9EEEE') from dual;
+###select to_number(0.0, '9.9EEEE') from dual;
+###select to_number(-0.0, '0.0EEEE') from dual;
+###select to_number(-0.1,'99.999EEEE') from dual;
+###select to_number('', '9,9,9,9,99EEEE') from dual;
+###select to_number(NULL, '9,9,9,9,99EEEE') from dual;
+
+--echo ##############################EEEE异常测试#################
+--error 01722
+select to_number(20080320, '9.9EEEE') from dual;
+--error 01722
+select to_number(20080320, '9.9eeee') from dual;
+--error 01722
+select to_number(20080320, '9.EEEE') from dual;
+--error 01722
+select to_number(20080320, '9EEEE') from dual;
+--error 01722
+select to_number(20080320.2365, '9.9EEEE') from dual;
+--error 01722
+select to_number(0.265, '9.9EEEE') from dual;
+--error 01722
+select to_number(-0.2568, '9.9EEEE') from dual;
+--error 01722
+select to_number(20080320, '0.0EEEE') from dual;
+--error 01722
+select to_number(20080320, '0.0eeee') from dual;
+--error 01722
+select to_number(20080320, '9.EEEE') from dual;
+--error 01722
+select to_number(20080320, '0EEEE') from dual;
+--error 01722
+select to_number(20080320.2365, '0.0EEEE') from dual;
+--error 01722
+select to_number(0.265, '0.0EEEE') from dual;
+--error 01722
+select to_number(-0.2568, '0.0EEEE') from dual;
+###--error 01722
+###select to_number(123, '9999999999EEEE') from dual;
+--error 01722
+select to_number(0.1,'0.99EEEE')  from dual;
+###--error 01722
+###select to_number(12,'9990999.99EEEE') from dual;
+###--error 01722
+###select to_number(485,'9999EEEE') from dual;
+###--error 01722
+###select to_number(-485,'9999EEEE') from dual;
+###--error 01722
+###select to_number(1234.34,'0000.009EEEE') from dual;
+###--error 01722
+###select to_number(123*0.34,'9999.99EEEE') from dual;
+
+--error 01481
+select to_number(20080320, '9.9EEE') from dual;
+--error 01481
+select to_number(20080320, '9.9EEEEE') from dual;
+--error 01481
+select to_number(20080320, '9.9eee') from dual;
+--error 01481
+select to_number(20080320, '9.9eeeee') from dual;
+###--error 01481
+###select to_number(20080320, '.9EEEE') from dual;
+--error 01481
+select to_number(20080320, '9.9eee') from dual;
+--error 01481
+select to_number(20080320, '9.9eeeee') from dual;
+--error 01481
+select to_number(20080320, '9.9EEEEE') from dual;
+###--error 01481
+###select to_number(20080320, '.9EEEE') from dual;
+--error 01481
+select to_number(20080320, '0.0EEE') from dual;
+--error 01481
+select to_number(20080320, '0.0EEEEE') from dual;
+--error 01481
+select to_number(20080320, '0.0eee') from dual;
+--error 01481
+select to_number(20080320, '0.0eeeee') from dual;
+###--error 01481
+###select to_number(20080320, '.0EEEE') from dual;
+--error 01481
+select to_number(20080320, '9EEEE9.9EEEE') from dual;
+--error 01481
+select to_number(20080320, '9EEEE9.9eeee') from dual;
+--error 01481
+select to_number(20080320, '9EEEE9.9EEE') from dual;
+--error 01481
+select to_number(20080320, '9EEEE9.9EEEEE') from dual;
+--error 01481
+select to_number(20080320, 'eeee9.9eeee') from dual;
+--error 01481
+select to_number(20080320, 'EEEE9.EEEE') from dual;
+--error 01481
+select to_number(20080320, 'EEEE.9EEEE') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9EEEE') from dual;
+--error 01481
+select to_number(100000000, '9,9999,99999EEEE') from dual;
+--error 01481
+select to_number(100000000, '999,999,999,9EEEE,,') from dual;
+--error 01481
+select to_number(0.1,'0,99EEEE')  from dual;
+--error 01481
+select to_number(1485,'9,9999EEEE') from dual;
+--error 01481
+select to_number(100.2356, '99999,999EEEE') from dual;
+--error 01481
+select to_number(100.2356, '9,999999999EEEE') from dual;
+--error 01481
+select to_number(100.00, '9,999999999EEEE') from dual;
+--error 01481
+select to_number(0.2356, '9,999999999EEEE') from dual;
+--error 01481
+select to_number(12345+12345, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(12345-12345, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(12345*5, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(52345/5, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(0, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(0.00, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(0+0, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(0*0, '9,9,9,9,99EEEE') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.999EEEE') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,99,9.999EEEE') from dual;
+--error 01481
+select to_number(0.2356, '9999,.99EEEE') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,.9999EEEE') from dual;
+###--error 01481
+###select to_number(1234.34,'.9EEEE') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9,9,9,9.999EEEE') from dual;
+--error 01481
+select to_number(123434/6,'9,9,9,9.999EEEE') from dual;
+--error 01481
+select to_number(1234.34*5,'9,9,9,99.99EEEE') from dual;
+--error 01481
+select to_number('ABCD','9,9,9,9.999EEEE') from dual;
+--error 01481
+select to_number('中文.中文','9,9,9,99.99EEEE') from dual;
+--error 01481
+select to_number(2, 'v9999EEEE') from dual;
+--error 01481
+select to_number(2, 'V9999EEEE') from dual;
+--error 01481
+select to_number(2, 'v99EEEE') from dual;
+--error 01481
+select to_number(100000000, '9,9999,9v999CEEEE') from dual;
+###--error 01481
+###select to_number(123, '999999V999CEEEE') from dual;
+--error 01481
+select to_number(0.1,'0,9VCEEEE')  from dual;
+###--error 01481
+###select to_number(485,'99V9CEEEE') from dual;
+###--error 01481
+###select to_number(-485,'999VCEEEE') from dual;
+--error 01481
+select to_number(1485,'9,999VCEEEE') from dual;
+--error 01481
+select to_number(100.2356, '99999,99VEEEE') from dual;
+--error 01481
+select to_number(100.2356, '9,99999999VEEEE') from dual;
+--error 01481
+select to_number(100.00, '9,99999999VEEEE') from dual;
+
+--echo ##############################G正常测试number_format_model-2-1-10##################
+select to_number('12,3.456', '99G9D999') from dual;
+select to_number('1,,,2,,3,4,5','9GGG9GG9G9G9') from dual;
+select to_number('1,2,3,4,5','9G9G9G9G9') from dual;
+select to_number('12,3.456', '99g9D999') from dual;
+select to_number('1,,,2,,3,4,5','9ggg9gg9G9G9') from dual;
+select to_number('1,2,3,4,5','9G9G9G9g9') from dual;
+
+select to_number('1,0000,0000','9G9999G9999') from dual;
+select to_number('1,00000000','9G99999999') from dual;
+select to_number('10,0000000','99G9999999') from dual;
+select to_number('100,000,000','999G999G999') from dual;
+
+select to_number('100,000,000,,,','999G999G999GGG') from dual;
+select to_number('1,000,,,','999G999G999GGG') from dual;
+select to_number('1,000','999G999G999') from dual;
+
+select to_number('','999G999') from dual;
+select to_number('','9G99') from dual;
+select to_number('','99G999') from dual;
+
+select to_number('0,0','0G9')  from dual;
+select to_number('0012.0','9990999.9') from dual;
+select to_number('485','999') from dual;
+select to_number('-485','999') from dual;
+select to_number('1,485','9G999') from dual;
+
+select to_number('1,00','99999G99') from dual;
+select to_number('100','9G99999999') from dual;
+select to_number('100','9G99999999') from dual;
+select to_number('0','9G99999999') from dual;
+select to_number('100','999G9999') from dual;
+select to_number('1,00','999G99') from dual;
+select to_number('0','9G9999') from dual;
+
+select to_number('10,0','999999G9') from dual;
+select to_number('100','9999G999') from dual;
+select to_number('0','9999G9') from dual;
+
+select to_number('2,4,6,9,0','9G9G9G9G9') from dual;
+select to_number('0','9G9G9G9G9') from dual;
+select to_number('6,1,7,2,5','9G9G9G9G9') from dual;
+select to_number('1,0,4,6,9','9G9G9G9G9') from dual;
+select to_number('','9G9G9G9G9') from dual;
+select to_number('','9G9G9G9G9') from dual;
+select to_number('0','9G9G9G9G9') from dual;
+select to_number('0', '9G9G9G9G9') from dual;
+select to_number('0', '9G9G9G9G9') from dual;
+select to_number('0', '9G9G9G9G9') from dual;
+select to_number('0012,34','0000G00') from dual;
+select to_number('4,2','9999G9') from dual;
+select to_number(100.00,'9G99999999') from dual;
+select to_number('','9G9G9G9G9') from dual;
+select to_number(NULL,'9G9G9G9G9') from dual;
+select to_number(0,'9G9G9G9G9') from dual;
+select to_number(0.00, '9G9G9G9G9') from dual;
+select to_number(0+0, '9G9G9G9G9') from dual;
+select to_number(0*0, '9G9G9G9G9') from dual;
+select to_number(12345-12345,'9G9G9G9G9') from dual;
+
+--echo ##############################G异常测试#################
+--error 01722
+select to_number(123.456, '99G9D999') from dual;
+--error 01722
+select to_number(12345,'9GGG9GG9G9G9') from dual;
+--error 01722
+select to_number(12345,'9G9G9G9G9') from dual;
+--error 01722
+select to_number(123.456, '99g9D999') from dual;
+--error 01722
+select to_number(12345,'9ggg9gg9G9G9') from dual;
+--error 01722
+select to_number(12345,'9G9G9G9g9') from dual;
+--error 01722
+select to_number(100000000,'9G9999G9999') from dual;
+--error 01722
+select to_number(100000000,'9G99999999') from dual;
+--error 01722
+select to_number(100000000,'99G9999999') from dual;
+--error 01722
+select to_number(100000000,'999G999G999') from dual;
+--error 01722
+select to_number(100000000,'999G999G999GGG') from dual;
+--error 01722
+select to_number(1000,'999G999G999GGG') from dual;
+--error 01722
+select to_number(1000,'999G999G999') from dual;
+--error 01722
+select to_number(100000000,'999G999') from dual;
+--error 01722
+select to_number(100000000,'9G99') from dual;
+--error 01722
+select to_number(100000000,'99G999') from dual;
+--error 01722
+select to_number(0.1,'0G9')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9') from dual;
+--error 01722
+select to_number(1485,'9G999') from dual;
+--error 01722
+select to_number(100.2356,'99999G99') from dual;
+--error 01722
+select to_number(100.2356,'9G99999999') from dual;
+--error 01722
+select to_number(0.2356,'9G99999999') from dual;
+--error 01722
+select to_number(100.2356,'999G9999') from dual;
+--error 01722
+select to_number(100.00,'999G99') from dual;
+--error 01722
+select to_number(0.2356,'9G9999') from dual;
+--error 01722
+select to_number(100.2356,'999999G9') from dual;
+--error 01722
+select to_number(100.2356,'9999G999') from dual;
+--error 01722
+select to_number(0.2356,'9999G9') from dual;
+--error 01722
+select to_number(12345+12345,'9G9G9G9G9') from dual;
+--error 01722
+select to_number(12345*5,'9G9G9G9G9') from dual;
+--error 01722
+select to_number(52345/5,'9G9G9G9G9') from dual;
+--error 01722
+select to_number(1234.34,'0000G00') from dual;
+--error 01722
+select to_number(123*0.34,'9999G9') from dual;
+
+--error 01481
+select to_number(0.0,'G') from dual;
+--error 01481
+select to_number(1234.34,'G') from dual;
+--error 01481
+select to_number(123,'9999999DG99') from dual;
+--error 01481
+select to_number(-0.1,'99D99G') from dual;
+--error 01481
+select to_number(0.1,'0d9G')  from dual;
+
+--error 01481
+select to_number(12345, '9GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG9GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG9GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG9GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG9') from dual;
+--error 01481
+select to_number(12345, '9GGG999GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG9') from dual;
+--error 01481
+select to_number(485,'9 9 9') from dual;
+--error 01481
+select to_number(485,'99GG 9') from dual;
+--error 01481
+select to_number(100000000, '9，99999999') from dual;
+--error 01481
+select to_number(12345,'GGGGG9GGG9GG9G9G9') from dual;
+--error 01481
+select to_number(12345,'G9G9G9G9G9') from dual;
+--error 01481
+select to_number(100.2356,'G999G9999') from dual;
+--error 01481
+select to_number(100.00,'GGG999G99') from dual;
+--error 01481
+select to_number(0.2356,'GG9G9999') from dual;
+--error 01481
+select to_number(20080320,'9G9.9EEEE') from dual;
+--error 01481
+select to_number(20080320,'9.9G9EEEE') from dual;
+--error 01481
+select to_number(20080320,'G9.9G9EEEE') from dual;
+--error 01481
+select to_number(200.80320,'9.9G9EEEE') from dual;
+--error 00904
+select to_number(abcde,'9GGG9GG9G9G9') from dual;
+--error 01722
+select to_number('abcde','9G9G9G9G9') from dual;
+--error 01722
+select to_number('中文测试呀','9G9G9G9G9') from dual;
+--error 01481
+select to_number(1234.34,'9G9G9G9.99') from dual;
+--error 01481
+select to_number(1234.34,'9GGGGGGGGGG99G9.99') from dual;
+--error 01481
+select to_number(0.2356, '9999G.9') from dual;
+--error 01481
+select to_number(1234.34,'9G9G9G.999') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9G9G9G9.99') from dual;
+--error 01481
+select to_number(123434/6,'9G9G9G9.99') from dual;
+--error 01481
+select to_number(1234.34*5,'9G9G9G99.9') from dual;
+
+--echo ##############################L正常测试number_format_model-2-1-11##################
+
+select to_number('$1234', 'L9999') from dual;
+select to_number('$123.123', 'L999.999') from dual;
+##select to_number('123.123$', '999.999L') from dual;
+select to_number('$123.123', 'l999.999') from dual;
+##select to_number('123.123$', '999.999l') from dual;
+
+
+SELECT to_number('<$10,000.00>', 'L99G999D99PR', 'NLS_CURRENCY=$') "Amount" FROM DUAL;
+select to_number('', 'BL99') from dual;
+select to_number('$23', 'FML99') from dual;
+select to_number('', 'Bl99') from dual;
+select to_number('$23', 'FMl99') from dual;
+###select to_number('23$00', '99BL99') from dual;
+###select to_number('23.12$', '99.99BL') from dual;
+###select to_number('23.12$', '99.99BLPR') from dual;
+###select to_number('23.12$+', '99.99BLS') from dual;
+##select to_number('23$00', '99Bl99') from dual;
+##select to_number('23.12$', '99.99Bl') from dual;
+##select to_number('23.12$', '99.99BlPR') from dual;
+##select to_number('23.12$+', '99.99BlS') from dual;
+
+###select to_number('1,,,2,,3,4,5$', '9,,,9,,9,9,9L') from dual;
+###select to_number('1,0000,0000$', '9,9999,9999L') from dual;
+###select to_number('123$', '999999999L') from dual;
+###select to_number('-.10$','99.99L') from dual;
+###select to_number('0.1$','0.9L')  from dual;
+###select to_number('0,0$','0,9L')  from dual;
+###select to_number('0012.0$','9990999.9L') from dual;
+###select to_number('485$','999L') from dual;
+###select to_number('-485$','999L') from dual;
+###select to_number('123$', '999999999l') from dual;
+###select to_number('-.10$','99.99l') from dual;
+###select to_number('0.1$','0.9l')  from dual;
+###select to_number('0,0$','0,9l')  from dual;
+###select to_number('0012.0$','9990999.9l') from dual;
+###select to_number('485$','999l') from dual;
+###select to_number('-485$','999l') from dual;
+###select to_number('1,485$','9,999L') from dual;
+###select to_number('1,00$', '99999,99L') from dual;
+###select to_number('100$', '9,99999999L') from dual;
+###select to_number('100$', '9,99999999L') from dual;
+###select to_number('0$', '9,99999999L') from dual;
+###select to_number('2,4,6,9,0$', '9,9,9,9,9L') from dual;
+###select to_number('0$', '9,9,9,9,9L') from dual;
+###select to_number('6,1,7,2,5$', '9,9,9,9,9L') from dual;
+###select to_number('1,0,4,6,9$', '9,9,9,9,9L') from dual;
+###select to_number('0$', '9,9,9,9,9L') from dual;
+###select to_number('0$', '9,9,9,9,9L') from dual;
+###select to_number('0$', '9,9,9,9,9L') from dual;
+###select to_number('0$', '9,9,9,9,9L') from dual;
+###select to_number('1,2,3,4.34$','9,9,9,9.99L') from dual;
+###select to_number('1,,,,,,,,,,23,4.34$','9,,,,,,,,,,99,9.99L') from dual;
+###select to_number('.2$', '9999,.9L') from dual;
+###select to_number('1234.34$','0000.00L') from dual;
+###select to_number('41.8$','9999.9L') from dual;
+###select to_number('2,4,6,8.90$','9,9,9,9.99L') from dual;
+###select to_number('6,1,71.7$','9,9,9,99.9L') from dual;
+
+select to_number('', '9BL9') from dual;
+select to_number('$23', 'FML999') from dual;
+select to_number('', '9,9,9,9,9L') from dual;
+select to_number(NULL, '9,9,9,9,9L') from dual;
+
+###select to_number('23$000', '999BL999') from dual;
+###select to_number('23.12$', '9999.99BL') from dual;
+###select to_number('23$', '99BLPR') from dual;
+###select to_number(23, '99Bl99') from dual;
+###select to_number(23, '999BL999') from dual;
+
+--echo ##############################L异常测试#################
+
+--error 01722
+select to_number(1234, 'L9999') from dual;
+--error 01722
+select to_number(123.123, 'L999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999L') from dual;
+--error 01722
+select to_number(123.123, 'l999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999l') from dual;
+--error 01722
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=$') "Amount" FROM DUAL;
+--error 01722
+select to_number(23, 'BL99') from dual;
+--error 01722
+select to_number(23.12, '99.99BL') from dual;
+--error 01722
+select to_number(23, 'FML99') from dual;
+--error 01722
+select to_number(23.12, '99.99BLMI') from dual;
+--error 01722
+select to_number(23.12, '99.99BLPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BLS') from dual;
+--error 01722
+select to_number(23, 'Bl99') from dual;
+--error 01722
+select to_number(23.12, '99.99Bl') from dual;
+--error 01722
+select to_number(23, 'FMl99') from dual;
+--error 01722
+select to_number(23.12, '99.99BlMI') from dual;
+--error 01722
+select to_number(23.12, '99.99BlPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BlS') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9L') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999L') from dual;
+--error 01722
+select to_number(123, '999999999L') from dual;
+--error 01722
+select to_number(-0.1,'99.99L') from dual;
+--error 01722
+select to_number(0.1,'0.9L')  from dual;
+--error 01722
+select to_number(0.1,'0,9L')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9L') from dual;
+--error 01722
+select to_number(485,'999L') from dual;
+--error 01722
+select to_number(-485,'999L') from dual;
+--error 01722
+select to_number(123, '999999999l') from dual;
+--error 01722
+select to_number(-0.1,'99.99l') from dual;
+--error 01722
+select to_number(0.1,'0.9l')  from dual;
+--error 01722
+select to_number(0.1,'0,9l')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9l') from dual;
+--error 01722
+select to_number(485,'999l') from dual;
+--error 01722
+select to_number(-485,'999l') from dual;
+--error 01722
+select to_number(1485,'9,999L') from dual;
+--error 01722
+select to_number(23, '9BL9') from dual;
+--error 01722
+select to_number(23.12, '9999.99BL') from dual;
+--error 01722
+select to_number(23, 'FML999') from dual;
+--error 01722
+select to_number(23.12, '99BLPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BLMI') from dual;
+--error 01722
+select to_number(100.2356, '99999,99L') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999L') from dual;
+--error 01722
+select to_number(100.00, '9,99999999L') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999L') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(0.00, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(0+0, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(0*0, '9,9,9,9,9L') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99L') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99L') from dual;
+--error 01722
+select to_number(0.2356, '9999,.9L') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999L') from dual;
+--error 01722
+select to_number(1234.34,'.L') from dual;
+--error 01722
+select to_number(1234.34,'0000.00L') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9L') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99L') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99L') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9L') from dual;
+
+--error 01722
+select to_number('23.12$', '99.99BLMI') from dual;
+--error 01722
+select to_number('23.12$', '99.99BlMI') from dual;
+--error 01722
+select to_number('23.12$', '99.99BLMI') from dual;
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=AMERICA') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(100000000, '999,999,999L,,,') from dual;
+--error 01722
+select to_number('ACCD','9,9,9,9.99L') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9L') from dual;
+
+--error 01481
+select to_number(123.123, '9L99.999') from dual;
+--error 01481
+select to_number(123.123, '99L9.999') from dual;
+--error 01481
+select to_number(123.123, '999L.999') from dual;
+--error 01481
+select to_number(123.123, '999.L999') from dual;
+--error 01481
+select to_number(123.123, '999.9L99') from dual;
+--error 01481
+select to_number(123.123, '999.99L9') from dual;
+
+--error 01481
+select to_number(123.123, '9l99.999') from dual;
+--error 01481
+select to_number(123.123, '99l9.999') from dual;
+--error 01481
+select to_number(123.123, '999l.999') from dual;
+--error 01481
+select to_number(123.123, '999.l999') from dual;
+--error 01481
+select to_number(123.123, '999.9l99') from dual;
+--error 01481
+select to_number(123.123, '999.99l9') from dual;
+
+--error 01481
+select to_number(123.123, 'LL999.999') from dual;
+--error 01481
+select to_number(123.123, '9LL99.999') from dual;
+--error 01481
+select to_number(123.123, '99LL9.999') from dual;
+--error 01481
+select to_number(123.123, '999L.99L9') from dual;
+--error 01481
+select to_number(123.123, '9L99.L999') from dual;
+--error 01481
+select to_number(123.123, '999.9L9l9') from dual;
+--error 01481
+select to_number(123.123, '999l.99L9') from dual;
+--error 01481
+select to_number(123.123, '999.999Ll') from dual;
+--error 01481
+select to_number(23.12, '99999BLMI.99') from dual;
+--error 01481
+select to_number(23.12, '99BLS.99') from dual;
+
+--error 01481
+select to_number(29989329, '9.9EEEEL') from dual;
+--error 01481
+select to_number(29989329, '9.9EEELE') from dual;
+--error 01481
+select to_number(29989329, '9.9EELEE') from dual;
+--error 01481
+select to_number(29989329, '9.9ELEEE') from dual;
+
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=UNITED KINGDOM') "Amount" FROM DUAL;
+
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=''UNITED KINGDOM''') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=USA') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=CHINA') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=Chinese') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'L99G999D99PR', 'NLS_CURRENCY=RMB') "Amount" FROM DUAL;
+
+--echo ##############################Mi正常测试number_format_model-2-1-12##################
+
+
+select to_number('.10-','99.99Mi') from dual;
+select to_number('485-','999Mi') from dual;
+select to_number('1,2,3,4.34-','9,9,9,9.99Mi') from dual;
+select to_number('1,,,,,,,,,,23,4.34-','9,,,,,,,,,,99,9.99Mi') from dual;
+select to_number('', '9,9,9,9,9Mi') from dual;
+select to_number('', '9,9,9,9,9Mi') from dual;
+select to_number('.2-', '9999,.9Mi') from dual;
+select to_number('','9,9,9,.999Mi') from dual;
+select to_number('','.Mi') from dual;
+select to_number('1234.34-','0000.00Mi') from dual;
+select to_number('41.8-','9999.9Mi') from dual;
+select to_number('','9,9,9,9.99Mi') from dual;
+select to_number('6,1,71.7-','9,9,9,99.9Mi') from dual;
+select to_number('', '9,9,9,9,9Mi') from dual;
+select to_number(NULL, '9,9,9,9,9Mi') from dual;
+
+
+--echo ##############################Mi异常测试#################
+
+--error 01722
+select to_number('$1234', 'L9999Mi') from dual;
+--error 01722
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9Mi') from dual;
+--error 01722
+select to_number('1,0000,0000', '9,9999,9999Mi') from dual;
+--error 01722
+select to_number('100,000,000,,,', '999,999,999,,,Mi') from dual;
+--error 01722
+select to_number('123', '999999999Mi') from dual;
+--error 01722
+select to_number('0.1','0.9Mi')  from dual;
+--error 01722
+select to_number('0,0','0,9Mi')  from dual;
+--error 01722
+select to_number('0012.0','9990999.9Mi') from dual;
+--error 01722
+select to_number('485','999Mi') from dual;
+--error 01722
+select to_number('1,485','9,999Mi') from dual;
+--error 01722
+select to_number('1,00', '99999,99Mi') from dual;
+--error 01722
+select to_number('100', '9,99999999Mi') from dual;
+--error 01722
+select to_number('100', '9,99999999Mi') from dual;
+--error 01722
+select to_number('.22','9,9,9,9.99Mi') from dual;
+--error 01722
+select to_number('0', '9,99999999Mi') from dual;
+--error 01722
+select to_number('2,4,6,9,0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('6,1,7,2,5', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('1,0,4,6,9', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(1234, 'L9999Mi') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9Mi') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999Mi') from dual;
+--error 01722
+select to_number(100000000, '999,999,999,,,Mi') from dual;
+--error 01722
+select to_number(123, '999999999Mi') from dual;
+--error 01722
+select to_number(-0.1,'99.99Mi') from dual;
+--error 01722
+select to_number(0.1,'0.9Mi')  from dual;
+--error 01722
+select to_number(0.1,'0,9Mi')  from dual;
+####--error 01722
+####select to_number(12,'9990999.9Mi') from dual;
+--error 01722
+select to_number(485,'999Mi') from dual;
+--error 01722
+select to_number(-485,'999Mi') from dual;
+--error 01722
+select to_number(1485,'9,999Mi') from dual;
+--error 01722
+select to_number(100.2356, '99999,99Mi') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999Mi') from dual;
+--error 01722
+select to_number(100.00, '9,99999999Mi') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999Mi') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(0.00, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(0+0, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(0*0, '9,9,9,9,9Mi') from dual;
+--error 01722
+select to_number(-1234.34,'9,9,9,9.99Mi') from dual;
+--error 01722
+select to_number(-1234.34,'9,,,,,,,,,,99,9.99Mi') from dual;
+--error 01722
+select to_number(-0.2356, '9999,.9Mi') from dual;
+--error 01722
+select to_number(-1234.34,'9,9,9,.999Mi') from dual;
+--error 01722
+select to_number(-1234.34,'.Mi') from dual;
+--error 01722
+select to_number(-1234.34,'0000.00Mi') from dual;
+--error 01722
+select to_number(-123*0.34,'9999.9Mi') from dual;
+--error 01722
+select to_number(-1234.34+1234.56,'9,9,9,9.99Mi') from dual;
+--error 01722
+select to_number(-123434/6,'9,9,9,9.99Mi') from dual;
+--error 01722
+select to_number(-1234.34*5,'9,9,9,99.9Mi') from dual;
+
+--error 01481
+select to_number(1234, 'LMi9999') from dual;
+--error 01481
+select to_number(1234, 'MiL9999') from dual;
+--error 01481
+select to_number(1234, 'L99Mi99') from dual;
+--error 01481
+select to_number(1234, 'L99Mi0') from dual;
+--error 01481
+select to_number(1234, 'MiL9999Mi') from dual;
+--error 01481
+select to_number(1234, 'L9999MiMi') from dual;
+--error 01481
+select to_number(1234, 'L9999MiMiMi') from dual;
+
+
+--echo ##############################PR正常测试number_format_model-2-1-13##################
+select to_number('$1234', 'L9999PR') from dual;
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9PR') from dual;
+select to_number('1,0000,0000', '9,9999,9999PR') from dual;
+select to_number('100,000,000,,,', '999,999,999,,,PR') from dual;
+select to_number('123', '999999999PR') from dual;
+select to_number('<.10>','99.99PR') from dual;
+select to_number('0.1','0.9PR')  from dual;
+select to_number('0,0','0,9PR')  from dual;
+select to_number('0012.0','9990999.9PR') from dual;
+select to_number('485','999PR') from dual;
+select to_number('<485>','999PR') from dual;
+select to_number('1,485','9,999PR') from dual;
+select to_number('1,00', '99999,99PR') from dual;
+select to_number('100', '9,99999999PR') from dual;
+select to_number('100', '9,99999999PR') from dual;
+select to_number('0', '9,99999999PR') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9PR') from dual;
+select to_number('0', '9,9,9,9,9PR') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9PR') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9PR') from dual;
+select to_number('', '9,9,9,9,9PR') from dual;
+select to_number('', '9,9,9,9,9PR') from dual;
+select to_number('0', '9,9,9,9,9PR') from dual;
+select to_number('0', '9,9,9,9,9PR') from dual;
+select to_number('0', '9,9,9,9,9PR') from dual;
+select to_number('0', '9,9,9,9,9PR') from dual;
+select to_number('<1,2,3,4.34>','9,9,9,9.99PR') from dual;
+select to_number('<1,,,,,,,,,,23,4.34>','9,,,,,,,,,,99,9.99PR') from dual;
+select to_number('<.2>', '9999,.9PR') from dual;
+select to_number('','9,9,9,.999PR') from dual;
+select to_number('','.PR') from dual;
+select to_number('<1234.34>','0000.00PR') from dual;
+select to_number('<41.8>','9999.9PR') from dual;
+select to_number('.22','9,9,9,9.99PR') from dual;
+select to_number('','9,9,9,9.99PR') from dual;
+select to_number('<6,1,71.7>','9,9,9,99.9PR') from dual;
+
+select to_number('$1234', 'L9999Pr') from dual;
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9Pr') from dual;
+select to_number('1,0000,0000', '9,9999,9999Pr') from dual;
+select to_number('100,000,000,,,', '999,999,999,,,Pr') from dual;
+select to_number('123', '999999999Pr') from dual;
+select to_number('<.10>','99.99Pr') from dual;
+select to_number('0.1','0.9Pr')  from dual;
+select to_number('0,0','0,9Pr')  from dual;
+select to_number('0012.0','9990999.9Pr') from dual;
+select to_number('485','999Pr') from dual;
+select to_number('<485>','999Pr') from dual;
+select to_number('1,485','9,999Pr') from dual;
+select to_number('1,00', '99999,99Pr') from dual;
+select to_number('100', '9,99999999Pr') from dual;
+select to_number('100', '9,99999999Pr') from dual;
+select to_number('0', '9,99999999Pr') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9Pr') from dual;
+select to_number('0', '9,9,9,9,9Pr') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9Pr') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9Pr') from dual;
+select to_number('', '9,9,9,9,9Pr') from dual;
+select to_number('', '9,9,9,9,9Pr') from dual;
+select to_number('0', '9,9,9,9,9Pr') from dual;
+select to_number('0', '9,9,9,9,9Pr') from dual;
+select to_number('0', '9,9,9,9,9Pr') from dual;
+select to_number('0', '9,9,9,9,9Pr') from dual;
+select to_number('<1,2,3,4.34>','9,9,9,9.99Pr') from dual;
+select to_number('<1,,,,,,,,,,23,4.34>','9,,,,,,,,,,99,9.99Pr') from dual;
+select to_number('<.2>', '9999,.9Pr') from dual;
+select to_number('','9,9,9,.999Pr') from dual;
+select to_number('','.Pr') from dual;
+select to_number('<1234.34>','0000.00Pr') from dual;
+select to_number('<41.8>','9999.9Pr') from dual;
+select to_number('.22','9,9,9,9.99Pr') from dual;
+select to_number('','9,9,9,9.99Pr') from dual;
+select to_number('<6,1,71.7>','9,9,9,99.9Pr') from dual;
+
+select to_number('$1234', 'L9999pR') from dual;
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9pR') from dual;
+select to_number('1,0000,0000', '9,9999,9999pR') from dual;
+select to_number('100,000,000,,,', '999,999,999,,,pR') from dual;
+select to_number('123', '999999999pR') from dual;
+select to_number('<.10>','99.99pR') from dual;
+select to_number('0.1','0.9pR')  from dual;
+select to_number('0,0','0,9pR')  from dual;
+select to_number('0012.0','9990999.9pR') from dual;
+select to_number('485','999pR') from dual;
+select to_number('<485>','999pR') from dual;
+select to_number('1,485','9,999pR') from dual;
+select to_number('1,00', '99999,99pR') from dual;
+select to_number('100', '9,99999999pR') from dual;
+select to_number('100', '9,99999999pR') from dual;
+select to_number('0', '9,99999999pR') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9pR') from dual;
+select to_number('0', '9,9,9,9,9pR') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9pR') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9pR') from dual;
+select to_number('', '9,9,9,9,9pR') from dual;
+select to_number('', '9,9,9,9,9pR') from dual;
+select to_number('0', '9,9,9,9,9pR') from dual;
+select to_number('0', '9,9,9,9,9pR') from dual;
+select to_number('0', '9,9,9,9,9pR') from dual;
+select to_number('0', '9,9,9,9,9pR') from dual;
+select to_number('<1,2,3,4.34>','9,9,9,9.99pR') from dual;
+select to_number('<1,,,,,,,,,,23,4.34>','9,,,,,,,,,,99,9.99pR') from dual;
+select to_number('<.2>', '9999,.9pR') from dual;
+select to_number('','9,9,9,.999pR') from dual;
+select to_number('','.pR') from dual;
+select to_number('<1234.34>','0000.00pR') from dual;
+select to_number('<41.8>','9999.9pR') from dual;
+select to_number('.22','9,9,9,9.99pR') from dual;
+select to_number('','9,9,9,9.99pR') from dual;
+select to_number('<6,1,71.7>','9,9,9,99.9pR') from dual;
+
+select to_number('$1234', 'L9999pr') from dual;
+select to_number('1,,,2,,3,4,5', '9,,,9,,9,9,9pr') from dual;
+select to_number('1,0000,0000', '9,9999,9999pr') from dual;
+select to_number('100,000,000,,,', '999,999,999,,,pr') from dual;
+select to_number('123', '999999999pr') from dual;
+select to_number('<.10>','99.99pr') from dual;
+select to_number('0.1','0.9pr')  from dual;
+select to_number('0,0','0,9pr')  from dual;
+select to_number('0012.0','9990999.9pr') from dual;
+select to_number('485','999pr') from dual;
+select to_number('<485>','999pr') from dual;
+select to_number('1,485','9,999pr') from dual;
+select to_number('1,00', '99999,99pr') from dual;
+select to_number('100', '9,99999999pr') from dual;
+select to_number('100', '9,99999999pr') from dual;
+select to_number('0', '9,99999999pr') from dual;
+select to_number('2,4,6,9,0', '9,9,9,9,9pr') from dual;
+select to_number('0', '9,9,9,9,9pr') from dual;
+select to_number('6,1,7,2,5', '9,9,9,9,9pr') from dual;
+select to_number('1,0,4,6,9', '9,9,9,9,9pr') from dual;
+select to_number('', '9,9,9,9,9pr') from dual;
+select to_number('', '9,9,9,9,9pr') from dual;
+select to_number('0', '9,9,9,9,9pr') from dual;
+select to_number('0', '9,9,9,9,9pr') from dual;
+select to_number('0', '9,9,9,9,9pr') from dual;
+select to_number('0', '9,9,9,9,9pr') from dual;
+select to_number('<1,2,3,4.34>','9,9,9,9.99pr') from dual;
+select to_number('<1,,,,,,,,,,23,4.34>','9,,,,,,,,,,99,9.99pr') from dual;
+select to_number('<.2>', '9999,.9pr') from dual;
+select to_number('','9,9,9,.999pr') from dual;
+select to_number('','.pr') from dual;
+select to_number('<1234.34>','0000.00pr') from dual;
+select to_number('<41.8>','9999.9pr') from dual;
+select to_number('.22','9,9,9,9.99pr') from dual;
+select to_number('','9,9,9,9.99pr') from dual;
+select to_number('<6,1,71.7>','9,9,9,99.9pr') from dual;
+select to_number(123, '999999999PR') from dual;
+select to_number(485,'999PR') from dual;
+select to_number(100.00, '9,99999999PR') from dual;
+select to_number(12345-12345, '9,9,9,9,9PR') from dual;
+select to_number('', '9,9,9,9,9PR') from dual;
+select to_number(NULL, '9,9,9,9,9PR') from dual;
+select to_number(0, '9,9,9,9,9PR') from dual;
+select to_number(0.00, '9,9,9,9,9PR') from dual;
+select to_number(0+0, '9,9,9,9,9PR') from dual;
+select to_number(0*0, '9,9,9,9,9PR') from dual;
+select to_number(-1234.34+1234.56,'9,9,9,9.99PR') from dual;
+
+
+--echo ##############################PR异常测试#################
+--error 01722
+select to_number(1234, 'L9999PR') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9PR') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999PR') from dual;
+--error 01722
+select to_number(100000000, '999,999,999,,,PR') from dual;
+--error 01722
+select to_number(-0.1,'99.99PR') from dual;
+--error 01722
+select to_number(0.1,'0.9PR')  from dual;
+--error 01722
+select to_number(0.1,'0,9PR')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9PR') from dual;
+--error 01722
+select to_number(-485,'999PR') from dual;
+--error 01722
+select to_number(1485,'9,999PR') from dual;
+--error 01722
+select to_number(100.2356, '99999,99PR') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999PR') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999PR') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9PR') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9PR') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9PR') from dual;
+--error 01722
+select to_number(-1234.34,'9,9,9,9.99PR') from dual;
+--error 01722
+select to_number(-1234.34,'9,,,,,,,,,,99,9.99PR') from dual;
+--error 01722
+select to_number(-0.2356, '9999,.9PR') from dual;
+--error 01722
+select to_number(-1234.34,'9,9,9,.999PR') from dual;
+--error 01722
+select to_number(-1234.34,'.PR') from dual;
+--error 01722
+select to_number(-1234.34,'0000.00PR') from dual;
+--error 01722
+select to_number(-123*0.34,'9999.9PR') from dual;
+--error 01722
+select to_number(-123434/6,'9,9,9,9.99PR') from dual;
+--error 01722
+select to_number(-1234.34*5,'9,9,9,99.9PR') from dual;
+
+
+--error 01481
+select to_number(1234, 'LPR9999') from dual;
+--error 01481
+select to_number(1234, 'PRL9999') from dual;
+--error 01481
+select to_number(1234, 'PRL9999PR') from dual;
+--error 01481
+select to_number(1234, 'L9999PRPR') from dual;
+--error 01481
+select to_number(1234, 'L9999PRPRPR') from dual;
+
+--error 01481
+select to_number(1234, 'Lpr9999') from dual;
+--error 01481
+select to_number(1234, 'prL9999') from dual;
+--error 01481
+select to_number(1234, 'prL9999pr') from dual;
+--error 01481
+select to_number(1234, 'L9999prpr') from dual;
+--error 01481
+select to_number(1234, 'L9999prprpr') from dual;
+--error 01481
+select to_number(1234, 'L999PR9') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,PR0') from dual;
+
+--echo ##############################RN(rn)正常测试number_format_model-2-1-14##################
+
+select to_number('', 'rN') from dual;
+select to_number('', 'Rn') from dual;
+select to_number('', 'rn') from dual;
+
+--echo ##############################RN(rn)异常测试#################
+--error 01722
+select to_number('CXXIII', 'RN') from dual;
+--error 01722
+select to_number('MMMCMXCIX', 'RN') from dual;
+--error 01722
+select to_number('MMMCMXCVIII', 'RN') from dual;
+--error 01722
+select to_number('MMMCMXCVIII', 'RN') from dual;
+--error 01722
+select to_number('MMMCMXCIX', 'RN') from dual;
+--error 01722
+select to_number('II', 'RN') from dual;
+--error 01722
+select to_number('CXXIII', 'rN') from dual;
+--error 01722
+select to_number('MMMCMXCVIII', 'Rn') from dual;
+--error 01722
+select to_number('II', 'rn') from dual;
+--error 01722
+select to_number(123, 'RN') from dual;
+--error 01722
+select to_number(0, 'RN') from dual;
+--error 01722
+select to_number(0.000, 'RN') from dual;
+--error 01722
+select to_number(3999, 'RN') from dual;
+--error 01722
+select to_number(3998, 'RN') from dual;
+--error 01722
+select to_number(3998.0, 'RN') from dual;
+--error 01722
+select to_number(3998.0 + 1, 'RN') from dual;
+--error 01722
+select to_number(-1, 'RN') from dual;
+--error 01722
+select to_number(0.111, 'RN') from dual;
+--error 01722
+select to_number(-0.5, 'RN') from dual;
+--error 01722
+select to_number(1.5, 'RN') from dual;
+--error 01722
+select to_number(4000, 'RN') from dual;
+--error 01722
+select to_number(5000, 'RN') from dual;
+--error 01722
+select to_number(-200, 'RN') from dual;
+--error 01722
+select to_number(3999.5, 'RN') from dual;
+--error 01722
+select to_number(-200, 'rN') from dual;
+--error 01722
+select to_number(123, 'Rn') from dual;
+--error 01722
+select to_number(3999.5, 'rn') from dual;
+
+--error 01481
+select to_number(-1, 'RNRN') from dual;
+--error 01481
+select to_number(0.111, 'RNRN') from dual;
+--error 01481
+select to_number(-0.5, 'RNRN') from dual;
+--error 01481
+select to_number(1.5, 'RNRN') from dual;
+--error 01481
+select to_number(4000, 'RNRN') from dual;
+--error 01481
+select to_number(5000, 'RNRN') from dual;
+--error 01481
+select to_number(-200, 'RNRN') from dual;
+--error 01481
+select to_number(3999.5, 'RNRN') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9RN') from dual;
+--error 01481
+select to_number(100000000, '9,9999,9999RN') from dual;
+--error 01481
+select to_number(100000000, '999,999,999,,,RN') from dual;
+--error 01481
+select to_number(-485,'999RN') from dual;
+--error 01481
+select to_number(1485,'9,999RN') from dual;
+--error 01481
+select to_number(100.2356, '99999,99RN') from dual;
+--error 01481
+select to_number(100.2356, '9,99999999RN') from dual;
+--error 01481
+select to_number(100.00, '9,99999999RN') from dual;
+--error 01481
+select to_number(0.2356, '9,99999999RN') from dual;
+--error 01722
+select to_number('ABCD','RN') from dual;
+--error 01722
+select to_number('中文.中文','RN') from dual;
+
+
+--echo ##############################S正常测试number_format_model-2-1-15##################
+
+select to_number('1234-', '9999S') from dual;
+select to_number('1234+', '9999S') from dual;
+select to_number('-1234', 'S9999') from dual;
+select to_number('+1234', 'S9999') from dual;
+select to_number('1234-', '9999s') from dual;
+select to_number('1234+', '9999s') from dual;
+select to_number('-1234', 's9999') from dual;
+select to_number('+1234', 's9999') from dual;
+select to_number('+1234', 'FMS9999') from dual;
+select to_number('+1234', 'FMs9999') from dual;
+
+select to_number('1,,,2,,3,4,5+', '9,,,9,,9,9,9s') from dual;
+select to_number('1,0000,0000+', '9,9999,9999S') from dual;
+select to_number('100,000,000,,,+', '999,999,999,,,S') from dual;
+select to_number('123+', '999999999S') from dual;
+select to_number('.10-','99.99S') from dual;
+select to_number('0.1+','0.9S')  from dual;
+select to_number('0,0+','0,9S')  from dual;
+select to_number('0012.0+','9990999.9S') from dual;
+select to_number('485+','999S') from dual;
+select to_number('485-','999S') from dual;
+select to_number('1,485+','9,999S') from dual;
+select to_number('1,00+', '99999,99S') from dual;
+select to_number('100+', '9,99999999S') from dual;
+select to_number('100+', '9,99999999S') from dual;
+select to_number('0+', '9,99999999S') from dual;
+select to_number('2,4,6,9,0+', '9,9,9,9,9S') from dual;
+select to_number('0+', '9,9,9,9,9S') from dual;
+select to_number('6,1,7,2,5+', '9,9,9,9,9S') from dual;
+select to_number('1,0,4,6,9+', '9,9,9,9,9S') from dual;
+select to_number('', '9,9,9,9,9S') from dual;
+select to_number(NULL, '9,9,9,9,9S') from dual;
+select to_number('0+', '9,9,9,9,9S') from dual;
+select to_number('0+', '9,9,9,9,9S') from dual;
+select to_number('0+', '9,9,9,9,9S') from dual;
+select to_number('0+', '9,9,9,9,9S') from dual;
+select to_number('1,2,3,4.34+','9,9,9,9.99S') from dual;
+select to_number('1,,,,,,,,,,23,4.34+','9,,,,,,,,,,99,9.99S') from dual;
+select to_number('+.2', 'S9999,.9') from dual;
+select to_number('','S9,9,9,.999') from dual;
+select to_number('','.S') from dual;
+select to_number('1234.34+','0000.00S') from dual;
+select to_number('41.8+','9999.9S') from dual;
+select to_number('+2,4,6,8.90','S9,9,9,9.99') from dual;
+select to_number('','S9,9,9,9.99') from dual;
+select to_number('+6,1,71.7','S9,9,9,99.9') from dual;
+
+select to_number('+1,,,2,,3,4,5', 's9,,,9,,9,9,9') from dual;
+select to_number('+1,0000,0000', 's9,9999,9999') from dual;
+select to_number('+100,000,000,,,', 's999,999,999,,,') from dual;
+select to_number('+123', 's999999999') from dual;
+select to_number('-.10','s99.99') from dual;
+select to_number('+0.1','s0.9')  from dual;
+select to_number('+0,0','s0,9')  from dual;
+select to_number('+0012.0','S9990999.9') from dual;
+select to_number('+485','S999') from dual;
+select to_number('-485','S999') from dual;
+select to_number('+1,485','S9,999') from dual;
+select to_number('+1,00', 'S99999,99') from dual;
+select to_number('+100', 'S9,99999999') from dual;
+select to_number('+100', 'S9,99999999') from dual;
+select to_number('+0', 'S9,99999999') from dual;
+select to_number('+2,4,6,9,0', 'S9,9,9,9,9') from dual;
+select to_number('+0', 'S9,9,9,9,9') from dual;
+select to_number('+6,1,7,2,5', 'S9,9,9,9,9') from dual;
+select to_number('+1,0,4,6,9', 'S9,9,9,9,9') from dual;
+select to_number('', 'S9,9,9,9,9') from dual;
+select to_number('', 'S9,9,9,9,9') from dual;
+select to_number('+0', 'S9,9,9,9,9') from dual;
+select to_number('+0', 'S9,9,9,9,9') from dual;
+select to_number('+0', 'S9,9,9,9,9') from dual;
+select to_number('+0', 'S9,9,9,9,9') from dual;
+select to_number('+1,2,3,4.34','S9,9,9,9.99') from dual;
+select to_number('+1,,,,,,,,,,23,4.34','S9,,,,,,,,,,99,9.99') from dual;
+select to_number('+.2', 'S9999,.9') from dual;
+select to_number('','S9,9,9,.999') from dual;
+select to_number('','S.') from dual;
+select to_number('+1234.34','S0000.00') from dual;
+select to_number('41.8+','9999.9S') from dual;
+select to_number('+2,4,6,8.90','S9,9,9,9.99') from dual;
+select to_number('','S9,9,9,9.99') from dual;
+select to_number('+6,1,71.7','S9,9,9,99.9') from dual;
+
+select to_number('$1,2,3,4.00+','9,9,9,9.$99s') from dual;
+select to_number('$1,,,2,,3,4,5+', '$9,,,9,,9,9,9S') from dual;
+select to_number('$1,0000,0000+', '9,9999,$9999S') from dual;
+select to_number('$100,000,000,,,+', '999,$999,999,,,S') from dual;
+select to_number('$123+', '9999$99999S') from dual;
+select to_number('$.10-','99.$99S') from dual;
+select to_number('$0.1+','0.$9S')  from dual;
+select to_number('$0,0+','0,$9S')  from dual;
+select to_number('$0012.0+','9990999.$9S') from dual;
+select to_number('$485+','999$S') from dual;
+select to_number('$485-','99$9S') from dual;
+select to_number('$1,485+','9,9$99S') from dual;
+select to_number('$1,00+', '99$999,99S') from dual;
+select to_number('$100+', '$9,99999999S') from dual;
+select to_number('$100+', '9,$99999999S') from dual;
+select to_number('$0+', '9$,99999999S') from dual;
+
+select to_number('', 'BC99s') from dual;
+###select to_number('23.12USD+', '99.99BCS') from dual;
+select to_number('USD23+', 'FMC99S') from dual;
+select to_number(-1234, 'S9999') from dual;
+select to_number('', '9,9,9,9,9S') from dual;
+select to_number(NULL, '9,9,9,9,9S') from dual;
+select to_number(-0.1,'s99.99') from dual;
+select to_number(-485,'S999') from dual;
+select to_number('', 'S9,9,9,9,9') from dual;
+select to_number(NULL, 'S9,9,9,9,9') from dual;
+
+--echo ##############################S异常测试#################
+--error 01722
+select to_number('23USD00+', '99BC99S') from dual;
+--error 01722
+select to_number(-1234, '9999S') from dual;
+--error 01722
+select to_number(1234, '9999S') from dual;
+--error 01722
+select to_number(1234, 'S9999') from dual;
+--error 01722
+select to_number(-1234, '9999s') from dual;
+--error 01722
+select to_number(1234, '9999s') from dual;
+--error 01722
+select to_number(1234, 's9999') from dual;
+--error 01722
+select to_number(1234, 'FMS9999') from dual;
+--error 01722
+select to_number(1234, 'FMs9999') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9s') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999S') from dual;
+--error 01722
+select to_number(100000000, '999,999,999,,,S') from dual;
+--error 01722
+select to_number(123, '999999999S') from dual;
+--error 01722
+select to_number(-0.1,'99.99S') from dual;
+--error 01722
+select to_number(0.1,'0.9S')  from dual;
+--error 01722
+select to_number(0.1,'0,9S')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9S') from dual;
+--error 01722
+select to_number(485,'999S') from dual;
+--error 01722
+select to_number(-485,'999S') from dual;
+--error 01722
+select to_number(1485,'9,999S') from dual;
+--error 01722
+select to_number(100.2356, '99999,99S') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999S') from dual;
+--error 01722
+select to_number(100.00, '9,99999999S') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999S') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(0.00, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(0+0, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(0*0, '9,9,9,9,9S') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99S') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99S') from dual;
+--error 01722
+select to_number(0.2356, 'S9999,.9') from dual;
+--error 01722
+select to_number(1234.34,'S9,9,9,.999') from dual;
+--error 01722
+select to_number(1234.34,'.S') from dual;
+--error 01722
+select to_number(1234.34,'0000.00S') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9S') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'S9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434/6,'S9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34*5,'S9,9,9,99.9') from dual;
+--error 01722
+select to_number(12345, 's9,,,9,,9,9,9') from dual;
+--error 01722
+select to_number(100000000, 's9,9999,9999') from dual;
+--error 01722
+select to_number(100000000, 's999,999,999,,,') from dual;
+--error 01722
+select to_number(123, 's999999999') from dual;
+--error 01722
+select to_number(0.1,'s0.9')  from dual;
+###--error 01722
+###select to_number(0.1,'s0,9')  from dual;
+--error 01722
+select to_number(12,'S9990999.9') from dual;
+--error 01722
+select to_number(485,'S999') from dual;
+--error 01722
+select to_number(1485,'S9,999') from dual;
+--error 01722
+select to_number(100.2356, 'S99999,99') from dual;
+--error 01722
+select to_number(100.2356, 'S9,99999999') from dual;
+--error 01722
+select to_number(100.00, 'S9,99999999') from dual;
+--error 01722
+select to_number(0.2356, 'S9,99999999') from dual;
+--error 01722
+select to_number(12345+12345, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345-12345, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345*5, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(52345/5, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(0, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(0.00, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(0+0, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(0*0, 'S9,9,9,9,9') from dual;
+--error 01722
+select to_number(1234.34,'S9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'S9,,,,,,,,,,99,9.99') from dual;
+--error 01722
+select to_number(0.2356, 'S9999,.9') from dual;
+--error 01722
+select to_number(1234.34,'S9,9,9,.999') from dual;
+--error 01722
+select to_number(1234.34,'S.') from dual;
+--error 01722
+select to_number(1234.34,'S0000.00') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9S') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'S9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434/6,'S9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34*5,'S9,9,9,99.9') from dual;
+--error 01722
+select to_number(1234,'9,9,9,9.$99s') from dual;
+--error 01722
+select to_number(12345, '$9,,,9,,9,9,9S') from dual;
+--error 01722
+select to_number(100000000, '9,9999,$9999S') from dual;
+--error 01722
+select to_number(100000000, '999,$999,999,,,S') from dual;
+--error 01722
+select to_number(123, '9999$99999S') from dual;
+--error 01722
+select to_number(-0.1,'99.$99S') from dual;
+--error 01722
+select to_number(0.1,'0.$9S')  from dual;
+--error 01722
+select to_number(0.1,'0,$9S')  from dual;
+--error 01722
+select to_number(12,'9990999.$9S') from dual;
+--error 01722
+select to_number(485,'999$S') from dual;
+--error 01722
+select to_number(-485,'99$9S') from dual;
+--error 01722
+select to_number(1485,'9,9$99S') from dual;
+--error 01722
+select to_number(100.2356, '99$999,99S') from dual;
+--error 01722
+select to_number(100.2356, '$9,99999999S') from dual;
+--error 01722
+select to_number(100.00, '9,$99999999S') from dual;
+--error 01722
+select to_number(0.2356, '9$,99999999S') from dual;
+--error 01722
+select to_number(23, 'BC99s') from dual;
+--error 01722
+select to_number(23, '99BC99S') from dual;
+--error 01722
+select to_number(23.12, '99.99BCS') from dual;
+--error 01722
+select to_number(23, 'FMC99S') from dual;
+
+--error 01481
+select to_number(1234, 'L9999PRs') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9PRS') from dual;
+--error 01481
+select to_number(100000000, '9,9999,9999PRS') from dual;
+--error 01481
+select to_number(100000000, '999,999,999,,,PRS') from dual;
+--error 01481
+select to_number(-1234, '9999SS') from dual;
+--error 01481
+select to_number(1234, '9999SS') from dual;
+--error 01481
+select to_number(-1234, 'S9999S') from dual;
+--error 01481
+select to_number(1234, 'S9999S') from dual;
+--error 01481
+select to_number(-1234, '9999sS') from dual;
+--error 01481
+select to_number(1234, '9999sS') from dual;
+--error 01481
+select to_number(-1234, 's9999S') from dual;
+--error 01481
+select to_number(1234, 's9999S') from dual;
+--error 01481
+select to_number(1234, 'FMSS9999') from dual;
+--error 01481
+select to_number(1234, 'FMsS9999') from dual;
+--error 01481
+select to_number(1234, 'FM9S9999') from dual;
+--error 01481
+select to_number(1234, 'FM9S9999') from dual;
+--error 01481
+select to_number(-1234, '99s99') from dual;
+--error 01481
+select to_number(1234, '999s9') from dual;
+--error 01481
+select to_number(-1234, '9s999') from dual;
+--error 01481
+select to_number(1234, '99s99') from dual;
+--error 01481
+select to_number(-1234, '9S999') from dual;
+--error 01481
+select to_number(1234, '99S99') from dual;
+--error 01481
+select to_number(-1234, 'sS9999') from dual;
+--error 01481
+select to_number(1234, '9S999') from dual;
+--error 01481
+select to_number(23.12, '99.99BCMIS') from dual;
+--error 01481
+select to_number(23.12, '99.99BCPRS') from dual;
+
+
+--echo ##############################tme/tm9正常测试number_format_model-2-1-16##################
+select to_number('', 'tme') from dual;
+select to_number('', 'tM9') from dual;
+select to_number('', '9,9,9,9,9tm9') from dual;
+select to_number('', '9,9,9,9,9tm9') from dual;
+select to_number('', '9,9,9,9,9tm9') from dual;
+select to_number(NULL, '9,9,9,9,9tm9') from dual;
+
+--echo ##############################tme/tm9异常测试#################
+--error 01722
+select to_number('1.234E+03', 'tme') from dual;
+--error 01722
+select to_number('1234', 'tm9') from dual;
+--error 01722
+select trim(to_number('1.234E+03', 'tme')) from dual;
+--error 01722
+select trim(to_number('1234', 'tm9')) from dual;
+--error 01722
+select to_number('1E+65', 'tme') from dual;
+--error 01722
+select to_number('1E+65', 'tm9') from dual;
+--error 01722
+select to_number('1E+64', 'tme') from dual;
+--error 01722
+select to_number('1E+64', 'tm9') from dual;
+--error 01722
+select to_number('1E+63', 'tme') from dual;
+--error 01722
+select to_number('1000000000000000000000000000000000000000000000000000000000000000', 'tm9') from dual;
+--error 01722
+select to_number('1.2345E+04', 'tme') from dual;
+--error 01722
+select to_number('1E+08', 'tme') from dual;
+--error 01722
+select to_number('1E+08', 'tme') from dual;
+--error 01722
+select to_number('1.23E+02', 'tme') from dual;
+--error 01722
+select to_number('-1E-01','tme') from dual;
+--error 01722
+select to_number('1E-01','tme')  from dual;
+--error 01722
+select to_number('1E-01','tme')  from dual;
+--error 01722
+select to_number('1.2E+01','tme') from dual;
+--error 01722
+select to_number('4.85E+02','tme') from dual;
+--error 01722
+select to_number('-4.85E+02','tme') from dual;
+--error 01722
+select to_number('1.485E+03','tme') from dual;
+--error 01722
+select to_number('1.002356E+02', 'tme') from dual;
+--error 01722
+select to_number('1E+02', 'tme') from dual;
+--error 01722
+select to_number('2.356E-01', 'tme') from dual;
+--error 01722
+select to_number('2.469E+04', 'tme') from dual;
+--error 01722
+select to_number('0E+00', 'tme') from dual;
+--error 01722
+select to_number('6.1725E+04', 'tme') from dual;
+--error 01722
+select to_number('1.0469E+04', 'tme') from dual;
+--error 01722
+select to_number('0E+00', 'tme') from dual;
+--error 01722
+select to_number('0E+00', 'tme') from dual;
+--error 01722
+select to_number('0E+00', 'tme') from dual;
+--error 01722
+select to_number('0E+00', 'tme') from dual;
+--error 01722
+select to_number('1.23434E+03','tme') from dual;
+--error 01722
+select to_number('1.23434E+03','tme') from dual;
+--error 01722
+select to_number('2.356E-01', 'tme') from dual;
+--error 01722
+select to_number('1.23434E+03','tme') from dual;
+--error 01722
+select to_number('1.23434E+03','tme') from dual;
+--error 01722
+select to_number('1.23434E+03','tme') from dual;
+--error 01722
+select to_number('4.182E+01','tme') from dual;
+--error 01722
+select to_number('2.4689E+03','tme') from dual;
+--error 01722
+select to_number('2.05723333333333333333333333333333333333E+04','tme') from dual;
+--error 01722
+select to_number('6.1717E+03','tme') from dual;
+--error 01722
+select to_number('1.2345E+04', 'tME') from dual;
+--error 01722
+select to_number('1E+08', 'tMe') from dual;
+--error 01722
+select to_number('1.2345E+04', 'TMe') from dual;
+--error 01722
+select to_number('1E+08', 'TMe') from dual;
+--error 01722
+select to_number('1E+08', 'TMe') from dual;
+--error 01722
+select to_number('1.23434E+03','TMe') from dual;
+--error 01722
+select to_number('4.182E+01','TMe') from dual;
+--error 01722
+select to_number('2.4689E+03','TMe') from dual;
+--error 01722
+select to_number('2.05723333333333333333333333333333333333E+04','TMe') from dual;
+--error 01722
+select to_number('0', 'tM9') from dual;
+--error 01722
+select to_number('0', 'tM9') from dual;
+--error 01722
+select to_number('0', 'tM9') from dual;
+--error 01722
+select to_number('0', 'tM9') from dual;
+--error 01722
+select to_number('1234.34','tM9') from dual;
+--error 01722
+select to_number('1234.34','tM9') from dual;
+--error 01722
+select to_number('.2356', 'tM9') from dual;
+--error 01722
+select to_number('1234.34','tM9') from dual;
+--error 01722
+select to_number('1234.34','tM9') from dual;
+--error 01722
+select to_number('1234.34','tM9') from dual;
+--error 01722
+select to_number('41.82','tM9') from dual;
+--error 01722
+select to_number('2468.9','tM9') from dual;
+--error 01722
+select to_number('20572.3333333333333333333333333333333333','tM9') from dual;
+--error 01722
+select to_number('6171.7','tM9') from dual;
+--error 01722
+select to_number('12345', 'Tm9') from dual;
+--error 01722
+select to_number('100000000', 'Tm9') from dual;
+--error 01722
+select to_number('100000000', 'Tm9') from dual;
+--error 01722
+select to_number('123', 'Tm9') from dual;
+--error 01722
+select to_number('-.1','Tm9') from dual;
+--error 01722
+select to_number(1234, 'tme') from dual;
+--error 01722
+select to_number(1234, 'tm9') from dual;
+--error 01722
+select trim(to_number(1234, 'tme')) from dual;
+--error 01722
+select trim(to_number(1234, 'tm9')) from dual;
+--error 01722
+select to_number(99999999999999999999999999999999999999999999999999999999999999999, 'tme') from dual;
+--error 01722
+select to_number(99999999999999999999999999999999999999999999999999999999999999999, 'tm9') from dual;
+--error 01722
+select to_number(9999999999999999999999999999999999999999999999999999999999999999, 'tme') from dual;
+--error 01722
+select to_number(9999999999999999999999999999999999999999999999999999999999999999, 'tm9') from dual;
+--error 01722
+select to_number(999999999999999999999999999999999999999999999999999999999999999, 'tme') from dual;
+--error 01722
+select to_number(999999999999999999999999999999999999999999999999999999999999999, 'tm9') from dual;
+--error 01722
+select to_number(12345, 'tme') from dual;
+--error 01722
+select to_number(100000000, 'tme') from dual;
+--error 01722
+select to_number(100000000, 'tme') from dual;
+--error 01722
+select to_number(123, 'tme') from dual;
+--error 01722
+select to_number(-0.1,'tme') from dual;
+--error 01722
+select to_number(0.1,'tme')  from dual;
+--error 01722
+select to_number(0.1,'tme')  from dual;
+--error 01722
+select to_number(12,'tme') from dual;
+--error 01722
+select to_number(485,'tme') from dual;
+--error 01722
+select to_number(-485,'tme') from dual;
+--error 01722
+select to_number(1485,'tme') from dual;
+
+--error 01481
+select to_number(12345, 'Tm0') from dual;
+--error 01481
+select to_number(100000000, 'Tm0') from dual;
+--error 01481
+select to_number(100000000, 'Tm0') from dual;
+--error 01481
+select to_number(123, 'Tm0') from dual;
+--error 01481
+select to_number(-0.1,'Tm0') from dual;
+
+--error 01481
+select to_number(1234, 'tmetme') from dual;
+--error 01481
+select to_number(1234, 'tm9tme') from dual;
+--error 01481
+select to_number(99999999999999999999999999999999999999999999999999999999999999999, 'tmetme') from dual;
+--error 01481
+select to_number(99999999999999999999999999999999999999999999999999999999999999999, 'tm9tm9') from dual;
+--error 01481
+SELECT to_number(1234, 'TM9e') FROM DUAL;
+--error 01481
+SELECT to_number(1234, 'TMe9') FROM DUAL;
+--error 01481
+select to_number(23, 'FMB99tme') from dual;
+--error 01481
+select to_number(23, 'FMB99tm9') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9tme') from dual;
+--error 01481
+select to_number(100000000, '9,9999,9999tme') from dual;
+--error 01481
+select to_number(100000000, '999,999,999tme,,,') from dual;
+--error 01481
+select to_number(123, '999999999tme') from dual;
+--error 01481
+select to_number(-0.1,'99.99tme') from dual;
+--error 01481
+select to_number(0.1,'tme0.9')  from dual;
+###--error 01481
+###select to_number(0.1,'0,9tme')  from dual;
+--error 01481
+select to_number(12,'9990999.9tme') from dual;
+--error 01481
+select to_number(485,'999tme') from dual;
+--error 01481
+select to_number(-485,'999tme') from dual;
+--error 01481
+select to_number(1485,'9,999tme') from dual;
+--error 01481
+select to_number(100.2356, 'tme99999,99') from dual;
+--error 01481
+select to_number(100.2356, '9,999tme99999') from dual;
+--error 01481
+select to_number(100.00, '9,999tme99999') from dual;
+--error 01481
+select to_number(0.2356, '9,9999tme9999') from dual;
+--error 01481
+select to_number(12345+12345, '9tm9,9,9,9,9') from dual;
+--error 01481
+select to_number(12345-12345, '9,tm99,9,9,9') from dual;
+--error 01481
+select to_number(12345*5, '9,9,9,tm99,9') from dual;
+--error 01481
+select to_number(52345/5, '9,9,9,9,9tm9') from dual;
+--error 01481
+select to_number(0, '9,9,9,9,9tm9') from dual;
+--error 01481
+select to_number(0.00, '9,9,9,9,9tm9') from dual;
+--error 01481
+select to_number(0+0, '9,9,9,9,9tm9') from dual;
+--error 01481
+select to_number(0*0, '9,9,9,9,9tm9') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.99tm9') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,99,9.99tm9') from dual;
+--error 01481
+select to_number(0.2356, '999tm99,.9') from dual;
+--error 01481
+select to_number(1234.34,'tm99,9,9,.999') from dual;
+--error 01481
+select to_number(1234.34,'.tm9') from dual;
+--error 01481
+select to_number(1234.34,'0000.00tm9') from dual;
+--error 01481
+select to_number(123*0.34,'9999.9tm9') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9,9,9,9.99tm9') from dual;
+--error 01481
+select to_number(123434/6,'9,9,9,9.99tm9') from dual;
+--error 01481
+select to_number(1234.34*5,'9,9,9,99.9tm9') from dual;
+
+
+--echo ##############################U正常测试number_format_model-2-1-17##################
+
+select to_number('$999', 'U999') from dual;
+select to_number('$123.123', 'U999.999') from dual;
+###select to_number('123.123$', '999.999U') from dual;
+select to_number('USD123.123', 'c999.999') from dual;
+###select to_number('123.123USD', '999.999c') from dual;
+SELECT to_number('<$10,000.00>', 'U99G999D99PR', 'NLS_DUAL_CURRENCY=$') "Amount" FROM DUAL;
+select to_number('$23', 'FMU99') from dual;
+select to_number('', 'BU99') from dual;
+
+###select to_number('23$00', '99BU99') from dual;
+###select to_number('23.12$', '99.99BU') from dual;
+###select to_number('23.12$', '99.99BUPR') from dual;
+###select to_number('23.12$+', '99.99BUS') from dual;
+
+###select to_number('1,,,2,,3,4,5$', '9,,,9,,9,9,9U') from dual;
+###select to_number('1,0000,0000$', '9,9999,9999U') from dual;
+###select to_number('123$', '999999999U') from dual;
+###select to_number('-.10$','99.99U') from dual;
+###select to_number('0.1$','0.9U')  from dual;
+###select to_number('0,0$','0,9U')  from dual;
+###select to_number('0012.0$','9990999.9U') from dual;
+###select to_number('485$','999U') from dual;
+###select to_number('-485$','999U') from dual;
+###select to_number('1,485$','9,999U') from dual;
+###select to_number('1,00$', '99999,99U') from dual;
+###select to_number('100$', '9,99999999U') from dual;
+###select to_number('100$', '9,99999999U') from dual;
+###select to_number('0$', '9,99999999U') from dual;
+###select to_number('2,4,6,9,0$', '9,9,9,9,9U') from dual;
+###select to_number('0$', '9,9,9,9,9U') from dual;
+###select to_number('6,1,7,2,5$', '9,9,9,9,9U') from dual;
+###select to_number('1,0,4,6,9$', '9,9,9,9,9U') from dual;
+###select to_number('0$', '9,9,9,9,9U') from dual;
+###select to_number('0$', '9,9,9,9,9U') from dual;
+###select to_number('0$', '9,9,9,9,9U') from dual;
+###select to_number('0$', '9,9,9,9,9U') from dual;
+###select to_number('1,2,3,4.34$','9,9,9,9.99U') from dual;
+###select to_number('1,,,,,,,,,,23,4.34$','9,,,,,,,,,,99,9.99U') from dual;
+###select to_number('.2$', '9999,.9U') from dual;
+###select to_number('1234.34$','0000.00U') from dual;
+###select to_number('41.8$','9999.9U') from dual;
+###select to_number('2,4,6,8.90$','9,9,9,9.99U') from dual;
+###select to_number('6,1,71.7$','9,9,9,99.9U') from dual;
+
+
+###select to_number('23$000', '999BU999') from dual;
+###select to_number('23.12$', '9999.99BU') from dual;
+###select to_number('23$', '99BUPR') from dual;
+###select to_number('23$000', '999Bu999') from dual;
+###select to_number('23.12$', '9999.99Bu') from dual;
+###select to_number('23$', '99BuPR') from dual;
+
+select to_number('', '9BU9') from dual;
+select to_number('$23', 'FMU999') from dual;
+select to_number('', '9Bu9') from dual;
+select to_number('$23', 'FMu999') from dual;
+###select to_number(23, '99BU99') from dual;
+select to_number('', '9,9,9,9,9U') from dual;
+select to_number(NULL, '9,9,9,9,9U') from dual;
+
+--echo ##############################U异常测试#################
+--error 01722
+select to_number('23.12$', '99.99BuMI') from dual;
+--error 01722
+select to_number('23.12$', '99.99BUMI') from dual;
+--error 01722
+select to_number(999, 'U999') from dual;
+--error 01722
+select to_number(123.123, 'U999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999U') from dual;
+--error 01722
+select to_number(123.123, 'c999.999') from dual;
+--error 01722
+select to_number(123.123, '999.999c') from dual;
+--error 01722
+SELECT to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=$') "Amount" FROM DUAL;
+--error 01722
+select to_number(23, 'BU99') from dual;
+--error 01722
+select to_number(23.12, '99.99BU') from dual;
+--error 01722
+select to_number(23, 'FMU99') from dual;
+--error 01722
+select to_number(23.12, '99.99BUMI') from dual;
+--error 01722
+select to_number(23.12, '99.99BUPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BUS') from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,9U') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9999U') from dual;
+--error 01722
+select to_number(123, '999999999U') from dual;
+--error 01722
+select to_number(-0.1,'99.99U') from dual;
+--error 01722
+select to_number(0.1,'0.9U')  from dual;
+--error 01722
+select to_number(0.1,'0,9U')  from dual;
+###--error 01722
+###select to_number(12,'9990999.9U') from dual;
+--error 01722
+select to_number(485,'999U') from dual;
+--error 01722
+select to_number(-485,'999U') from dual;
+--error 01722
+select to_number(1485,'9,999U') from dual;
+--error 01722
+select to_number(100.2356, '99999,99U') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999U') from dual;
+--error 01722
+select to_number(100.00, '9,99999999U') from dual;
+--error 01722
+select to_number(0.2356, '9,99999999U') from dual;
+--error 01722
+select to_number(12345+12345, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(12345*5, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(52345/5, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(0.00, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(0+0, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(0*0, '9,9,9,9,9U') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,9.99U') from dual;
+--error 01722
+select to_number(1234.34,'9,,,,,,,,,,99,9.99U') from dual;
+--error 01722
+select to_number(0.2356, '9999,.9U') from dual;
+--error 01722
+select to_number(1234.34,'9,9,9,.999U') from dual;
+--error 01722
+select to_number(1234.34,'.U') from dual;
+--error 01722
+select to_number(1234.34,'0000.00U') from dual;
+--error 01722
+select to_number(123*0.34,'9999.9U') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'9,9,9,9.99U') from dual;
+--error 01722
+select to_number(123434/6,'9,9,9,9.99U') from dual;
+--error 01722
+select to_number(1234.34*5,'9,9,9,99.9U') from dual;
+--error 01722
+select to_number(23, '9BU9') from dual;
+--error 01722
+select to_number(23.12, '9999.99BU') from dual;
+--error 01722
+select to_number(23, 'FMU999') from dual;
+--error 01722
+select to_number(23.12, '99BUPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BUMI') from dual;
+--error 01722
+select to_number(23, '9Bu9') from dual;
+--error 01722
+select to_number(23.12, '9999.99Bu') from dual;
+--error 01722
+select to_number(23, 'FMu999') from dual;
+--error 01722
+select to_number(23.12, '99BuPR') from dual;
+--error 01722
+select to_number(23.12, '99.99BuMI') from dual;
+
+--error 12702
+SELECT to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=AMERICA') "Amount" FROM DUAL;
+--error 12702
+SELECT to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=USD') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(100000000, '999,999,999U,,,') from dual;
+--error 01722
+select to_number('AUUD','9,9,9,9.99U') from dual;
+--error 01722
+select to_number('中文.中文','9,9,9,99.9U') from dual;
+
+--error 01481
+select to_number(123.123, '9U99.999') from dual;
+--error 01481
+select to_number(123.123, '99U9.999') from dual;
+--error 01481
+select to_number(123.123, '999U.999') from dual;
+--error 01481
+select to_number(123.123, '999.U999') from dual;
+--error 01481
+select to_number(123.123, '999.9U99') from dual;
+--error 01481
+select to_number(123.123, '999.99U9') from dual;
+
+--error 01481
+select to_number(123.123, '9u99.999') from dual;
+--error 01481
+select to_number(123.123, '99u9.999') from dual;
+--error 01481
+select to_number(123.123, '999u.999') from dual;
+--error 01481
+select to_number(123.123, '999.u999') from dual;
+--error 01481
+select to_number(123.123, '999.9u99') from dual;
+--error 01481
+select to_number(123.123, '999.99u9') from dual;
+
+--error 01481
+select to_number(123.123, 'UU999.999') from dual;
+--error 01481
+select to_number(123.123, '9UU99.999') from dual;
+--error 01481
+select to_number(123.123, '99UU9.999') from dual;
+--error 01481
+select to_number(123.123, '999U.99U9') from dual;
+--error 01481
+select to_number(123.123, '9U99.U999') from dual;
+--error 01481
+select to_number(123.123, '999.9U9c9') from dual;
+--error 01481
+select to_number(123.123, '999c.99U9') from dual;
+--error 01481
+select to_number(123.123, '999.999Uu') from dual;
+--error 01481
+select to_number(23.12, '99999BUMI.99') from dual;
+--error 01481
+select to_number(23.12, '99BUS.99') from dual;
+
+--error 01481
+select to_number(29989329, '9.9EEEEB') from dual;
+--error 01481
+select to_number(29989329, '9.9EEEBE') from dual;
+--error 01481
+select to_number(29989329, '9.9EEBEE') from dual;
+--error 01481
+select to_number(29989329, '9.9EBEEE') from dual;
+
+--error 12702
+select to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=UNITED KINGDOM') "Amount" FROM DUAL;
+
+--error 01722,12702
+select to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=''UNITED KINGDOM''') "Amount" FROM DUAL;
+--error 01722,12702
+select to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=USA') "Amount" FROM DUAL;
+--error 01722,12702
+select to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=UHINA') "Amount" FROM DUAL;
+--error 01722,12702
+select to_number(-10000, 'U99G999D99PR', 'NLS_DUAL_CURRENCY=Uhinese') "Amount" FROM DUAL;
+
+--error 01481
+select to_number(23.12, '99.99UB') from dual;
+--error 01481
+select to_number(23.12, '9.9UEEEE') from dual;
+
+--echo ##############################V(v)正常测试number_format_model-2-1-18##################
+select to_number('', 'V9999') from dual;
+select to_number('', 'V99') from dual;
+select to_number('', '9,9,9,V9,9') from dual;
+select to_number('', '9,9V,9,9,9') from dual;
+select to_number('', '9,,,9,,9,9,v9') from dual;
+select to_number('', '9,9999,9V999') from dual;
+select to_number('','9,9V99') from dual;
+
+--echo ##############################V(v)异常测试#################
+--error 01722
+select to_number('200', '99v99') from dual;
+--error 01722
+select to_number('2000', '9v999') from dual;
+--error 01722
+select to_number('2', '9999V') from dual;
+--error 01722
+select to_number('20', '9v9') from dual;
+--error 01722
+select to_number('200', '9v9') from dual;
+--error 01722
+select to_number('2', '99V') from dual;
+--error 01722
+select to_number('200000000000000', '99v99999999999999') from dual;
+--error 01722
+select to_number('20000000000', '99v9999999999') from dual;
+--error 01722
+select to_number('200000000000', '9v99999999999') from dual;
+--error 01722
+select to_number('$23', 'FMU99V') from dual;
+--error 01722
+select to_number('123000USD', '999999V999C') from dual;
+--error 01722
+select to_number('0,0USD','0,9VC')  from dual;
+--error 01722
+select to_number('-485USD','999VC') from dual;
+--error 01722
+select to_number('1,485USD','9,999VC') from dual;
+--error 01722
+select to_number('1,00USD', '99999,99VC') from dual;
+--error 01722
+select to_number('100USD', '9,99999999VC') from dual;
+--error 01722
+select to_number('100USD', '9,99999999VC') from dual;
+--error 01722
+select to_number('200E+00', '99v99EEEE') from dual;
+--error 01722
+select to_number('2000E+00', '9v999EEEE') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,9V') from dual;
+--error 01722
+select to_number('123000', '999999V999') from dual;
+--error 01722
+select to_number('0,1','0,V9')  from dual;
+--error 01722
+select to_number('485','999V') from dual;
+--error 01722
+select to_number('-485','999V') from dual;
+--error 01722
+select to_number('10000000', '9,999V99999') from dual;
+--error 01722
+select to_number('2356', '9,9999V9999') from dual;
+--error 01722
+select to_number('0', '9,9,9,9,V9') from dual;
+--error 01722
+select to_number(2, '99v99') from dual;
+--error 01722
+select to_number(2, '9v999') from dual;
+--error 01722
+select to_number(2, 'V9999') from dual;
+--error 01722
+select to_number(2, '9999V') from dual;
+--error 01722
+select to_number(2, '9v9') from dual;
+--error 01722
+select to_number(2, '9v9') from dual;
+--error 01722
+select to_number(2, 'V99') from dual;
+--error 01722
+select to_number(2, '99V') from dual;
+--error 01722
+select to_number(2, '99v99999999999999') from dual;
+--error 01722
+select to_number(2, '99v9999999999') from dual;
+--error 01722
+select to_number(2, '9v99999999999') from dual;
+--error 01722
+select to_number(23, 'FMU99V') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9v999C') from dual;
+--error 01722
+select to_number(123, '999999V999C') from dual;
+--error 01722
+select to_number(0.1,'0,9VC')  from dual;
+--error 01722
+select to_number(485,'99V9C') from dual;
+--error 01722
+select to_number(-485,'999VC') from dual;
+--error 01722
+select to_number(1485,'9,999VC') from dual;
+--error 01722
+select to_number(100.2356, '99999,99VC') from dual;
+--error 01722
+select to_number(100.2356, '9,99999999VC') from dual;
+--error 01722
+select to_number(100.00, '9,99999999VC') from dual;
+--error 01722
+select to_number(2, '99v99EEEE') from dual;
+--error 01722
+select to_number(2, '9v999EEEE') from dual;
+--error 01722
+select to_number(0, '9,9,9,9,9V') from dual;
+--error 01722
+select to_number(123, '999999V999') from dual;
+--error 01722
+select to_number(0.1,'0,V9')  from dual;
+--error 01722
+select to_number(12345, '9,,,9,,9,9,v9') from dual;
+--error 01722
+select to_number(100000000, '9,9999,9V999') from dual;
+--error 01722
+select to_number(485,'999V') from dual;
+--error 01722
+select to_number(-485,'999V') from dual;
+--error 01722
+select to_number(1485,'9,9V99') from dual;
+--error 01722
+select to_number(100.00, '9,999V99999') from dual;
+--error 01722
+select to_number(0.2356, '9,9999V9999') from dual;
+--error 01722
+select to_number(12345-12345, '9,9,9,9,V9') from dual;
+
+
+--error 01481
+select to_number(2, '99v9V9') from dual;
+--error 01481
+select to_number(2, '9v999V') from dual;
+--error 01481
+select to_number(2, 'VV9999') from dual;
+--error 01481
+select to_number(2, '9999VV') from dual;
+--error 01481
+select to_number(2, '99v.99') from dual;
+--error 01481
+select to_number(2, '9v.999') from dual;
+--error 01481
+select to_number(2, 'V.9999') from dual;
+--error 01481
+select to_number(2, '9999.V') from dual;
+--error 01481
+select to_number(2, 'V9999EEEE') from dual;
+
+--error 01481
+select to_number(29989329, '9.9EEEEv') from dual;
+--error 01481
+select to_number(29989329, '9.9EEEVE') from dual;
+--error 01481
+select to_number(29989329, '9.9EEVEE') from dual;
+--error 01481
+select to_number(29989329, '9.9EVEEE') from dual;
+--error 01481
+select to_number(23, 'BU99v') from dual;
+--error 01481
+select to_number(23, '99BU9v9') from dual;
+--error 01481
+select to_number(23.12, '99.99BUV') from dual;
+--error 01481
+select to_number(23.12, '99.99VBUMI') from dual;
+--error 01481
+select to_number(23.12, '99.99VBUPR') from dual;
+--error 01481
+select to_number(23.12, '99.99VBUS') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9Cv') from dual;
+--error 01481
+select to_number(-0.1,'99.99VC') from dual;
+--error 01481
+select to_number(0.1,'0.9VC')  from dual;
+###--error 01481
+###select to_number(12,'9990999.9VC') from dual;
+###--error 01481
+###select to_number(100000000, '999,999,V999,,,') from dual;
+--error 01481
+select to_number(-0.1,'99.V99') from dual;
+--error 01481
+select to_number(0.1,'0.V9')  from dual;
+--error 01481
+select to_number(12,'9990V999.9') from dual;
+####--error 01481
+####select to_number(100.2356, 'V99999,99') from dual;
+###--error 01481
+###select to_number(100.2356, '9V,99999999') from dual;
+###--error 01481
+###select to_number(12345+12345, 'V9,9,9,9,9') from dual;
+###--error 01481
+###select to_number(12345*5, '9,9,9,V9,9') from dual;
+###--error 01481
+###select to_number(52345/5, '9,9V,9,9,9') from dual;
+###--error 01481
+###select to_number(0.00, '9,V9,9,9,9') from dual;
+###--error 01481
+###select to_number(0+0, '9,9,V9,9,9') from dual;
+###--error 01481
+###select to_number(0*0, '9,9V,9,9,9') from dual;
+--error 01481
+select to_number(1234.34,'9,9V,9,9.99') from dual;
+--error 01481
+select to_number(1234.34,'9V,,,,,,,,,,99,9.99') from dual;
+--error 01481
+select to_number(0.2356, '9V999,.9') from dual;
+--error 01481
+select to_number(1234.34,'9,V9,9,.999') from dual;
+--error 01481
+select to_number(1234.34,'V.') from dual;
+--error 01481
+select to_number(1234.34,'0000V.00') from dual;
+--error 01481
+select to_number(123*0.34,'9999V.9') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9,9,9,9.V99') from dual;
+--error 01481
+select to_number(123434/6,'9,9,9,9.V99') from dual;
+--error 01481
+select to_number(1234.34*5,'9,9,V9,99.9') from dual;
+
+--echo ##############################X(x)正常测试number_format_model-2-1-19##################
+select to_number('20', 'xx') from dual;
+select to_number('', 'XX') from dual;
+select to_number('', 'X') from dual;
+select to_number('7B', 'XX') from dual;
+select to_number('0','XXX')  from dual;
+select to_number('C','XX') from dual;
+select to_number('1E5','XXX') from dual;
+select to_number('','XXX') from dual;
+select to_number('5CD','XXX') from dual;
+select to_number('64', 'XXX') from dual;
+select to_number('0', 'XX') from dual;
+select to_number('', 'XX') from dual;
+select to_number('0', 'XXXX') from dual;
+select to_number('', 'xxx') from dual;
+select to_number('', 'xx') from dual;
+select to_number('0', 'XXxx') from dual;
+select to_number('6072', 'xxxXX') from dual;
+select to_number('0', 'XXxxxXX') from dual;
+select to_number('f11d', 'xxxXXXX') from dual;
+select to_number('28e5', 'xXXXXx') from dual;
+select to_number('', 'xx') from dual;
+select to_number('0', 'xxx') from dual;
+select to_number('0', 'xx') from dual;
+select to_number('0', 'xxxxx') from dual;
+select to_number('','xx') from dual;
+select to_number('4d2','xxx') from dual;
+select to_number('0', 'xxx') from dual;
+select to_number('4d2','xxx') from dual;
+select to_number('2a','xxx') from dual;
+select to_number('','xx') from dual;
+select to_number('','xxx') from dual;
+
+select to_number('03039', '000XX') from dual;
+select to_number('', '000XX') from dual;
+select to_number('', '00X') from dual;
+select to_number('00000','000XX')  from dual;
+select to_number('00000','00XXX')  from dual;
+select to_number('0000C','000XX') from dual;
+select to_number('0001E5','000XXX') from dual;
+select to_number('','000XXX') from dual;
+select to_number('0005CD','000XXX') from dual;
+select to_number('', 'xx000') from dual;
+select to_number('', '000xx') from dual;
+select to_number('000000', '000xxx') from dual;
+select to_number('00000', '000xx') from dual;
+select to_number('00000000', '000xxxxx') from dual;
+select to_number('00000', '000xx') from dual;
+select to_number('004d2','000xx') from dual;
+select to_number('0004d2','000xxx') from dual;
+select to_number('00000', '00xxx') from dual;
+select to_number('0004d2','000xxx') from dual;
+select to_number('0004d2','000xxx') from dual;
+select to_number('00002a','000xxx') from dual;
+select to_number('009a5','000xx') from dual;
+select to_number('00505c','000xxx') from dual;
+select to_number('00181c','000xxx') from dual;
+
+select to_number('', 'FMXX') from dual;
+select to_number('0','FMXX')  from dual;
+select to_number('0','FMXXX')  from dual;
+select to_number('C','FMXX') from dual;
+select to_number('1E5','FMXXX') from dual;
+select to_number('','FMXXX') from dual;
+select to_number('5CD','FMXXX') from dual;
+select to_number('', 'xxFM') from dual;
+select to_number('', 'FMxx') from dual;
+select to_number('0', 'FMxxx') from dual;
+select to_number('0', 'FMxx') from dual;
+select to_number('0', 'FMxxxxx') from dual;
+select to_number('0', 'FMxx') from dual;
+select to_number('','FMxx') from dual;
+select to_number('4d2','FMxxx') from dual;
+select to_number('0', 'FMxxx') from dual;
+select to_number('4d2','FMxxx') from dual;
+select to_number('4d2','FMxxx') from dual;
+select to_number('2a','FMxxx') from dual;
+select to_number('','FMxx') from dual;
+select to_number('','FMxxx') from dual;
+select to_number('','FMxx') from dual;
+select to_number('0','FMXX') from dual;
+select to_number('64', 'FMXXX') from dual;
+select to_number('64', 'FMXXX') from dual;
+select to_number('64', 'FMXXX') from dual;
+select to_number('0', 'FMXX') from dual;
+
+
+###select to_number('04D2','0000.00X') from dual;
+###select to_number(-485,'XXX') from dual;
+###select to_number(-485,'FMXXX') from dual;
+###select to_number(1234.34,'0000.00X') from dual;
+
+select to_number('505c','FM0xxx') from dual;
+select to_number('','FM0xx') from dual;
+select to_number('000','FM0XX') from dual;
+select to_number('0064', 'FM0XXX') from dual;
+select to_number('0064', 'FM0XXX') from dual;
+select to_number('0064', 'FM0XXX') from dual;
+select to_number('000', 'FM0XX') from dual;
+select to_number('', '9X,9,9,9,9') from dual;
+select to_number('', '9,9,9X,9,9') from dual;
+select to_number(32, 'xx') from dual;
+select to_number(32, 'XX') from dual;
+select to_number(12,'XX') from dual;
+select to_number(485,'XXX') from dual;
+select to_number(100.00, 'XXX') from dual;
+select to_number(12345-12345, 'XXXX') from dual;
+select to_number(12345+12345, 'xxxXX') from dual;
+select to_number(12345-12345, 'XXxxxXX') from dual;
+select to_number(12345*5, 'xxxXXXX') from dual;
+select to_number(52345/5, 'xXXXXx') from dual;
+select to_number(0, 'xxx') from dual;
+select to_number(0.00, 'xx') from dual;
+select to_number(0+0, 'xxxxx') from dual;
+select to_number(0*0, 'xx') from dual;
+select to_number('', 'xx000') from dual;
+select to_number(NULL, '000xx') from dual;
+select to_number(12345, '000XX') from dual;
+select to_number(12,'FMXX') from dual;
+select to_number(485,'FMXXX') from dual;
+select to_number('', 'xxFM') from dual;
+select to_number(NULL, 'FMxx') from dual;
+select to_number(0, 'FMxxx') from dual;
+select to_number(0.00, 'FMxx') from dual;
+select to_number(0+0, 'FMxxxxx') from dual;
+select to_number(0*0, 'FMxx') from dual;
+select to_number(100.00, 'FMXXX') from dual;
+select to_number('', '9X,9,9,9,9') from dual;
+select to_number(NULL, '9,9,9X,9,9') from dual;
+
+
+
+--echo ##############################X(x)异常测试#################
+--error 01722
+select to_number(123434/6,'FM0xxx') from dual;
+--error 01722
+select to_number(1234.34*5,'FM0xx') from dual;
+--error 01722
+select to_number(-0.1,'FM0XX') from dual;
+--error 01722
+select to_number(100.2356, 'FM0XXX') from dual;
+--error 01722
+select to_number(100.2356, 'FM0XXX') from dual;
+###--error 01722
+###select to_number(100.00, 'FM0XXX') from dual;
+--error 01722
+select to_number(0.2356, 'FM0XX') from dual;
+--error 01722
+select to_number(1485,'FMXXX') from dual;
+--error 01722
+select to_number(12345, 'FMXX') from dual;
+--error 01722
+select to_number(100000000, 'FMXX') from dual;
+--error 01722
+select to_number(100000000, 'FMX') from dual;
+--error 01722
+select to_number(0.1,'FMXX')  from dual;
+--error 01722
+select to_number(0.1,'FMXXX')  from dual;
+--error 01722
+select to_number(12345*5, 'xxx') from dual;
+--error 01722
+select to_number(52345/5, 'xx') from dual;
+--error 01722
+select to_number(0.2356, 'XXxx') from dual;
+--error 01722
+select to_number(12345, 'XX') from dual;
+--error 01722
+select to_number(100000000, 'XX') from dual;
+--error 01722
+select to_number(100000000, 'X') from dual;
+--error 01722
+select to_number(123, 'XX') from dual;
+--error 01722
+select to_number(-0.1,'XX') from dual;
+--error 01722
+select to_number(0.1,'XX')  from dual;
+--error 01722
+select to_number(0.1,'XXX')  from dual;
+--error 01722
+select to_number(1485,'XXX') from dual;
+--error 01722
+select to_number(100.2356, 'XXX') from dual;
+--error 01722
+select to_number(100.2356, 'XXX') from dual;
+--error 01722
+select to_number(0.2356, 'XX') from dual;
+--error 01722
+select to_number(12345+12345, 'XX') from dual;
+--error 01722
+select to_number(1234.34,'xx') from dual;
+--error 01722
+select to_number(1234.34,'xxx') from dual;
+--error 01722
+select to_number(0.2356, 'xxx') from dual;
+--error 01722
+select to_number(1234.34,'xxx') from dual;
+--error 01722
+select to_number(1234.34,'xxx') from dual;
+--error 01722
+select to_number(123*0.34,'xxx') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'xx') from dual;
+--error 01722
+select to_number(123434/6,'xxx') from dual;
+--error 01722
+select to_number(1234.34*5,'xxx') from dual;
+--error 01722
+select to_number(100000000, '000XX') from dual;
+--error 01722
+select to_number(100000000, '00X') from dual;
+--error 01722
+select to_number(0.1,'000XX')  from dual;
+--error 01722
+select to_number(0.1,'00XXX')  from dual;
+###--error 01722
+###select to_number(12,'000XX') from dual;
+###--error 01722
+###select to_number(485,'000XXX') from dual;
+--error 01722
+select to_number(-485,'000XXX') from dual;
+###--error 01722
+###select to_number(1485,'000XXX') from dual;
+###--error 01722
+###select to_number(0, '000xxx') from dual;
+###--error 01722
+###select to_number(0.00, '000xx') from dual;
+###--error 01722
+###select to_number(0+0, '000xxxxx') from dual;
+###--error 01722
+###select to_number(0*0, '000xx') from dual;
+--error 01722
+select to_number(1234.34,'000xx') from dual;
+--error 01722
+select to_number(1234.34,'000xxx') from dual;
+--error 01722
+select to_number(0.2356, '00xxx') from dual;
+--error 01722
+select to_number(1234.34,'000xxx') from dual;
+--error 01722
+select to_number(1234.34,'000xxx') from dual;
+--error 01722
+select to_number(123*0.34,'000xxx') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'000xx') from dual;
+--error 01722
+select to_number(123434/6,'000xxx') from dual;
+--error 01722
+select to_number(1234.34*5,'000xxx') from dual;
+--error 01722
+select to_number(1234.34,'FMxx') from dual;
+--error 01722
+select to_number(1234.34,'FMxxx') from dual;
+--error 01722
+select to_number(0.2356, 'FMxxx') from dual;
+--error 01722
+select to_number(1234.34,'FMxxx') from dual;
+--error 01722
+select to_number(1234.34,'FMxxx') from dual;
+--error 01722
+select to_number(123*0.34,'FMxxx') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'FMxx') from dual;
+--error 01722
+select to_number(123434/6,'FMxxx') from dual;
+--error 01722
+select to_number(1234.34*5,'FMxx') from dual;
+--error 01722
+select to_number(-0.1,'FMXX') from dual;
+--error 01722
+select to_number(100.2356, 'FMXXX') from dual;
+--error 01722
+select to_number(100.2356, 'FMXXX') from dual;
+--error 01722
+select to_number(0.2356, 'FMXX') from dual;
+
+--error 01481
+select to_number(123434/6,'0FMxxx') from dual;
+--error 01481
+select to_number(1234.34*5,'0FMxx') from dual;
+--error 01481
+select to_number(-0.1,'0FMXX') from dual;
+--error 01481
+select to_number(100.2356, '0FMXXX') from dual;
+--error 01481
+select to_number(100.2356, '0FMXXX') from dual;
+--error 01481
+select to_number(100.00, '0FMXXX') from dual;
+--error 01481
+select to_number(0.2356, '0FMXX') from dual;
+
+
+--error 01481
+select to_number(1234.34,'.x') from dual;
+--error 01481
+select to_number(123, 'X000X') from dual;
+--error 01481
+select to_number(-0.1,'X00X') from dual;
+--error 01481
+select to_number(100.2356, 'XXX000') from dual;
+--error 01481
+select to_number(100.2356, 'XXX000') from dual;
+--error 01481
+select to_number(100.00, 'XXX00') from dual;
+--error 01481
+select to_number(0.2356, 'XX000') from dual;
+--error 01481
+select to_number(12345+12345, 'XX000') from dual;
+--error 01481
+select to_number(12345-12345, 'XXX000X') from dual;
+--error 01481
+select to_number(12345*5, 'xxx00') from dual;
+--error 01481
+select to_number(52345/5, 'xx000') from dual;
+--error 01481
+select to_number(12345+12345, 'FMXX0') from dual;
+--error 01481
+select to_number(12345-12345, 'XXXFMX') from dual;
+--error 01481
+select to_number(12345*5, 'xxxFM') from dual;
+--error 01481
+select to_number(52345/5, 'xxFM') from dual;
+--error 01481
+select to_number(123, 'XFMX') from dual;
+--error 01481
+select to_number(123434/6,'0FMxxx') from dual;
+--error 01481
+select to_number(1234.34*5,'0FMxx') from dual;
+--error 01481
+select to_number(-0.1,'0FMXX') from dual;
+--error 01481
+select to_number(100.2356, '0FMXXX') from dual;
+--error 01481
+select to_number(100.2356, '0FMXXX') from dual;
+--error 01481
+select to_number(100.00, '0FMXXX') from dual;
+--error 01481
+select to_number(0.2356, '0FMXX') from dual;
+--error 01481
+select to_number(12345, '9,,,9,,9,9,9XXXX') from dual;
+--error 01481
+select to_number(100000000, '9,9999,9999XXX') from dual;
+--error 01481
+select to_number(100000000, '999,99XXX9,999,,,') from dual;
+--error 01481
+select to_number(123, '999999999XXX') from dual;
+--error 01481
+select to_number(-0.1,'99.9XX9') from dual;
+--error 01481
+select to_number(0.1,'0.9XXX')  from dual;
+--error 01481
+select to_number(0.1,'0,9XX')  from dual;
+###--error 01481
+###select to_number(12,'9990999.9X') from dual;
+--error 01481
+select to_number(485,'99X9') from dual;
+--error 01481
+select to_number(-485,'9X99') from dual;
+--error 01481
+select to_number(1485,'9,999X') from dual;
+--error 01481
+select to_number(100.2356, '9999XX9,99') from dual;
+--error 01481
+select to_number(100.2356, 'X9,99999999') from dual;
+--error 01481
+select to_number(100.00, '9,99999999XX') from dual;
+--error 01481
+select to_number(0.2356, '9,9XX9999999') from dual;
+--error 01481
+select to_number(12345+12345, '9,9,9,9,9X') from dual;
+--error 01481
+select to_number(12345-12345, 'X9,9,9,9,9') from dual;
+--error 01481
+select to_number(12345*5, '9,X9,9,9,9') from dual;
+--error 01481
+select to_number(52345/5, '9X,9,9,9,9') from dual;
+--error 01481
+select to_number(0, '9,9,9,9,9XX') from dual;
+--error 01481
+select to_number(0.00, '9,9,9,9,9XXX') from dual;
+--error 01481
+select to_number(0+0, '9,9,9,9,9XXX') from dual;
+--error 01481
+select to_number(0*0, '9,9,9,9,9XXXX') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,9.99XXX') from dual;
+--error 01481
+select to_number(1234.34,'9,,,,,,,,,,99,9.99X') from dual;
+--error 01481
+select to_number(0.2356, '9999,.9X') from dual;
+--error 01481
+select to_number(1234.34,'9,9,9,.999X') from dual;
+--error 01481
+select to_number(1234.34,'.X') from dual;
+--error 01481
+select to_number(123*0.34,'9999.9X') from dual;
+--error 01481
+select to_number(1234.34+1234.56,'9,9,9,9.99X') from dual;
+--error 01481
+select to_number(123434/6,'9,9,9,X9.99') from dual;
+--error 01481
+select to_number(1234.34*5,'9,9,9,99X.9') from dual;
+
+--echo ##############################FM(fm)正常测试number_format_model-2-1-20##################
+
+select to_number('13', 'FMB99') from dual;
+select to_number('1,,,2,,3,4,5', 'fm9,,,9,,9,9,9') from dual;
+select to_number('1,0000,0000', 'FM9,9999,9999') from dual;
+select to_number('100,000,000,,,', 'FM999,999,999,,,') from dual;
+select to_number('123', 'FM999999999') from dual;
+select to_number('-.1','FM99.99') from dual;
+select to_number('0.1','FM0.9')  from dual;
+select to_number('0,0','FM0,9')  from dual;
+select to_number('0012.','FM9990999.9') from dual;
+select to_number('485','FM999') from dual;
+select to_number('-485','FM999') from dual;
+select to_number('1,485','FM9,999') from dual;
+select to_number('1,00', 'FM99999,99') from dual;
+select to_number('100', 'FM9,99999999') from dual;
+select to_number('100', 'FM9,99999999') from dual;
+select to_number('0', 'FM9,99999999') from dual;
+select to_number('2,4,6,9,0', 'FM9,9,9,9,9') from dual;
+select to_number('0', 'FM9,9,9,9,9') from dual;
+select to_number('6,1,7,2,5', 'FM9,9,9,9,9') from dual;
+select to_number('1,0,4,6,9', 'FM9,9,9,9,9') from dual;
+select to_number('', 'FM9,9,9,9,9') from dual;
+select to_number('', 'FM9,9,9,9,9') from dual;
+select to_number('0', 'FM9,9,9,9,9') from dual;
+select to_number('0', 'FM9,9,9,9,9') from dual;
+select to_number('0', 'FM9,9,9,9,9') from dual;
+select to_number('0', 'FM9,9,9,9,9') from dual;
+select to_number('1,2,3,4.34','FM9,9,9,9.99') from dual;
+select to_number('1,,,,,,,,,,23,4.34','FM9,,,,,,,,,,99,9.99') from dual;
+select to_number('.2', 'FM9999,.9') from dual;
+select to_number('','FM9,9,9,.999') from dual;
+select to_number('','FM.') from dual;
+select to_number('1234.34','FM0000.00') from dual;
+select to_number('41.8','FM9999.9') from dual;
+select to_number('2,4,6,8.9','FM9,9,9,9.99') from dual;
+select to_number('','FM9,9,9,9.99') from dual;
+select to_number('6,1,71.7','FM9,9,9,99.9') from dual;
+
+
+select to_number('', '9,9,9,9,9FMtm9') from dual;
+select to_number('', '9,9,9,9,9FMtm9') from dual;
+select to_number('','FM.Mi') from dual;
+select to_number('1234.34-','FM0000.00Mi') from dual;
+select to_number('41.8-','FM9999.9Mi') from dual;
+###select to_number('.22','FM9,9,9,9.99Mi') from dual;
+select to_number('','FM9,9,9,9.99Mi') from dual;
+select to_number('6,1,71.7-','FM9,9,9,99.9Mi') from dual;
+
+###select to_number('1234567890-','9999999999S') from dual;
+select to_number('.00','99.99') from dual;
+select to_number('.10','99.99') from dual;
+select to_number('-.20','99.99') from dual;
+select to_number('0.00','90.99') from dual;
+select to_number('0.10','90.99') from dual;
+select to_number('-0.20','90.99') from dual;
+select to_number('0','9999') from dual;
+select to_number('1','9999') from dual;
+select to_number('','B9999') from dual;
+select to_number('1','B9999') from dual;
+select to_number('','B90.99') from dual;
+select to_number('123.456','999.999') from dual;
+select to_number('-123.456','999.999') from dual;
+select to_number('123.456','FM999.009') from dual;
+select to_number('1.2E+02','9.9EEEE') from dual;
+###select to_number('1.0E+123','9.9EEEE') from dual;
+select to_number('1.2E+02','FM9.9EEEE') from dual;
+select to_number('123.45','FM999.009') from dual;
+select to_number('123.00','FM999.009') from dual;
+select to_number('$123.45','L999.99') from dual;
+select to_number('$123.45','FML999.99') from dual;
+select to_number('1234567890+','9999999999S') from dual;
+
+
+select to_number(23, 'FMB99') from dual;
+select to_number(' 23', 'FMB99') from dual;
+select to_number('                                                                                                                                                    23', 'FMB99') from dual;
+select to_number(123, 'FM999999999') from dual;
+select to_number(-0.1,'FM99.99') from dual;
+select to_number(485,'FM999') from dual;
+select to_number(-485,'FM999') from dual;
+select to_number(100.00, 'FM9,99999999') from dual;
+select to_number(12345-12345, 'FM9,9,9,9,9') from dual;
+select to_number('', 'FM9,9,9,9,9') from dual;
+select to_number(NULL, 'FM9,9,9,9,9') from dual;
+select to_number(0, 'FM9,9,9,9,9') from dual;
+select to_number(0.00, 'FM9,9,9,9,9') from dual;
+select to_number(0+0, 'FM9,9,9,9,9') from dual;
+select to_number(0*0, 'FM9,9,9,9,9') from dual;
+select to_number(1234.34,'FM0000.00') from dual;
+select to_number('', '9,9,9,9,9FMtm9') from dual;
+select to_number(NULL, '9,9,9,9,9FMtm9') from dual;
+###select to_number(-1234.34+1234.56,'FM9,9,9,9.99Mi') from dual;
+select to_number(0,'99.99') from dual;
+select to_number(+0.1,'99.99') from dual;
+select to_number(-0.2,'99.99') from dual;
+select to_number(0,'90.99') from dual;
+select to_number(0,'9999') from dual;
+select to_number(1,'9999') from dual;
+select to_number(0,'B9999') from dual;
+select to_number(1,'B9999') from dual;
+select to_number(0,'B90.99') from dual;
+select to_number(+123.456,'999.999') from dual;
+select to_number(-123.456,'999.999') from dual;
+select to_number(+123.456,'FM999.009') from dual;
+select to_number(+123.45,'FM999.009') from dual;
+select to_number(+123.0,'FM999.009') from dual;
+
+--echo ##############################FM(fm)异常测试#################
+--error 01722
+select to_number(+123.456,'9.9EEEE') from dual;
+--error 01722
+select to_number(+1E+123,'9.9EEEE') from dual;
+--error 01722
+select to_number(+123.456,'FM9.9EEEE') from dual;
+--error 01722
+select to_number(+123.45,'L999.99') from dual;
+--error 01722
+select to_number(+123.45,'FML999.99') from dual;
+--error 01722
+select to_number(+1234567890,'9999999999S') from dual;
+--error 01722
+select to_number(-1234567890,'9999999999S') from dual;
+--error 01722
+select to_number(+0.1,'90.99') from dual;
+--error 01722
+select to_number(-0.2,'90.99') from dual;
+--error 01722
+select to_number(-1234.34,'FM.Mi') from dual;
+--error 01722
+select to_number(-1234.34,'FM0000.00Mi') from dual;
+--error 01722
+select to_number(-123*0.34,'FM9999.9Mi') from dual;
+--error 01722
+select to_number(-123434/6,'FM9,9,9,9.99Mi') from dual;
+--error 01722
+select to_number(-1234.34*5,'FM9,9,9,99.9Mi') from dual;
+--error 01722
+select to_number(12345, 'FMTm9') from dual;
+--error 01722
+select to_number(100000000, 'FMTm9') from dual;
+--error 01722
+select to_number(100000000, 'FMTm9') from dual;
+--error 01722
+select to_number(123, 'FMTm9') from dual;
+--error 01722
+select to_number(-0.1,'FMTm9') from dual;
+--error 01722
+select to_number('12345', 'FMTm9') from dual;
+--error 01722
+select to_number('100000000', 'FMTm9') from dual;
+--error 01722
+select to_number('100000000', 'FMTm9') from dual;
+--error 01722
+select to_number('123', 'FMTm9') from dual;
+--error 01722
+select to_number('-.1','FMTm9') from dual;
+--error 01722
+select to_number('                 23                                                                                                                                   ', 'FMB99') from dual;
+--error 01722
+select to_number(12345, 'fm9,,,9,,9,9,9') from dual;
+--error 01722
+select to_number(100000000, 'FM9,9999,9999') from dual;
+--error 01722
+select to_number(100000000, 'FM999,999,999,,,') from dual;
+--error 01722
+select to_number(0.1,'FM0.9')  from dual;
+--error 01722
+select to_number(0.1,'FM0,9')  from dual;
+###--error 01722
+###select to_number(12,'FM9990999.9') from dual;
+--error 01722
+select to_number(1485,'FM9,999') from dual;
+--error 01722
+select to_number(100.2356, 'FM99999,99') from dual;
+--error 01722
+select to_number(100.2356, 'FM9,99999999') from dual;
+--error 01722
+select to_number(0.2356, 'FM9,99999999') from dual;
+--error 01722
+select to_number(12345+12345, 'FM9,9,9,9,9') from dual;
+--error 01722
+select to_number(12345*5, 'FM9,9,9,9,9') from dual;
+--error 01722
+select to_number(52345/5, 'FM9,9,9,9,9') from dual;
+--error 01722
+select to_number(1234.34,'FM9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34,'FM9,,,,,,,,,,99,9.99') from dual;
+--error 01722
+select to_number(0.2356, 'FM9999,.9') from dual;
+--error 01722
+select to_number(1234.34,'FM9,9,9,.999') from dual;
+--error 01722
+select to_number(1234.34,'FM.') from dual;
+--error 01722
+select to_number(123*0.34,'FM9999.9') from dual;
+--error 01722
+select to_number(1234.34+1234.56,'FM9,9,9,9.99') from dual;
+--error 01722
+select to_number(123434/6,'FM9,9,9,9.99') from dual;
+--error 01722
+select to_number(1234.34*5,'FM9,9,9,99.9') from dual;
+
+
+###--error 01481
+###select to_number(+123.456,'	999.999') from dual;
+###--error 01481
+###select to_number(-123.456,'	999.999') from dual;
+###--error 01481
+###select to_number(+123.456,'	FM999.009') from dual;
+--error 01481
+SELECT to_number(4654.46456, 'fmt') FROM DUAL;
+--error 01481
+select to_number(23, 'FMfmB99') from dual;
+--error 01481
+select to_number(' 23', 'fmFMB99') from dual;
+--error 01481
+select to_number(23, 'FMB99fm') from dual;
+--error 01481
+select to_number(' 23', 'FMFMB99') from dual;
+--error 01481
+select to_number(23, '99FM') from dual;
+--error 01481
+select to_number(' 23', '99FM') from dual;
+--error 01481
+select to_number(23, '99fm') from dual;
+--error 01481
+select to_number(' 23', '9FM9') from dual;

@@ -1,0 +1,77 @@
+# owner: yunshan.tys
+# owner group: storage
+# description: this case is used for preprocess machine
+#
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2, init_unit_num=2);
+
+ob1.reboot;
+
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+let $ip = deploy_get_value(ob1.z2.obs0.ip);
+let $port = deploy_get_value(ob1.z2.obs0.mysql_port);
+
+connect(mysql_conn, $ip, root@obtest,,test, $port);
+connect(sys_conn, $ip, root@sys,,oceanbase, $port);
+
+connection mysql_conn;
+
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+--disable_warnings
+drop table if exists tt;
+--enable_warnings
+
+create table tt(a int primary key);
+
+insert into tt values(1);
+select * from tt;
+
+connection sys_conn;
+let $table_id = query_get_value(select * from __all_virtual_table where table_name='tt', table_id, 1);
+
+let $role = 1;
+let $timeout = 30;
+
+--echo role = $role
+--echo timeout = $timeout
+
+#测试快速迁移触发后，目的端宕机重启。
+connection sys_conn;
+
+let $zone = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and role = $role, zone, 1);
+
+let $src_ip = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and zone = "$zone", svr_ip, 1);
+
+let $src_port = query_get_value(select * from __all_virtual_meta_table where table_id = $table_id and zone = "$zone" and svr_ip = "$src_ip", svr_port, 1);
+
+let $dest_ip = query_get_value(select * from __all_server where zone = "$zone" and (svr_ip != "$src_ip" or svr_port != $src_port), svr_ip, 1);
+
+let $dest_port = query_get_value(select * from __all_server where zone = "$zone" and (svr_ip != "$src_ip" or svr_port != $src_port) and svr_ip = "$dest_ip", svr_port, 1);
+
+# trigger partition move
+--disable_query_log
+eval alter system move replica partition_id = '0%1@$table_id' source='$src_ip:$src_port' destination='$dest_ip:$dest_port';
+
+let $stop_addr = deploy_get_value(ob1.select select concat(svr_ip, ":", svr_port) as addr from oceanbase.__all_server where zone = "$zone" and svr_ip = "$dest_ip" and svr_port = $dest_port, addr, 1);
+let $stop_obs = deploy_get_value(ob1.get_obs_by_addr $stop_addr);
+
+let $ip = deploy_get_value(ob1.z2.obs0.ip);
+let $port = deploy_get_value(ob1.z2.obs0.mysql_port);
+
+connect(mysql_conn1, $ip, root@obtest,,test, $port);
+connect(sys_conn1, $ip, root@sys,,oceanbase, $port);
+
+connection sys_conn1;
+
+$stop_obs.force_stop;
+sleep 5;
+
+$stop_obs.start;
+sleep 30;
+
+connection mysql_conn1;
+
+select * from tt;

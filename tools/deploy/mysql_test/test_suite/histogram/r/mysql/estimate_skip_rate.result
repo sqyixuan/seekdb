@@ -1,0 +1,463 @@
+drop table if exists test;
+drop table if exists test_hash;
+drop table if exists test_hash_hash;
+drop procedure if exists InsertTestData;
+drop table if exists cost1;
+drop table if exists cost2;
+drop table if exists cost3;
+drop table if exists cost1_range;
+alter system set_tp tp_no = 368, error_code = 0, frequency = 1;
+alter system flush kvcache;
+set _enable_storage_cardinality_estimation = OFF;
+set optimizer_dynamic_sampling = 0;
+result_format: 4
+set ob_query_timeout = 1000000000;
+
+create table test(
+  c1 bigint DEFAULT NULL,
+  c2 float DEFAULT NULL,
+  c3 double DEFAULT NULL,
+  c4 date DEFAULT NULL,
+  c5 time DEFAULT NULL,
+  c6 year DEFAULT NULL,
+  c7 timestamp DEFAULT NULL,
+  c8 char(20) DEFAULT NULL,
+  c9 varchar(20) DEFAULT NULL,
+  c10 text DEFAULT NULL
+) with column group (each column);
+
+call dbms_stats.SET_TABLE_PREFS('TEST','test', 'SKIP_RATE_SAMPLE_COUNT', '100000');
+SELECT dbms_stats.get_prefs('SKIP_RATE_SAMPLE_COUNT', 'TEST', 'test') FROM dual;
++----------------------------------------------------------------+
+| dbms_stats.get_prefs('SKIP_RATE_SAMPLE_COUNT', 'TEST', 'test') |
++----------------------------------------------------------------+
+| 100000                                                          |
++----------------------------------------------------------------+
+
+
+create procedure InsertTestData()
+begin
+  declare i int default 0;
+  declare base_time time default '00:00:00';
+  declare base_date date default '2024-01-01';
+  declare base_ts timestamp default '2024-01-01 00:00:00';
+  
+  while i < 10000 do
+    insert into test (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
+    values (
+      i + 1,
+      round(rand(i) * 1000, 2),
+      round(rand(i) * 1000000, 2),
+      base_date + interval floor(rand(i) * 365) day,
+      sec_to_time(time_to_sec(base_time) + floor(rand(i) * 86400)),
+      year(base_date) + floor(rand(i) * 10),
+      base_ts + interval floor(rand(i) * 31536000) second,
+      char(
+        65 + floor(rand(i) * 26),
+        65 + floor(rand(i) * 26),
+        65 + floor(rand(i) * 26)
+      ),
+      concat('test', lpad(i, 4, '0')),
+      concat('Fixed text content ', i) 
+    );
+    set i = i + 1;
+  end while;
+end$$
+
+
+call InsertTestData();
+
+create table test_hash(c1 int, c2 int) partition by hash(c1) partitions 3 with column group (each column);
+insert into test_hash select random(3)%100,random(100)%100 from table(generator(30000));
+
+create table test_hash_hash(c1 int, c2 int) partition by hash(c1)  subpartition by hash(c2) subpartitions 2 partitions 3 with column group (all columns, each column);
+insert into test_hash_hash select random(3)%100,random(100)%100 from table(generator(300000));
+
+create table cost1(c1 int, c2 float) with column group (all columns, each column);
+create index k1 on cost1(c1);
+set cte_max_recursion_depth =  1000000;
+insert into cost1(c1, c2)
+with recursive nums(n) as (
+  select 1
+  union all
+  select n + 1 from nums where n < 1000000
+)
+select n, n from nums;
+
+create table cost1_range (
+    c1 int,
+    c2 float
+)
+partition by range (c1) (
+    partition p0 values less than (100001),
+    partition p1 values less than (500001),
+    partition p2 values less than maxvalue
+) with column group (all columns, each column);
+create index k1 on cost1_range(c1);
+set cte_max_recursion_depth =  1000000;
+insert into cost1_range(c1, c2)
+with recursive nums(n) as (
+  select 1
+  union all
+  select n + 1 from nums where n < 1000000
+)
+select n, n from nums;
+
+create table cost2 (c1 int, c2 date) with column group (all columns, each column);
+create index k1 on cost2(c1);
+set cte_max_recursion_depth = 1000000;
+insert into cost2 (c1, c2)
+with recursive nums1 (n, start_date) as (
+    select 1, '2023-01-01'
+    union all
+    select n + 1, date_add(start_date, interval 1 day)
+    from nums1
+    where n < 1000000
+)
+select n, start_date from nums1;
+
+create table cost3 (c1 int, c2 float) with column group (all columns, each column);
+create index k1 on cost3(c1);
+Insert /*+ append enable_parallel_dml parallel(8) */ into cost3 select random(100)%100, random(100)%100 from table(generator(1000000));
+
+alter system major freeze;
+
+-------------------test non-partitioned table and different column type ----------------------
+--collect single column
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for columns size 8 c1');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+--------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+--------------+------------------+------------------+
+| test       |        16 |            1 |                1 |                2 |
++------------+-----------+--------------+------------------+------------------+
+--collect all column
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+---------------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+---------------------+------------------+------------------+
+| test       |        16 |                   1 |                1 |                2 |
+| test       |        17 | 0.49500000000000005 |                1 |                3 |
+| test       |        18 | 0.49500000000000005 |                1 |                3 |
+| test       |        19 |               0.495 |                1 |                2 |
+| test       |        20 | 0.49500000000000005 |                1 |                3 |
+| test       |        21 |               0.495 |                1 |                2 |
+| test       |        22 | 0.49500000000000005 |                1 |                3 |
+| test       |        23 |               0.495 |                1 |                2 |
+| test       |        24 |                   1 |                1 |                2 |
++------------+-----------+---------------------+------------------+------------------+
+
+--test prefs SKIP_RATE_SAMPLE_COUNT
+call dbms_stats.set_global_prefs('SKIP_RATE_SAMPLE_COUNT', '1');
+select sname, spare4 from oceanbase.__all_optstat_global_prefs where sname = 'SKIP_RATE_SAMPLE_COUNT';
++------------------------+--------+
+| sname                  | spare4 |
++------------------------+--------+
+| SKIP_RATE_SAMPLE_COUNT | 1      |
++------------------------+--------+
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8');
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+---------------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+---------------------+------------------+------------------+
+| test       |        16 |                   1 |                1 |                2 |
+| test       |        17 | 0.49500000000000005 |                1 |                3 |
+| test       |        18 | 0.49500000000000005 |                1 |                3 |
+| test       |        19 |               0.495 |                1 |                2 |
+| test       |        20 | 0.49500000000000005 |                1 |                3 |
+| test       |        21 |               0.495 |                1 |                2 |
+| test       |        22 | 0.49500000000000005 |                1 |                3 |
+| test       |        23 |               0.495 |                1 |                2 |
+| test       |        24 |                   1 |                1 |                2 |
++------------+-----------+---------------------+------------------+------------------+
+
+--test gather global stat
+call dbms_stats.set_global_prefs('SKIP_RATE_SAMPLE_COUNT', '100000');
+select sname, spare4 from oceanbase.__all_optstat_global_prefs where sname = 'SKIP_RATE_SAMPLE_COUNT';
++------------------------+--------+
+| sname                  | spare4 |
++------------------------+--------+
+| SKIP_RATE_SAMPLE_COUNT | 100000 |
++------------------------+--------+
+call dbms_stats.gather_table_stats('test', 'test', method_opt=>'for all columns size 8', granularity => 'ALL');
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+---------------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+---------------------+------------------+------------------+
+| test       |        16 |                   1 |                1 |                2 |
+| test       |        17 | 0.49500000000000005 |                1 |                3 |
+| test       |        18 | 0.49500000000000005 |                1 |                3 |
+| test       |        19 |               0.495 |                1 |                2 |
+| test       |        20 | 0.49500000000000005 |                1 |                3 |
+| test       |        21 |               0.495 |                1 |                2 |
+| test       |        22 | 0.49500000000000005 |                1 |                3 |
+| test       |        23 |               0.495 |                1 |                2 |
+| test       |        24 |                   1 |                1 |                2 |
++------------+-----------+---------------------+------------------+------------------+
+
+-------------------test first level partitioned table ----------------------
+call dbms_stats.gather_table_stats('test', 'test_hash', method_opt=>'for all columns size 8', granularity => 'PARTITION');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+--------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+--------------+------------------+------------------+
+| test_hash  |        16 |        0.495 |                2 |                4 |
+| test_hash  |        17 |        0.495 |                2 |                4 |
+| test_hash  |        16 |        0.495 |                1 |                2 |
+| test_hash  |        17 |        0.495 |                1 |                2 |
+| test_hash  |        16 |        0.495 |                1 |                2 |
+| test_hash  |        17 |        0.495 |                1 |                2 |
+| test_hash  |        16 |            0 |                0 |                0 |
+| test_hash  |        17 |            0 |                0 |                0 |
++------------+-----------+--------------+------------------+------------------+
+
+call dbms_stats.gather_table_stats('test', 'test_hash', method_opt=>'for all columns size 8', granularity => 'GLOBAL');
+
+select b.table_name, a.partition_id, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash"
+) b
+where a.table_id=b.table_id and a.partition_id = -1 order by a.table_id, a.partition_id, a.column_id;
++------------+--------------+-----------+---------------------+------------------+------------------+
+| table_name | partition_id | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+--------------+-----------+---------------------+------------------+------------------+
+| test_hash  |           -1 |        16 | 0.28285714285714286 |                2 |                4 |
+| test_hash  |           -1 |        17 |               0.495 |                2 |                4 |
++------------+--------------+-----------+---------------------+------------------+------------------+
+
+-------------------test first second partitioned table ----------------------
+call dbms_stats.gather_table_stats('test', 'test_hash_hash', method_opt=>'for all columns size 8', granularity => 'PARTITION');
+
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash_hash"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++----------------+-----------+---------------------+------------------+------------------+
+| table_name     | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++----------------+-----------+---------------------+------------------+------------------+
+| test_hash_hash |        16 | 0.49499999999999994 |                6 |               24 |
+| test_hash_hash |        17 | 0.49499999999999994 |                6 |               24 |
+| test_hash_hash |        16 | 0.49499999999999994 |                2 |                8 |
+| test_hash_hash |        17 | 0.49499999999999994 |                2 |                8 |
+| test_hash_hash |        16 | 0.49499999999999994 |                2 |                8 |
+| test_hash_hash |        17 | 0.49499999999999994 |                2 |                8 |
+| test_hash_hash |        16 | 0.49499999999999994 |                2 |                8 |
+| test_hash_hash |        17 | 0.49499999999999994 |                2 |                8 |
++----------------+-----------+---------------------+------------------+------------------+
+
+call dbms_stats.gather_table_stats('test', 'test_hash_hash', method_opt=>'for all columns size 8', granularity => 'GLOBAL');
+
+select b.table_name, a.partition_id, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "test_hash_hash"
+) b
+where a.table_id=b.table_id and a.partition_id = -1 order by a.table_id, a.partition_id, a.column_id;
++----------------+--------------+-----------+---------------------+------------------+------------------+
+| table_name     | partition_id | column_id | cg_skip_rate        | cg_macro_blk_cnt | cg_micro_blk_cnt |
++----------------+--------------+-----------+---------------------+------------------+------------------+
+| test_hash_hash |           -1 |        16 |  0.4949999999999999 |                6 |               24 |
+| test_hash_hash |           -1 |        17 | 0.49499999999999994 |                6 |               24 |
++----------------+--------------+-----------+---------------------+------------------+------------------+
+
+-------------------test plan cost ----------------------
+--test cg_skip_rate = 1
+call dbms_stats.gather_table_stats('test', 'cost1', granularity => 'ALL');
+show create table cost1;
+Table	Create Table
+cost1	CREATE TABLE `cost1` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` float DEFAULT NULL,
+  KEY `k1` (`c1`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 WITH COLUMN GROUP(all columns, each column)
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost1"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+--------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+--------------+------------------+------------------+
+| cost1      |        16 |            1 |                1 |               17 |
+| cost1      |        17 |            1 |                1 |               17 |
++------------+-----------+--------------+------------------+------------------+
+
+call dbms_stats.gather_table_stats('test', 'cost1_range', granularity => 'ALL');
+show create table cost1_range;
+Table	Create Table
+cost1_range	CREATE TABLE `cost1_range` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` float DEFAULT NULL,
+  KEY `k1` (`c1`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+ partition by range(c1)
+(partition `p0` values less than (100001),
+partition `p1` values less than (500001),
+partition `p2` values less than (MAXVALUE)) WITH COLUMN GROUP(all columns, each column)
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost1_range"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++-------------+-----------+--------------+------------------+------------------+
+| table_name  | column_id | cg_skip_rate | cg_macro_blk_cnt | cg_micro_blk_cnt |
++-------------+-----------+--------------+------------------+------------------+
+| cost1_range |        16 |            1 |                3 |               20 |
+| cost1_range |        17 |            1 |                3 |               20 |
+| cost1_range |        16 |            1 |                1 |                3 |
+| cost1_range |        17 |            1 |                1 |                3 |
+| cost1_range |        16 |            1 |                1 |                8 |
+| cost1_range |        17 |            1 |                1 |                8 |
+| cost1_range |        16 |            1 |                1 |                9 |
+| cost1_range |        17 |            1 |                1 |                9 |
++-------------+-----------+--------------+------------------+------------------+
+
+show create table cost3;
+Table	Create Table
+cost3	CREATE TABLE `cost3` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` float DEFAULT NULL,
+  KEY `k1` (`c1`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 WITH COLUMN GROUP(all columns, each column)
+call dbms_stats.gather_table_stats('test', 'cost3', granularity => 'ALL');
+
+select b.table_name, a.column_id, a.cg_skip_rate between 0.495 and 0.496 as Expected, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt between 60 and 80 as Expected
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost3"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+----------+------------------+----------+
+| table_name | column_id | Expected | cg_macro_blk_cnt | Expected |
++------------+-----------+----------+------------------+----------+
+| cost3      |        16 |        1 |                1 |        1 |
+| cost3      |        17 |        1 |                1 |        1 |
++------------+-----------+----------+------------------+----------+
+
+select count(1) from cost3;
++----------+
+| count(1) |
++----------+
+|  1000000 |
++----------+
+select count(1) from cost3 where c1>98;
++----------+
+| count(1) |
++----------+
+|     5121 |
++----------+
+explain select * from cost3 where c1>98;
+Query Plan
+=======================================================
+|ID|OPERATOR              |NAME |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |COLUMN TABLE FULL SCAN|cost3|5121    |9862        |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([cost3.c1], [cost3.c2]), filter([cost3.c1 > 98]), rowset=256
+      access([cost3.c1], [cost3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([cost3.__pk_increment]), range(MIN ; MAX)always true
+
+select count(1) from cost3 where c1>10;
++----------+
+| count(1) |
++----------+
+|   444756 |
++----------+
+explain select * from cost3 where c1>10;
+Query Plan
+=======================================================
+|ID|OPERATOR              |NAME |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |COLUMN TABLE FULL SCAN|cost3|444756  |16258       |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([cost3.c1], [cost3.c2]), filter([cost3.c1 > 10]), rowset=256
+      access([cost3.c1], [cost3.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([cost3.__pk_increment]), range(MIN ; MAX)always true
+
+call dbms_stats.gather_table_stats('test', 'cost2', granularity => 'ALL');
+show create table cost2;
+Table	Create Table
+cost2	CREATE TABLE `cost2` (
+  `c1` int(11) DEFAULT NULL,
+  `c2` date DEFAULT NULL,
+  KEY `k1` (`c1`) BLOCK_SIZE 16384 LOCAL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = replica_num BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0 WITH COLUMN GROUP(all columns, each column)
+select b.table_name, a.column_id, a.cg_skip_rate, a.cg_macro_blk_cnt, a.cg_micro_blk_cnt
+from oceanbase.__all_column_stat a,
+(
+  select table_name,table_id from oceanbase.__all_table where table_name = "cost2"
+) b
+where a.table_id=b.table_id order by a.table_id, a.partition_id, a.column_id;
++------------+-----------+--------------+------------------+------------------+
+| table_name | column_id | cg_skip_rate | cg_macro_blk_cnt | cg_micro_blk_cnt |
++------------+-----------+--------------+------------------+------------------+
+| cost2      |        16 |            1 |                1 |               17 |
+| cost2      |        17 |            1 |                1 |               17 |
++------------+-----------+--------------+------------------+------------------+
+
+explain select c2 from cost2 where c1 < 10000 and c2 < '2050-05-18' ;
+Query Plan
+=======================================================
+|ID|OPERATOR              |NAME |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------
+|0 |COLUMN TABLE FULL SCAN|cost2|1000    |200         |
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([cost2.c2]), filter([cost2.c1 < 10000], [cost2.c2 < demote_cast('2050-05-18', MYSQL_DATE(10, 0))]), rowset=256
+      access([cost2.c1], [cost2.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([cost2.__pk_increment]), range(MIN ; MAX)always true
+
+--clean
+call dbms_stats.SET_TABLE_PREFS('TEST','test', 'SKIP_RATE_SAMPLE_COUNT', '0');
+drop table test;
+drop table test_hash;
+drop table test_hash_hash;
+drop procedure InsertTestData;
+drop table cost1;
+drop table cost2;
+drop table cost3;
+drop table cost1_range;
+set _enable_storage_cardinality_estimation = True;
+set optimizer_dynamic_sampling = 1;

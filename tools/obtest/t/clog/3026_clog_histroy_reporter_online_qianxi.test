@@ -1,0 +1,150 @@
+##
+# owner: <QianXi> madoll.tw
+# owner group: ob_clog_history_reprorter
+# description:
+# 测试功能点：__all_clog_history_info_v2表大量partition上线操作
+# 用例描述: 创建多张表-创建大量partition:
+#           1. 测试online操作的正确性
+#           2. 测试结果总数的正确性
+#           3. 测试字段的正确性
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+
+sleep 5;
+
+let $ip0=deploy_get_value(ob1.z1.obs0.ip);
+let $port0=deploy_get_value(ob1.z1.obs0.port);
+let $sql_port0=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(conn0,$ip0,root@sys,,oceanbase,$sql_port0);
+connection conn0;
+connect(conn1,$ip0,root@obtest,,oceanbase,$sql_port0);
+connection conn1;
+create database if not exists db;
+use db;
+
+# 关闭partiton leader自动迁移
+ob1.mysql alter system set enable_auto_leader_switch=false;
+
+
+## step 1. 变量声明
+# 创建表的个数
+let $TABLE_NUMBER = 7;
+
+# 返回结果
+let $TRUE = true;
+let $FALSE = false;
+
+# 每次查询最多重试10次
+let $retry_count = 10;
+echo $retry_count;
+
+# 记录表查询结果总数
+let $table_record_count = 0;
+
+# param
+let $partition_idx = 0;
+let $partition_cnt = 100;
+let $start_log_id = 0;
+let $UINT64_MAX = 18446744073709551615;
+echo $partition_idx;
+echo $partition_cnt;
+echo $start_log_id;
+echo $UINT64_MAX;
+
+# 对于100个partition，三个observer，__all_clog_history_info_v2表一共有300条记录
+let $PARTITION_TOTAL_RECORD_COUNT = 300;
+
+
+## step 2. 创建TABLE_NUMBER张表(采用Hash分区)
+let $i = 1;
+while ($i <= $TABLE_NUMBER)
+{
+  eval create table t$i(pk int primary key, c1 int, c2 varchar(20)) PARTITION BY HASH(pk) PARTITIONS $partition_cnt;
+  inc $i;
+}
+sleep 5;
+
+## step 3. 查询各个表的table_id, 并查询各个表的结果总数
+let $i = 1;
+while ($i <= $TABLE_NUMBER)
+{
+  echo t$i;
+  # init
+  let $table_record_count = 0;
+	let $retry_count = 10;
+
+  connection conn0;
+  #查询各个表的table_id
+	let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't$i', table_id, 1);
+  #echo $table_id;
+
+  connection conn1;
+	while($table_record_count < $PARTITION_TOTAL_RECORD_COUNT && $retry_count > 0)
+	{
+		dec $retry_count;
+  	let $table_record_count = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id', count, 1);
+    if($table_record_count < $PARTITION_TOTAL_RECORD_COUNT)
+    {
+		  sleep 2;
+    }
+	}
+	echo $table_record_count;
+  # i++
+  inc $i;
+}
+
+
+## step 4. 验证各个表字段的正确性: pkey, start_log_id, end_log_id
+# res记录一次查询的预期结果
+let $res = 3;
+# correct记录查询正确的个数
+let $correct = 0;
+
+let $i = 1;
+# 目前版本新建分区，partition_cnt=0
+let $PARTITION_CNT = 0;
+while ($i <= $TABLE_NUMBER)
+{
+  echo t$i;
+  # init
+  let $partition_idx=0;
+  let $correct = 0;
+
+  connection conn0;
+  # 查询各个表的table_id
+	let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 't$i', table_id, 1);
+  #echo $table_id;
+  # 遍历检查所有的partition
+  connection conn1;
+	while($partition_idx < $partition_cnt)
+	{
+  	let $test_cnt = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where table_id = '$table_id' and partition_idx = '$partition_idx' and partition_cnt = '$PARTITION_CNT' and start_log_id = '$start_log_id' and end_log_id = '$UINT64_MAX', count, 1);
+  	#echo $test_cnt;
+  	#echo $partition_idx;
+  	if ($res == $test_cnt)
+  	{
+    	inc $correct;
+  	}
+    # 结果不正确，打印pkey
+  	if ($res != $test_cnt)
+  	{
+      echo $table_id/$partition_idx/$partition_cnt;
+  	}
+
+  	# partition_idx++
+  	inc $partition_idx;
+	}
+	if ($correct == $partition_cnt)
+	{
+  	echo $TRUE;
+	}
+	if ($correct != $partition_cnt)
+	{
+  	echo $FALSE;
+	}
+  # i++
+  inc $i;
+}

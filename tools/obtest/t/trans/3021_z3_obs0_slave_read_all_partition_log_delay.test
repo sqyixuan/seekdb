@@ -1,0 +1,52 @@
+##
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：测试网络隔离场景下，副本无法跟上游进行keep alive，备机读是否还能执行成功；
+##
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5,init_unit_num=1);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_auto_leader_switch=false;
+
+#在zone1上建立连接
+let $l_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+
+#在zone2上建立连接
+let $f_ip=deploy_get_value(ob1.z2.obs0.ip);
+let $f_port=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn2,$f_ip,root@obtest,,test,$f_port);
+
+connection conn1;
+--disable_result_log
+drop table if exists t1;
+--enable_result_log
+
+create table t1(pk int primary key, c1 int, c2 varchar(20)) primary_zone='z1';
+sleep 10;
+
+connection conn2;
+set autocommit=0;
+insert into t1 values(1,1,'a');
+insert into t1 values(2,2,'b');
+commit;
+
+#阻塞leader和follower之间的网络
+connection conn1;
+ob1.z1.obs0.block_net ob1.z2.obs0;
+ob1.z2.obs0.block_net ob1.z1.obs0;
+#保证备机读时间戳已经落后于配置项的值(5s)
+sleep 6;
+
+connection conn2;
+set autocommit=1;
+#备机读版本号是落后，但需要按照当前值－3s去推进，能够读出数据
+#select /*+ read_consistency(weak)*/* from t1;
+
+connection conn1;
+ob1.z1.obs0.clean_net ob1.z2.obs0;
+ob1.z2.obs0.clean_net ob1.z1.obs0;

@@ -1,0 +1,56 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试在paxos类型副本不够时，所有unit都布满了readonly；
+# locality形式为：F@Z1,R{2}@Z1.
+# 不能用readonly{all_server}的形式，因为r@a是最后一个判断的，所以直接就会找一个副本转成F；all_server
+
+ob1=OBI(cluster=3:3:3, init_unit_cpu=2, proxy_num=0, ct_num = 0, locality=hz:hz:sh);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $case_index=2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R{2}@z3,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_2", tenant_id, 1); 
+
+ob1.create_client tenant=tenant_2,user=root,passwd=,database=test;
+create table test2(c1 int primary key, c2 int) primary_zone='z1';
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test2" and tenant_id = "$tenant_id", table_id, 1);
+###找到z3上面的F副本，永久下线；
+let $down_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t2_id and zone='z3' and replica_type=0, addr, 1);
+let $obi = deploy_get_value(ob1.get_obs_by_addr $down_addr);
+$obi.force_stop;
+
+##设置永久下线的时间；
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_temporary_offline_time = '15s';
+
+##等待踢成员
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t2_id and role = 1 and member_list like '%,%,%', 0, 60;
+##等待F冒出来；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t2_id and role = 1 and member_list like '%,%,%', 1, 60;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t2_id and replica_type= 16, 1, 60;
+
+##重启机器
+$obi.nstart;
+##等待R出来；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id = $t2_id and replica_type=16, 2, 60; 
+
+
+

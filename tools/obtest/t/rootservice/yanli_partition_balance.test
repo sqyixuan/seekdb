@@ -1,0 +1,77 @@
+##########################
+#owner :msy164651
+# 测试点：
+##########################
+
+ob1=OBI(cluster=2,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+
+
+set @@session.ob_query_timeout = 1000000000;
+
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set partition_balance_schedule_interval = '1m' tenant = 'mysql';
+ob1.mysql alter system set balancer_idle_time = '10s' tenant = 'mysql';
+ob1.mysql alter system set enable_rebalance = 'false' tenant = 'mysql';
+sleep 2;
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+set recyclebin=off;
+let $count = 0;
+while ($count < 30) 
+{
+eval create table non_partition_$count(pk int primary key);
+inc $count;
+}
+#创建广播日志流
+# test create duplicate table
+create table dup_t1(c1 int, c2 longtext) duplicate_scope = 'cluster';
+insert into dup_t1 value (1, "123"), (2,"456"), (3,"789"), (4,"1"), (5, "2");
+create table dup_pt1(c1 int) duplicate_scope = 'CLUSTER' partition by hash(c1) partitions 4;
+insert into dup_pt1 value (1), (2), (3), (4), (5);
+select * from dup_pt1 order by c1 asc;
+# test create table like duplicate table
+create table dup_from_t1 like dup_t1;
+create table dup_t2(c1 int primary key,c2 int ,c3 int) duplicate_scope = 'cluster';
+create index il on dup_t2(c2) local;
+create index il1 on dup_t2(c2) global;
+
+create table dup_t3(c1 int primary key,c2 int ,c3 int) duplicate_scope = 'cluster' partition by hash(c1) partitions 100;
+create index il on dup_t3(c2) local;
+create index il1 on dup_t3(c2) global;
+#wait oceanbase.__all_balance_group_ls_stat
+sleep 60;
+connection conn_sys;
+alter system change tenant tenant_id = 1001;
+select balance_group_id_high, balance_group_id_low, ls_id  from oceanbase.__all_balance_group_ls_stat;
+ob1.mysql_p select ls_id, count(*) from oceanbase.__all_virtual_tablet_to_ls where tenant_id = 1002 and  ls_id = 1003;
+
+connection conn_mysql;
+--disable_query_log
+let $count = 0;
+while ($count < 15)
+{
+  let $table_name = deploy_get_value(ob1.select select table_name from oceanbase.__all_virtual_table where tablet_id in (select tablet_id from oceanbase.__all_virtual_tablet_to_ls where ls_id = 1001) and table_name like "%non_partition%", table_name, 1);
+  eval drop table $table_name;
+  inc $count;
+}
+--enable_query_log
+
+ob1.mysql alter system set enable_rebalance = 'true' tenant = 'mysql';
+#广播日志流上的tablet不会发生变化
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_history order by create_time;
+ob1.mysql_p select ls_id, count(*) from oceanbase.__all_virtual_tablet_to_ls where tenant_id = 1002 and  ls_id = 1003;

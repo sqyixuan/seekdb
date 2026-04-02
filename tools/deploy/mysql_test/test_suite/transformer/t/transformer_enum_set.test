@@ -1,0 +1,160 @@
+#owner: zhuangyifeng.zyf
+#owner group: sql1
+#description: test for transform for enum/set
+#tags: optimizer
+
+--disable_warnings
+drop table if exists employees;
+drop table if exists orders;
+--enable_warnings
+
+CREATE TABLE employees (
+    id INT PRIMARY KEY,
+    name VARCHAR(50),
+    department ENUM('HR', 'IT', 'Sales', 'Marketing', 'Finance'),
+    skills SET('Java', 'Python', 'SQL', 'C++', 'JavaScript'),
+    salary DECIMAL(10, 2)
+);
+
+CREATE TABLE orders (
+    order_id INT PRIMARY KEY,
+    customer_id INT,
+    status ENUM('Pending', 'Shipped', 'Delivered', 'Cancelled'),
+    order_date DATE,
+    total_amount DECIMAL(10, 2)
+);
+
+INSERT INTO employees VALUES
+(1, 'John Doe', 'IT', 'Java,Python', 75000),
+(2, 'Jane Smith', 'HR', 'SQL', 65000),
+(3, 'Mike Johnson', 'Sales', 'JavaScript', 80000),
+(4, 'Emily Brown', 'Marketing', 'Python,SQL', 70000),
+(5, 'David Lee', 'IT', 'Java,C++', 78000);
+
+INSERT INTO orders VALUES
+(1, 101, 'Shipped', '2023-01-15', 500.00),
+(2, 102, 'Delivered', '2023-01-20', 750.50),
+(3, 101, 'Pending', '2023-02-01', 300.25),
+(4, 103, 'Cancelled', '2023-02-05', 1000.00),
+(5, 102, 'Shipped', '2023-02-10', 450.75);
+
+--enable_sorted_result
+--result_format 4
+
+--echo # 测试 simplify distinct
+explain outline select distinct 1 from employees where department = 1;
+select distinct 1 from employees where department = 1;
+select /*+no_rewrite*/ distinct 1 from employees where department = 1;
+
+--echo # 测试 simplify group by
+explain outline select count(id), count(distinct department), skills from employees group by id;
+select count(id), count(distinct department), skills from employees group by id;
+select /*+no_rewrite*/ count(id), count(distinct department), skills from employees group by id;
+
+explain outline select count(distinct department), count(distinct skills) from employees group by department, skills;
+select count(distinct department), count(distinct skills) from employees group by department, skills;
+select /*+no_rewrite*/ count(distinct department), count(distinct skills) from employees group by department, skills;
+
+--echo # 测试 simplify winfunc
+explain outline select count(skills) over (partition by id) from employees;
+select count(skills) over (partition by id) from employees;
+select /*+no_rewrite*/ count(skills) over (partition by id) from employees;
+
+--echo # 测试 simplify order by
+explain outline select * from employees where id in (select customer_id from orders order by status);
+select * from employees where id in (select customer_id from orders order by status);
+select /*+no_rewrite*/ * from employees where id in (select customer_id from orders order by status);
+
+--echo # 测试 simplify limit
+explain outline select /*+no_semi_to_inner*/ * from employees where exists (select * from orders where employees.id = 1);
+select /*+no_semi_to_inner*/ * from employees where exists (select * from orders where employees.id = 1);
+select /*+no_rewrite*/ * from employees where exists (select * from orders where employees.id = 1);
+
+--echo # 测试 simplify subquery
+explain outline select * from employees where exists (select * from orders where status = 1);
+select * from employees where exists (select * from orders where status = 1);
+select /*+no_rewrite*/* from employees where exists (select * from orders where status = 1);
+
+--echo # 测试 fastminmax
+explain outline select max(id) from employees where department = 2;
+select max(id) from employees where department = 2;
+select /*+no_rewrite*/ max(id) from employees where department = 2;
+
+--echo # 测试 eliminate oj
+explain outline select * from employees left outer join orders on employees.id = orders.customer_id where orders.order_id is not null;
+select * from employees left outer join orders on employees.id = orders.customer_id where orders.order_id is not null;
+select /*+no_rewrite*/ * from employees left outer join orders on employees.id = orders.customer_id where orders.order_id is not null;
+
+--echo # 测试 view merge
+explain outline select * from (select /*+merge*/ * from employees);
+select * from (select /*+merge*/ * from employees);
+select /*+no_rewrite*/ * from (select * from employees);
+
+--echo # 测试 where sq pullup
+explain outline select * from orders where customer_id in (select id from employees where department = 1);
+select * from orders where customer_id in (select id from employees where department = 1);
+select /*+no_rewrite*/ * from orders where customer_id in (select id from employees where department = 1);
+
+--echo # 测试 query push down
+explain outline select * from (select * from employees order by id) where skills != 2;
+select * from (select * from employees order by id) where skills != 2;
+select /*+no_rewrite*/ * from (select * from employees order by id) where skills != 2;
+
+--echo # 测试 simplify set
+explain outline select department from employees where id = 1 and 1 = 0 union select department from employees where id = 2;
+select department from employees where id = 1 and 1 = 0 union select department from employees where id = 2;
+select /*+no_rewrite*/ department from employees where id = 1 and 1 = 0 union select /*+no_rewrite*/ department from employees where id = 2;
+
+--echo # 测试 project pruning
+explain outline select id from (select * from employees where skills = 1);
+select id from (select * from employees where skills = 1);
+select /*+no_rewrite*/ id from (select * from employees where skills = 1);
+
+--echo # 测试 aggr subquery
+explain outline select * from employees where id > (select min(customer_id) from orders where status = 1);
+select * from employees where id > (select min(customer_id) from orders where status = 1);
+select /*+no_rewrite*/ * from employees where id > (select min(customer_id) from orders where status = 1);
+
+--echo # 测试 predicate move around
+explain outline select id, department, customer_id, status from employees, orders where employees.id = 1 and employees.id = orders.customer_id;
+select id, department, customer_id, status from employees, orders where employees.id = 1 and employees.id = orders.customer_id;
+select /*+no_rewrite*/ id, department, customer_id, status from employees, orders where employees.id = 1 and employees.id = orders.customer_id;
+
+--echo # 测试 join limit pushdown
+explain outline select * from employees left outer join orders on employees.department = 2 limit 1;
+select * from employees left outer join orders on employees.department = 2 limit 1;
+select /*+no_rewrite*/ * from employees left outer join orders on employees.department = 2 limit 1;
+
+--echo # 测试 count to exists
+explain outline select * from employees where (select count(status) from orders) = 0;
+select * from employees where (select count(status) from orders) = 0;
+select /*+no_rewrite*/ * from employees where (select count(status) from orders) = 0;
+
+--echo # 测试 conditional aggr coalesce
+explain outline select /*+no_simplify_group_by*/ id, count(department),
+  sum(case when id = 1 then id else 0 end) as s1,
+  sum(case when id = 1 then id else 0 end) as s2
+from employees group by id;
+
+select /*+no_simplify_group_by*/ id, count(department),
+  sum(case when id = 1 then id else 0 end) as s1,
+  sum(case when id = 1 then id else 0 end) as s2
+from employees group by id;
+
+select /*+no_rewrite*/ id, count(department),
+  sum(case when id = 1 then id else 0 end) as s1,
+  sum(case when id = 1 then id else 0 end) as s2
+from employees group by id;
+
+--echo # 测试 semi to inner
+explain outline select/*+semi_to_inner(orders)*/ * from employees where department in (select status from orders);
+select/*+semi_to_inner(orders)*/ * from employees where department in (select status from orders);
+select/*+no_rewrite*/ * from employees where department in (select status from orders);
+
+--echo # 测试 distinct aggregate
+explain outline select count(distinct department), min(salary), id from employees;
+select count(distinct department), min(salary), id from employees;
+select /*+no_rewrite*/ count(distinct department), min(salary), id from employees;
+
+drop table employees;
+drop table orders;

@@ -1,0 +1,79 @@
+
+##########################
+# owner :yaoying,yyy
+# owner group: clog
+# 测试点：
+# test scn_to_timestamp() and timestamp_to_scn() with different system timezone
+##########################
+
+ob1=OBI(cluster=1,proxy_num=0);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant  = backup_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+
+# case 1. 验证bootstrap
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+sleep 3;
+
+ob1.mysql alter system set enable_rebalance='false';
+
+# case 2. 验证建租户
+let $max_cpu = 2;
+let $min_cpu = 1;
+let $memory_size = 4294967296;
+let $log_disk_size = 2147483648;
+let $max_iops = 100000;
+let $min_iops = 1024;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+set @@session.ob_query_timeout = 1000000000;
+# mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU $max_cpu, MIN_CPU $min_cpu, MEMORY_SIZE $memory_size, LOG_DISK_SIZE $log_disk_size, MAX_IOPS $max_iops, MIN_IOPS $min_iops;
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%', system_time_zone='+10:00';
+eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT backup_oracle_tenant RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%',  ob_compatibility_mode='oracle', system_time_zone='+9:00';
+
+source include/check_schema_sync.inc;
+
+ob1.mysql alter tenant backup_oracle_tenant set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF9';
+
+let $backup_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'backup_mysql_tenant', tenant_id, 1);
+
+# case 3. 验证mysql租户下表的DML/SELECT
+ob_connect(conn_mysql, ob1.z1.obs0, root@$backup_mysql_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+show variables like 'system_time_zone';
+## timestamp of
+select scn_to_timestamp(1686031566000000000);
+select timestamp_to_scn('2023-06-06 06:06:06.060606') from dual;
+set time_zone='+06:00';
+select scn_to_timestamp(1686031566000000000);
+select timestamp_to_scn('2023-06-06 06:06:06.060606') from dual;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+#select START_SCN_DISPLAY, CHECKPOINT_SCN_DISPLAY from DBA_OB_ARCHIVELOG;
+
+ob_connect(sys_conn_oracle, ob1.z1.obs0, SYS@backup_oracle_tenant, ,SYS, , USE_OB_CONNECTOR);
+connection sys_conn_oracle;
+alter session set NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9';
+show variables like 'system_time_zone';
+alter session set time_zone='+02:00';
+select to_char(scn_to_timestamp(1686031566000000123), 'YYYY-MM-DD HH24:MI:SS.FF9') from dual;
+select timestamp_to_scn('2023-06-06 06:06:06.060606123') from dual;
+alter session set time_zone='+02:00';
+select to_char(scn_to_timestamp(1686031566000000123), 'YYYY-MM-DD HH24:MI:SS.FF9') from dual;
+select timestamp_to_scn('2023-06-06 06:06:06.060606123') from dual;
+## test here
+# alter session set time_zone='+10:00';

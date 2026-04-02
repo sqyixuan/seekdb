@@ -1,0 +1,121 @@
+# owner: zg410411
+# owner group: mv
+# tags: 
+# descriotion: alter materialized view's attributes
+#
+
+set query_rewrite_enabled='force';
+set query_rewrite_integrity='enforced';
+set @@recyclebin = OFF;
+set global mview_refresh_dop = 0;
+set mview_refresh_dop = 0;
+--disable_warnings
+drop database if exists alter_mv_db;
+create database alter_mv_db;
+--enable_warnings
+
+# 0. prepare
+use alter_mv_db;
+create table t1 (c1 int, c2 int, primary key(c1));
+create table t2 (c1 int, c2 int, primary key(c1));
+insert into t1 values(1, 1), (2, 2), (3, 3);
+insert into t2 values(1, 1), (2, 2), (3, 3);
+create materialized view log on t1 with primary key (c2) including new values;
+create materialized view log on t2 with primary key (c2) including new values;
+create materialized view alter_mv1 refresh fast start with sysdate() next sysdate() + interval 10 second as select t1.c1 s1, t1.c2 s2, t2.c1 s3, t2.c2 s4 from t1 join t2 on t1.c1 = t2.c1;
+sleep 20;
+let $mv_table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 'alter_mv1', table_id, 1);
+let $mv_container_table_id = query_get_value(select data_table_id from oceanbase.__all_table where table_name = 'alter_mv1', data_table_id, 1);
+
+# 1. alter enable on query computation and query rewrite
+#select table_mode from oceanbase.__all_table where table_name = 'alter_mv1';
+#select on_query_computation from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'alter_mv1';
+#--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+#explain basic select t1.c1 s1, t1.c2 s2, t2.c1 s3, t2.c2 s4 from t1 join t2 on t1.c1 = t2.c1;
+
+#alter materialized view alter_mv1 enable on query computation, enable query rewrite;
+#select table_mode from oceanbase.__all_table where table_name = 'alter_mv1';
+#select on_query_computation from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'alter_mv1';
+#--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+#explain basic select t1.c1 s1, t1.c2 s2, t2.c1 s3, t2.c2 s4 from t1 join t2 on t1.c1 = t2.c1;
+
+# disabled for now
+--error 1235
+alter materialized view alter_mv1 enable on query computation;
+--error 1235
+alter materialized view alter_mv1 enable query rewrite;
+
+# 2. alter refresh method
+#--disable_query_log
+#eval select refresh_method from oceanbase.__all_mview where mview_id = $mv_table_id;
+#alter materialized view alter_mv1 refresh force;
+#eval select refresh_method from oceanbase.__all_mview where mview_id = $mv_table_id;
+#alter materialized view alter_mv1 refresh complete;
+#eval select refresh_method from oceanbase.__all_mview where mview_id = $mv_table_id;
+#--enable_query_log
+#create table t3(c1 int, c2 int, primary key(c1));
+#insert into t3 values(1, 1), (2, 2), (3, 3);
+#create materialized view alter_mv2 refresh complete on demand as select c1, c2, count(*) from t3 group by c1, c2;
+#insert into t3 values(4,4);
+#--error 9760
+#alter materialized view alter_mv2 refresh fast;
+#create materialized view log on t3 with primary key (c2) including new values;
+#insert into t3 values(5,5);
+#alter materialized view alter_mv2 refresh fast;
+#call DBMS_MVIEW.refresh('alter_mv2', 'f');
+#select * from alter_mv2;
+
+# disabled for now
+--error 1235
+alter materialized view alter_mv1 refresh complete;
+
+# 3. alter refresh interval
+--disable_query_log
+eval select refresh_next from oceanbase.__all_mview where mview_id = $mv_table_id;
+let $refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv_table_id, refresh_job, 1);
+eval select repeat_interval from oceanbase.__all_tenant_scheduler_job where job_name = '$refresh_job';
+
+alter materialized view alter_mv1 refresh next sysdate() + interval 5 second;
+eval select refresh_next from oceanbase.__all_mview where mview_id = $mv_table_id;
+let $refresh_job = query_get_value(select refresh_job from oceanbase.__all_mview where mview_id = $mv_table_id, refresh_job, 1);
+eval select repeat_interval from oceanbase.__all_tenant_scheduler_job where job_name = '$refresh_job';
+--enable_query_log
+
+# 4. alter refresh dop
+--disable_query_log
+eval select refresh_dop from oceanbase.__all_mview where mview_id = $mv_table_id;
+eval select dop from oceanbase.__all_table where table_id = $mv_container_table_id;
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'alter_mv_db.alter_mv1' order by gmt_create desc limit 1;
+show create table alter_mv1;
+alter materialized view alter_mv1 parallel 4;
+sleep 20;
+eval select refresh_dop from oceanbase.__all_mview where mview_id = $mv_table_id;
+eval select dop from oceanbase.__all_table where table_id = $mv_container_table_id;
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'alter_mv_db.alter_mv1' order by gmt_create desc limit 1;
+show create table alter_mv1;
+eval select ddl_stmt_str from oceanbase.__all_ddl_operation where ddl_stmt_str like '%alter_mv1 parallel 4%' and table_id = $mv_container_table_id ;
+--enable_query_log
+
+# 5. without refresh node
+create materialized view alter_mv2 parallel 6 as select t1.c1 s1, t1.c2 s2, t2.c1 s3, t2.c2 s4 from t1 join t2 on t1.c1 = t2.c1;
+let $mv_table_id2 = query_get_value(select table_id from oceanbase.__all_table where table_name = 'alter_mv2', table_id, 1);
+let $mv_container_table_id2 = query_get_value(select data_table_id from oceanbase.__all_table where table_name = 'alter_mv2', data_table_id, 1);
+--disable_query_log
+eval select refresh_dop from oceanbase.__all_mview where mview_id = $mv_table_id2;
+eval select dop from oceanbase.__all_table where table_id = $mv_container_table_id2;
+--enable_query_log
+
+# 6. test view info
+select refresh_dop from oceanbase.DBA_MVIEWS where MVIEW_NAME = 'alter_mv2';
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+select refresh_dop from oceanbase.CDB_MVIEWS where MVIEW_NAME = 'alter_mv2';
+
+# 7. supplement
+# no params is not supported
+--error 1064
+alter materialized view alter_mv1;
+
+# clean up
+connection default;
+drop database alter_mv_db;

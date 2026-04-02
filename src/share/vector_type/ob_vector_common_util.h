@@ -81,7 +81,7 @@ public:
   {}
   
   ~ObSPIVFixedSizeHeap() = default;
-
+  
   int push(T &item)
   {
     int ret = OB_SUCCESS;
@@ -205,6 +205,7 @@ public:
   static int set_center_id_to_string(const ObCenterId &center_id, ObString &str, ObIAllocator *allocator = nullptr);
   static int get_pq_center_id_from_string(ObPqCenterId &pq_center_id, const ObString &str, uint8_t flag = IVF_PARSE_PQ_CENTER);
   static int set_pq_center_id_to_string(const ObPqCenterId &pq_center_id, ObString &str, ObIAllocator *alloc = nullptr);
+  static uint64_t get_center_prefix(const ObString &center_id, bool is_pq_centroid = false);
 
   static void release_inner_session(sql::ObFreeSessionCtx &free_session_ctx, sql::ObSQLSessionInfo *&session);
 
@@ -667,7 +668,7 @@ bool ObVectorCenterClusterHelper<VEC_T, CENTER_T>::is_satify_similarity_threshol
     SHARE_LOG(WARN, "get similarity from distance fail", K(ret));
   } else if (similarity < similarity_threshold_){
     is_satify = false;
-  }
+  } 
   return is_satify;
 }
 

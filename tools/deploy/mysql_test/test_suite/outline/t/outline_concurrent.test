@@ -1,0 +1,266 @@
+#owner: xiaoyi.xy
+#owner group: SQL1
+#description: 该case是为了验证outline的限流功能
+#tags: outline
+
+let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+alter system flush plan cache;
+disconnect obsys;
+connection default;
+
+START TRANSACTION;
+
+--disable_warnings
+drop database if exists ol_concurrent_db;
+create database ol_concurrent_db;
+
+use ol_concurrent_db;
+select 1;
+--error 1064
+select ?;
+--error 1064
+select 1+?;
+
+##part one: check if create outline with concurrent limit is valid
+create table t1(c1 int primary key, c2 int, c3 int, key(c2), key(c3,c2));
+create table t2(c1 int primary key, c2 int, c3 int, key(c2), key(c3,c2));
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+--error 1064
+select  c2,c1 from t1 where c2 = ?;
+select  c2,c1 from t1 where c2 = 2;
+--error 1064
+select  c2,c1 from t1 where c2 = ?;
+select  c2,c1 from t1 where c2 = 2;
+select  c2,c1 from t1 where c2 = 3;
+select hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = "select  c2,c1 from t1 where c2 = ?";
+
+--echo ## simply test ##
+create outline olt_1 on select /*+max_concurrent(5)*/ c2,c1 from t1 where c2 = 2;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+sleep 2;
+##expect error
+--error 5267
+create outline olt_2 on select /*+index(t1 c3)*/ c2 from t1 where c2 = ?;
+--error 1064
+select /*+max_concurrent(5)*/ c2 from t1 where c2 = ?;
+--error 5264
+create outline olt_1 on select /*+max_concurrent(5)*/ c2,c1 from t1 where c2 = ?;
+--error 5264
+create outline olt_2 on select /*+max_concurrent(5)*/ c2,c1 from t1 where c2 = ?;
+--error 5264
+create outline olt_1 on select /*+max_concurrent(-1)*/ c2,c1 from t1 where c1 = 2 and c2 = ?;
+
+create outline olt_3 on select /*+max_concurrent(5)*/ c2 from t1 where c2 in (select /*+max_concurrent(6)*/ c2 from t2);
+create outline olt_4 on select c2 from t1 where c2 in (select /*+max_concurrent(6)*/ c2 from t2);
+create outline olt_5 on select c2 from t1 where c2 in (select /*+max_concurrent(6)*/ c2 from t2) union (select /*+max_concurrent(4)*/ c1 from t2);
+create outline olt_6 on select c2 from t1 where c2 in (select /*+max_concurrent(6)*/ c2 from t2) union (select c1 from t2);
+create outline olt_7 on select /*+max_concurrent(5)*/ c2 from t1 where c2 in (select /*+max_concurrent(6)*/ c2 from t2) union (select /*+max_concurrent(4)*/ c1 from t2);
+create outline olt_8 on select /*+max_concurrent(5)*/ c2 from t1 where c2 in ((select /*+max_concurrent(6)*/ c2 from t2) union (select /*+max_concurrent(4)*/ c1 from t2));
+
+--error 5267
+create outline olt_9 on select /*+max_concurrent(5) index(t1 c3)*/ c2,   c1 from t1 where c2 = ?;
+create outline olt_10 on select /*+index(t1 c3)*/ c2 from t1 where c2 in      (select /*+max_concurrent(6)*/ c2 from t2);
+create outline olt_11 on select /*+max_concurrent(5)*/ c2 from t1 where c2    in (select /*+index(t2 c3)*/ c2 from t2) union (select c1 from t2);
+
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+
+drop outline olt_1;
+drop outline olt_3;
+drop outline olt_4;
+drop outline olt_5;
+drop outline olt_6;
+drop outline olt_7;
+drop outline olt_8;
+
+###part two: check concurrent limit is effective
+create outline olt_1 on select /*+max_concurrent(0)*/ c2,c1 from t1 where c1 = 2 and c2 = ?;
+sleep 2;
+
+--error 5268
+select  c2,c1 from t1 where c1 = 2 and c2 = "2";
+--error 5268
+select  c2,c1 from t1 where c1 = 2 and c2 = "1";
+--error 5268
+select  c2,c1 from t1 where c1 = 2 and c2 = 1;
+--error 5268
+select  c2,c1 from t1 where c1 = 2 and c2 = true;
+
+select  c2,c1 from t1 where c1 = 1 and c2 = "2";
+select  c2,c1 from t1 where c1 = 1 and c2 = "1";
+select  c2,c1 from t1 where c1 = 1 and c2 = 1;
+select  c2,c1 from t1 where c1 = 1 and c2 = true;
+
+connection obsys;
+alter system flush plan cache;
+connection default;
+
+drop outline olt_1;
+
+create outline olt_1 on select /*+max_concurrent(1)*/ c2,c1 from t1 where c1 = 2 and c2 = ?;
+sleep 2;
+select  c2,c1 from t1 where c1 = 2 and c2 = "2";
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = 1;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 1 and c2 = "1";
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = "3";
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 1 and c2 = "2";
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+
+connection obsys;
+alter system flush plan cache;
+connection default;
+##test whether flush plan cache is effective on outlined_plan
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+
+create outline olt_2 on select /*+max_concurrent(1)*/ c2,c1 from t1 where c1 = 2 and c2 = ? and c3 = 1;
+sleep 2;
+select  c2,c1 from t1 where c1 = 2 and c2 = "2" and c3 = 1;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = 2 and c3 = 1;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = "2" and c3 = 3;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = 2 and c3 = 3;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+select  c2,c1 from t1 where c1 = 2 and c2 = "3" and c3 = 1;
+select statement, hit_count,if(outline_id = -1, -1, 1) as outline_id from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select  c2,c1 from t1 where c1 =%';
+
+##check create or replace max_concurrent
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+create or replace outline olt_2 on select /*+max_concurrent(3)*/ c2,c1 from t1 where c1 = 2 and c2 = ? and c3 = 1;
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+create or replace outline olt_2 on select /*+index(t1 c3)*/ c2,c1 from t1 where c1 = 2 and c2 = 2 and c3 = 1;
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+create or replace outline olt_2 on select /*+max_concurrent(4)*/ c2,c1 from t1 where c1 = 2 and c2 = ? and c3 = 1;
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+drop outline olt_1;
+drop outline olt_2;
+drop table t1;
+drop table t2;
+
+##test outline with insert_stmt
+create table t1(c1 int, c2 int, c3 int, key(c2), key(c3,c2));
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+create outline ol_insert on insert /*+trace_log*/ into t1 value (1,2,4);
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+alter outline ol_insert add insert /*+max_concurrent(0)*/ into t1 value (1,?,?);
+alter outline ol_insert add insert /*+max_concurrent(0)*/ into t1 value (?,1,1);
+alter outline ol_insert add insert /*+max_concurrent(1)*/ into t1 value (?,1,2);
+sleep 2;
+--error 5268
+insert  into t1 value (1,2,2);
+--error 5268
+insert  into t1 value (2,1,1);
+--error 5268
+insert  into t1 value (2.0,1,1);
+--error 5268
+insert  into t1 value ('2',1,1);
+insert  into t1 value (2,1,2);
+alter outline ol_insert add insert /*+max_concurrent(0)*/ into t1 value (?,1,?);
+--error 5268
+insert  into t1 value (2,1,2);
+insert  into t1 value (3,3,3);
+drop outline ol_insert;
+
+##test update
+create outline ol_update on update /*+trace_log*/t1 set c1 = 4 where c3 =2;
+alter outline ol_update add update /*+max_concurrent(0)*/t1 set c1 = 4 where c3 =?;
+alter outline ol_update add update /*+max_concurrent(1)*/t1 set c1 = 3 where c3 =?;
+sleep 2;
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+--error 5268
+update t1 set c1 = 4 where c3 =2;
+update t1 set c1 = 4.0 where c3 =2;
+update t1 set c1 = '4' where c3 =2;
+update t1 set c1 = 3 where c3 =2;
+drop outline ol_update;
+
+##test delete
+create outline ol_delete on delete /*+max_concurrent(0)*/ from t1 where c3 =2 and c1 = 3 to delete /*+trace_log index(t1 c3)*/ from t1 where c3 =2 and c1 = 3;
+alter outline ol_delete add delete /*+max_concurrent(0)*/ from t1 where c3 =? and c1 = 1 to delete /*+trace_log index(t1 c3)*/ from t1 where c3 =? and c1 = 1;
+sleep 2;
+connection obsys;
+--disable_query_log
+eval select a.name as name, hex(substr(a.signature, 1, 1)) as signatrue_len, substr(a.signature, 2, conv(hex(substr(a.signature, 1, 1)), 16,10)) as signature, a.outline_content as outline_content, a.outline_target as outline_target, a.sql_text as sql_text, a.owner as owner, hex(a.outline_params) as outline_params from oceanbase.__all_virtual_outline a, oceanbase.__all_virtual_database b where a.tenant_id = b.tenant_id and a.database_id = b.database_id and b.in_recyclebin = false and a.tenant_id = $default_tenant_id and b.database_name='ol_concurrent_db';
+--enable_query_log
+connection default;
+
+delete  from t1 where c3 =2 and c1 = 3;
+delete /*+trace_log index(t1 c3)*/ from t1 where c3 =2 and c1 = 4;
+--error 5268
+delete /*+trace_log index(t1 c3)*/ from t1 where c3 =2 and c1 = 1;
+delete /*+trace_log index(t1 c3)*/ from t1 where c3 =2 and c1 = 2;
+drop outline ol_delete;
+
+create outline olt_sleep on 'DB4D227E26A29942E26F9E3F1DDB4F53' using hint /*+max_concurrent(0)*/;
+--error 5268
+select sleep(3) from dual;
+select query_sql, hit_count from oceanbase.gv$ob_plan_cache_plan_stat where sql_id='DB4D227E26A29942E26F9E3F1DDB4F53';
+
+
+create table tab_format(c1 int);
+--error 5267
+create format outline otlx on select /*+max_concurrent(0)*/* from tab_format where c1 in (1,2,3);
+create format outline otlx2 on select /*+max_concurrent(0)*/* from tab_format where c1 =1;
+create format outline otlx3 on select /*+max_concurrent(0)*/* from tab_format where c1 in (?);
+--error 5267
+create format outline otlx4 on select /*+max_concurrent(0)*/* from tab_format where c1 in (?) and c1 = 1;
+--error 5268
+select * from tab_format where c1 =1;
+--error 5268
+select * from tab_format where     c1 = 1 ; 
+--error 5268
+select * from tab_format where     c1 in (1,2); 
+--error 5268
+select * from tab_format where c1 in (1,2,3); 
+select * from tab_format where c1 in (1,2,3) and c1 = 1;
+
+drop database ol_concurrent_db;
+commit;

@@ -1,0 +1,101 @@
+##
+# owner: <QianXi> madoll.tw
+# owner group: ob_clog_history_reprorter
+# description:
+# 测试功能点: delete server-A, __all_clog_history_info_v2表关于sever-A的记录均要被删除
+# 用例描述: delete server
+#           1. 测试delete server之前，__all_clog_history_info_v2表的记录总数
+#           2. 测试delete server之后，__all_clog_history_info_v2表的记录总数
+##
+
+#ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=2,init_unit_num=1);
+ob1.reboot;
+
+let $ip=deploy_get_value(ob1.z1.obs1.ip);
+let $port=deploy_get_value(ob1.z1.obs1.mysql_port);
+connect (conn1,$ip,root@obtest,,test,$port);
+
+ob1.mysql alter system set balancer_idle_time = '20s';
+
+sleep 2;
+
+let $ip = deploy_get_value(ob1.z1.obs1.ip);
+let $mysql_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+
+## step 1. 变量声明
+let $CORRECT_QUERY = query correct;
+let $ERROR_QUERY = query error;
+let $DELETE_SUCC = delete succ;
+let $DELETE_FAIL = delete fail;
+# 每次查询最多重试10次
+let $retry_count = 10;
+# 分别记录delete server之前和之后的记录
+let $record_count_before_delete = 0;
+let $record_count_after_delete = 0;
+
+
+## step 2. 在delete server-A之前，查询sever-A 在__all_clog_history_info_v2表里记录个数
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+#echo $z3_obs0_ip:$z3_obs0_port;
+
+while ($retry_count > 0)
+{
+  #对于同一个机器上部署两个进程的情况，此处不应该过滤svr_ip
+  let $record_count_before_delete = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port', count, 1);
+
+  # 异步任务可能未执行完，未查询到sleep
+  if (0 == $record_count_before_delete)
+  {
+    sleep 10;
+  }
+  if (0 != $record_count_before_delete)
+  {
+    #echo $record_count_before_delete;
+    echo $CORRECT_QUERY;
+    let $retry_count = 0;
+  }
+  dec $retry_count;
+}
+if (0 == $record_count_before_delete)
+{
+  echo $ERROR_QUERY;
+}
+
+## step 3. 删除zone-3:ob0
+ob1.mysql alter system delete server '$z3_obs0_ip:$z3_obs0_port';
+sleep 10;
+
+
+## step 4. 等待zone-3:ob0完全完成删除,__all_server表记录无法查询到
+sleep 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port', 0, 1000;
+sleep 20;
+
+
+## step 5. 在delete server-A之后，查询sever-A 在__all_clog_history_info_v2表里记录个数
+let $retry_count = 10;
+while ($retry_count > 0)
+{
+  #对于同一个机器上部署两个进程的情况，此处不应该过滤svr_ip
+  let $record_count_after_delete = query_get_value(select count(*) as count from oceanbase.__all_clog_history_info_v2 where svr_ip = '$z3_obs0_ip' and svr_port = '$z3_obs0_port', count, 1);
+
+  #echo $record_count_after_delete;
+  # 删除记录异步任务可能未执行完, sleep
+  if (0 != $record_count_after_delete)
+  {
+    sleep 10;
+  }
+  if (0 == $record_count_after_delete)
+  {
+    #echo $record_count_after_delete;
+    echo $DELETE_SUCC;
+    let $retry_count = 0;
+  }
+  dec $retry_count;
+}
+if (0 != $record_count_after_delete)
+{
+  echo $DELETE_FAIL;
+}

@@ -1,0 +1,126 @@
+# rs
+# wenduo.swd
+# 测试点：带有E副本的主备库部署基础测试
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob2=OBI(cluster=1:1:1,proxy_num=0,leaderob=ob1);
+
+# 主库启动，并构建主库加密zone
+ob1.z3.obs0.set status=disable;
+ob1.reboot;
+let $tt1ip = deploy_get_value(ob1.z1.obs0.ip);
+let $tt1port= deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys1_conn, $tt1ip, root,,oceanbase, $tt1port);
+connection sys1_conn;
+
+let $tt11ip = deploy_get_value(ob1.z2.obs0.ip);
+let $tt11port= deploy_get_value(ob1.z2.obs0.mysql_port);
+connect(sys11_conn, $tt11ip, root,,oceanbase, $tt11port);
+connection sys11_conn;
+
+ob1.mysql set global ob_query_timeout = 30000000;
+--disable_query_log
+alter system set tde_method='internal';
+--enable_query_log
+# 备库启动
+ob2.z3.obs0.set status=disable;
+ob2.reboot;
+ob_connect(sys2_conn, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+connection sys2_conn;
+
+ob2.mysql set global ob_query_timeout = 30000000;
+--disable_query_log
+alter system set tde_method='internal';
+--enable_query_log
+
+# 主库增加加密zone
+connection sys1_conn;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 15;
+# add encryption zone
+alter system add zone 'z3' zone_type = "encryption";
+alter system start zone 'z3';
+# add server
+ob1.z3.obs0.set status=enable;
+ob1.z3.obs0.start;
+sleep 30;
+ob1.z3.obs0.add;
+sleep 60;
+
+# 检查备库同步完成
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 180;
+
+# 备库添加加密zone
+connection sys2_conn;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 15;
+# add encryption zone
+alter system add zone 'z3' zone_type = "encryption";
+alter system start zone 'z3';
+# add server
+ob2.z3.obs0.set status=enable;
+ob2.z3.obs0.start;
+sleep 30;
+ob2.z3.obs0.add;
+sleep 60;
+
+# 将主库的系统租户locality补充成3副本
+ob1.mysql CREATE RESOURCE POOL sys_pool2 unit = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z3');
+ob1.mysql ALTER TENANT sys RESOURCE_POOL_LIST = ('sys_pool','sys_pool2'), locality = "F@z1,F@z2,E@z3";
+ob1.check_until_timeout select count(*) c from __all_tenant where previous_locality != "", 0, 600;
+
+# 在主库上创建一个租户
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tt RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1', locality = 'F@z1,F@z2,E@z3'set ob_tcp_invited_nodes='%';
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_server_schema_info where refreshed_schema_version = $primary_schema_version and tenant_id = 1, 3, 30;
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = 1001, s, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_server_schema_info where refreshed_schema_version = $primary_schema_version and tenant_id = 1001, 3, 30;
+
+ob_connect(conn3, ob1.z1.obs0, root@tt, ,test, , USE_OB_CONNECTOR);
+connection conn3;
+create table t1(c1 int primary key);
+insert into t1 values(1);
+
+# 备库同步完成
+let $primary_schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_ddl_operation, s, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_ddl_operation where schema_version = $primary_schema_version, 1, 180;
+
+# 将原主库切成备
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+ob1.mysql alter system commit to switchover to physical standby;
+
+# 将原备库切成主
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;
+# 检查原主库, 成员列表里包含E副本
+let $z3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port = deploy_get_value(ob1.z3.obs0.port);
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where member_list like "%$z3_ip:$z3_port%";
+# 将原主库的z2 stop掉
+ob1.z2.obs0.stop;
+
+ob_connect(conn4, ob2.z1.obs0, root@tt, ,test, , USE_OB_CONNECTOR);
+connection conn4;
+insert into t1 values(2);
+
+# 查询原主库上t1表中的数据
+sleep 10;
+connection conn3;
+set ob_read_consistency='weak';
+select * from t1;
+
+# 将原主库的z1停掉，z2拉起，再次读原主库的表
+ob1.z1.obs0.stop;
+ob1.z2.obs0.start;
+ob1.z2.obs0.check_until_timeout select count(*) c from oceanbase.__all_virtual_core_meta_table where role = 1, 1, 100;
+ob1.z2.obs0.check_until_timeout select count(*) c from oceanbase.__all_virtual_server_schema_info where refreshed_schema_version != received_schema_version and received_schema_version > 1, 0, 100;
+sleep 20;
+ob_connect(conn5, ob1.z2.obs0, root@tt, ,test, , USE_OB_CONNECTOR);
+connection conn5;
+
+ob1.z2.obs0.check_until_timeout select count(*) c from oceanbase.__all_virtual_meta_table where role = 3, 1, 600;
+ob1.z2.obs0.check_until_timeout select count(*) c from oceanbase.__all_virtual_clog_stat where is_in_sync = 0, 0, 100;
+connection conn5;
+set ob_read_consistency='weak';
+select * from t1;

@@ -1,0 +1,79 @@
+# owner: zhanghuidong.zhd
+# owner group: storage
+# description: copy test cases from alter_table_exchange_partition and fine tune, allow co major to be exchanged with major (from delayed column transform). After major merge, the sstable status should become column storage.
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists pt;
+drop table if exists nt;
+--enable_warnings
+# table nt has column group while table pt does not, exchange is not allowed
+create table pt (c1 bigint primary key, c2 bigint, c3 blob) partition by range(c1) (partition M1  VALUES LESS THAN (50000), partition M2 VALUES LESS THAN (100000), partition M3 VALUES LESS THAN (200000));
+create table nt (c1 bigint primary key, c2 bigint, c3 blob);
+alter table nt add column group (each column) delayed;
+--error 1731
+alter table pt exchange partition M3 with table nt without validation;
+drop table pt;
+drop table nt;
+
+--disable_warnings
+drop table if exists test1;
+drop table if exists test2;
+--enable_warnings
+create table test1(c1 int primary key, c2 varchar(30)) partition by range (c1)(
+                                                       partition c1_15 values less than (15),
+                                                       partition c1_35 values less than (35),
+                                                       partition c1_50 values less than (50));
+create table test2(c1 int primary key, c2 varchar(30));
+
+--disable_query_log
+insert into test1(c1) values(1),(2),(36),(38),(40),(45);
+insert into test2(c1) values(40),(60);
+--enable_query_log
+--source tenant_major_freeze.inc
+--disable_query_log
+insert into test1(c1) values(16),(18);
+insert into test2(c1) values(19),(20);
+--enable_query_log
+
+alter table test1 add column group (each column) delayed;
+alter table test2 add column group (each column);
+alter table test1 exchange partition c1_35 with table test2 without validation;
+select * from test1;
+select * from test2;
+
+--disable_query_log
+# partition c1_35
+let $table_name = "test1";
+let $partition_name = "c1_35";
+let $mode = 1;
+--source check_tenant_tablet_partition_sstable_status.inc
+
+let $table_name = "test2";
+let $mode = 0;
+--source check_tenant_tablet_sstable_status.inc
+--enable_query_log
+
+--source tenant_major_freeze.inc
+--disable_query_log
+let $mode = 0;
+let $table_name = "test1";
+# partition c1_15
+let $partition_name = "c1_15";
+--source check_tenant_tablet_partition_sstable_status.inc
+# partition c1_35
+let $partition_name = "c1_35";
+--source check_tenant_tablet_partition_sstable_status.inc
+# partition c1_50
+let $partition_name = "c1_50";
+--source check_tenant_tablet_partition_sstable_status.inc
+let $table_name = "test2";
+--source check_tenant_tablet_sstable_status.inc
+--enable_query_log
+drop table test1;
+drop table test2;
+
+disconnect conn1;
+connection default;

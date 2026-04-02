@@ -1,0 +1,127 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cpu_count=16,memory_limit='30G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('small_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+set global wait_timeout = 288000;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+use oceanbase;
+ob1.mysql alter tenant $backup_mysql_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=1 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_mysql_tenant_id, 1, 100;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 2, 1200;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+alter system change tenant tenant_id = 1003;
+select tenant_role from __all_tenant_info where tenant_id = 1004;
+tenant_role
+STANDBY
+UPDATE t1 SET b = 2 WHERE a = 1;
+UPDATE t1 SET b = 3 WHERE a = 1;
+select * from t1;
+a	b	c
+1	1	NULL
+select * from t1;
+a	b	c
+1	1	NULL
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ALTER SYSTEM RECOVER STANDBY TENANT restore_mysql_tenant UNTIL SCN = 4611686018427387903;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = 4611686018427387903, 1, 5;
+ALTER SYSTEM RECOVER STANDBY TENANT restore_mysql_tenant UNTIL SCN = 0;
+ERROR HY000: Incorrect arguments to until scn, it should be positive integer
+ALTER SYSTEM RECOVER STANDBY TENANT restore_mysql_tenant CANCEL;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = sync_scn, 1, 5;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_UPDATE_RECOVERY_UNTIL_SCN wait_for continue_signal execute 10000';
+ALTER SYSTEM RECOVER STANDBY TENANT restore_mysql_tenant UNTIL UNLIMITED;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal execute 10000';
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = $cur_recovery_until_scn, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_log_restore_source where tenant_id = 1004 and recovery_until_scn = $cur_recovery_until_scn, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn != 4611686018427387903, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_log_restore_source where tenant_id = 1004 and recovery_until_scn != 4611686018427387903, 1, 5;
+ALTER SYSTEM RECOVER STANDBY TENANT restore_mysql_tenant UNTIL UNLIMITED;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = 4611686018427387903, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ALTER SYSTEM RECOVER STANDBY UNTIL SCN = 4611686018427387903;
+ALTER SYSTEM RECOVER STANDBY UNTIL SCN = 0;
+ERROR HY000: Incorrect arguments to until scn, it should be positive integer
+ALTER SYSTEM RECOVER STANDBY UNTIL UNLIMITED;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = 4611686018427387903, 1, 5;
+ob1.mysql set ob_global_debug_sync = 'STOP_LS_RECOVERY_THREAD wait_for continue_signal execute 10000';
+ob1.check_until_timeout SELECT count(*) FROM __all_virtual_tenant_info l LEFT JOIN __all_virtual_ls_recovery_stat r ON l.tenant_id=r.tenant_id where r.ls_id = 1 and r.sync_scn - l.sync_scn > 1 and l.tenant_id = 1004, 1, 10;
+ALTER SYSTEM RECOVER STANDBY CANCEL;
+ob1.check_until_timeout SELECT count(*) FROM __all_virtual_tenant_info l LEFT JOIN __all_virtual_ls_recovery_stat r ON l.tenant_id=r.tenant_id where r.ls_id = 1 and r.sync_scn - l.sync_scn > 1 and l.tenant_id = 1004, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1004 and recovery_until_scn = sync_scn, 1, 5;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal execute 10000';
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql CREATE TENANT backup_oracle_tenant RESOURCE_POOL_LIST = ('small_pool_0'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+set global wait_timeout = 288000;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+grant dba to test;
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(11, 11);
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_oracle_tenant_id, DOING, 600;
+ob1.mysql alter system major freeze tenant = 'backup_oracle_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_oracle_tenant_id, 0, 600;
+ob1.mysql alter system backup database;
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_oracle_tenant_id, 0, 10;
+use oceanbase;
+ob1.mysql alter tenant backup_oracle_tenant set primary_zone = 'z1';
+ob1.check_until_timeout select count(*)>=1 from oceanbase.__all_virtual_ls_status where status = 'NORMAL' and tenant_id = $backup_oracle_tenant_id, 1, 100;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG where $backup_oracle_tenant_id = tenant_id, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG where $backup_oracle_tenant_id = tenant_id, 1, 600;
+ob1.mysql alter system restore $restore_oracle_tenant from '$oracle_restore_path' until time='$restore_checkpoint' with 'pool_list=small_pool_1&primary_zone=z1';
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1007, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1008 and restore_status = 0, 2, 1200;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1008, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+alter system change tenant tenant_id = 1007;
+select tenant_role from __all_tenant_info where tenant_id = 1008;
+tenant_role
+STANDBY
+ob1.mysql set ob_global_debug_sync = 'STOP_LS_RECOVERY_THREAD wait_for continue_signal execute 10000';
+ob1.check_until_timeout SELECT count(*) FROM __all_virtual_tenant_info l LEFT JOIN __all_virtual_ls_recovery_stat r ON l.tenant_id=r.tenant_id where r.ls_id = 1 and r.sync_scn - l.sync_scn > 1 and l.tenant_id = 1008, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1008 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1008 and recovery_until_scn = $recovery_until_scn, 1, 5;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal execute 10000';
+ob1.mysql set ob_global_debug_sync = 'reset';
+ALTER SYSTEM RECOVER STANDBY UNTIL SCN = 4611686018427387903;
+ALTER SYSTEM RECOVER STANDBY UNTIL SCN = 0;
+ERROR HY000: OBE-00600: internal error code, arguments: -4002, Incorrect arguments to until scn, it should be positive integer
+ALTER SYSTEM RECOVER STANDBY CANCEL;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1008 and recovery_until_scn = sync_scn, 1, 5;
+ALTER SYSTEM RECOVER STANDBY UNTIL UNLIMITED;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1008 and recovery_until_scn = 4611686018427387903, 1, 5;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant CANCEL;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant CANCEL;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant CANCEL;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant CANCEL;
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_oracle_tenant UNTIL UNLIMITED;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_info where tenant_id = 1008 and (sync_scn / 1000000) > $current_timestamp, 1, 60;

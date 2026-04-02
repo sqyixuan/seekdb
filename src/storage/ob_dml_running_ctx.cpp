@@ -20,6 +20,7 @@
 #include "share/schema/ob_table_dml_param.h"
 #include "storage/tablet/ob_tablet.h"
 #include "storage/memtable/ob_memtable_context.h"
+#include "storage/tx/ob_trans_part_ctx.h"
 
 namespace oceanbase
 {
@@ -106,6 +107,14 @@ int ObDMLRunningCtx::init(
     store_ctx_.mvcc_acc_ctx_.mem_ctx_->set_table_version(dml_param_.schema_version_);
     store_ctx_.table_version_ = dml_param_.schema_version_;
     column_ids_ = column_ids;
+    // Propagate async-index flag to the transaction context so that the log block header
+    // carries HAS_ASYNC_INDEX, enabling Change Stream Fetcher fast filtering.
+    if (OB_UNLIKELY(dml_param_.has_async_index_)) {
+      transaction::ObPartTransCtx *tx_ctx = store_ctx_.mvcc_acc_ctx_.mem_ctx_->get_trans_ctx();
+      if (OB_NOT_NULL(tx_ctx)) {
+        tx_ctx->set_has_async_index_redo();
+      }
+    }
     is_inited_ = true;
   }
 
@@ -199,7 +208,7 @@ int ObDMLRunningCtx::check_need_old_row_legitimacy()
     is_need_check_old_row_ = true;
     if ((relative_table_.is_index_table() && !relative_table_.can_read_index())
         || dml_param_.is_main_table_in_fts_ddl_ ) {
-      // We should not check old row because domain row may be generated instead of scanned
+      // We should not check old row because domain row may be generated instead of scanned 
       // from domain table when:
       // 1) index can not be read during building index
       // 2) or schema shows index ready, but fts ddl is on going when dml start snapshot

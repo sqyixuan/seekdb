@@ -1,0 +1,120 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试日志流副本运维命令指定data_source是否有效，底层使用的数据源是否符合预期
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=2:2:2:2,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3, F@z4", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+connect(mysql_tenant, $proxy_ip, root@mysql_tenant,,oceanbase, $proxy_port);
+
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select SELECT tenant_id - 1 as meta_tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $meta_tenant_name = deploy_get_value(ob1.select SELECT tenant_name FROM oceanbase.DBA_OB_TENANTS WHERE tenant_id = $meta_tenant_id, tenant_name, 1);
+
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1001 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = 1002 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from GV\$OB_LOG_STAT where tenant_id = $tenant_id and ls_id = 1001 and role = 'leader', 1, 10;
+ob1.check_until_timeout select count(*) from GV\$OB_LOG_STAT where tenant_id = $tenant_id and ls_id = 1002 and role = 'leader', 1, 10;
+
+# get servers' addr in z1, z2
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+
+let $z1_obs1_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $z1_obs1_port = deploy_get_value(ob1.z1.obs1.port);
+let $z1_obs1 = $z1_obs1_ip:$z1_obs1_port;
+
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+
+let $z2_obs1_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $z2_obs1_port = deploy_get_value(ob1.z2.obs1.port);
+let $z2_obs1 = $z2_obs1_ip:$z2_obs1_port;
+
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+let $z3_obs1 = $z3_obs1_ip:$z3_obs1_port;
+
+let $z4_obs0_ip = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_obs0_port = deploy_get_value(ob1.z4.obs0.port);
+let $z4_obs0 = $z4_obs0_ip:$z4_obs0_port;
+
+let $z4_obs1_ip = deploy_get_value(ob1.z4.obs1.ip);
+let $z4_obs1_port = deploy_get_value(ob1.z4.obs1.port);
+let $z4_obs1 = $z4_obs1_ip:$z4_obs1_port;
+
+let $tenant_ls_id = deploy_get_value(ob1.select SELECT ls_id as ls_id_tmp FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE svr_ip = '$z1_obs0_ip' AND svr_port = $z1_obs0_port AND ls_id > 1, ls_id_tmp, 1);
+sleep 10;
+--disable_query_log
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||        [MILESTONE] case 1: 测试补副本的指定data_source能力             ||
+--echo ========================================================================
+# 1.补一个副本，设置数据源为$z2_obs0（非leader）
+eval alter system add replica ls=$tenant_ls_id server='$z1_obs1' replica_type='F' data_source='$z2_obs0' paxos_replica_num=5 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z1_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+# 查看历史表的DATA_SOURCE字段，应该等于$z2_obs0
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE DATA_SOURCE_SVR_IP = '$z2_obs0_ip' and DATA_SOURCE_SVR_PORT = $z2_obs0_port and TASK_TYPE = 'ADD REPLICA', 1, 5;
+# 查看server event 确认底层选择的数据源是rs指定的
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z1_obs1_ip' and svr_port = $z1_obs1_port and value3 like "%$z2_obs0%" and value5 = 'ADD_LS_OP', 1, 5;
+
+#2.补一个副本，设置数据源为空
+eval alter system add replica ls=$tenant_ls_id server='$z2_obs1' replica_type='F' paxos_replica_num=6 tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z2_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+# 查看历史表的DATA_SOURCE字段，应该为空
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE DATA_SOURCE_SVR_IP = '0.0.0.0' and DATA_SOURCE_SVR_PORT = 0 and TASK_TYPE = 'ADD REPLICA', 1, 20;
+# 查看server event 确认底层选择的数据源不是leader
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z2_obs1_ip' and svr_port = $z2_obs1_port and value3 like "%$z1_obs0%" and value5 = 'ADD_LS_OP', 0, 5;
+
+--echo ========================================================================
+--echo ||      [MILESTONE] case 2: 测试迁移副本的指定data_source能力             ||
+--echo ========================================================================
+
+# 1.迁移一个副本，设置数据源为$z2_obs0（非leader）
+eval alter system migrate replica ls=$tenant_ls_id source='$z3_obs0' destination='$z3_obs1' data_source='$z2_obs0' tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs0%', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z3_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+# 查看历史表的DATA_SOURCE字段，应该等于$z2_obs0
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE DATA_SOURCE_SVR_IP = '$z2_obs0_ip' and DATA_SOURCE_SVR_PORT = $z2_obs0_port and TASK_TYPE = 'MIGRATE REPLICA', 1, 20;
+# 查看server event 确认底层选择的数据源是rs指定的
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port and value3 like "%$z2_obs0%" and value5 = 'MIGRATE_LS_OP', 1, 5;
+
+# 2.迁移一个副本，设置数据源为空
+eval alter system migrate replica ls=$tenant_ls_id source='$z4_obs0' destination='$z4_obs1' tenant='mysql_tenant';
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z4_obs0%', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_LOCATIONS WHERE tenant_id = $tenant_id AND ls_id = $tenant_ls_id AND role = "LEADER" AND member_list LIKE '%$z4_obs1%', 1, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS WHERE tenant_id = $tenant_id, 0, 20;
+# 查看历史表的DATA_SOURCE字段，应该为空
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY WHERE DATA_SOURCE_SVR_IP = '0.0.0.0' and DATA_SOURCE_SVR_PORT = 0 and TASK_TYPE = 'MIGRATE REPLICA', 1, 20;
+# 查看server event 确认底层选择的数据源不是leader
+ob1.check_until_timeout select count(*) from oceanbase.__all_server_event_history where event like "%choose_src%" and value1 = $tenant_id and svr_ip = '$z4_obs1_ip' and svr_port = $z4_obs1_port and value3 like "%$z1_obs0%" and value5 = 'MIGRATE_LS_OP', 0, 5;

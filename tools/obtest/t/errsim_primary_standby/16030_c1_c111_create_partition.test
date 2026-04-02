@@ -1,0 +1,111 @@
+#rs
+#msy164651
+#测试点：持久化member_list的时候只有少数派成功
+#case 2: 多数派机器判断
+ob1=OBI(cluster=1, proxy_num = 0);
+ob2=OBI(cluster=1:1:1, proxy_num = 0, leaderob=ob1);
+ob1.reboot;
+ob2.reboot;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 30;
+ob2.mysql alter system set balancer_idle_time = '10s';
+ob2.mysql alter system set server_data_copy_out_concurrency = 30;
+ob2.mysql alter system set server_data_copy_in_concurrency = 30;
+ob2.mysql alter system set data_copy_concurrency = 60;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1';
+let $zone_list = 'z1';
+source include/create_tenant_1.inc;
+
+ob_connect(conn1, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+ob_connect(conn2, ob2.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+
+connection conn1;
+#检查备库同步完成
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+#case 1
+#宕机z3，持久化成员列表z1，z2
+ob2.z3.obs0.force_stop;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 2, 100;
+#控制备库在创建表的时候member list之前报错，实际上partition已经创建完成,并且member_list已经写入表中
+ob_connect(conn3, ob1.z1.obs0, root@tenant_1, , test, , USE_OB_CONNECTOR);
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+connection conn3;
+create table t1 (c1 int primary key,c3 int); 
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't1', table_id, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id, 2, 30;
+ob2.mysql_p select member_list from oceanbase.__all_virtual_meta_table where table_id = $table_id;
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where table_id = $table_id, 1, 30;
+#partition创建成功
+connection conn2;
+let $z3_addr = deploy_get_value(ob2.z3.obs0.get_addr); 
+ob2.mysql_p select count(*) from oceanbase.__all_partition_member_list where table_id = $table_id and member_list like '%$z3_addr%';
+#拉起z3，宕机z2
+ob2.z3.obs0.start;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 3, 100;
+ob2.z2.obs0.force_stop;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 2, 100;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+#副本不会持久化成功，选不出来leader
+sleep 30;
+ob2.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and member_list !='';
+ob2.mysql_p select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and role = 3;
+#拉起z2，创建成功，并且可以补副本
+ob2.z2.obs0.start;
+ob2.check_until_timeout select count(*) from __all_server where start_service_time > 0 and status = 'active', 3, 100;
+#
+#切换
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql alter system commit to switchover to physical standby;
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob2.mysql alter system commit to switchover to primary;
+
+
+## case2
+#创建有100个分区的表，卡在持久化成员列表之前
+#删除A机器的0号副本，删除C机器的1号副本，最终这个多数派是存在的
+ob2.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob2.mysql alter system commit to switchover to physical standby;
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO PRIMARY, 100;
+ob1.mysql alter system commit to switchover to primary;
+connection conn2;
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+alter system set enable_rereplication = false;
+alter system set enable_rebalance = false;
+let $part_cnt = 100;
+connection conn3;
+eval create table t2(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions $part_cnt;
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't2', table_id, 1);
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and zone = 'z1', $part_cnt, 60;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and zone = 'z3', $part_cnt, 60;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where table_id = $table_id and zone = 'z2', $part_cnt, 60;
+ob2.mysql_p select member_list from oceanbase.__all_virtual_meta_table where table_id = $table_id and member_list != '';
+ob2.check_until_timeout select count(*) > 0 from oceanbase.__all_partition_member_list where table_id = $table_id, 1, 30;
+connection conn2;
+#在z1机器上删除0，2，4，6，8，10，12等
+let $i = 0;
+while ($i < $part_cnt)
+{
+  let $query = select partition_cnt, tenant_id, table_id, partition_id, svr_ip, svr_port from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $i and zone = 'z1';
+  let $cmd1 = deploy_get_value(ob2.select select concat('./etc/ob_admin -h ',svr_ip,' -p ', svr_port, ' force_remove_replica ', table_id,':',partition_id,':',partition_cnt) as str from ($query) limit 0, 1, str, 1);
+  ob2.sh $cmd1;
+  inc $i;
+  inc $i;
+}
+
+#在z3集群上删除1，3，5，7，9等
+let $i = 1;
+while ($i < $part_cnt)
+{
+  let $query = select partition_cnt, tenant_id, table_id, partition_id, svr_ip, svr_port from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $i and zone = 'z3';
+  let $cmd1 = deploy_get_value(ob2.select select concat('./etc/ob_admin -h ',svr_ip,' -p ', svr_port, ' force_remove_replica ', table_id,':',partition_id,':',partition_cnt) as str from ($query) limit 0, 1, str, 1);
+  ob2.sh $cmd1;
+  inc $i;
+  inc $i;
+}
+
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 300;
+

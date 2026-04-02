@@ -1,0 +1,124 @@
+# owner:xiekaige.xkg
+# owner group:storage
+# test special minor policy for mv SSTables
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (obsys, $svr_ip, root@sys, , oceanbase, $svr_port);
+connection obsys;
+let $sys_tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'sys', tenant_id, 1);
+
+alter system set _enable_adaptive_compaction = False tenant sys;
+alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+alter system set writing_throttling_trigger_percentage = 80 tenant sys;
+alter system set freeze_trigger_percentage = 60 tenant sys;
+set ob_query_timeout = 1000000000000;
+set ob_trx_timeout = 1000000000000;
+
+#############################################################################################################
+### case1: Test whether mv SSTables can perform a history minor merge when the minor compact trigger == 1 ###
+#############################################################################################################
+alter system set undo_retention = 1800;
+alter system major freeze tenant sys;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+
+## create collect mv
+create tablegroup tg1 sharding='PARTITION';
+drop table if exists t1;
+create table t1(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+drop table if exists t2;
+create table t2(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+create materialized view mv1 (primary key(t1_c1,t1_c2)) tablegroup='tg1' partition by hash(t1_c1) partitions 2 REFRESH FAST ON DEMAND  
+ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(t1 t2) leading(t1 t2) use_das(t2) no_use_nl_materialization(t2)*/ t1.c1 t1_c1,t1.c2 t1_c2,t2.c2 t2_c2,t2.c3 t2_c3 from t1 join t2 on t1.c2=t2.c2;
+
+let $table_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't2', table_id, 1);
+let $tablet_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id= $table_id, tablet_id, 1);
+
+## dump mini sstable
+insert into t1(c1,c2) values(1,2);
+insert into t2(c2,c3) values(2,1);
+alter system minor freeze tenant sys;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+
+insert into t1(c1,c2) values(1,3);
+insert into t2(c2,c3) values(3,1);
+alter system minor freeze tenant sys;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+
+alter system major freeze tenant sys;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+
+let $table_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't2', table_id, 1);
+let $tablet_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id= $table_id, tablet_id, 1);
+
+## check if minor merge execute
+alter system set minor_compact_trigger = 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 12, 0, 1200;
+
+alter system set undo_retention = 0;
+alter system major freeze tenant sys;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+
+##################################################################################################################################################
+### case2: Test whether mv SSTables can perform a minor merge when there are one large SSTable and one small SSTable but other sstable can not ###
+##################################################################################################################################################
+alter system set minor_compact_trigger = 2;
+
+## create collect mv
+drop table if exists t4;
+create table t4(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+drop table if exists t5;
+create table t5(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+create materialized view mv2 (primary key(t4_c1,t4_c2)) tablegroup='tg1' partition by hash(t4_c1) partitions 2 REFRESH FAST ON DEMAND  
+ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(t4 t5) leading(t4 t5) use_das(t5) no_use_nl_materialization(t5)*/ t4.c1 t4_c1,t4.c2 t4_c2,t5.c2 t5_c2,t5.c3 t5_c3 from t4 join t5 on t4.c2=t5.c2;
+drop table if exists t3;
+create table t3(c1 int, c2 int);
+
+## Major merge to set table_referenced_by_fast_lsm_mv_flag_
+alter system major freeze tenant sys;
+sleep 20;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $sys_tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN and LAST_SCN != 1, 1, 1200;
+
+let $table_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't5', table_id, 1);
+let $tablet_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id= $table_id, tablet_id, 1);
+let $table_id2=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name= 't3', table_id, 1);
+let $tablet_id2=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id= $table_id2, tablet_id, 1);
+
+## construct large mini sstable, whose row_count > 10
+ob1.mysql alter system set_tp tp_no = 762, error_code = 4677, frequency = 1;
+
+--disable_query_log
+let $row_count = 1;
+while ($row_count <= 11) 
+{
+    eval insert into t5 values($row_count,$row_count);
+    eval insert into t4 values($row_count,$row_count);
+    eval insert into t3 values($row_count,$row_count);
+    inc $row_count;
+}
+--enable_query_log
+alter system minor freeze tenant sys;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id2 and table_type = 0, 0, 100;
+
+## construct mini sstable
+insert into t4 values(12,12);
+insert into t5 values(12,12);
+insert into t3 values(12,12);
+
+alter system minor freeze tenant sys;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+ob1.check_until_timeout select count(1) from __all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id2 and table_type = 0, 0, 100;
+
+## check if minor merge execute
+alter system set minor_compact_trigger = 1;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id and table_type = 12, 0, 1200;
+ob1.check_until_timeout select count(1) > 0 from oceanbase.__all_virtual_table_mgr where tenant_id = $sys_tenant_id and tablet_id = $tablet_id2 and table_type = 12, 1, 1200;
+
+ob1.mysql alter system set_tp tp_no = 762, error_code = 4677, frequency = 0;

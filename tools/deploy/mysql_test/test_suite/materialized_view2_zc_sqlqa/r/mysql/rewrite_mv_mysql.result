@@ -1,0 +1,5569 @@
+result_format: 4
+PURGE RECYCLEBIN;
+##clean PLAN
+alter system flush plan cache global;
+DROP MATERIALIZED VIEW LOG ON col_info;
+DROP MATERIALIZED VIEW LOG ON col_item;
+DROP table col_item;
+DROP table col_info;
+DROP materialized view ZC_MV1;
+DROP materialized view ZC_MV2;
+DROP materialized view ZC_MV3;
+DROP materialized view ZC_MV4;
+CREATE table col_info(c1 int,c2 int,PRIMARY KEY(c2)) PARTITION by hash(c2) partitions 1000;
+CREATE TABLE col_item(c1 int PRIMARY KEY,c2 int,c3 VARCHAR(1000),FOREIGN KEY(C1) REFERENCES col_info(C2)) PARTITION by hash(c1) partitions 16;
+CREATE MATERIALIZED VIEW LOG ON col_info parallel 1 WITH PRIMARY KEY,ROWID,SEQUENCE(c1)INCLUDING NEW VALUES;
+CREATE MATERIALIZED VIEW LOG ON col_item parallel 2 WITH PRIMARY KEY,ROWID,SEQUENCE(c2,c3) INCLUDING NEW VALUES;
+##先添加数据
+INSERT INTO col_info SELECT 1,1 from dual;
+INSERT INTO col_info SELECT c1+1,c2+1 from col_info;
+INSERT INTO col_info SELECT c1+2,c2+2 from col_info;
+INSERT INTO col_info SELECT c1+4,c2+4 from col_info;
+INSERT INTO col_info SELECT c1+8,c2+8 from col_info;
+INSERT INTO col_item VALUES(1,1,'A');
+INSERT INTO col_item SELECT C1+1,C2+1,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+2,C2+2,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+4,C2+4,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+8,C2+8,C3 FROM col_item;
+##MV
+create materialized view ZC_MV1 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_info ZT1;
+create materialized view ZC_MV2 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT2 WHERE zt2.c1 > 1;
+create materialized view ZC_MV3 never REFRESH enable query rewrite AS
+select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2
+from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1;
+##建好物化视图后再次添加数据
+INSERT INTO col_info SELECT c1+16,c2+16 from col_info;
+INSERT INTO col_info SELECT c1+32,c2+32 from col_info WHERE C1 IS NOT NULL;
+INSERT INTO col_item SELECT C1+16,C2+16,C3 FROM col_item WHERE C3 IS NOT NULL;
+UPDATE col_info SET C1 = 999 WHERE C2 = 1;
+UPDATE col_item SET C3 = 'N' WHERE C2 = 2;
+DELETE FROM col_info WHERE C1 BETWEEN 55 AND 56;
+DELETE FROM col_item WHERE C3 LIKE '%N%';
+####收集统计信息
+CALL dbms_stats.gather_table_stats('test', 'col_info');
+CALL dbms_stats.gather_table_stats('test', 'col_item');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV1');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV2');
+CALL dbms_stats.gather_table_stats('test', 'ZC_MV3');
+####开启物化改写(检查开，非实时物化开)
+SET QUERY_REWRITE_ENABLED = TRUE;
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+####SELECT
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 ORDER by c1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+select /*+mv_rewrite(ZC_MV1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select /*+mv_rewrite(ZC_MV1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by c1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+explain basic select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  3 - output([ZT1.c2], [ZT1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c2], [ZT1.c1]), filter(nil), rowset=256
+      access([ZT1.c2], [ZT1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c2]), range(MIN ; MAX)always true
+select /*+no_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+##WHERE
+##nore
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  3 - output([ZT1.c2], [ZT1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c2], [ZT1.c1]), filter([ZT1.c1 > 1]), rowset=256
+      access([ZT1.c2], [ZT1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ZT1.c2]), range(MIN ; MAX)always true
+##re
+SELECT /*+mv_rewrite(ZC_MV1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 > 1]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+SELECT /*+no_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+explain SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+===============================================================
+|ID|OPERATOR                   |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |62      |2191        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|62      |2168        |
+|2 |  └─SORT                   |        |62      |2115        |
+|3 |    └─PX PARTITION ITERATOR|        |62      |2106        |
+|4 |      └─TABLE FULL SCAN    |ZT1     |62      |2106        |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  3 - output([ZT1.c2], [ZT1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c2], [ZT1.c1]), filter([ZT1.c1 > 1]), rowset=256
+      access([ZT1.c2], [ZT1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ZT1.c2]), range(MIN ; MAX)always true
+##CREATE INDEX
+CREATE INDEX in_mv1 ON zc_mv1(c1);
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##指定无关的mv
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+EXPLAIN BASIC SELECT /*+mv_rewrite*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##指定多个mv
+##re
+SELECT /*+mv_rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+SELECT /*+rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2,zc_mv1)*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##指定空
+##re
+SELECT /*+mv_rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+SELECT /*+rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT /*+mv_rewrite()*/* FROM col_info ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##OR,AND
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 OR ZT1.C2 >10 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 OR ZT1.C2 >10 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 > 1 OR zc_mv1.c2 > 10]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
++------+----+
+| c1   | c2 |
++------+----+
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+EXPLAIN BASIC SELECT * FROM col_info ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c2 > 10]), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+####
+##CREATE INDEX
+CREATE INDEX in_mv2 ON zc_mv2(c1);
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  2 |    2 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      access([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >0 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+##nore(直接走plan cache，不走改写,plan不稳定注释)
+##clean PLAN
+alter system flush plan cache global;
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  2 |    2 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+EXPLAIN BASIC SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter([ZT1.c2 > 10]), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ZT1.c1]), range(1 ; MAX), 
+      range_cond([ZT1.c1 > 1])
+EXPLAIN BASIC SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter([zc_mv2.c2 > 10]), rowset=16
+      access([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+CREATE INDEX in1_mv2 ON zc_mv2(c2);
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+DROP INDEX in_mv2 on zc_mv2;
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C2 >10 ORDER BY 1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SORT              |               |
+|1 |└─TABLE RANGE SCAN|zc_mv2(in1_mv2)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      access([zc_mv2.__pk_increment], [zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv2.c2], [zc_mv2.__pk_increment]), range(10,MAX ; MAX,MAX), 
+      range_cond([zc_mv2.c2 > 10])
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(10 ; MAX), 
+      range_cond([ZT1.c1 > 1], [ZT1.c1 > 10])
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(10 ; MAX), 
+      range_cond([ZT1.c1 > 1], [ZT1.c1 > 10])
+##re
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 AND ZT1.C1 >10 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), filter([zc_mv2.c1 > 10]), rowset=16
+      access([zc_mv2.c1], [zc_mv2.c2], [zc_mv2.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 OR ZT1.C1 >10 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(1 ; MAX), 
+      range_cond([ZT1.c1 > 1 OR ZT1.c1 > 10])
+##nore
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >1 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+##nore
+SELECT /*+mv_rewrite(zc_mv2)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >1 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 > 1 OR ZT1.C1 >10;
+##re
+SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >10 ORDER BY 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##nore
+explain basic SELECT * FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >11 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(1 ; MAX), 
+      range_cond([ZT1.c1 > 1 OR ZT1.c1 > 11])
+CREATE INDEX in1_mv4 ON zc_mv4(c1);
+##nore
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* FROM col_item ZT1 WHERE ZT1.C1 >1 or ZT1.C1 >11 ORDER BY 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |ZT1     |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2, ZT1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC]), local merge sort
+  3 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([ZT1.c1], [ZT1.c2], [ZT1.c3]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2], [ZT1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(1 ; MAX), 
+      range_cond([ZT1.c1 > 1 OR ZT1.c1 > 11])
+DROP materialized view ZC_MV4;
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 > ZT1.C2 ;
+##re
+select * from col_item WHERE c1 > C2 ;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain basic select * from col_item WHERE c1 > C2 ;
+Query Plan
+===========================
+|ID|OPERATOR       |NAME  |
+---------------------------
+|0 |TABLE FULL SCAN|zc_mv4|
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##re
+select * from col_item WHERE c2 < C1 ;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain basic select * from col_item WHERE c2 < C1 ;
+Query Plan
+===========================
+|ID|OPERATOR       |NAME  |
+---------------------------
+|0 |TABLE FULL SCAN|zc_mv4|
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##re
+select /*+mv_rewrite(zc_mv4)*/* from col_item WHERE c1 > C2 ;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain basic select /*+mv_rewrite(zc_mv4)*/* from col_item WHERE c1 > C2 ;
+Query Plan
+===========================
+|ID|OPERATOR       |NAME  |
+---------------------------
+|0 |TABLE FULL SCAN|zc_mv4|
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####=/<=>/<> / !=
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c2 = zc_mv1.c1], [zc_mv1.c1 IS NOT NULL]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
++------+----+
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 = zct1.c2 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c2], [zct1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c2], [zct1.c1]), filter([zct1.c1 = zct1.c2]), rowset=256
+      access([zct1.c2], [zct1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 <=> zc_mv1.c2]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
++------+----+
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <=> zct1.c2 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  3 - output([zct1.c2], [zct1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c2], [zct1.c1]), filter([zct1.c1 <=> zct1.c2]), rowset=256
+      access([zct1.c2], [zct1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 != zc_mv1.c2]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|  999 |  1 |
++------+----+
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 <> zct1.c2 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([zct1.c1], [zct1.c2]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  3 - output([zct1.c2], [zct1.c1]), filter(nil), rowset=16
+      force partition granule
+  4 - output([zct1.c2], [zct1.c1]), filter([zct1.c1 != zct1.c2]), rowset=16
+      access([zct1.c2], [zct1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 != zc_mv1.c2]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|  999 |  1 |
++------+----+
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 != zct1.c2 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([zct1.c1], [zct1.c2]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  3 - output([zct1.c2], [zct1.c1]), filter(nil), rowset=16
+      force partition granule
+  4 - output([zct1.c2], [zct1.c1]), filter([zct1.c1 != zct1.c2]), rowset=16
+      access([zct1.c2], [zct1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 = 1 ;
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
+Query Plan
+===================
+|ID|OPERATOR |NAME|
+-------------------
+|0 |TABLE GET|zct1|
+===================
+Outputs & filters:
+-------------------------------------
+  0 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range[1 ; 1], 
+      range_cond([zct1.c1 <=> 1])
+##nore
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 <=> 1 order by 1;
+Query Plan
+===================
+|ID|OPERATOR |NAME|
+-------------------
+|0 |TABLE GET|zct1|
+===================
+Outputs & filters:
+-------------------------------------
+  0 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range[1 ; 1], 
+      range_cond([zct1.c1 <=> 1])
+DROP materialized view ZC_MV4;
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 != 1 ;
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 <> 1 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 <> 1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####in/not IN
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|   10 | 10 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MIN ; 1,MAX), (10,MIN ; 10,MAX), (20,MIN ; 20,MAX), 
+      range_cond([zc_mv1.c1 IN (1, 10, 20)])
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 NOT IN(1,10,20) order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 NOT IN(1,10,20) order by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(NULL,MAX ; 1,MIN), (1,MAX ; 10,MIN), (10,MAX ; 20,MIN), (20,MAX ; MAX,MAX), 
+      range_cond([(T_OP_NOT_IN, zc_mv1.c1, (1, 10, 20))])
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 IN (1,10,20) ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 IN(1,10,20,30) order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+| 10 |   10 | A    |
+| 20 |   20 | A    |
+| 30 |   30 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IN (1,10,20,30) order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE GET          |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p1, p4, p10, p14)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range[1 ; 1], [10 ; 10], [20 ; 20], [30 ; 30], 
+      range_cond([zct1.c1 IN (1, 10, 20, 30)])
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IN(1,10) order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+| 10 |   10 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IN (1,10) order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE GET          |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p1, p10)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range[1 ; 1], [10 ; 10], 
+      range_cond([zct1.c1 IN (1, 10)])
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 IN(1,10,20) order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+| 10 |   10 | A    |
+| 20 |   20 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IN (1,10,20) order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####is null/is not null
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 IS NULL order by 1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 IS NULL order by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(NULL,MIN ; NULL,MAX), 
+      range_cond([zc_mv1.c1 IS NULL])
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 is NOT NULL order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 is NOT NULL order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 IS NOT NULL]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 IS NOT NULL ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+Query Plan
+=========================
+|ID|OPERATOR       |NAME|
+-------------------------
+|0 |TABLE FULL SCAN|zct1|
+=========================
+Outputs & filters:
+-------------------------------------
+  0 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), startup_filter([0]), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 IS NULL order by 1;
+Query Plan
+=========================
+|ID|OPERATOR       |NAME|
+-------------------------
+|0 |TABLE FULL SCAN|zct1|
+=========================
+Outputs & filters:
+-------------------------------------
+  0 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), startup_filter([0]), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 IS NOT NULL order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 IS NOT NULL order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####between and/not between and
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 between 1 and 10 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(1,MIN ; 10,MAX), 
+      range_cond([zc_mv1.c1 >= 1], [zc_mv1.c1 <= 10])
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 not between 1 and 10 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 not between 1 and 10 order by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in_mv1)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.__pk_increment], [zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.__pk_increment]), range(NULL,MAX ; 1,MIN), (10,MAX ; MAX,MAX), 
+      range_cond([zc_mv1.c1 < 1 OR zc_mv1.c1 > 10])
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 between 1 and 10 ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 100 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 100 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range[1 ; 100], 
+      range_cond([zct1.c1 >= 1], [zct1.c1 <= 100])
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT between 1 and 10 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT between 1 and 10 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(NULL ; 1), (10 ; MAX), 
+      range_cond([zct1.c1 < 1 OR zct1.c1 > 10])
+##re
+SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 10 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 between 1 and 10 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=16
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####like / not like
+##re
+SELECT * from col_info zct1 WHERE zct1.c1 LIKE 1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1 LIKE 1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([(T_OP_LIKE, cast(zc_mv1.c1, VARCHAR(1048576)), cast(1, VARCHAR(1048576)), '\\')]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c2 not LIKE 1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c2 not LIKE 1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([(T_OP_NOT, (T_OP_LIKE, cast(zc_mv1.c2, VARCHAR(1048576)), cast(1, VARCHAR(1048576)), '\\'))]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select * from col_item ZT1 WHERE zt1.c1 NOT LIKE 1 ;
+CREATE INDEX in1_mv4 ON ZC_MV4(c1);
+##nore
+SELECT * from col_item zct1 WHERE zct1.c1 LIKE 1 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
++----+------+------+
+explain basic SELECT * from col_item zct1 WHERE zct1.c1 LIKE 1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=16
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=16
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter([(T_OP_LIKE, cast(zct1.c1, VARCHAR(1048576)), cast(1, VARCHAR(1048576)), '\\')]), rowset=16
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE -1 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  1 |    1 | A    |
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE -1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2, zct1.c3)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c1], [zct1.c2], [zct1.c3]), filter([(T_OP_NOT, (T_OP_LIKE, cast(zct1.c1, VARCHAR(1048576)), cast(-1, VARCHAR(1048576)), '\\'))]), rowset=256
+      access([zct1.c1], [zct1.c2], [zct1.c3]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##re
+SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE 1 order by 1;
++----+------+------+
+| c1 | c2   | c3   |
++----+------+------+
+|  3 |    3 | A    |
+|  4 |    4 | A    |
+|  5 |    5 | A    |
+|  6 |    6 | A    |
+|  7 |    7 | A    |
+|  8 |    8 | A    |
+|  9 |    9 | A    |
+| 10 |   10 | A    |
+| 11 |   11 | A    |
+| 12 |   12 | A    |
+| 13 |   13 | A    |
+| 14 |   14 | A    |
+| 15 |   15 | A    |
+| 16 |   16 | A    |
+| 17 |   17 | A    |
+| 18 |   18 | A    |
+| 19 |   19 | A    |
+| 20 |   20 | A    |
+| 21 |   21 | A    |
+| 22 |   22 | A    |
+| 23 |   23 | A    |
+| 24 |   24 | A    |
+| 25 |   25 | A    |
+| 26 |   26 | A    |
+| 27 |   27 | A    |
+| 28 |   28 | A    |
+| 29 |   29 | A    |
+| 30 |   30 | A    |
+| 31 |   31 | A    |
+| 32 |   32 | A    |
++----+------+------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/* from col_item zct1 WHERE zct1.c1 NOT LIKE 1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), filter(nil), rowset=256
+      access([zc_mv4.c1], [zc_mv4.c2], [zc_mv4.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####+-*/
+##re
+SELECT * from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 + zc_mv1.c2 > 1]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##或者hint跳过检查
+DROP INDEX in_mv1 ON zc_mv1;
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/* from col_info zct1 WHERE zct1.c1+zct1.c2 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 + zc_mv1.c2 > 1]), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##建一个多列索引
+CREATE INDEX in2_mv1 ON zc_mv1(c2,c1);
+##re
+SELECT * from col_info zct1 WHERE zct1.c1-zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1-zct1.c2 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 - zc_mv1.c2 > 1]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT * from col_info zct1 WHERE zct1.c1*zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1*zct1.c2 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 * zc_mv1.c2 > 1]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT * from col_info zct1 WHERE zct1.c1/zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic SELECT * from col_info zct1 WHERE zct1.c1/zct1.c2 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv1|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter([cast(zc_mv1.c1, DECIMAL_INT(34, 23)) / cast(zc_mv1.c2, DECIMAL_INT(11, 0)) > cast(1, DECIMAL(20, 0))]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 * zct1.c2 >1 order by 1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
+|   17 | 17 |
+|   18 | 18 |
+|   19 | 19 |
+|   20 | 20 |
+|   21 | 21 |
+|   22 | 22 |
+|   23 | 23 |
+|   24 | 24 |
+|   25 | 25 |
+|   26 | 26 |
+|   27 | 27 |
+|   28 | 28 |
+|   29 | 29 |
+|   30 | 30 |
+|   31 | 31 |
+|   32 | 32 |
+|   33 | 33 |
+|   34 | 34 |
+|   35 | 35 |
+|   36 | 36 |
+|   37 | 37 |
+|   38 | 38 |
+|   39 | 39 |
+|   40 | 40 |
+|   41 | 41 |
+|   42 | 42 |
+|   43 | 43 |
+|   44 | 44 |
+|   45 | 45 |
+|   46 | 46 |
+|   47 | 47 |
+|   48 | 48 |
+|   49 | 49 |
+|   50 | 50 |
+|   51 | 51 |
+|   52 | 52 |
+|   53 | 53 |
+|   54 | 54 |
+|   57 | 57 |
+|   58 | 58 |
+|   59 | 59 |
+|   60 | 60 |
+|   61 | 61 |
+|   62 | 62 |
+|   63 | 63 |
+|   64 | 64 |
+|  999 |  1 |
++------+----+
+explain basic SELECT /*+no_mv_rewrite*/* from col_info zct1 WHERE zct1.c1 * zct1.c2 >1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1, zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1], [zct1.c2]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  3 - output([zct1.c2], [zct1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c2], [zct1.c1]), filter([zct1.c1 * zct1.c2 > 1]), rowset=256
+      access([zct1.c2], [zct1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+####GROUP by####
+##re
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
++------+
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1]), filter(nil), rowset=256
+      distinct([zc_mv1.c1])
+  1 - output([zc_mv1.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1]), filter(nil), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT /*+mv_rewrite(zc_mv1)*/zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
++------+
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/zct1.c1 FROM col_info zct1 GROUP by zct1.c1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1]), filter(nil), rowset=256
+      distinct([zc_mv1.c1])
+  1 - output([zc_mv1.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1]), filter(nil), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re
+SELECT zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
++----+
+| c2 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+Query Plan
+======================================
+|ID|OPERATOR         |NAME           |
+--------------------------------------
+|0 |MERGE DISTINCT   |               |
+|1 |└─TABLE FULL SCAN|zc_mv1(in2_mv1)|
+======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c2]), filter(nil), rowset=256
+      distinct([zc_mv1.c2])
+  1 - output([zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c2], [zc_mv1.c1], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+##nore
+SELECT /*+no_mv_rewrite*/zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
++----+
+| c2 |
++----+
+|  1 |
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
+| 17 |
+| 18 |
+| 19 |
+| 20 |
+| 21 |
+| 22 |
+| 23 |
+| 24 |
+| 25 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
+| 33 |
+| 34 |
+| 35 |
+| 36 |
+| 37 |
+| 38 |
+| 39 |
+| 40 |
+| 41 |
+| 42 |
+| 43 |
+| 44 |
+| 45 |
+| 46 |
+| 47 |
+| 48 |
+| 49 |
+| 50 |
+| 51 |
+| 52 |
+| 53 |
+| 54 |
+| 57 |
+| 58 |
+| 59 |
+| 60 |
+| 61 |
+| 62 |
+| 63 |
+| 64 |
++----+
+explain basic SELECT /*+no_mv_rewrite*/zct1.c2 FROM col_info zct1 GROUP by zct1.c2 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+      sort_keys([zct1.c2, ASC])
+  1 - output([zct1.c2], [INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c2]), filter(nil), rowset=256
+      sort_keys([zct1.c2, ASC]), local merge sort
+  3 - output([zct1.c2]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c2]), filter(nil), rowset=256
+      access([zct1.c2]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c2]), range(MIN ; MAX)always true
+##re
+SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c2 order by 1;
++----------+
+| COUNT(*) |
++----------+
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
++----------+
+explain basic SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c2 order by 1;
+Query Plan
+========================================
+|ID|OPERATOR           |NAME           |
+----------------------------------------
+|0 |SORT               |               |
+|1 |└─MERGE GROUP BY   |               |
+|2 |  └─TABLE FULL SCAN|zc_mv1(in2_mv1)|
+========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      sort_keys([T_FUN_COUNT(*), ASC])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group([zc_mv1.c2]), agg_func([T_FUN_COUNT(*)])
+  2 - output([zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c2], [zc_mv1.c1], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+##re
+SELECT zct1.c1,COUNT(zct1.c2),SUM(zct1.c2),AVG(zct1.c2),MAX(zct1.c2),MIN(zct1.c2) FROM col_info zct1 GROUP by zct1.c1 order by 1;
++------+----------------+--------------+--------------+--------------+--------------+
+| c1   | COUNT(zct1.c2) | SUM(zct1.c2) | AVG(zct1.c2) | MAX(zct1.c2) | MIN(zct1.c2) |
++------+----------------+--------------+--------------+--------------+--------------+
+|    1 |              1 |            1 |       1.0000 |            1 |            1 |
+|    2 |              1 |            2 |       2.0000 |            2 |            2 |
+|    3 |              1 |            3 |       3.0000 |            3 |            3 |
+|    4 |              1 |            4 |       4.0000 |            4 |            4 |
+|    5 |              1 |            5 |       5.0000 |            5 |            5 |
+|    6 |              1 |            6 |       6.0000 |            6 |            6 |
+|    7 |              1 |            7 |       7.0000 |            7 |            7 |
+|    8 |              1 |            8 |       8.0000 |            8 |            8 |
+|    9 |              1 |            9 |       9.0000 |            9 |            9 |
+|   10 |              1 |           10 |      10.0000 |           10 |           10 |
+|   11 |              1 |           11 |      11.0000 |           11 |           11 |
+|   12 |              1 |           12 |      12.0000 |           12 |           12 |
+|   13 |              1 |           13 |      13.0000 |           13 |           13 |
+|   14 |              1 |           14 |      14.0000 |           14 |           14 |
+|   15 |              1 |           15 |      15.0000 |           15 |           15 |
+|   16 |              1 |           16 |      16.0000 |           16 |           16 |
++------+----------------+--------------+--------------+--------------+--------------+
+explain basic SELECT zct1.c1,SUM(zct1.c2),AVG(zct1.c2),MAX(zct1.c2),MIN(zct1.c2),COUNT(zct1.c2) FROM col_info zct1 GROUP by zct1.c1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE GROUP BY     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [T_FUN_SUM(zc_mv1.c2)], [cast(cast(T_FUN_SUM(zc_mv1.c2), DECIMAL_INT(65, 32)) / cast(T_FUN_COUNT(zc_mv1.c2), DECIMAL_INT(20, 0)),
+       DECIMAL(15, 4))], [T_FUN_MAX(zc_mv1.c2)], [T_FUN_MIN(zc_mv1.c2)], [T_FUN_COUNT(zc_mv1.c2)]), filter(nil), rowset=256
+      group([zc_mv1.c1]), agg_func([T_FUN_SUM(zc_mv1.c2)], [T_FUN_COUNT(zc_mv1.c2)], [T_FUN_MAX(zc_mv1.c2)], [T_FUN_MIN(zc_mv1.c2)])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##STDDEV,VARIANCE nore(oracle)(bug)
+SELECT /*+mv_rewrite(zc_mv1)*/STDDEV(zct1.c1) FROM col_info zct1 GROUP by zct1.c1 order by 1;
++-----------------+
+| STDDEV(zct1.c1) |
++-----------------+
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
+|               0 |
++-----------------+
+SELECT /*+mv_rewrite(zc_mv1)*/VARIANCE(zct1.c1) FROM col_info zct1 GROUP by zct1.c1 order by 1;
++-------------------+
+| VARIANCE(zct1.c1) |
++-------------------+
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
+|                 0 |
++-------------------+
+##rollup(oracle mode)
+##nore
+##re
+SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c1+zct1.c2 order by 1;
++----------+
+| COUNT(*) |
++----------+
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
+|        1 |
++----------+
+explain basic SELECT COUNT(*) FROM col_info zct1 GROUP by zct1.c1+zct1.c2 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |SORT               |      |
+|1 |└─HASH GROUP BY    |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      sort_keys([T_FUN_COUNT(*), ASC])
+  1 - output([T_FUN_COUNT(*)]), filter(nil), rowset=256
+      group([zc_mv1.c1 + zc_mv1.c2]), agg_func([T_FUN_COUNT(*)])
+  2 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 order by 1;
++----+
+| c1 |
++----+
+|  1 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
+| 17 |
+| 18 |
+| 19 |
+| 20 |
+| 21 |
+| 22 |
+| 23 |
+| 24 |
+| 25 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
++----+
+explain basic SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c1]), filter(nil), rowset=256
+      access([zct1.c1]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##re
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 > 1 GROUP by zct1.c1 order by 1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 > 1 GROUP by zct1.c1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv2|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      distinct([zc_mv2.c1])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  2 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+####有group BY的物化视图不能改写
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select zt1.c1 from col_info ZT1 GROUP BY zt1.c1;
+##re(mv1)
+SELECT zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
++------+
+explain basic SELECT zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1]), filter(nil), rowset=256
+      distinct([zc_mv1.c1])
+  1 - output([zc_mv1.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1]), filter(nil), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
++------+
+| c1   |
++------+
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
+|   17 |
+|   18 |
+|   19 |
+|   20 |
+|   21 |
+|   22 |
+|   23 |
+|   24 |
+|   25 |
+|   26 |
+|   27 |
+|   28 |
+|   29 |
+|   30 |
+|   31 |
+|   32 |
+|   33 |
+|   34 |
+|   35 |
+|   36 |
+|   37 |
+|   38 |
+|   39 |
+|   40 |
+|   41 |
+|   42 |
+|   43 |
+|   44 |
+|   45 |
+|   46 |
+|   47 |
+|   48 |
+|   49 |
+|   50 |
+|   51 |
+|   52 |
+|   53 |
+|   54 |
+|   57 |
+|   58 |
+|   59 |
+|   60 |
+|   61 |
+|   62 |
+|   63 |
+|   64 |
+|  999 |
++------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 from col_info zct1 GROUP BY zct1.c1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1]), filter(nil), rowset=256
+      access([zc_mv4.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+DROP materialized view ZC_MV4;
+####HAVING
+##re
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
++------+
+| c1   |
++------+
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
++------+
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1]), filter(nil), rowset=256
+      distinct([zc_mv1.c1])
+  1 - output([zc_mv1.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1]), filter([zc_mv1.c1 > 1]), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+DROP INDEX in2_mv1 ON zc_mv1;
+##re(与index无关having条件不会做检查)
+SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
++------+
+| c1   |
++------+
+|    2 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
++------+
+explain basic SELECT zct1.c1 FROM col_info zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv1|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1]), filter(nil), rowset=256
+      distinct([zc_mv1.c1])
+  1 - output([zc_mv1.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  2 - output([zc_mv1.c1]), filter([zc_mv1.c1 > 1]), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+CREATE INDEX in2_mv1 ON zc_mv1(c1,c2);
+##nore
+SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
+| 17 |
+| 18 |
+| 19 |
+| 20 |
+| 21 |
+| 22 |
+| 23 |
+| 24 |
+| 25 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
++----+
+explain basic SELECT zct1.c1 FROM col_item zct1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE RANGE SCAN   |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c1)]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC])
+  1 - output([zct1.c1], [INTERNAL_FUNCTION(zct1.c1)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c1]), filter(nil), rowset=256
+      sort_keys([zct1.c1, ASC]), local merge sort
+  3 - output([zct1.c1]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c1]), filter(nil), rowset=256
+      access([zct1.c1]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(1 ; MAX), 
+      range_cond([zct1.c1 > 1])
+##re
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 GROUP by zct1.c1 HAVING zct1.c1 >10 order by 1;
++----+
+| c1 |
++----+
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1>1 GROUP by zct1.c1 HAVING zct1.c1 >1 order by 1;
+Query Plan
+===============================
+|ID|OPERATOR           |NAME  |
+-------------------------------
+|0 |MERGE DISTINCT     |      |
+|1 |└─SORT             |      |
+|2 |  └─TABLE FULL SCAN|zc_mv2|
+===============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      distinct([zc_mv2.c1])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  2 - output([zc_mv2.c1]), filter([zc_mv2.c1 > 1]), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+####SELECT item
+##DISTINCT
+##re
+SELECT zct1.c1+zct1.c2,zct1.c1-zct1.c2,zct1.c1*zct1.c2,zct1.c1/zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
++-----------------+-----------------+-----------------+-----------------+
+| zct1.c1+zct1.c2 | zct1.c1-zct1.c2 | zct1.c1*zct1.c2 | zct1.c1/zct1.c2 |
++-----------------+-----------------+-----------------+-----------------+
+|               4 |               0 |               4 |          1.0000 |
+|               6 |               0 |               9 |          1.0000 |
+|               8 |               0 |              16 |          1.0000 |
+|              10 |               0 |              25 |          1.0000 |
+|              12 |               0 |              36 |          1.0000 |
+|              14 |               0 |              49 |          1.0000 |
+|              16 |               0 |              64 |          1.0000 |
+|              18 |               0 |              81 |          1.0000 |
+|              20 |               0 |             100 |          1.0000 |
+|              22 |               0 |             121 |          1.0000 |
+|              24 |               0 |             144 |          1.0000 |
+|              26 |               0 |             169 |          1.0000 |
+|              28 |               0 |             196 |          1.0000 |
+|              30 |               0 |             225 |          1.0000 |
+|              32 |               0 |             256 |          1.0000 |
++-----------------+-----------------+-----------------+-----------------+
+explain basic SELECT zct1.c1+zct1.c2,zct1.c1-zct1.c2,zct1.c1*zct1.c2,zct1.c1/zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1 + zc_mv1.c2], [zc_mv1.c1 - zc_mv1.c2], [zc_mv1.c1 * zc_mv1.c2], [cast(zc_mv1.c1, DECIMAL_INT(34, 23)) / cast(zc_mv1.c2, DECIMAL_INT(11,
+       0))]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##re
+SELECT DISTINCT zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT DISTINCT zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |MERGE DISTINCT    |               |
+|1 |└─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      distinct([zc_mv1.c1], [zc_mv1.c2])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##re
+SELECT UNIQUE zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT UNIQUE zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |MERGE DISTINCT    |               |
+|1 |└─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      distinct([zc_mv1.c1], [zc_mv1.c2])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##re
+SELECT ALL zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic SELECT all zct1.c1,zct1.c2 FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##constant
+##re
+SELECT 1,NULL,'a' FROM col_info zct1 WHERE zct1.c1 >1;
++---+------+---+
+| 1 | NULL | a |
++---+------+---+
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
+| 1 | NULL | a |
++---+------+---+
+explain basic SELECT 1,NULL,'a' FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1], [NULL], ['a']), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##CAST
+##re
+SELECT CAST(zct1.c1 as CHAR(10)) FROM col_info zct1 WHERE zct1.c1 >1;
++---------------------------+
+| CAST(zct1.c1 as CHAR(10)) |
++---------------------------+
+| 2                         |
+| 3                         |
+| 4                         |
+| 5                         |
+| 6                         |
+| 7                         |
+| 8                         |
+| 9                         |
+| 10                        |
+| 11                        |
+| 12                        |
+| 13                        |
+| 14                        |
+| 15                        |
+| 16                        |
++---------------------------+
+explain basic SELECT CAST(zct1.c1 as CHAR(10)) FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([cast(zc_mv1.c1, CHAR(10))]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##CONCAT
+##re
+SELECT CONCAT(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
++-------------------------+
+| CONCAT(zct1.c1,zct1.c2) |
++-------------------------+
+| 22                      |
+| 33                      |
+| 44                      |
+| 55                      |
+| 66                      |
+| 77                      |
+| 88                      |
+| 99                      |
+| 1010                    |
+| 1111                    |
+| 1212                    |
+| 1313                    |
+| 1414                    |
+| 1515                    |
+| 1616                    |
++-------------------------+
+explain basic SELECT CONCAT(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([CONCAT(cast(zc_mv1.c1, VARCHAR(1048576)), cast(zc_mv1.c2, VARCHAR(1048576)))]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##MOD
+##re
+SELECT MOD(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
++----------------------+
+| MOD(zct1.c1,zct1.c2) |
++----------------------+
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
+|                    0 |
++----------------------+
+explain basic SELECT MOD(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1 % zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##LEAST
+##re
+SELECT LEAST(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
++------------------------+
+| LEAST(zct1.c1,zct1.c2) |
++------------------------+
+|                      2 |
+|                      3 |
+|                      4 |
+|                      5 |
+|                      6 |
+|                      7 |
+|                      8 |
+|                      9 |
+|                     10 |
+|                     11 |
+|                     12 |
+|                     13 |
+|                     14 |
+|                     15 |
+|                     16 |
++------------------------+
+explain basic SELECT LEAST(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([LEAST(zc_mv1.c1, zc_mv1.c2)]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##CASE WHEN
+##nore(已修复)
+SELECT CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
++----------------------------------------------+
+| CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end |
++----------------------------------------------+
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
++----------------------------------------------+
+explain basic SELECT CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([CASE WHEN zc_mv1.c1 > 10 THEN 'a' ELSE 'b' END]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##re(已修复)
+SELECT /*+mv_rewrite(zc_mv1)*/ CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
++----------------------------------------------+
+| CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end |
++----------------------------------------------+
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| b                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
+| a                                            |
++----------------------------------------------+
+explain basic SELECT /*+mv_rewrite(zc_mv1)*/ CASE WHEN zct1.c1 > 10 THEN 'a' ELSE 'b' end FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([CASE WHEN zc_mv1.c1 > 10 THEN 'a' ELSE 'b' END]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##NULLIF
+##re
+SELECT NULLIF(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
++-------------------------+
+| NULLIF(zct1.c1,zct1.c2) |
++-------------------------+
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
+|                    NULL |
++-------------------------+
+explain basic SELECT NULLIF(zct1.c1,zct1.c2) FROM col_info zct1 WHERE zct1.c1 >1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([NULLIF(zc_mv1.c1, zc_mv1.c2)]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+##mv不含查询列
+create materialized view ZC_MV4 REFRESH FORCE ON DEMAND enable query rewrite AS
+select zt1.c1 from col_item ZT1;
+##nore
+SELECT zct1.c2 from col_item zct1;
++------+
+| c2   |
++------+
+|   16 |
+|   32 |
+|    1 |
+|   17 |
+|   18 |
+|    3 |
+|   19 |
+|    4 |
+|   20 |
+|    5 |
+|   21 |
+|    6 |
+|   22 |
+|    7 |
+|   23 |
+|    8 |
+|   24 |
+|    9 |
+|   25 |
+|   10 |
+|   26 |
+|   11 |
+|   27 |
+|   12 |
+|   28 |
+|   13 |
+|   29 |
+|   14 |
+|   30 |
+|   15 |
+|   31 |
++------+
+explain basic SELECT zct1.c2 from col_item zct1;
+Query Plan
+=======================================
+|ID|OPERATOR                 |NAME    |
+---------------------------------------
+|0 |PX COORDINATOR           |        |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|
+|2 |  └─PX PARTITION ITERATOR|        |
+|3 |    └─TABLE FULL SCAN    |zct1    |
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+  1 - output([INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c2]), filter(nil), rowset=256
+      force partition granule
+  3 - output([zct1.c2]), filter(nil), rowset=256
+      access([zct1.c2]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##nore
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c2 from col_item zct1 order by 1;
++------+
+| c2   |
++------+
+|    1 |
+|    3 |
+|    4 |
+|    5 |
+|    6 |
+|    7 |
+|    8 |
+|    9 |
+|   10 |
+|   11 |
+|   12 |
+|   13 |
+|   14 |
+|   15 |
+|   16 |
+|   17 |
+|   18 |
+|   19 |
+|   20 |
+|   21 |
+|   22 |
+|   23 |
+|   24 |
+|   25 |
+|   26 |
+|   27 |
+|   28 |
+|   29 |
+|   30 |
+|   31 |
+|   32 |
++------+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c2 from col_item zct1 order by 1;
+Query Plan
+=========================================
+|ID|OPERATOR                   |NAME    |
+-----------------------------------------
+|0 |PX COORDINATOR MERGE SORT  |        |
+|1 |└─EXCHANGE OUT DISTR       |:EX10000|
+|2 |  └─SORT                   |        |
+|3 |    └─PX PARTITION ITERATOR|        |
+|4 |      └─TABLE FULL SCAN    |zct1    |
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+      sort_keys([zct1.c2, ASC])
+  1 - output([zct1.c2], [INTERNAL_FUNCTION(zct1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zct1.c2]), filter(nil), rowset=256
+      sort_keys([zct1.c2, ASC])
+  3 - output([zct1.c2]), filter(nil), rowset=256
+      force partition granule
+  4 - output([zct1.c2]), filter(nil), rowset=256
+      access([zct1.c2]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([zct1.c1]), range(MIN ; MAX)always true
+##ROWID(oracle)
+##re
+##re
+SELECT 1,NULL from col_item zct1 order by 1;
++---+------+
+| 1 | NULL |
++---+------+
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
+| 1 | NULL |
++---+------+
+explain basic SELECT 1,NULL from col_item zct1 order by 1;
+Query Plan
+===========================
+|ID|OPERATOR       |NAME  |
+---------------------------
+|0 |TABLE FULL SCAN|zc_mv4|
+===========================
+Outputs & filters:
+-------------------------------------
+  0 - output([1], [NULL]), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##re(default mv2)
+SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##re(mv4)
+SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
+| 17 |
+| 18 |
+| 19 |
+| 20 |
+| 21 |
+| 22 |
+| 23 |
+| 24 |
+| 25 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
++----+
+explain basic SELECT /*+mv_rewrite(zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1]), filter([zc_mv4.c1 > 1]), rowset=16
+      access([zc_mv4.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT /*+mv_rewrite(zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv2,zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT /*+mv_rewrite(zc_mv2,zc_mv4)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##re(mv2)
+SELECT /*+mv_rewrite(zc_mv4,zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic SELECT /*+mv_rewrite(zc_mv4,zc_mv2)*/zct1.c1 FROM col_item zct1 WHERE zct1.c1 >1 order by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+####subquery
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SUBPLAN FILTER    |               |
+|1 |├─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+|2 |└─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([zc_mv1.c1 = :0])
+  2 - output([zc_mv1.c1]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+##re
+select /*+mv_rewrite(zc_mv1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic select /*+mv_rewrite(zc_mv1)*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SUBPLAN FILTER    |               |
+|1 |├─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+|2 |└─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([zc_mv1.c1 = :0])
+  2 - output([zc_mv1.c1]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+##re
+select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+Query Plan
+================================================
+|ID|OPERATOR                   |NAME           |
+------------------------------------------------
+|0 |SUBPLAN FILTER             |               |
+|1 |├─PX COORDINATOR           |               |
+|2 |│ └─EXCHANGE OUT DISTR     |:EX10000       |
+|3 |│   └─PX PARTITION ITERATOR|               |
+|4 |│     └─TABLE FULL SCAN    |ZT1            |
+|5 |└─TABLE RANGE SCAN         |zc_mv1(in2_mv1)|
+================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=16
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=16
+      dop=1
+  3 - output([ZT1.c2], [ZT1.c1]), filter(nil), rowset=16
+      force partition granule
+  4 - output([ZT1.c2], [ZT1.c1]), filter([ZT1.c1 = :0]), rowset=16
+      access([ZT1.c2], [ZT1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ZT1.c2]), range(MIN ; MAX)always true
+  5 - output([zc_mv1.c1]), filter(nil), rowset=16
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT /*+no_mv_rewrite*/a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT /*+no_mv_rewrite*/a.c1 FROM col_info a WHERE a.c1 = 1) ORDER by c1;
+Query Plan
+================================================
+|ID|OPERATOR                   |NAME           |
+------------------------------------------------
+|0 |SUBPLAN FILTER             |               |
+|1 |├─TABLE RANGE SCAN         |zc_mv1(in2_mv1)|
+|2 |└─PX COORDINATOR           |               |
+|3 |  └─EXCHANGE OUT DISTR     |:EX10000       |
+|4 |    └─PX PARTITION ITERATOR|               |
+|5 |      └─TABLE FULL SCAN    |a              |
+================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([zc_mv1.c1 = :0])
+  2 - output([a.c1]), filter(nil), rowset=16
+  3 - output([a.c1]), filter(nil), rowset=16
+      dop=1
+  4 - output([a.c1]), filter(nil), rowset=16
+      force partition granule
+  5 - output([a.c1]), filter([a.c1 = 1]), rowset=16
+      access([a.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c2]), range(MIN ; MAX)always true
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 >1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 >1) ORDER by c1;
+Query Plan
+========================================
+|ID|OPERATOR           |NAME           |
+----------------------------------------
+|0 |MERGE SEMI JOIN    |               |
+|1 |├─TABLE FULL SCAN  |zc_mv1(in2_mv1)|
+|2 |└─SORT             |               |
+|3 |  └─TABLE FULL SCAN|zc_mv2         |
+========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      equal_conds([zc_mv1.c1 = zc_mv2.c1]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  2 - output([zc_mv2.c1]), filter(nil), rowset=256
+      sort_keys([zc_mv2.c1, ASC])
+  3 - output([zc_mv2.c1]), filter(nil), rowset=256
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##re(oracle和mysql的计划有出入)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+Query Plan
+===========================================
+|ID|OPERATOR              |NAME           |
+-------------------------------------------
+|0 |MERGE SEMI JOIN       |               |
+|1 |├─TABLE FULL SCAN     |zc_mv1(in2_mv1)|
+|2 |└─SORT                |               |
+|3 |  └─SUBPLAN SCAN      |VIEW3          |
+|4 |    └─TABLE RANGE SCAN|zc_mv2(in1_mv2)|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      equal_conds([zc_mv1.c1 = VIEW3.c1]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  2 - output([VIEW3.c1]), filter(nil), rowset=256
+      sort_keys([VIEW3.c1, ASC])
+  3 - output([VIEW3.c1]), filter(nil), rowset=256
+      access([VIEW3.c1])
+  4 - output([zc_mv2.c1]), filter(nil), rowset=256
+      access([zc_mv2.__pk_increment], [zc_mv2.c1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv2.c2], [zc_mv2.__pk_increment]), range(10,MAX ; MAX,MAX), 
+      range_cond([zc_mv2.c2 > 10])
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 IN (SELECT a.c1 FROM col_item a WHERE a.c1 > 1 AND a.c2 >10) ORDER by c1;
+Query Plan
+===========================================
+|ID|OPERATOR              |NAME           |
+-------------------------------------------
+|0 |MERGE SEMI JOIN       |               |
+|1 |├─TABLE FULL SCAN     |zc_mv1(in2_mv1)|
+|2 |└─SORT                |               |
+|3 |  └─SUBPLAN SCAN      |VIEW3          |
+|4 |    └─TABLE RANGE SCAN|zc_mv2(in1_mv2)|
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      equal_conds([zc_mv1.c1 = VIEW3.c1]), other_conds(nil)
+      merge_directions([ASC])
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  2 - output([VIEW3.c1]), filter(nil), rowset=256
+      sort_keys([VIEW3.c1, ASC])
+  3 - output([VIEW3.c1]), filter(nil), rowset=256
+      access([VIEW3.c1])
+  4 - output([zc_mv2.c1]), filter(nil), rowset=256
+      access([zc_mv2.__pk_increment], [zc_mv2.c1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv2.c2], [zc_mv2.__pk_increment]), range(10,MAX ; MAX,MAX), 
+      range_cond([zc_mv2.c2 > 10])
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_item ZT1 WHERE zt1.c1>1 AND zt1.c1 IN (SELECT a.c2 FROM col_item a) ORDER by c1;
++----+------+
+| c1 | c2   |
++----+------+
+|  3 |    3 |
+|  4 |    4 |
+|  5 |    5 |
+|  6 |    6 |
+|  7 |    7 |
+|  8 |    8 |
+|  9 |    9 |
+| 10 |   10 |
+| 11 |   11 |
+| 12 |   12 |
+| 13 |   13 |
+| 14 |   14 |
+| 15 |   15 |
+| 16 |   16 |
+| 17 |   17 |
+| 18 |   18 |
+| 19 |   19 |
+| 20 |   20 |
+| 21 |   21 |
+| 22 |   22 |
+| 23 |   23 |
+| 24 |   24 |
+| 25 |   25 |
+| 26 |   26 |
+| 27 |   27 |
+| 28 |   28 |
+| 29 |   29 |
+| 30 |   30 |
+| 31 |   31 |
+| 32 |   32 |
++----+------+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_item ZT1 WHERE zt1.c1>1 AND zt1.c1 IN (SELECT a.c2 FROM col_item a) ORDER by c1;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT          |        |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001|
+|2 |  └─SORT                           |        |
+|3 |    └─HASH RIGHT SEMI JOIN         |        |
+|4 |      ├─EXCHANGE IN DISTR          |        |
+|5 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|6 |      │   └─SUBPLAN SCAN           |VIEW1   |
+|7 |      │     └─PX PARTITION ITERATOR|        |
+|8 |      │       └─TABLE FULL SCAN    |a       |
+|9 |      └─PX PARTITION ITERATOR      |        |
+|10|        └─TABLE RANGE SCAN         |ZT1     |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  3 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      equal_conds([ZT1.c1 = VIEW1.c2]), other_conds(nil)
+  4 - output([VIEW1.c2]), filter(nil), rowset=256
+  5 - output([VIEW1.c2]), filter(nil), rowset=256
+      (#keys=1, [VIEW1.c2]), dop=1
+  6 - output([VIEW1.c2]), filter(nil), rowset=256
+      access([VIEW1.c2])
+  7 - output([a.c2]), filter(nil), rowset=256
+      force partition granule
+  8 - output([a.c2]), filter([a.c2 > 1]), rowset=256
+      access([a.c2]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  9 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      affinitize, force partition granule
+ 10 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      access([ZT1.c1], [ZT1.c2]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT1.c1]), range(1 ; MAX), 
+      range_cond([ZT1.c1 > 1])
+##关联子查询
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT zt1.c2 FROM col_info a WHERE a.c1 = zt1.c1) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
+|    2 |  2 |
+|    3 |  3 |
+|    4 |  4 |
+|    5 |  5 |
+|    6 |  6 |
+|    7 |  7 |
+|    8 |  8 |
+|    9 |  9 |
+|   10 | 10 |
+|   11 | 11 |
+|   12 | 12 |
+|   13 | 13 |
+|   14 | 14 |
+|   15 | 15 |
+|   16 | 16 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from col_info ZT1 WHERE zt1.c1 = (SELECT zt1.c2 FROM col_info a WHERE a.c1 = zt1.c1) ORDER by c1;
+Query Plan
+===================================================
+|ID|OPERATOR                      |NAME           |
+---------------------------------------------------
+|0 |SUBPLAN FILTER                |               |
+|1 |├─TABLE FULL SCAN             |zc_mv1(in2_mv1)|
+|2 |└─DISTRIBUTED TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter([zc_mv1.c1 = subquery(1)]), rowset=256
+      exec_params_([zc_mv1.c1(:0)], [zc_mv1.c2(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+  2 - output([:1]), filter(nil), rowset=256
+      access([GROUP_ID]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true, 
+      range_cond([zc_mv1.c1 = :0])
+##FROM
+##re
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+Query Plan
+=====================================
+|ID|OPERATOR        |NAME           |
+-------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT /*+no_mv_rewrite*/* FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT /*+no_mv_rewrite*/* FROM col_info a WHERE a.c1 = 1) ZT1 ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR                 |NAME    |
+---------------------------------------
+|0 |PX COORDINATOR           |        |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|
+|2 |  └─PX PARTITION ITERATOR|        |
+|3 |    └─TABLE FULL SCAN    |a       |
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(a.c1, a.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(a.c1, a.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([a.c2], [a.c1]), filter(nil), rowset=16
+      force partition granule
+  3 - output([a.c2], [a.c1]), filter([a.c1 = 1]), rowset=16
+      access([a.c2], [a.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([a.c2]), range(MIN ; MAX)always true
+##re(mv4)
+select * from (SELECT /*+mv_rewrite(zc_mv4)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
++----+
+| c1 |
++----+
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
+| 17 |
+| 18 |
+| 19 |
+| 20 |
+| 21 |
+| 22 |
+| 23 |
+| 24 |
+| 25 |
+| 26 |
+| 27 |
+| 28 |
+| 29 |
+| 30 |
+| 31 |
+| 32 |
++----+
+explain basic select * from (SELECT /*+mv_rewrite(zc_mv4)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv4|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv4.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv4.c1, ASC])
+  1 - output([zc_mv4.c1]), filter([zc_mv4.c1 > 1]), rowset=16
+      access([zc_mv4.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv4.__pk_increment]), range(MIN ; MAX)always true
+##re(mv2)
+select * from (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
++----+
+| c1 |
++----+
+|  2 |
+|  3 |
+|  4 |
+|  5 |
+|  6 |
+|  7 |
+|  8 |
+|  9 |
+| 10 |
+| 11 |
+| 12 |
+| 13 |
+| 14 |
+| 15 |
+| 16 |
++----+
+explain basic select * from (SELECT /*+mv_rewrite(zc_mv2)*/a.c1 FROM col_item a WHERE a.c1 >1) ZT1 ORDER by c1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv2|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv2.c1]), filter(nil), rowset=16
+      sort_keys([zc_mv2.c1, ASC])
+  1 - output([zc_mv2.c1]), filter(nil), rowset=16
+      access([zc_mv2.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv2.__pk_increment]), range(MIN ; MAX)always true
+##re(两个子查询都会re)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE zt1.c1 in (SELECT b.c2 from col_info b) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE zt1.c1 in (SELECT b.c2 from col_info b) ORDER by c1;
+Query Plan
+================================================
+|ID|OPERATOR                   |NAME           |
+------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |               |
+|1 |├─TABLE RANGE SCAN         |zc_mv1(in2_mv1)|
+|2 |└─MATERIAL                 |               |
+|3 |  └─SUBPLAN SCAN           |VIEW2          |
+|4 |    └─TABLE FULL SCAN      |zc_mv1         |
+================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+  2 - output(nil), filter(nil), rowset=16
+  3 - output(nil), filter(nil), rowset=16
+      access(nil)
+  4 - output([1]), filter([zc_mv1.c2 = 1]), rowset=16
+      access([zc_mv1.c2]), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##re(两个子查询都会re)
+select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE EXISTS (SELECT b.c2 from col_info b) ORDER by c1;
++------+----+
+| c1   | c2 |
++------+----+
+|    1 |  1 |
++------+----+
+explain basic select ZT1.c1 as c1,ZT1.C2 AS c2 from (SELECT * FROM col_info a WHERE a.c1 = 1) ZT1 WHERE EXISTS (SELECT b.c2 from col_info b) ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SUBPLAN FILTER    |               |
+|1 |├─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+|2 |└─TABLE FULL SCAN |zc_mv1         |
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=16
+      exec_params_(nil), onetime_exprs_([(T_OP_EXISTS, subquery(1))(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), startup_filter([:0]), rowset=16
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+  2 - output([1]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+##select item
+##re
+select (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) as c1 from col_info ZT1 ORDER by c1;
++------+
+| c1   |
++------+
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
+|    1 |
++------+
+explain basic select (SELECT a.c1 FROM col_info a WHERE a.c1 = 1) as c1 from col_info ZT1 ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SUBPLAN FILTER    |               |
+|1 |├─TABLE FULL SCAN |zc_mv1         |
+|2 |└─TABLE RANGE SCAN|zc_mv1(in2_mv1)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([:0]), filter(nil), rowset=256
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([zc_mv1.c1]), filter(nil), rowset=256
+      access([zc_mv1.c1]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MIN,MIN ; 1,MAX,MAX), 
+      range_cond([zc_mv1.c1 = 1])
+##re
+select (SELECT /*+mv_rewrite(zc_mv2)*/c1 FROM col_item  WHERE c1 > 1 AND c2 = 1) as c1 from col_info ZT1 ORDER by c1;
++----+
+| c1 |
++----+
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
+| NULL |
++----+
+explain basic select (SELECT /*+mv_rewrite(zc_mv2)*/c1 FROM col_item  WHERE c1 > 1 AND c2 = 1) as c1 from col_info ZT1 ORDER by c1;
+Query Plan
+=======================================
+|ID|OPERATOR          |NAME           |
+---------------------------------------
+|0 |SUBPLAN FILTER    |               |
+|1 |├─TABLE FULL SCAN |zc_mv1         |
+|2 |└─TABLE RANGE SCAN|zc_mv2(in1_mv2)|
+=======================================
+Outputs & filters:
+-------------------------------------
+  0 - output([:0]), filter(nil), rowset=256
+      exec_params_(nil), onetime_exprs_([subquery(1)(:0)]), init_plan_idxs_(nil), use_batch=false
+  1 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([zc_mv2.c1]), filter(nil), rowset=256
+      access([zc_mv2.__pk_increment], [zc_mv2.c1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv2.c2], [zc_mv2.__pk_increment]), range(1,MIN ; 1,MAX), 
+      range_cond([zc_mv2.c2 = 1])
+create materialized view ZC_MV5 REFRESH FORCE ON DEMAND enable query rewrite AS
+select 1 as c1 from dual;
+Got one of the listed errors
+####join
+##re
+select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2
+from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 ORDER by 1;
++------+------+------+------+------+
+| c1_1 | c2_1 | c1_2 | c2_2 | c3_2 |
++------+------+------+------+------+
+|    1 |    1 |    1 |    1 | A    |
+|    2 |    2 |    2 |    2 | A    |
+|    3 |    3 |    3 |    3 | A    |
+|    4 |    4 |    4 |    4 | A    |
+|    5 |    5 |    5 |    5 | A    |
+|    6 |    6 |    6 |    6 | A    |
+|    7 |    7 |    7 |    7 | A    |
+|    8 |    8 |    8 |    8 | A    |
+|    9 |    9 |    9 |    9 | A    |
+|   10 |   10 |   10 |   10 | A    |
+|   11 |   11 |   11 |   11 | A    |
+|   12 |   12 |   12 |   12 | A    |
+|   13 |   13 |   13 |   13 | A    |
+|   14 |   14 |   14 |   14 | A    |
+|   15 |   15 |   15 |   15 | A    |
+|   16 |   16 |   16 |   16 | A    |
++------+------+------+------+------+
+##mysql和oracle计划有出入
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1,zt2.c1 c1_2,zt2.c2 c2_2,zt2.c3 c3_2 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 ORDER by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv3|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv3.c1_1], [zc_mv3.c2_1], [zc_mv3.c1_2], [zc_mv3.c2_2], [zc_mv3.c3_2]), filter(nil), rowset=256
+      sort_keys([zc_mv3.c1_1, ASC])
+  1 - output([zc_mv3.c1_1], [zc_mv3.c2_1], [zc_mv3.c1_2], [zc_mv3.c2_2], [zc_mv3.c3_2]), filter(nil), rowset=256
+      access([zc_mv3.c1_1], [zc_mv3.c2_1], [zc_mv3.c1_2], [zc_mv3.c2_2], [zc_mv3.c3_2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv3.__pk_increment]), range(MIN ; MAX)always true
+##nore
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
++------+------+
+| c1_1 | c2_1 |
++------+------+
+|    3 |    3 |
+|    4 |    4 |
+|    5 |    5 |
+|    6 |    6 |
+|    7 |    7 |
+|    8 |    8 |
+|    9 |    9 |
+|   10 |   10 |
+|   11 |   11 |
+|   12 |   12 |
+|   13 |   13 |
+|   14 |   14 |
+|   15 |   15 |
+|   16 |   16 |
++------+------+
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+Query Plan
+========================================================
+|ID|OPERATOR                           |NAME           |
+--------------------------------------------------------
+|0 |PX COORDINATOR MERGE SORT          |               |
+|1 |└─EXCHANGE OUT DISTR               |:EX10001       |
+|2 |  └─SORT                           |               |
+|3 |    └─HASH JOIN                    |               |
+|4 |      ├─EXCHANGE IN DISTR          |               |
+|5 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000       |
+|6 |      │   └─TABLE RANGE SCAN       |zc_mv1(in2_mv1)|
+|7 |      └─PX PARTITION ITERATOR      |               |
+|8 |        └─TABLE FULL SCAN          |ZT2            |
+========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(zc_mv1.c1, zc_mv1.c2)]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  1 - output([zc_mv1.c1], [INTERNAL_FUNCTION(zc_mv1.c1, zc_mv1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      sort_keys([zc_mv1.c1, ASC])
+  3 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      equal_conds([zc_mv1.c2 = ZT2.c1]), other_conds(nil)
+  4 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+  5 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      (#keys=1, [zc_mv1.c2]), is_single, dop=1
+  6 - output([zc_mv1.c1], [zc_mv1.c2]), filter(nil), rowset=256
+      access([zc_mv1.c1], [zc_mv1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([zc_mv1.c1], [zc_mv1.c2], [zc_mv1.__pk_increment]), range(1,MAX,MAX ; MAX,MAX,MAX), 
+      range_cond([zc_mv1.c1 > 1])
+  7 - output([ZT2.c1]), filter(nil), rowset=256
+      affinitize, force partition granule
+  8 - output([ZT2.c1]), filter(nil), rowset=256
+      access([ZT2.c1]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT2.c1]), range(MIN ; MAX)always true
+##re(mv3)
+select /*+mv_rewrite(zc_mv3)*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
++------+------+
+| c1_1 | c2_1 |
++------+------+
+|    2 |    2 |
+|    3 |    3 |
+|    4 |    4 |
+|    5 |    5 |
+|    6 |    6 |
+|    7 |    7 |
+|    8 |    8 |
+|    9 |    9 |
+|   10 |   10 |
+|   11 |   11 |
+|   12 |   12 |
+|   13 |   13 |
+|   14 |   14 |
+|   15 |   15 |
+|   16 |   16 |
++------+------+
+explain basic select /*+mv_rewrite(zc_mv3)*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+Query Plan
+=============================
+|ID|OPERATOR         |NAME  |
+-----------------------------
+|0 |SORT             |      |
+|1 |└─TABLE FULL SCAN|zc_mv3|
+=============================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv3.c1_1], [zc_mv3.c2_1]), filter(nil), rowset=256
+      sort_keys([zc_mv3.c1_1, ASC])
+  1 - output([zc_mv3.c1_1], [zc_mv3.c2_1]), filter([zc_mv3.c1_1 > 1]), rowset=256
+      access([zc_mv3.c1_1], [zc_mv3.c2_1]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([zc_mv3.__pk_increment]), range(MIN ; MAX)always true
+CREATE INDEX in_mv3 ON zc_mv3(c1_1);
+##re(mv3)
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
++------+------+
+| c1_1 | c2_1 |
++------+------+
+|    2 |    2 |
+|    3 |    3 |
+|    4 |    4 |
+|    5 |    5 |
+|    6 |    6 |
+|    7 |    7 |
+|    8 |    8 |
+|    9 |    9 |
+|   10 |   10 |
+|   11 |   11 |
+|   12 |   12 |
+|   13 |   13 |
+|   14 |   14 |
+|   15 |   15 |
+|   16 |   16 |
++------+------+
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv3(in_mv3)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv3.c1_1], [zc_mv3.c2_1]), filter(nil), rowset=16
+      access([zc_mv3.__pk_increment], [zc_mv3.c1_1], [zc_mv3.c2_1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv3.c1_1], [zc_mv3.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv3.c1_1 > 1])
+##nore
+select /*+no_mv_rewrite*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
++------+------+
+| c1_1 | c2_1 |
++------+------+
+|    3 |    3 |
+|    4 |    4 |
+|    5 |    5 |
+|    6 |    6 |
+|    7 |    7 |
+|    8 |    8 |
+|    9 |    9 |
+|   10 |   10 |
+|   11 |   11 |
+|   12 |   12 |
+|   13 |   13 |
+|   14 |   14 |
+|   15 |   15 |
+|   16 |   16 |
+|   17 |   17 |
+|   18 |   18 |
+|   19 |   19 |
+|   20 |   20 |
+|   21 |   21 |
+|   22 |   22 |
+|   23 |   23 |
+|   24 |   24 |
+|   25 |   25 |
+|   26 |   26 |
+|   27 |   27 |
+|   28 |   28 |
+|   29 |   29 |
+|   30 |   30 |
+|   31 |   31 |
+|   32 |   32 |
+|  999 |    1 |
++------+------+
+explain basic select /*+no_mv_rewrite*/zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1,col_item ZT2 WHERE zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |PX COORDINATOR MERGE SORT    |        |
+|1 |└─EXCHANGE OUT DISTR         |:EX10000|
+|2 |  └─SORT                     |        |
+|3 |    └─NESTED-LOOP JOIN       |        |
+|4 |      ├─PX PARTITION ITERATOR|        |
+|5 |      │ └─TABLE FULL SCAN    |ZT2     |
+|6 |      └─DISTRIBUTED TABLE GET|ZT1     |
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  1 - output([ZT1.c1], [INTERNAL_FUNCTION(ZT1.c1, ZT1.c2)]), filter(nil), rowset=256
+      dop=1
+  2 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      sort_keys([ZT1.c1, ASC])
+  3 - output([ZT1.c1], [ZT1.c2]), filter(nil), rowset=256
+      conds(nil), nl_params_([ZT2.c1(:)]), use_batch=true
+  4 - output([ZT2.c1]), filter(nil), rowset=256
+      force partition granule
+  5 - output([ZT2.c1]), filter(nil), rowset=256
+      access([ZT2.c1]), partitions(p[0-15])
+      is_index_back=false, is_global_index=false, 
+      range_key([ZT2.c1]), range(MIN ; MAX)always true
+  6 - output([ZT1.c2], [ZT1.c1]), filter([ZT1.c1 > 1]), rowset=256
+      access([GROUP_ID], [ZT1.c2], [ZT1.c1]), partitions(p[0-999])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([ZT1.c2]), range(MIN ; MAX), 
+      range_cond([ZT1.c2 = :])
+##nore
+select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1 inner join col_item ZT2 ON zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
++------+------+
+| c1_1 | c2_1 |
++------+------+
+|    2 |    2 |
+|    3 |    3 |
+|    4 |    4 |
+|    5 |    5 |
+|    6 |    6 |
+|    7 |    7 |
+|    8 |    8 |
+|    9 |    9 |
+|   10 |   10 |
+|   11 |   11 |
+|   12 |   12 |
+|   13 |   13 |
+|   14 |   14 |
+|   15 |   15 |
+|   16 |   16 |
++------+------+
+explain basic select zt1.c1 c1_1,zt1.c2 c2_1 from col_info ZT1 inner join col_item ZT2 ON zt1.c2 = zt2.c1 AND zt1.c1 > 1 ORDER by 1;
+Query Plan
+====================================
+|ID|OPERATOR        |NAME          |
+------------------------------------
+|0 |TABLE RANGE SCAN|zc_mv3(in_mv3)|
+====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([zc_mv3.c1_1], [zc_mv3.c2_1]), filter(nil), rowset=16
+      access([zc_mv3.__pk_increment], [zc_mv3.c1_1], [zc_mv3.c2_1]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([zc_mv3.c1_1], [zc_mv3.__pk_increment]), range(1,MAX ; MAX,MAX), 
+      range_cond([zc_mv3.c1_1 > 1])
+DROP materialized view ZC_MV4;
+DROP MATERIALIZED VIEW LOG ON col_info;
+DROP MATERIALIZED VIEW LOG ON col_item;
+DROP table col_item;
+DROP table col_info;
+DROP materialized view ZC_MV1;
+DROP materialized view ZC_MV2;
+DROP materialized view ZC_MV3;
+DROP materialized view ZC_MV4;
+SET QUERY_REWRITE_ENABLED = 'FALSE';
+SET QUERY_REWRITE_INTEGRITY = ENFORCED;

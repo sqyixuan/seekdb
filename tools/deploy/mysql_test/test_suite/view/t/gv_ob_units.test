@@ -1,0 +1,114 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner       : fenggu.yh
+#owner group : STORAGE
+#description : 测试虚拟表__all_virtual_unit和视图GV$OB_UNITS
+
+
+connect (sysc,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connect (mysqlc,$OBMYSQL_MS0,root@sys,'',oceanbase,$OBMYSQL_PORT);
+
+connection sysc;
+
+##修改配置
+--disable_abort_on_error
+
+let $mysql_tenant_id = query_get_value(select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name='sys', tenant_id, 1);
+
+## case:检查表结构
+use oceanbase;
+desc __all_virtual_unit;
+desc V$OB_UNITS;
+desc GV$OB_UNITS;
+
+--disable_query_log
+# 关闭错误注入
+alter system set_tp tp_name = ERRSIM_EMPTY_LOCALITY_CACHE, error_code = 4018, frequency = 0;
+
+## sys租户能看自己及其他租户的unit
+eval select count(distinct(tenant_id)) from __all_virtual_unit where tenant_id in (1, $mysql_tenant_id, $mysql_tenant_id - 1) group by tenant_id;
+
+## 验证META租户的CPU、IOPS显示为NULL
+eval select distinct(MAX_CPU) from GV\$OB_UNITS where tenant_id = $mysql_tenant_id - 1;
+eval select distinct(MIN_CPU) from GV\$OB_UNITS where tenant_id = $mysql_tenant_id - 1;
+eval select distinct(MAX_IOPS) from GV\$OB_UNITS where tenant_id = $mysql_tenant_id - 1;
+eval select distinct(MIN_IOPS) from GV\$OB_UNITS where tenant_id = $mysql_tenant_id - 1;
+eval select distinct(IOPS_WEIGHT) from GV\$OB_UNITS where tenant_id = $mysql_tenant_id - 1;
+
+# 验证GV$OB_UNITS展示的META+USER租户资源等于实际分配资源
+let $mysql_unit_id = query_get_value(select unit_id from DBA_OB_UNITS where tenant_id = $mysql_tenant_id, unit_id, 1);
+let $mysql_max_cpu = query_get_value('select max_cpu v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_min_cpu = query_get_value('select min_cpu v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_memory_size = query_get_value('select memory_size v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_log_disk_size = query_get_value('select log_disk_size v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_max_iops = query_get_value('select max_iops v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_min_iops = query_get_value('select min_iops v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+let $mysql_iops_weight = query_get_value('select iops_weight v from DBA_OB_RESOURCE_POOLS p, DBA_OB_UNIT_CONFIGS c where p.unit_config_id = c.unit_config_id and p.tenant_id=$mysql_tenant_id', v, 1);
+
+eval select (sum(min_cpu) = $mysql_min_cpu) is_min_cpu_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(max_cpu) = $mysql_max_cpu) is_max_cpu_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(memory_size) = $mysql_memory_size) is_memory_size_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(log_disk_size) = $mysql_log_disk_size) is_log_disk_size_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(min_iops) = $mysql_min_iops) is_min_iops_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(max_iops) = $mysql_max_iops) is_max_iops_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+eval select (sum(iops_weight) = $mysql_iops_weight) is_iops_weight_same from GV\$OB_UNITS where unit_id = $mysql_unit_id group by unit_id;
+
+## 验证GV$OB_UNITS中ZONE_TYPE和REGION
+# 开启错误注入
+alter system set_tp tp_name = ERRSIM_EMPTY_LOCALITY_CACHE, error_code = 4018, frequency = 1;
+# 验证在locality cache未刷新时显示为NULL
+eval select distinct(ZONE_TYPE) from GV\$OB_UNITS where unit_id = $mysql_unit_id; 
+eval select distinct(REGION) from GV\$OB_UNITS where unit_id = $mysql_unit_id; 
+# 取消错误注入
+alter system set_tp tp_name = ERRSIM_EMPTY_LOCALITY_CACHE, error_code = 4018, frequency = 0;
+
+# 验证GV$OB_UNITS的REGION和ZONE_TYPE与DBA_OB_ZONES中的值相同
+--disable_warnings
+drop view if exists temp_view_for_gv_ob_units;
+drop view if exists gv_ob_units;
+--enable_warnings
+eval create view temp_view_for_gv_ob_units as select U.UNIT_ID, Z.ZONE, Z.REGION, Z.TYPE ZONE_TYPE from DBA_OB_ZONES as Z, DBA_OB_UNITS as U 
+where Z.zone=U.zone && U.UNIT_ID = $mysql_unit_id;
+select T.UNIT_ID, T.ZONE_TYPE REAL_ZONE_TYPE, G.ZONE_TYPE, T.REGION REAL_REGION, G.REGION from temp_view_for_gv_ob_units as T INNER JOIN GV$OB_UNITS as G on T.UNIT_ID = G.UNIT_ID 
+where T.REGION <> G.REGION OR T.ZONE_TYPE <> G.ZONE_TYPE;
+
+# 验证改变region或zone_type时 GV$OB_UNITS 经过短暂延迟后更新成功
+let $mysql_zone = query_get_value(select zone from DBA_OB_UNITS where UNIT_ID = $mysql_unit_id, zone, 1);
+let $mysql_region = query_get_value(select region from DBA_OB_ZONES where ZONE = '$mysql_zone', region, 1);
+eval alter system change zone $mysql_zone set region='new_region_name';
+# 验证在timeout时间内能更新成功
+let $i=20;     # timeout in second
+create view gv_ob_units as select * from GV$OB_UNITS;
+while ($i>0)
+{
+    sleep 1;   
+    let $result = query_get_value('select count(*) as mismatched_rows from temp_view_for_gv_ob_units as T INNER JOIN gv_ob_units as G on T.UNIT_ID = G.UNIT_ID 
+    where T.REGION <> G.REGION OR T.ZONE_TYPE <> G.ZONE_TYPE', mismatched_rows, 1);
+    # --echo $result
+    if($result == 0)
+    {
+        let $i = 0;     # break
+        --echo succeed to update view after altering region
+    }
+    dec $i;
+}
+if($i != -1)
+{
+    --echo fail to update view after altering region
+}
+eval alter system change zone $mysql_zone set region='$mysql_region';
+sleep 10;   # 确保更改生效
+drop view if exists temp_view_for_gv_ob_units;
+drop view if exists gv_ob_units;
+
+## 普通租户只能看到自己的unit
+connection mysqlc;
+desc V$OB_UNITS;
+desc GV$OB_UNITS;
+eval select distinct(tenant_id) = $mysql_tenant_id as aaa from GV\$OB_UNITS;
+
+--enable_query_log
+
+##还原配置
+--enable_abort_on_error

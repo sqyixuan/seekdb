@@ -1,0 +1,89 @@
+# owner: ouyanghongrong.oyh
+# owner group: STORAGE
+# description: test __all_virtual_cs_replica_stats
+
+--echo ===============================================================
+--echo === Step 0: create tenant with cs replica locality in z2 ======
+--echo ===============================================================
+
+let $unit1 = unit_1;
+let $pool1 = pool_1;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection obsys;
+
+#let $z1 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 1); 
+#let $z2 = query_get_value(select distinct zone from oceanbase.__all_zone where zone != '' limit 3, zone, 2); 
+#let $z2_ip         = query_get_value(select svr_ip     from oceanbase.__all_server where zone = '$z2', svr_ip,     1); 
+#let $z2_mysql_port = query_get_value(select inner_port from oceanbase.__all_server where zone = '$z2', inner_port, 1);
+
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+#eval CREATE RESOURCE UNIT if not exists $unit1 MAX_CPU=1, MEMORY_SIZE='2G';
+#eval create resource pool if not exists $pool1 unit='$unit1', unit_num = 1, zone_list = ('$z1', '$z2');
+#eval create tenant tenant1 resource_pool_list=('$pool1'), replica_num=2, zone_list=('$z1','$z2'), locality = 'F@$z1, C@$z2' set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+connect (conn1,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,root,'',test, $OBMYSQL_PORT);
+
+--echo ===============================================================
+--echo === Step 2: create table, prepare basic data ==================
+--echo ===============================================================
+connection conn1;
+--disable_warnings
+drop table if exists t1,t2,t3,tload;
+drop sequence if exists seq;
+--enable_warnings
+create table t1 (k int primary key, v1 int, v2 int, v3 int);
+create table t2 (k int primary key, v1 int, v2 int, v3 int) with column group(each column);
+create table t3 (k int primary key, v1 int, v2 int, v3 int) with column group(all columns, each column);
+create table tload (k int primary key, v1 int, v2 int, v3 int);
+create index idx1 on t1(v1);
+create index idx2 on t2(v1);
+create index idx3 on t3(v1);
+create index idx4 on t1(v2) with column group(each column);
+create index idx5 on t2(v2) with column group(each column);
+create index idx6 on t3(v2) with column group(each column);
+create index idx7 on t1(v3) with column group(all columns, each column);
+create index idx8 on t2(v3) with column group(all columns, each column);
+create index idx9 on t3(v3) with column group(all columns, each column);
+
+create sequence seq cache 100000 noorder;
+insert into tload select seq.nextval + 10, seq.nextval + 11, seq.nextval + 12, seq.nextval + 13 from table(generator(100000));
+
+--echo ===============================================================
+--echo === Step 3: Do full direct load  ==============================
+--echo ===============================================================
+connection obsys;
+alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+alter system set merger_check_interval = '10s' tenant sys;
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_CONVERT_CO", error_code = 4016, frequency = 1;
+
+connection conn1;
+set ob_query_timeout = 100000000;
+insert /*+ enable_parallel_dml parallel(7) append*/ into t1 select * from tload;
+insert /*+ enable_parallel_dml parallel(7) append*/ into t2 select * from tload;
+insert /*+ enable_parallel_dml parallel(7) append*/ into t3 select * from tload;
+# wait old tablet of t1 ~ t3 be deleted
+sleep 30;
+select TOTAL_TABLET_CNT, AVAILABLE_TABLET_CNT, AVAILABLE from oceanbase.DBA_OB_CS_REPLICA_STATS;
+
+connection obsys;
+select tablet_id, is_cs, is_cs_replica, available from __all_virtual_cs_replica_tablet_stats where tenant_id = (select tenant_id from DBA_OB_TENANTS where tenant_name = 'sys') order by tablet_id;
+select TOTAL_TABLET_CNT, AVAILABLE_TABLET_CNT, AVAILABLE from oceanbase.CDB_OB_CS_REPLICA_STATS where tenant_id = (select tenant_id from DBA_OB_TENANTS where tenant_name = 'sys');
+alter system set_tp tp_name = "EN_COMPACTION_DISABLE_CONVERT_CO", error_code = 4016, frequency = 0;
+sleep 30;
+select tablet_id, is_cs, is_cs_replica, available from __all_virtual_cs_replica_tablet_stats where tenant_id = (select tenant_id from DBA_OB_TENANTS where tenant_name = 'sys') order by tablet_id;
+select TOTAL_TABLET_CNT, AVAILABLE_TABLET_CNT, AVAILABLE from oceanbase.CDB_OB_CS_REPLICA_STATS where tenant_id = (select tenant_id from DBA_OB_TENANTS where tenant_name = 'sys');
+--disable_warnings
+#drop tenant if exists tenant1 force;
+#eval DROP RESOURCE POOL if exists $pool1;
+#eval DROP RESOURCE UNIT if exists $unit1;
+--disable_query_log
+
+select "Finish";

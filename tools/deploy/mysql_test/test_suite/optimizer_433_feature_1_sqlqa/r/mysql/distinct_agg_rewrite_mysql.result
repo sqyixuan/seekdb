@@ -1,0 +1,1639 @@
+result_format: 4
+purge recyclebin;
+drop table lyqtest1;
+CREATE TABLE lyqtest1 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1_c2_c3 (c1, c2, c3),
+    INDEX idx_t1_c1 (c1)
+);
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-10-01 12:00:00', 10.5, 'data1', '2023-10-01');
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(2, null, '2023-11-01 13:00:00', 20.5, 'data2', '2023-11-01');
+INSERT INTO lyqtest1 (c1, c2, c3, c4, c5, c6) VALUES
+(3, 'example3', '2023-12-01 14:00:00', 30.5, 'data3', '2023-12-01');
+drop table lyqtest2;
+CREATE TABLE lyqtest2 (
+    c1 INT,
+    c2 VARCHAR(255),
+    c3 DATETIME,
+    c4 FLOAT,
+    c5 VARCHAR(255),
+    c6 DATE,
+    INDEX idx_c1 (c1),
+    INDEX idx_c2 (c2),
+    INDEX idx_c5 (c5)
+) 
+PARTITION BY RANGE (YEAR(c6)) (
+    PARTITION p2020 VALUES LESS THAN (2021),
+    PARTITION p2021 VALUES LESS THAN (2022),
+    PARTITION p2022 VALUES LESS THAN (2023),
+    PARTITION p2023 VALUES LESS THAN MAXVALUE
+);
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(1, 'example1', '2023-09-01 15:00:00', 40.5, 'data4', '2023-09-01');
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(2, 'example2', '2023-08-01 16:00:00', 50.5, 'data5', '2023-08-01');
+INSERT INTO lyqtest2 (c1, c2, c3, c4, c5, c6) VALUES
+(null, 'example6', '2023-07-01 17:00:00', 60.5, 'data6', '2023-07-01');
+drop table lyqtest3;
+CREATE TABLE lyqtest3 AS SELECT * FROM lyqtest2;
+只有一个聚合函数有 distinct 或者 distinct 聚合函数 distinct 的都是同一列的情况下，是不需要 dup 数据的，可以去掉一个阶段
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  1 |                1 |    10.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */  count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c1), ASC], [T_FUN_SUM(distinct lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  2 - output([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c4]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+group by 多列
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2,c3 order by 1,2;
++--------------------+------------------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  1 |                1 |    10.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2,c3 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2], [VIEW1.lyqtest1.c3]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)],
+       [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2], [VIEW1.lyqtest1.c3]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2], [VIEW1.lyqtest1.c3])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c3], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2], [lyqtest1.c3]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2], [lyqtest1.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+distinct 聚合函数 distinct 的不是同一列的情况  不会改写
+select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+---------+
+| count(distinct c5) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  1 |                1 |    10.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c5), ASC], [T_FUN_SUM(distinct lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  2 - output([lyqtest1.c2], [lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */  count(distinct c5), sum(distinct c1), sum(c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c5), ASC], [T_FUN_SUM(distinct lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c5)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  2 - output([lyqtest1.c2], [lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c5], [lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+所有非 distinct 聚合函数都是可以预聚合的
+select count(distinct c1), sum(distinct c1), sum(c4),avg(c4),max(c1),min(c1) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+---------+---------+---------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) | avg(c4) | max(c1) | min(c1) |
++--------------------+------------------+---------+---------+---------+---------+
+|                  1 |                1 |    10.5 |    10.5 |       1 |       1 |
+|                  1 |                2 |    20.5 |    20.5 |       2 |       2 |
+|                  1 |                3 |    30.5 |    30.5 |       3 |       3 |
++--------------------+------------------+---------+---------+---------+---------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4),avg(c4),max(c1),min(c1) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4,
+       DOUBLE(-1, -1)))) / cast(T_FUN_COUNT_SUM(VIEW1.T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1)))), DOUBLE(-1, -1))], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))],
+       [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))],
+       [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))], [T_FUN_COUNT_SUM(VIEW1.T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))], [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))],
+       [T_FUN_COUNT_SUM(VIEW1.T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.T_FUN_MAX(lyqtest1.c1)], [VIEW1.T_FUN_MIN(lyqtest1.c1)], [VIEW1.T_FUN_COUNT(cast(lyqtest1.c4,
+       DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.T_FUN_MAX(lyqtest1.c1)], [VIEW1.T_FUN_MIN(lyqtest1.c1)], [VIEW1.T_FUN_COUNT(cast(lyqtest1.c4,
+       DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c1], [T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1],
+       [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [T_FUN_COUNT(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+group_concat  不会改写
+select count(distinct c1), sum(distinct c1), sum(c4),group_concat(c3) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+---------+---------------------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) | group_concat(c3)    |
++--------------------+------------------+---------+---------------------+
+|                  1 |                1 |    10.5 | 2023-10-01 12:00:00 |
+|                  1 |                2 |    20.5 | 2023-11-01 13:00:00 |
+|                  1 |                3 |    30.5 | 2023-12-01 14:00:00 |
++--------------------+------------------+---------+---------------------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4),group_concat(c3) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [T_FUN_GROUP_CONCAT(cast(lyqtest1.c3,
+       VARCHAR(65536)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c1), ASC], [T_FUN_SUM(distinct lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [T_FUN_GROUP_CONCAT(cast(lyqtest1.c3,
+       VARCHAR(65536)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))],
+       [T_FUN_GROUP_CONCAT(cast(lyqtest1.c3, VARCHAR(65536)))])
+  2 - output([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c4], [lyqtest1.c3]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c3], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c3], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+所有 distinct 聚合函数的 distinct expr 都是相同的
+select count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1),count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+------------------+------------------+------------------+--------------------+--------------------+------------------+------------------+------------------+------------------+--------------------+
+| count(distinct c1) | sum(distinct c1) | avg(distinct c1) | max(distinct c1) | min(distinct c1) | count(distinct c1) | count(distinct c1) | sum(distinct c1) | avg(distinct c1) | max(distinct c1) | min(distinct c1) | count(distinct c1) |
++--------------------+------------------+------------------+------------------+------------------+--------------------+--------------------+------------------+------------------+------------------+------------------+--------------------+
+|                  1 |                1 |           1.0000 |                1 |                1 |                  1 |                  1 |                1 |           1.0000 |                1 |                1 |                  1 |
+|                  1 |                2 |           2.0000 |                2 |                2 |                  1 |                  1 |                2 |           2.0000 |                2 |                2 |                  1 |
+|                  1 |                3 |           3.0000 |                3 |                3 |                  1 |                  1 |                3 |           3.0000 |                3 |                3 |                  1 |
++--------------------+------------------+------------------+------------------+------------------+--------------------+--------------------+------------------+------------------+------------------+------------------+--------------------+
+explain basic select count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1),count(distinct c1), sum(distinct c1), avg(distinct c1),max(distinct c1),min(distinct c1),count(distinct c1) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================================
+|ID|OPERATOR               |NAME                  |
+---------------------------------------------------
+|0 |SORT                   |                      |
+|1 |└─HASH GROUP BY        |                      |
+|2 |  └─SUBPLAN SCAN       |VIEW1                 |
+|3 |    └─MERGE DISTINCT   |                      |
+|4 |      └─TABLE FULL SCAN|lyqtest1(idx_c1_c2_c3)|
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [cast(cast(T_FUN_SUM(VIEW1.lyqtest1.c1), DECIMAL_INT(65, 32)) / cast(T_FUN_COUNT(VIEW1.lyqtest1.c1),
+       DECIMAL_INT(20, 0)), DECIMAL(15, 4))], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))], [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)],
+       [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [cast(cast(T_FUN_SUM(VIEW1.lyqtest1.c1), DECIMAL_INT(65, 32)) / cast(T_FUN_COUNT(VIEW1.lyqtest1.c1),
+       DECIMAL_INT(20, 0)), DECIMAL(15, 4))], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))], [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))], [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c1))], [T_FUN_MIN(VIEW1.T_FUN_MIN(lyqtest1.c1))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)],
+       [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_MAX(lyqtest1.c1)], [VIEW1.T_FUN_MIN(lyqtest1.c1)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_MAX(lyqtest1.c1)], [VIEW1.T_FUN_MIN(lyqtest1.c1)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([lyqtest1.c1], [lyqtest1.c1], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c1], [lyqtest1.c1])
+  4 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 order by 1,2;
++-----------------------+------------------+
+| count(distinct t1.c1) | sum(distinct c1) |
++-----------------------+------------------+
+|                     1 |                1 |
+|                     1 |                2 |
+|                     1 |                3 |
++-----------------------+------------------+
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR               |NAME            |
+---------------------------------------------
+|0 |SORT                   |                |
+|1 |└─HASH GROUP BY        |                |
+|2 |  └─SUBPLAN SCAN       |VIEW1           |
+|3 |    └─MERGE DISTINCT   |                |
+|4 |      └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC], [T_FUN_SUM(VIEW1.t1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)])
+  2 - output([VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t1.c1], [t1.c2])
+  4 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+select count(distinct abs(c1)), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
++-------------------------+-----------------------+
+| count(distinct abs(c1)) | sum(distinct abs(c1)) |
++-------------------------+-----------------------+
+|                       1 |                     1 |
+|                       1 |                     2 |
+|                       1 |                     3 |
++-------------------------+-----------------------+
+explain basic select count(distinct abs(c1)), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================================
+|ID|OPERATOR               |NAME                  |
+---------------------------------------------------
+|0 |SORT                   |                      |
+|1 |└─HASH GROUP BY        |                      |
+|2 |  └─SUBPLAN SCAN       |VIEW1                 |
+|3 |    └─HASH DISTINCT    |                      |
+|4 |      └─TABLE FULL SCAN|lyqtest1(idx_c1_c2_c3)|
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0))))], [T_FUN_SUM(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0)))), ASC], [T_FUN_SUM(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0)))), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0))))], [T_FUN_SUM(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_COUNT(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0))))], [T_FUN_SUM(VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1,
+       0))))])
+  2 - output([VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0)))], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.abs(cast(lyqtest1.c1, BIGINT(-1, 0)))], [VIEW1.lyqtest1.c2])
+  3 - output([abs(cast(lyqtest1.c1, BIGINT(-1, 0)))], [lyqtest1.c2]), filter(nil), rowset=16
+      distinct([abs(cast(lyqtest1.c1, BIGINT(-1, 0)))], [lyqtest1.c2])
+  4 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+count(distinct c1), sum(distinct c1), max(distinct c4)    max ,min distinct 不影响， 会改写
+select count(distinct c1), sum(distinct c1), max(distinct c4) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+------------------+
+| count(distinct c1) | sum(distinct c1) | max(distinct c4) |
++--------------------+------------------+------------------+
+|                  1 |                1 |             10.5 |
+|                  1 |                2 |             20.5 |
+|                  1 |                3 |             30.5 |
++--------------------+------------------+------------------+
+explain basic select count(distinct c1), sum(distinct c1), max(distinct c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_MAX(lyqtest1.c4)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_MAX(lyqtest1.c4)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([T_FUN_MAX(lyqtest1.c4)], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_MAX(lyqtest1.c4)])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+select count(distinct c1), sum(distinct c1), max(distinct c4),upper(c2) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+------------------+-----------+
+| count(distinct c1) | sum(distinct c1) | max(distinct c4) | upper(c2) |
++--------------------+------------------+------------------+-----------+
+|                  1 |                1 |             10.5 | EXAMPLE1  |
+|                  1 |                2 |             20.5 | NULL      |
+|                  1 |                3 |             30.5 | EXAMPLE3  |
++--------------------+------------------+------------------+-----------+
+explain basic select count(distinct c1), sum(distinct c1), max(distinct c4),upper(c2) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=====================================
+|ID|OPERATOR               |NAME    |
+-------------------------------------
+|0 |SORT                   |        |
+|1 |└─HASH GROUP BY        |        |
+|2 |  └─SUBPLAN SCAN       |VIEW1   |
+|3 |    └─HASH GROUP BY    |        |
+|4 |      └─TABLE FULL SCAN|lyqtest1|
+=====================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))], [upper(VIEW1.lyqtest1.c2)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.lyqtest1.c1), ASC], [T_FUN_SUM(VIEW1.lyqtest1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c4))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  2 - output([VIEW1.T_FUN_MAX(lyqtest1.c4)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_MAX(lyqtest1.c4)], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  3 - output([T_FUN_MAX(lyqtest1.c4)], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_MAX(lyqtest1.c4)])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+count(distinct c1), sum(distinct abs(c1))   不会改写
+select count(distinct c1), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
++--------------------+-----------------------+
+| count(distinct c1) | sum(distinct abs(c1)) |
++--------------------+-----------------------+
+|                  1 |                     1 |
+|                  1 |                     2 |
+|                  1 |                     3 |
++--------------------+-----------------------+
+explain basic select count(distinct c1), sum(distinct abs(c1)) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=================================================
+|ID|OPERATOR             |NAME                  |
+-------------------------------------------------
+|0 |SORT                 |                      |
+|1 |└─MERGE GROUP BY     |                      |
+|2 |  └─PARTITION SORT   |                      |
+|3 |    └─TABLE FULL SCAN|lyqtest1(idx_c1_c2_c3)|
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct abs(cast(lyqtest1.c1, BIGINT(-1, 0))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c1), ASC], [T_FUN_SUM(distinct abs(cast(lyqtest1.c1, BIGINT(-1, 0)))), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct abs(cast(lyqtest1.c1, BIGINT(-1, 0))))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct abs(cast(lyqtest1.c1, BIGINT(-1, 0))))])
+  2 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+count(distinct c1), sum(distinct c4)     不会改写
+select count(distinct c1), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+
+| count(distinct c1) | sum(distinct c4) |
++--------------------+------------------+
+|                  1 |             10.5 |
+|                  1 |             20.5 |
+|                  1 |             30.5 |
++--------------------+------------------+
+explain basic select count(distinct c1), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c1), ASC], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1))), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  2 - output([lyqtest1.c2], [lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+count(distinct 1), sum(distinct 1)     不会改写
+select count(distinct 1), sum(distinct 1) from lyqtest1 group by c2 order by 1,2;
++-------------------+-----------------+
+| count(distinct 1) | sum(distinct 1) |
++-------------------+-----------------+
+|                 1 |               1 |
+|                 1 |               1 |
+|                 1 |               1 |
++-------------------+-----------------+
+explain basic select count(distinct 1), sum(distinct 1) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR         |NAME                  |
+---------------------------------------------
+|0 |HASH GROUP BY    |                      |
+|1 |└─TABLE FULL SCAN|lyqtest1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1], [cast(1, DECIMAL_INT(42, 0))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func(nil)
+  1 - output([lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+count(distinct c4), sum(distinct c4)    c4在被sum时会被cast， 不会改写
+select count(distinct c4), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
++--------------------+------------------+
+| count(distinct c4) | sum(distinct c4) |
++--------------------+------------------+
+|                  1 |             10.5 |
+|                  1 |             20.5 |
+|                  1 |             30.5 |
++--------------------+------------------+
+explain basic select count(distinct c4), sum(distinct c4) from lyqtest1 group by c2 order by 1,2;
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |SORT                 |        |
+|1 |└─MERGE GROUP BY     |        |
+|2 |  └─PARTITION SORT   |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct lyqtest1.c4)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct lyqtest1.c4), ASC], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1))), ASC])
+  1 - output([T_FUN_COUNT(distinct lyqtest1.c4)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c4)], [T_FUN_SUM(distinct cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  2 - output([lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  3 - output([lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+层次查询    
+WITH RECURSIVE cte1 AS (
+    SELECT t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, 1 AS level
+    FROM lyqtest1 t1
+    WHERE t1.c1 IS NOT NULL
+    UNION ALL
+    SELECT t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, t2.c6, h.level + 1
+    FROM lyqtest2 t2
+    INNER JOIN cte1 h ON t2.c1 = h.c1
+    WHERE h.level < 10 
+)
+SELECT count(distinct c1) FROM cte1 group by c2 order by 1 ;
++--------------------+
+| count(distinct c1) |
++--------------------+
+|                  1 |
+|                  1 |
+|                  1 |
+|                  1 |
++--------------------+
+explain basic  WITH RECURSIVE cte1 AS (
+    SELECT t1.c1, t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, 1 AS level
+    FROM lyqtest1 t1
+    WHERE t1.c1 IS NOT NULL
+    UNION ALL
+    SELECT t2.c1, t2.c2, t2.c3, t2.c4, t2.c5, t2.c6, h.level + 1
+    FROM lyqtest2 t2
+    INNER JOIN cte1 h ON t2.c1 = h.c1
+    WHERE h.level < 10 
+)
+SELECT /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1) FROM cte1 group by c2 order by 1 ;
+Query Plan
+=====================================================
+|ID|OPERATOR                               |NAME    |
+-----------------------------------------------------
+|0 |SORT                                   |        |
+|1 |└─MERGE GROUP BY                       |        |
+|2 |  └─PARTITION SORT                     |        |
+|3 |    └─SUBPLAN SCAN                     |cte1    |
+|4 |      └─RECURSIVE UNION ALL            |        |
+|5 |        ├─TABLE FULL SCAN              |t1      |
+|6 |        └─HASH JOIN                    |        |
+|7 |          ├─TABLE FULL SCAN            |h       |
+|8 |          └─MATERIAL                   |        |
+|9 |            └─PX COORDINATOR           |        |
+|10|              └─EXCHANGE OUT DISTR     |:EX10000|
+|11|                └─PX PARTITION ITERATOR|        |
+|12|                  └─TABLE FULL SCAN    |t2      |
+=====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct cte1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct cte1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct cte1.c1)]), filter(nil), rowset=16
+      group([cte1.c2]), agg_func([T_FUN_COUNT(distinct cte1.c1)])
+  2 - output([cte1.c2], [cte1.c1]), filter(nil), rowset=16
+      sort_keys([HASH(cte1.c2), ASC], [cte1.c2, ASC])
+  3 - output([cte1.c1], [cte1.c2]), filter(nil), rowset=16
+      access([cte1.c1], [cte1.c2])
+  4 - output([UNION([1])], [UNION([2])], [UNION([3])], [UNION([4])], [UNION([5])], [UNION([6])], [UNION([7])]), filter(nil), rowset=16
+  5 - output([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5], [t1.c6], [1]), filter([t1.c1 IS NOT NULL]), rowset=16
+      access([t1.c1], [t1.c2], [t1.c3], [t1.c4], [t1.c5], [t1.c6]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([column_conv(INT,PS:(11,0),NULL,t2.c1)], [column_conv(VARCHAR,utf8mb4_general_ci,length:255,NULL,t2.c2)], [column_conv(MYSQL_DATETIME,PS:(19,
+      0),NULL,t2.c3)], [column_conv(FLOAT,PS:(-1,-1),NULL,t2.c4)], [column_conv(VARCHAR,utf8mb4_general_ci,length:255,NULL,t2.c5)], [column_conv(MYSQL_DATE,PS:(10,
+      0),NULL,t2.c6)], [column_conv(BIGINT,PS:(20,0),NULL,h.level + 1)]), filter(nil), rowset=16
+      equal_conds([t2.c1 = h.c1]), other_conds(nil)
+  7 - output([h.c1], [h.level]), filter([h.level < 10]), rowset=16
+      access([h.c1], [h.level])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key(nil), range(MIN ; MAX)
+  8 - output([t2.c1], [t2.c6], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+  9 - output([t2.c1], [t2.c6], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+ 10 - output([t2.c1], [t2.c6], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      dop=1
+ 11 - output([t2.c6], [t2.c1], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      force partition granule
+ 12 - output([t2.c6], [t2.c1], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), filter(nil), rowset=16
+      access([t2.c6], [t2.c1], [t2.c2], [t2.c3], [t2.c4], [t2.c5]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+不能包含变量赋值
+SELECT c1 INTO @var_name FROM lyqtest1 where c1 = 1;
+select count(distinct @var_name), sum(@var_name) from lyqtest1 t1 group by c2 order by 1,2;
++---------------------------+----------------+
+| count(distinct @var_name) | sum(@var_name) |
++---------------------------+----------------+
+|                         1 |              1 |
+|                         1 |              1 |
+|                         1 |              1 |
++---------------------------+----------------+
+explain basic select count(distinct @var_name), sum(@var_name) from lyqtest1 t1 group by c2 order by 1,2;
+Query Plan
+=========================================
+|ID|OPERATOR           |NAME            |
+-----------------------------------------
+|0 |SORT               |                |
+|1 |└─HASH GROUP BY    |                |
+|2 |  └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([1], [T_FUN_SUM(('var_name'))]), filter(nil), rowset=16
+      sort_keys([T_FUN_SUM(('var_name')), ASC])
+  1 - output([T_FUN_SUM(('var_name'))]), filter(nil), rowset=16
+      group([t1.c2]), agg_func([T_FUN_SUM(('var_name'))])
+  2 - output([t1.c2]), filter(nil), rowset=16
+      access([t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+会改写
+select count(distinct c1), sum(distinct @var_name) from lyqtest1 t1 group by c2 order by 1,2;
++--------------------+-------------------------+
+| count(distinct c1) | sum(distinct @var_name) |
++--------------------+-------------------------+
+|                  1 |                       1 |
+|                  1 |                       1 |
+|                  1 |                       1 |
++--------------------+-------------------------+
+explain basic select count(distinct c1), sum(distinct @var_name) from lyqtest1 t1 group by c2 order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR               |NAME            |
+---------------------------------------------
+|0 |SORT                   |                |
+|1 |└─HASH GROUP BY        |                |
+|2 |  └─SUBPLAN SCAN       |VIEW1           |
+|3 |    └─MERGE DISTINCT   |                |
+|4 |      └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [cast(('var_name'), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t1.c1)])
+  2 - output([VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t1.c1], [t1.c2])
+  4 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+包含 rollup  不会改写
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 with rollup order by 1,2;
++-----------------------+------------------+
+| count(distinct t1.c1) | sum(distinct c1) |
++-----------------------+------------------+
+|                     1 |                1 |
+|                     1 |                2 |
+|                     1 |                3 |
+|                     3 |                6 |
++-----------------------+------------------+
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 with rollup order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR               |NAME            |
+---------------------------------------------
+|0 |SORT                   |                |
+|1 |└─MERGE GROUP BY       |                |
+|2 |  └─PARTITION SORT     |                |
+|3 |    └─EXPANSION        |                |
+|4 |      └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(distinct t1.c1)], [T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(distinct t1.c1), ASC], [T_FUN_SUM(distinct t1.c1), ASC])
+  1 - output([T_FUN_COUNT(distinct t1.c1)], [T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      group([t1.c2], [GROUPING_ID]), agg_func([T_FUN_COUNT(distinct t1.c1)], [T_FUN_SUM(distinct t1.c1)])
+  2 - output([t1.c1], [t1.c2], [GROUPING_ID]), filter(nil), rowset=16
+      sort_keys([HASH(t1.c2, GROUPING_ID), ASC], [t1.c2, ASC], [GROUPING_ID, ASC])
+  3 - output([t1.c1], [t1.c2], [GROUPING_ID]), filter(nil), rowset=16
+      repeat(2)[(t1.c2), (NULL)]
+  4 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+包含 having  会改写
+select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 having c2 like '%x%' order by 1,2;
++-----------------------+------------------+
+| count(distinct t1.c1) | sum(distinct c1) |
++-----------------------+------------------+
+|                     1 |                1 |
+|                     1 |                3 |
++-----------------------+------------------+
+explain basic select count(distinct t1.c1), sum(distinct c1) from lyqtest1 t1 group by c2 having c2 like '%x%' order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR               |NAME            |
+---------------------------------------------
+|0 |SORT                   |                |
+|1 |└─HASH GROUP BY        |                |
+|2 |  └─SUBPLAN SCAN       |VIEW1           |
+|3 |    └─MERGE DISTINCT   |                |
+|4 |      └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC], [T_FUN_SUM(VIEW1.t1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)])
+  2 - output([VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t1.c1], [t1.c2])
+  4 - output([t1.c1], [t1.c2]), filter([(T_OP_LIKE, t1.c2, '%x%', '\\')]), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+包含 join  会改写
+select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
++-----------------------+---------------------+
+| count(distinct t1.c1) | sum(distinct t1.c1) |
++-----------------------+---------------------+
+|                     1 |                   1 |
+|                     1 |                   2 |
+|                     1 |                   3 |
++-----------------------+---------------------+
+explain basic select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 left join lyqtest2 t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+Query Plan
+=============================================
+|ID|OPERATOR               |NAME            |
+---------------------------------------------
+|0 |SORT                   |                |
+|1 |└─HASH GROUP BY        |                |
+|2 |  └─SUBPLAN SCAN       |VIEW1           |
+|3 |    └─MERGE DISTINCT   |                |
+|4 |      └─TABLE FULL SCAN|t1(idx_c1_c2_c3)|
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC], [T_FUN_SUM(VIEW1.t1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)])
+  2 - output([VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t1.c1], [t1.c2])
+  4 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+包含 join  会改写
+select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
++-----------------------+---------------------+
+| count(distinct t1.c1) | sum(distinct t1.c1) |
++-----------------------+---------------------+
+|                     1 |                   1 |
+|                     1 |                   2 |
+|                     1 |                   3 |
++-----------------------+---------------------+
+explain basic select count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+Query Plan
+===========================================================
+|ID|OPERATOR                             |NAME            |
+-----------------------------------------------------------
+|0 |SORT                                 |                |
+|1 |└─HASH GROUP BY                      |                |
+|2 |  └─SUBPLAN SCAN                     |VIEW1           |
+|3 |    └─MERGE DISTINCT                 |                |
+|4 |      └─NESTED-LOOP JOIN CARTESIAN   |                |
+|5 |        ├─TABLE FULL SCAN            |t1(idx_c1_c2_c3)|
+|6 |        └─MATERIAL                   |                |
+|7 |          └─PX COORDINATOR           |                |
+|8 |            └─EXCHANGE OUT DISTR     |:EX10000        |
+|9 |              └─PX PARTITION ITERATOR|                |
+|10|                └─TABLE FULL SCAN    |t2(idx_c1)      |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC], [T_FUN_SUM(VIEW1.t1.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.t1.c1)])
+  2 - output([VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t1.c1], [t1.c2])
+  4 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  5 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+  8 - output(nil), filter(nil), rowset=16
+      dop=1
+  9 - output(nil), filter(nil), rowset=16
+      force partition granule
+ 10 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.c1], [t2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct t1.c1), sum(distinct t1.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+Query Plan
+=========================================================
+|ID|OPERATOR                           |NAME            |
+---------------------------------------------------------
+|0 |SORT                               |                |
+|1 |└─NESTED-LOOP JOIN CARTESIAN       |                |
+|2 |  ├─SUBPLAN SCAN                   |VIEW1           |
+|3 |  │ └─SCALAR GROUP BY              |                |
+|4 |  │   └─PX COORDINATOR             |                |
+|5 |  │     └─EXCHANGE OUT DISTR       |:EX10000        |
+|6 |  │       └─MERGE GROUP BY         |                |
+|7 |  │         └─PX PARTITION ITERATOR|                |
+|8 |  │           └─TABLE FULL SCAN    |t2              |
+|9 |  └─SUBPLAN SCAN                   |VIEW2           |
+|10|    └─MERGE GROUP BY               |                |
+|11|      └─PARTITION SORT             |                |
+|12|        └─TABLE FULL SCAN          |t1(idx_c1_c2_c3)|
+=========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.T_FUN_COUNT(distinct t1.c1)], [VIEW2.T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      sort_keys([VIEW2.T_FUN_COUNT(distinct t1.c1), ASC], [VIEW2.T_FUN_SUM(distinct t1.c1), ASC])
+  1 - output([VIEW2.T_FUN_COUNT(distinct t1.c1)], [VIEW2.T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  2 - output(nil), filter(nil), rowset=16
+      access(nil)
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT_SUM(T_FUN_COUNT(*)))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT_SUM(T_FUN_COUNT(*))) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT_SUM(T_FUN_COUNT(*)))])
+  4 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=16
+  5 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=16
+      dop=1
+  6 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  7 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      force partition granule
+  8 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  9 - output([VIEW2.T_FUN_COUNT(distinct t1.c1)], [VIEW2.T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_COUNT(distinct t1.c1)], [VIEW2.T_FUN_SUM(distinct t1.c1)])
+ 10 - output([T_FUN_COUNT(distinct t1.c1)], [T_FUN_SUM(distinct t1.c1)]), filter(nil), rowset=16
+      group([t1.c2]), agg_func([T_FUN_COUNT(distinct t1.c1)], [T_FUN_SUM(distinct t1.c1)])
+ 11 - output([t1.c2], [t1.c1]), filter(nil), rowset=16
+      sort_keys([HASH(t1.c2), ASC], [t1.c2, ASC])
+ 12 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+包含 join  会改写
+select count(distinct t2.c1), sum(distinct t2.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
++-----------------------+---------------------+
+| count(distinct t2.c1) | sum(distinct t2.c1) |
++-----------------------+---------------------+
+|                     2 |                   3 |
+|                     2 |                   3 |
+|                     2 |                   3 |
++-----------------------+---------------------+
+explain basic select count(distinct t2.c1), sum(distinct t2.c1) from lyqtest1 t1 , lyqtest2 t2 group by t1.c2 order by 1,2;
+Query Plan
+===========================================================
+|ID|OPERATOR                             |NAME            |
+-----------------------------------------------------------
+|0 |SORT                                 |                |
+|1 |└─HASH GROUP BY                      |                |
+|2 |  └─SUBPLAN SCAN                     |VIEW1           |
+|3 |    └─HASH DISTINCT                  |                |
+|4 |      └─NESTED-LOOP JOIN CARTESIAN   |                |
+|5 |        ├─TABLE FULL SCAN            |t1(idx_c1_c2_c3)|
+|6 |        └─MATERIAL                   |                |
+|7 |          └─PX COORDINATOR           |                |
+|8 |            └─EXCHANGE OUT DISTR     |:EX10000        |
+|9 |              └─PX PARTITION ITERATOR|                |
+|10|                └─TABLE FULL SCAN    |t2(idx_c1)      |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t2.c1)], [T_FUN_SUM(VIEW1.t2.c1)]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t2.c1), ASC], [T_FUN_SUM(VIEW1.t2.c1), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t2.c1)], [T_FUN_SUM(VIEW1.t2.c1)]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_COUNT(VIEW1.t2.c1)], [T_FUN_SUM(VIEW1.t2.c1)])
+  2 - output([VIEW1.t2.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.t2.c1], [VIEW1.t1.c2])
+  3 - output([t2.c1], [t1.c2]), filter(nil), rowset=16
+      distinct([t2.c1], [t1.c2])
+  4 - output([t2.c1], [t1.c2]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  5 - output([t1.c2]), filter(nil), rowset=16
+      access([t1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c1], [t1.c2], [t1.c3], [t1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  6 - output([t2.c1]), filter(nil), rowset=16
+  7 - output([t2.c1]), filter(nil), rowset=16
+  8 - output([t2.c1]), filter(nil), rowset=16
+      dop=1
+  9 - output([t2.c1]), filter(nil), rowset=16
+      force partition granule
+ 10 - output([t2.c1]), filter(nil), rowset=16
+      access([t2.c1]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.c1], [t2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+子查询
+select * from (select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2);
++--------------------+------------------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  1 |                1 |    10.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select * from (select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2);
+Query Plan
+===================================
+|ID|OPERATOR             |NAME    |
+-----------------------------------
+|0 |HASH GROUP BY        |        |
+|1 |└─SUBPLAN SCAN       |VIEW1   |
+|2 |  └─HASH GROUP BY    |        |
+|3 |    └─TABLE FULL SCAN|lyqtest1|
+===================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  1 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  2 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  3 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+select count(distinct t1.c1), sum(c4)from lyqtest2 t1,(select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 group by t1.c2 order by 1,2;
++-----------------------+---------+
+| count(distinct t1.c1) | sum(c4) |
++-----------------------+---------+
+|                     0 |   181.5 |
+|                     1 |   121.5 |
+|                     1 |   151.5 |
++-----------------------+---------+
+explain basic select count(distinct t1.c1), sum(c4)from lyqtest2 t1,(select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 group by t1.c2 order by 1,2;
+Query Plan
+===============================================================
+|ID|OPERATOR                           |NAME                  |
+---------------------------------------------------------------
+|0 |SORT                               |                      |
+|1 |└─HASH GROUP BY                    |                      |
+|2 |  └─SUBPLAN SCAN                   |VIEW1                 |
+|3 |    └─HASH GROUP BY                |                      |
+|4 |      └─NESTED-LOOP JOIN CARTESIAN |                      |
+|5 |        ├─PX COORDINATOR           |                      |
+|6 |        │ └─EXCHANGE OUT DISTR     |:EX10000              |
+|7 |        │   └─PX PARTITION ITERATOR|                      |
+|8 |        │     └─TABLE FULL SCAN    |t1                    |
+|9 |        └─MATERIAL                 |                      |
+|10|          └─SUBPLAN SCAN           |t2                    |
+|11|            └─HASH GROUP BY        |                      |
+|12|              └─TABLE FULL SCAN    |lyqtest1(idx_c1_c2_c3)|
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW1.t1.c1), ASC], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))), ASC])
+  1 - output([T_FUN_COUNT(VIEW1.t1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.t1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.t1.c1)])
+  2 - output([VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [VIEW1.t1.c1], [VIEW1.t1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [VIEW1.t1.c1], [VIEW1.t1.c2])
+  3 - output([T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [t1.c1], [t1.c2]), filter(nil), rowset=16
+      group([t1.c2], [t1.c1]), agg_func([T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))])
+  4 - output([t1.c2], [t1.c1], [t1.c4]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  5 - output([t1.c2], [t1.c1], [t1.c4]), filter(nil), rowset=16
+  6 - output([t1.c2], [t1.c1], [t1.c4]), filter(nil), rowset=16
+      dop=1
+  7 - output([t1.c1], [t1.c4], [t1.c2]), filter(nil), rowset=16
+      force partition granule
+  8 - output([t1.c1], [t1.c4], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c4], [t1.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+  9 - output(nil), filter(nil), rowset=16
+ 10 - output(nil), filter(nil), rowset=16
+      access(nil)
+ 11 - output([1]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func(nil)
+ 12 - output([lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+select count(distinct t2.c1), sum(c4) from lyqtest2 t1 inner join (select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
++-----------------------+---------+
+| count(distinct t2.c1) | sum(c4) |
++-----------------------+---------+
+|                     1 |   121.5 |
++-----------------------+---------+
+explain basic select count(distinct t2.c1), sum(c4) from lyqtest2 t1 inner join (select count(distinct c1) c1, sum(distinct c1) c2 , sum(c4) c3 from lyqtest1 group by c2) t2 on t1.c1 = t2.c1 group by t1.c2 order by 1,2;
+Query Plan
+===============================================================
+|ID|OPERATOR                           |NAME                  |
+---------------------------------------------------------------
+|0 |SORT                               |                      |
+|1 |└─HASH GROUP BY                    |                      |
+|2 |  └─SUBPLAN SCAN                   |VIEW2                 |
+|3 |    └─HASH GROUP BY                |                      |
+|4 |      └─HASH JOIN                  |                      |
+|5 |        ├─SUBPLAN SCAN             |t2                    |
+|6 |        │ └─HASH GROUP BY          |                      |
+|7 |        │   └─SUBPLAN SCAN         |VIEW1                 |
+|8 |        │     └─MERGE DISTINCT     |                      |
+|9 |        │       └─TABLE FULL SCAN  |lyqtest1(idx_c1_c2_c3)|
+|10|        └─PX COORDINATOR           |                      |
+|11|          └─EXCHANGE OUT DISTR     |:EX10000              |
+|12|            └─PX PARTITION ITERATOR|                      |
+|13|              └─TABLE FULL SCAN    |t1                    |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_COUNT(VIEW2.t2.c1)], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      sort_keys([T_FUN_COUNT(VIEW2.t2.c1), ASC], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))), ASC])
+  1 - output([T_FUN_COUNT(VIEW2.t2.c1)], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW2.t1.c2]), agg_func([T_FUN_SUM(VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.t2.c1)])
+  2 - output([VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [VIEW2.t2.c1], [VIEW2.t1.c2]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [VIEW2.t2.c1], [VIEW2.t1.c2])
+  3 - output([T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))], [t2.c1], [t1.c2]), filter(nil), rowset=16
+      group([t1.c2], [t2.c1]), agg_func([T_FUN_SUM(cast(t1.c4, DOUBLE(-1, -1)))])
+  4 - output([t1.c2], [t2.c1], [t1.c4]), filter(nil), rowset=16
+      equal_conds([t1.c1 = t2.c1]), other_conds(nil)
+  5 - output([t2.c1]), filter(nil), rowset=16
+      access([t2.c1])
+  6 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_COUNT(VIEW1.lyqtest1.c1)])
+  7 - output([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  8 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      distinct([lyqtest1.c1], [lyqtest1.c2])
+  9 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+ 10 - output([t1.c2], [t1.c1], [t1.c4]), filter(nil), rowset=16
+ 11 - output([t1.c2], [t1.c1], [t1.c4]), filter(nil), rowset=16
+      dop=1
+ 12 - output([t1.c1], [t1.c4], [t1.c2]), filter(nil), rowset=16
+      force partition granule
+ 13 - output([t1.c1], [t1.c4], [t1.c2]), filter(nil), rowset=16
+      access([t1.c1], [t1.c4], [t1.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+拆分sum中const表达式改写 + GroupBy 下推 union 改写
+select sum(c1), sum(c1 + 1) + sum(c1 + 2),sum(c1 + 3) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1;
++---------+---------------------------+-------------+
+| sum(c1) | sum(c1 + 1) + sum(c1 + 2) | sum(c1 + 3) |
++---------+---------------------------+-------------+
+|       9 |                        30 |          21 |
++---------+---------------------------+-------------+
+explain basic select sum(c1), sum(c1 + 1) + sum(c1 + 2),sum(c1 + 3) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1;
+Query Plan
+=======================================================================
+|ID|OPERATOR                                   |NAME                  |
+-----------------------------------------------------------------------
+|0 |SCALAR GROUP BY                            |                      |
+|1 |└─SUBPLAN SCAN                             |view1                 |
+|2 |  └─HASH GROUP BY                          |                      |
+|3 |    └─SUBPLAN SCAN                         |t1                    |
+|4 |      └─UNION ALL                          |                      |
+|5 |        ├─HASH GROUP BY                    |                      |
+|6 |        │ └─TABLE FULL SCAN                |lyqtest1(idx_c1_c2_c3)|
+|7 |        └─PX COORDINATOR                   |                      |
+|8 |          └─EXCHANGE OUT DISTR             |:EX10001              |
+|9 |            └─HASH GROUP BY                |                      |
+|10|              └─EXCHANGE IN DISTR          |                      |
+|11|                └─EXCHANGE OUT DISTR (HASH)|:EX10000              |
+|12|                  └─HASH GROUP BY          |                      |
+|13|                    └─PX PARTITION ITERATOR|                      |
+|14|                      └─TABLE FULL SCAN    |lyqtest2              |
+=======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(view1.c1)], [cast(cast(T_FUN_SUM(view1.c1), DECIMAL_INT(77, 0)) + cast(cast(T_FUN_COUNT(view1.c1), DECIMAL_INT(20, 0)) * cast(cast(1,
+       DECIMAL_INT(34, 0)), DECIMAL_INT(56, 0)), DECIMAL_INT(77, 0)), DECIMAL_INT(56, 0)) + cast(cast(T_FUN_SUM(view1.c1), DECIMAL_INT(77, 0)) + cast(cast(T_FUN_COUNT(view1.c1),
+       DECIMAL_INT(20, 0)) * cast(cast(2, DECIMAL_INT(34, 0)), DECIMAL_INT(56, 0)), DECIMAL_INT(77, 0)), DECIMAL_INT(56, 0))], [cast(cast(T_FUN_SUM(view1.c1),
+       DECIMAL_INT(77, 0)) + cast(cast(T_FUN_COUNT(view1.c1), DECIMAL_INT(20, 0)) * cast(cast(3, DECIMAL_INT(34, 0)), DECIMAL_INT(56, 0)), DECIMAL_INT(77, 0)),
+       DECIMAL_INT(56, 0))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(view1.c1)], [T_FUN_COUNT(view1.c1)])
+  1 - output([view1.c1]), filter(nil), rowset=16
+      access([view1.c1])
+  2 - output([cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      group([t1.lyqtest1.c2]), agg_func([T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1))])
+  3 - output([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2]), filter(nil), rowset=16
+      access([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2])
+  4 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  5 - output([T_FUN_SUM(lyqtest1.c1)], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_SUM(lyqtest1.c1)])
+  6 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  7 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+  8 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  9 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))])
+ 10 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+ 11 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [lyqtest2.c2]), dop=1
+ 12 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(lyqtest2.c1)])
+ 13 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 14 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+Distinct 聚合改写 + GroupBy 下推 union 改写   不会改写
+select count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
++--------------------+
+| count(distinct c1) |
++--------------------+
+|                  0 |
+|                  1 |
+|                  1 |
+|                  1 |
+|                  1 |
++--------------------+
+explain basic select count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                                 |NAME                  |
+---------------------------------------------------------------------
+|0 |SORT                                     |                      |
+|1 |└─HASH GROUP BY                          |                      |
+|2 |  └─SUBPLAN SCAN                         |t1                    |
+|3 |    └─UNION ALL                          |                      |
+|4 |      ├─HASH GROUP BY                    |                      |
+|5 |      │ └─TABLE FULL SCAN                |lyqtest1(idx_c1_c2_c3)|
+|6 |      └─PX COORDINATOR                   |                      |
+|7 |        └─EXCHANGE OUT DISTR             |:EX10001              |
+|8 |          └─HASH GROUP BY                |                      |
+|9 |            └─EXCHANGE IN DISTR          |                      |
+|10|              └─EXCHANGE OUT DISTR (HASH)|:EX10000              |
+|11|                └─HASH GROUP BY          |                      |
+|12|                  └─PX PARTITION ITERATOR|                      |
+|13|                    └─TABLE FULL SCAN    |lyqtest2              |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END]), filter(nil), rowset=16
+      sort_keys([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END, ASC])
+  1 - output([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END]), filter(nil), rowset=16
+      group([t1.lyqtest1.c2]), agg_func([T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1))])
+  2 - output([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2]), filter(nil), rowset=16
+      access([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2])
+  3 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  4 - output([T_FUN_SUM(lyqtest1.c1)], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_SUM(lyqtest1.c1)])
+  5 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  6 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+  7 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  8 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))])
+  9 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+ 10 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [lyqtest2.c2]), dop=1
+ 11 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(lyqtest2.c1)])
+ 12 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 13 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ TRANSFORM_DISTINCT_AGG */ count(distinct c1) from (select /*+place_group_by*/ sum(c1) c1 , c2 from ( select c1, c2 from lyqtest1 union all  select c1, c2 from lyqtest2) t1 group by c2 order by 1,2) view1 group by c2 order by 1;
+Query Plan
+=====================================================================
+|ID|OPERATOR                                 |NAME                  |
+---------------------------------------------------------------------
+|0 |SORT                                     |                      |
+|1 |└─HASH GROUP BY                          |                      |
+|2 |  └─SUBPLAN SCAN                         |t1                    |
+|3 |    └─UNION ALL                          |                      |
+|4 |      ├─HASH GROUP BY                    |                      |
+|5 |      │ └─TABLE FULL SCAN                |lyqtest1(idx_c1_c2_c3)|
+|6 |      └─PX COORDINATOR                   |                      |
+|7 |        └─EXCHANGE OUT DISTR             |:EX10001              |
+|8 |          └─HASH GROUP BY                |                      |
+|9 |            └─EXCHANGE IN DISTR          |                      |
+|10|              └─EXCHANGE OUT DISTR (HASH)|:EX10000              |
+|11|                └─HASH GROUP BY          |                      |
+|12|                  └─PX PARTITION ITERATOR|                      |
+|13|                    └─TABLE FULL SCAN    |lyqtest2              |
+=====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END]), filter(nil), rowset=16
+      sort_keys([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END, ASC])
+  1 - output([CASE WHEN cast(T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1)), DECIMAL_INT(33, 0)) IS NOT NULL THEN 1 ELSE 0 END]), filter(nil), rowset=16
+      group([t1.lyqtest1.c2]), agg_func([T_FUN_SUM(t1.T_FUN_SUM(lyqtest1.c1))])
+  2 - output([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2]), filter(nil), rowset=16
+      access([t1.T_FUN_SUM(lyqtest1.c1)], [t1.lyqtest1.c2])
+  3 - output([UNION([1])], [UNION([2])]), filter(nil), rowset=16
+  4 - output([T_FUN_SUM(lyqtest1.c1)], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_SUM(lyqtest1.c1)])
+  5 - output([lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.c1], [lyqtest1.c2], [lyqtest1.c3], [lyqtest1.__pk_increment]), range(MIN,MIN,MIN,MIN ; MAX,MAX,MAX,MAX)always true
+  6 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+  7 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      dop=1
+  8 - output([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(lyqtest2.c1))])
+  9 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+ 10 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [lyqtest2.c2]), dop=1
+ 11 - output([lyqtest2.c2], [T_FUN_SUM(lyqtest2.c1)]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_SUM(lyqtest2.c1)])
+ 12 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 13 - output([lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+union 会改写
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
++--------------------+------------------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  0 |             NULL |    60.5 |
+|                  1 |                1 |    10.5 |
+|                  1 |                1 |    40.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                2 |    50.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+Query Plan
+===============================================================
+|ID|OPERATOR                                         |NAME    |
+---------------------------------------------------------------
+|0 |SORT                                             |        |
+|1 |└─HASH UNION DISTINCT                            |        |
+|2 |  ├─HASH GROUP BY                                |        |
+|3 |  │ └─SUBPLAN SCAN                               |VIEW1   |
+|4 |  │   └─HASH GROUP BY                            |        |
+|5 |  │     └─TABLE FULL SCAN                        |lyqtest1|
+|6 |  └─PX COORDINATOR                               |        |
+|7 |    └─EXCHANGE OUT DISTR                         |:EX10002|
+|8 |      └─HASH DISTINCT                            |        |
+|9 |        └─HASH GROUP BY                          |        |
+|10|          └─EXCHANGE IN DISTR                    |        |
+|11|            └─EXCHANGE OUT DISTR (HASH)          |:EX10001|
+|12|              └─HASH GROUP BY                    |        |
+|13|                └─SUBPLAN SCAN                   |VIEW2   |
+|14|                  └─HASH GROUP BY                |        |
+|15|                    └─EXCHANGE IN DISTR          |        |
+|16|                      └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|17|                        └─HASH GROUP BY          |        |
+|18|                          └─PX PARTITION ITERATOR|        |
+|19|                            └─TABLE FULL SCAN    |lyqtest2|
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+      sort_keys([UNION([1]), ASC], [UNION([2]), ASC])
+  1 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  2 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  3 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  4 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  5 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+  7 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      dop=1
+  8 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      distinct([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))])
+  9 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))],
+       [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))])
+ 10 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+ 11 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c2]), dop=1
+ 12 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)])
+ 13 - output([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2])
+ 14 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))])
+ 15 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+ 16 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c2], [lyqtest2.c1]), dop=1
+ 17 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+ 18 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 19 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+explain basic select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION
+select /*+ NO_TRANSFORM_DISTINCT_AGG */ count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+Query Plan
+===========================================================
+|ID|OPERATOR                                     |NAME    |
+-----------------------------------------------------------
+|0 |SORT                                         |        |
+|1 |└─HASH UNION DISTINCT                        |        |
+|2 |  ├─MERGE GROUP BY                           |        |
+|3 |  │ └─PARTITION SORT                         |        |
+|4 |  │   └─TABLE FULL SCAN                      |lyqtest1|
+|5 |  └─PX COORDINATOR                           |        |
+|6 |    └─EXCHANGE OUT DISTR                     |:EX10002|
+|7 |      └─HASH DISTINCT                        |        |
+|8 |        └─HASH GROUP BY                      |        |
+|9 |          └─EXCHANGE IN DISTR                |        |
+|10|            └─EXCHANGE OUT DISTR (HASH)      |:EX10001|
+|11|              └─HASH GROUP BY                |        |
+|12|                └─EXCHANGE IN DISTR          |        |
+|13|                  └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|14|                    └─HASH GROUP BY          |        |
+|15|                      └─PX PARTITION ITERATOR|        |
+|16|                        └─TABLE FULL SCAN    |lyqtest2|
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+      sort_keys([UNION([1]), ASC], [UNION([2]), ASC])
+  1 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  2 - output([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest1.c2]), agg_func([T_FUN_COUNT(distinct lyqtest1.c1)], [T_FUN_SUM(distinct lyqtest1.c1)], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  3 - output([lyqtest1.c2], [lyqtest1.c1], [lyqtest1.c4]), filter(nil), rowset=16
+      sort_keys([HASH(lyqtest1.c2), ASC], [lyqtest1.c2, ASC])
+  4 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))]), filter(nil), rowset=16
+  6 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))]), filter(nil), rowset=16
+      dop=1
+  7 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))]), filter(nil), rowset=16
+      distinct([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))])
+  8 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1,
+       -1))))]), filter(nil), rowset=16
+      group([lyqtest2.c2]), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(dup(lyqtest2.c1)))], [T_FUN_SUM(T_FUN_SUM(dup(lyqtest2.c1)))])
+  9 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c2], [AGGR_CODE], [T_FUN_COUNT(dup(lyqtest2.c1))], [T_FUN_SUM(dup(lyqtest2.c1))]), filter(nil), rowset=16
+ 10 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c2], [AGGR_CODE], [T_FUN_COUNT(dup(lyqtest2.c1))], [T_FUN_SUM(dup(lyqtest2.c1))]), filter(nil), rowset=16
+      (#keys=1, [lyqtest2.c2]), dop=1
+ 11 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c2], [AGGR_CODE], [T_FUN_COUNT(dup(lyqtest2.c1))], [T_FUN_SUM(dup(lyqtest2.c1))]), filter(nil), rowset=16
+      group([lyqtest2.c2], [AGGR_CODE]), agg_func([T_FUN_COUNT(dup(lyqtest2.c1))], [T_FUN_SUM(dup(lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1))))])
+ 12 - output([dup(lyqtest2.c1)], [lyqtest2.c2], [AGGR_CODE], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+ 13 - output([dup(lyqtest2.c1)], [lyqtest2.c2], [AGGR_CODE], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=3, [lyqtest2.c2], [AGGR_CODE], [dup(lyqtest2.c1)]), dop=1
+ 14 - output([dup(lyqtest2.c1)], [lyqtest2.c2], [AGGR_CODE], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest2.c2], [AGGR_CODE], [dup(lyqtest2.c1)]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+ 15 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 16 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION all
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
++--------------------+------------------+---------+
+| count(distinct c1) | sum(distinct c1) | sum(c4) |
++--------------------+------------------+---------+
+|                  0 |             NULL |    60.5 |
+|                  1 |                1 |    10.5 |
+|                  1 |                1 |    40.5 |
+|                  1 |                2 |    20.5 |
+|                  1 |                2 |    50.5 |
+|                  1 |                3 |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest1 group by c2
+UNION all
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2;
+Query Plan
+=============================================================
+|ID|OPERATOR                                       |NAME    |
+-------------------------------------------------------------
+|0 |SORT                                           |        |
+|1 |└─UNION ALL                                    |        |
+|2 |  ├─HASH GROUP BY                              |        |
+|3 |  │ └─SUBPLAN SCAN                             |VIEW1   |
+|4 |  │   └─HASH GROUP BY                          |        |
+|5 |  │     └─TABLE FULL SCAN                      |lyqtest1|
+|6 |  └─PX COORDINATOR                             |        |
+|7 |    └─EXCHANGE OUT DISTR                       |:EX10002|
+|8 |      └─HASH GROUP BY                          |        |
+|9 |        └─EXCHANGE IN DISTR                    |        |
+|10|          └─EXCHANGE OUT DISTR (HASH)          |:EX10001|
+|11|            └─HASH GROUP BY                    |        |
+|12|              └─SUBPLAN SCAN                   |VIEW2   |
+|13|                └─HASH GROUP BY                |        |
+|14|                  └─EXCHANGE IN DISTR          |        |
+|15|                    └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|16|                      └─HASH GROUP BY          |        |
+|17|                        └─PX PARTITION ITERATOR|        |
+|18|                          └─TABLE FULL SCAN    |lyqtest2|
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+      sort_keys([UNION([1]), ASC], [UNION([2]), ASC])
+  1 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  2 - output([T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c2]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c1)], [T_FUN_SUM(VIEW1.lyqtest1.c1)])
+  3 - output([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c1], [VIEW1.lyqtest1.c2])
+  4 - output([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c1], [lyqtest1.c2]), filter(nil), rowset=16
+      group([lyqtest1.c2], [lyqtest1.c1]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  5 - output([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), filter(nil), rowset=16
+      access([lyqtest1.c1], [lyqtest1.c4], [lyqtest1.c2]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+  7 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      dop=1
+  8 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))],
+       [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))])
+  9 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+ 10 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c2]), dop=1
+ 11 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)])
+ 12 - output([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2])
+ 13 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))])
+ 14 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+ 15 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c2], [lyqtest2.c1]), dop=1
+ 16 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+ 17 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 18 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+select count(distinct c2), max(distinct c2), sum(c4) from lyqtest1 group by c5
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2,3;
++--------------------+------------------+---------+
+| count(distinct c2) | max(distinct c2) | sum(c4) |
++--------------------+------------------+---------+
+|                  0 | NULL             |    20.5 |
+|                  0 | NULL             |    60.5 |
+|                  1 | 1                |    40.5 |
+|                  1 | 2                |    50.5 |
+|                  1 | example1         |    10.5 |
+|                  1 | example3         |    30.5 |
++--------------------+------------------+---------+
+explain basic select count(distinct c2), max(distinct c2), sum(c4) from lyqtest1 group by c5
+UNION
+select count(distinct c1), sum(distinct c1), sum(c4) from lyqtest2 group by c2 order by 1,2,3;
+Query Plan
+===============================================================
+|ID|OPERATOR                                         |NAME    |
+---------------------------------------------------------------
+|0 |SORT                                             |        |
+|1 |└─HASH UNION DISTINCT                            |        |
+|2 |  ├─HASH GROUP BY                                |        |
+|3 |  │ └─SUBPLAN SCAN                               |VIEW1   |
+|4 |  │   └─HASH GROUP BY                            |        |
+|5 |  │     └─TABLE FULL SCAN                        |lyqtest1|
+|6 |  └─PX COORDINATOR                               |        |
+|7 |    └─EXCHANGE OUT DISTR                         |:EX10002|
+|8 |      └─HASH DISTINCT                            |        |
+|9 |        └─HASH GROUP BY                          |        |
+|10|          └─EXCHANGE IN DISTR                    |        |
+|11|            └─EXCHANGE OUT DISTR (HASH)          |:EX10001|
+|12|              └─HASH GROUP BY                    |        |
+|13|                └─SUBPLAN SCAN                   |VIEW2   |
+|14|                  └─HASH GROUP BY                |        |
+|15|                    └─EXCHANGE IN DISTR          |        |
+|16|                      └─EXCHANGE OUT DISTR (HASH)|:EX10000|
+|17|                        └─HASH GROUP BY          |        |
+|18|                          └─PX PARTITION ITERATOR|        |
+|19|                            └─TABLE FULL SCAN    |lyqtest2|
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+      sort_keys([UNION([1]), ASC], [UNION([2]), ASC], [UNION([3]), ASC])
+  1 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
+  2 - output([T_FUN_COUNT(VIEW1.lyqtest1.c2)], [T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c2))], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))]), filter(nil), rowset=16
+      group([VIEW1.lyqtest1.c5]), agg_func([T_FUN_MAX(VIEW1.T_FUN_MAX(lyqtest1.c2))], [T_FUN_SUM(VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW1.lyqtest1.c2)])
+  3 - output([VIEW1.T_FUN_MAX(lyqtest1.c2)], [VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c2], [VIEW1.lyqtest1.c5]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_MAX(lyqtest1.c2)], [VIEW1.T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [VIEW1.lyqtest1.c2], [VIEW1.lyqtest1.c5])
+  4 - output([lyqtest1.c2], [T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))], [lyqtest1.c2], [lyqtest1.c5]), filter(nil), rowset=16
+      group([lyqtest1.c5], [lyqtest1.c2]), agg_func([T_FUN_SUM(cast(lyqtest1.c4, DOUBLE(-1, -1)))])
+  5 - output([lyqtest1.c2], [lyqtest1.c4], [lyqtest1.c5]), filter(nil), rowset=16
+      access([lyqtest1.c2], [lyqtest1.c4], [lyqtest1.c5]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest1.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [cast(T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1)), VARCHAR(255))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+  7 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [cast(T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1)), VARCHAR(255))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      dop=1
+  8 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [cast(T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1)), VARCHAR(255))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      distinct([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [cast(T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1)), VARCHAR(255))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))])
+  9 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))], [cast(T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1)), VARCHAR(255))], [T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4,
+       DOUBLE(-1, -1)))))]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))))], [T_FUN_COUNT_SUM(T_FUN_COUNT(VIEW2.lyqtest2.c1))],
+       [T_FUN_SUM(T_FUN_SUM(VIEW2.lyqtest2.c1))])
+ 10 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+ 11 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      (#keys=1, [VIEW2.lyqtest2.c2]), dop=1
+ 12 - output([VIEW2.lyqtest2.c2], [T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)]), filter(nil), rowset=16
+      group([VIEW2.lyqtest2.c2]), agg_func([T_FUN_SUM(VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [T_FUN_COUNT(VIEW2.lyqtest2.c1)], [T_FUN_SUM(VIEW2.lyqtest2.c1)])
+ 13 - output([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))], [VIEW2.lyqtest2.c1], [VIEW2.lyqtest2.c2])
+ 14 - output([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))], [lyqtest2.c1], [lyqtest2.c2]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1))))])
+ 15 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+ 16 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      (#keys=2, [lyqtest2.c2], [lyqtest2.c1]), dop=1
+ 17 - output([lyqtest2.c2], [lyqtest2.c1], [T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))]), filter(nil), rowset=16
+      group([lyqtest2.c2], [lyqtest2.c1]), agg_func([T_FUN_SUM(cast(lyqtest2.c4, DOUBLE(-1, -1)))])
+ 18 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      force partition granule
+ 19 - output([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), filter(nil), rowset=16
+      access([lyqtest2.c1], [lyqtest2.c4], [lyqtest2.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([lyqtest2.__pk_increment]), range(MIN ; MAX)always true
+drop table lyqtest1;
+drop table lyqtest2;
+drop table lyqtest3;

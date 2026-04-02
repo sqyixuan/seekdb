@@ -1,0 +1,64 @@
+# owner: baonian.wbx
+# owner group: cloud storage
+# desc: test prewarming hot tablet after reboot
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=5);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $table_name = basic_sc;
+
+connect (ob_sys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection ob_sys;
+let $server_count = query_get_value(SELECT COUNT(*) as server_count FROM oceanbase.__all_server, server_count, 1);
+
+connect(conn_mysql, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn_mysql;
+let $check_scp_task_tenant = `select effective_tenant()`;
+let $check_scp_task_tenant_id = `select effective_tenant_id()`;
+
+# disable major compaction prewarm
+alter system set _ss_major_compaction_prewarm_level = 2;
+# reset tenant params
+alter system set enable_manual_storage_cache_policy = true;
+alter system set default_storage_cache_policy = 'AUTO';
+alter system set suspend_storage_cache_task = false;
+
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+
+create table basic_sc(c1 bigint, c2 varchar(1000), c3 bigint) storage_cache_policy = (global = "auto");
+let $check_scp_task_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name = '$table_name', tablet_id, 1);
+
+--echo "=========== insert data ==========="
+--disable_query_log
+set ob_query_timeout = 100000000;
+eval insert into $table_name select random() c1, randstr(1000, random()) c2, normal(0, 1, random()) c3 from table(generator(100));
+--enable_query_log
+
+--echo "=========== launch and wait major freeze ==========="
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+--echo "=========== trigger prewarm task ==========="
+let $check_scp_task_init_timestamp = `select current_timestamp`;
+eval alter table $table_name storage_cache_policy = (global = "hot");
+let $expect_scp_prewarm_task_exist = 1;
+--source include/check_storage_cache_policy_prewarm_task.inc
+
+--echo "=========== restart ==========="
+sleep 5;
+let $check_scp_task_init_timestamp = `select current_timestamp`;
+ob1.restart;
+ob1.check_until_timeout select status from oceanbase.__all_server where zone = 'z1', ACTIVE, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and start_service_time > 0, 1, 600;
+connect(conn_mysql, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn_mysql;
+
+--echo "=========== check prewarm task ==========="
+let $expect_scp_prewarm_task_exist = 1;
+--source include/check_storage_cache_policy_prewarm_task.inc
+
+--echo "=========== finish ==========="

@@ -1,0 +1,58 @@
+# owner:lixia.yq
+# owner group:storage
+# test RS compaction check
+# 1) switch major check RS
+# 2) rs can't get all tablets' checksum items
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set minor_compact_trigger = 3 tenant obtest;
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression = 'none' partition by hash(c1) partitions 10;
+create index idx1 on test01(c2) global partition by hash(c2) partitions 10;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $data_table_id limit 1, tablet_id, 1);
+let $index_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = (select table_id from oceanbase.__all_virtual_table where data_table_id=$data_table_id) limit 1, tablet_id, 1);
+
+#########################################################################
+# TEST_1: full-test index
+#########################################################################
+ob1.mysql alter system set_tp tp_name = "EN_FAILED_TO_CHECK_FTS", error_code = 4023, frequency = 1;
+sleep 10;
+
+connection conn1;
+--disable_warnings
+CREATE TABLE articles(id INT UNSIGNED AUTO_INCREMENT, tid INT, title VARCHAR(200), content TEXT, PRIMARY KEY(id, tid), FULLTEXT INDEX ctx1(title, content), FULLTEXT INDEX ctx2(title, content), FULLTEXT INDEX ctx3(title, content), INDEX idx1(title) global, INDEX idx2(title, id) local) PARTITION BY HASH(id) PARTITIONS 3 SUBPARTITION BY HASH(tid) SUBPARTITIONS 2;
+--enable_warnings
+
+connection conn1;
+let $cnt=0;
+--disable_query_log
+while($cnt < 20)
+{
+  eval INSERT INTO articles (tid, title, content) VALUES ($cnt, 'OceanBase Tutorial', 'This is a tutorial about Oceanbase Fulltext.');
+  inc $cnt;
+}
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;

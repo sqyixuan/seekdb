@@ -1,0 +1,220 @@
+# CASE_OWNER:
+#    @bohou.ws
+# CASE_DESC:
+# test obcdc can work as expect while add or delete ls
+# refer: t/rootservice/qiuchun_ls_balance_rs_job_2.test
+
+ob1=OBI(cluster=2:2:2,proxy_num=1);
+ob1.force_stop;
+ob1.z1.obs1.set status=disable;
+ob1.z2.obs1.set status=disable;
+ob1.z3.obs1.set status=disable;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn_sys, $ip, root@sys,,oceanbase, $port);
+connection conn_sys;
+
+ob1.mysql CREATE RESOURCE UNIT 1c2g MAX_CPU 1, MEMORY_SIZE '2G', LOG_DISK_SIZE '4G';
+ob1.mysql CREATE RESOURCE POOL pool1 UNIT='1c2g',UNIT_NUM=1,ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT IF NOT EXISTS cdc_tenant ZONE_LIST=('z1', 'z2', 'z3'), RESOURCE_POOL_LIST=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+
+# delay delete ls to make sure obcdc can fetch data from deleted ls
+ob1.mysql alter system set ls_gc_delay_time='0s' tenant=all;
+sleep 3;
+#shutdown server balancer
+ob1.mysql alter system enable_rebalance = false tenant = 'sys';
+ob1.mysql alter system enable_rebalance = true tenant = 'cdc_tenant';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "cdc_tenant", tenant_id, 1);
+
+# prepare cdc;
+ob_connect(conn_oracle, ob1.proxy0, sys@cdc_tenant, , SYS,,USE_OB_CONNECTOR);
+connection conn_oracle;
+
+let $log_backup_dest_cdc_mysql = deploy_get_value(ob1.get_log_backup_dest cdc_tenant);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_cdc_mysql';
+--enable_all_result_log
+ob1.mysql alter system archivelog;
+######## if log_archive_dest is S3, please set archive_lag_target >= '60s'
+source include/liboblog/archive_lag_target.inc;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$tenant_id, DOING, 600;
+
+create user obcdc IDENTIFIED BY "obcdc";
+grant all on *.* to obcdc WITH GRANT OPTION;
+grant dba to obcdc;
+
+ob_connect(conn_cdc, ob1.proxy0, obcdc@cdc_tenant, obcdc, obcdc,,USE_OB_CONNECTOR);
+connection conn_cdc;
+
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* ;
+ob1.oblog.restart;
+
+create table cdc_tb(pk int primary key, c int) partition by hash(pk) partitions 6;
+ob1.oblog.next;
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb" and role = 'LEADER' and tenant_id = $tenant_id ;
+
+# FOR MULTI LOGSTREAM(DIST TRANSACTION)
+connection conn_sys;
+ob1.z1.obs1.set status=enable;
+ob1.z2.obs1.set status=enable;
+ob1.z3.obs1.set status=enable;
+ob1.z1.obs1.start;
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+
+ob1.z1.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z2.obs1.check_log_until_success -c "weak read service thread start";
+ob1.z3.obs1.check_log_until_success -c "weak read service thread start";
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where (a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0) and a.tenant_id = 1, 0, 120;
+
+ob1.z1.obs1.add;
+ob1.z2.obs1.add;
+ob1.z3.obs1.add;
+ob1.check_until_timeout SELECT COUNT(*) c FROM __all_server WHERE start_service_time > 0, 6, 200;
+
+let $start_tstamp_usec1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_cdc;
+
+let $dml_cnt = 0;
+let $tb_row_cnt = 6;
+let $idx=0;
+while ($idx < $tb_row_cnt)
+{
+  eval insert into cdc_tb values ($idx, $idx);
+  ob1.oblog.next;
+  inc $idx;
+  inc $dml_cnt;
+}
+
+connection conn_sys;
+ob1.mysql alter resource tenant cdc_tenant UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = $tenant_id, 6, 240;
+
+let $start_tstamp_usec2 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+connection conn_cdc;
+create table cdc_tb2(pk int primary key, c int) partition by hash(pk) partitions 6;
+ob1.oblog.next;
+let $idx=0;
+while ($idx < $tb_row_cnt)
+{
+  eval insert into cdc_tb2 values ($idx, $idx);
+  ob1.oblog.next;
+  inc $idx;
+  inc $dml_cnt;
+}
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb" and role = 'LEADER' and tenant_id = $tenant_id;
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb2" and role = 'LEADER' and tenant_id = $tenant_id;
+
+let $idx=0;
+while ($idx < $tb_row_cnt)
+{
+  eval update cdc_tb2 set c = c + 1 where pk = $idx;
+  ob1.oblog.next;
+  inc $idx;
+  inc $dml_cnt;
+}
+
+connection conn_sys;
+ob1.mysql alter resource tenant cdc_tenant UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id = $tenant_id, 3, 240;
+
+let $start_tstamp_usec3 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_cdc, ob1.proxy0, obcdc@cdc_tenant, obcdc, obcdc,,USE_OB_CONNECTOR);
+connection conn_cdc;
+create table cdc_tb3(pk int primary key, c int) partition by hash(pk) partitions 6;
+ob1.oblog.next;
+let $idx=0;
+while ($idx < $tb_row_cnt)
+{
+  eval insert into cdc_tb3 values ($idx, $idx);
+  ob1.oblog.next;
+  inc $idx;
+  inc $dml_cnt;
+}
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb" and role = 'LEADER' and tenant_id = $tenant_id;
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb2" and role = 'LEADER' and tenant_id = $tenant_id;
+ob1.mysql select DISTINCT LS_ID from oceanbase.CDB_OB_TABLE_LOCATIONS where table_name like "cdc_tb3" and role = 'LEADER' and tenant_id = $tenant_id;
+
+let $idx=0;
+while ($idx < $tb_row_cnt)
+{
+  eval update cdc_tb3 set c = c + 1 where pk = $idx;
+  ob1.oblog.next;
+  inc $idx;
+  inc $dml_cnt;
+}
+
+ob1.oblog.stop;
+
+echo $dml_cnt;
+
+
+# reconsume from start_tstamp_usec1 with data_dict
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec1;
+ob1.oblog.gen_conf tb_white_list=cdc*.*.*;
+ob1.oblog.restart;
+
+let $dml_cnt=30;
+let $idx=0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+ob1.oblog.stop;
+
+# reconsume from start_tstamp_usec3
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec3;
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $dml_cnt=12;
+let $idx=0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+ob1.oblog.stop;
+
+# reconsume from start_tstamp_usec2
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec2;
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $dml_cnt=24;
+let $idx=0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+ob1.oblog.stop;
+
+# reconsume from start_tstamp_usec1
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec1;
+ob1.oblog.gen_conf tb_white_list=cdc*.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $dml_cnt=30;
+let $idx=0;
+while ($idx < $dml_cnt)
+{
+  ob1.oblog.next_dml;
+  inc $idx;
+}
+
+ob1.oblog.stop;

@@ -1,0 +1,865 @@
+##owner: sean.yyj
+##owner group: 技术部-SQL-优化器
+##description: function routine
+##tags: PL routine
+##author : wb-zwc01059807
+purge recyclebin;
+--disable_warnings
+drop database if exists db1;
+--enable_warnings
+ 
+create database db1;
+use db1;
+ 
+ 
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+ 
+--error 0,1396
+drop user root1;
+create user 'root1' identified by '123';
+GRANT ALL PRIVILEGES ON *.* TO 'root1'@'%' WITH GRANT OPTION;
+ 
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (root1,$OBMYSQL_MS0,root1,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#root1
+connection root1;
+use db1;
+select current_user;
+ 
+ 
+ 
+ 
+--echo	#function
+--echo	#创建create outine function
+--echo	#root下
+connection root1;
+ 
+--error 0,1396
+drop user zwc;
+create user 'zwc' identified by '123';
+grant create on *.* to zwc;
+grant insert on *.* to zwc;
+ 
+GRANT CREATE ROUTINE ON db1.* to zwc;
+show grants for zwc;
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (zwc,$OBMYSQL_MS0,zwc,123,db1,$OBMYSQL_PORT);
+ 
+ 
+ 
+ 
+--echo	#创建者 
+--echo	#验证 create function后自动添加 execute和alter routine权限
+connection zwc;
+use db1;
+ 
+CREATE TABLE t1 (c1 int);
+delimiter /;
+create function f1() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 1;
+END;
+/
+delimiter ;/
+ 
+show grants for zwc;
+ 
+#show function status like '%f1%';
+ 
+ 
+--echo	#execute权限
+SELECT f1();
+ 
+--echo	#alter routine权限
+ALTER FUNCTION f1 SQL SECURITY INVOKER;
+ 
+ALTER FUNCTION f1 COMMENT 'f1 验证权限';
+ 
+#show function status like '%f1%';
+ 
+DROP FUNCTION f1;
+ 
+ 
+--echo	#验证revoke excute 和 revoke alter routine
+ 
+delimiter /;
+create function f2() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 2;
+END;
+/
+delimiter ;/
+ 
+show grants FOR zwc ;
+ 
+select f2();
+ 
+ 
+ 
+--echo	#revoke execute (root下执行)
+connection root1;
+
+#--error 5362
+revoke execute on function db1.f2 from zwc;
+ 
+ 
+--echo	#创建者验证权限
+connection zwc;
+--error 1370
+SELECT f2();
+ 
+show grants FOR zwc;
+ 
+ 
+--echo	#revoke alter routine (root下执行)
+connection root1;
+#--error 5362
+revoke ALTER ROUTINE  on function db1.f2 from zwc;
+ 
+--echo	#创建者验证权限
+connection zwc;
+show grants;
+
+--error 1370
+ALTER FUNCTION f2 SQL SECURITY INVOKER;
+ 
+--error 1370
+ALTER FUNCTION f2 COMMENT 'f2 revoke 验证权限!!!!!!';
+ 
+#show function status like '%f2%';
+ 
+--error 1370
+DROP FUNCTION f2;
+ 
+--echo	#root
+connection root1;
+ 
+#--error 1305
+DROP FUNCTION f2;
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+--echo	#不自动创建权限   set global automatic_sp_privileges = 0;
+--echo	#root下设置
+connection root1;
+ 
+set global automatic_sp_privileges = 0;
+ 
+--echo	#创建者下执行 验证 是否自动添加 execute和alter routine权限
+connection zwc;
+ 
+select @@automatic_sp_privileges;
+ 
+delimiter /;
+create function f3() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 3;
+END;
+/
+delimiter ;/
+ 
+show grants FOR zwc;
+ 
+--echo	#execute权限 预期报错，
+--error 1370
+SELECT f3();
+ 
+--echo	#alter routine权限，预期报错
+--error 1370
+ALTER FUNCTION f3 SQL SECURITY INVOKER;
+ 
+--error 1370
+ALTER FUNCTION f3 COMMENT 'f3 revoke 验证权限';
+ 
+#show function status like '%f3%';
+ 
+ 
+--echo	#root下
+connection root1;
+ 
+DROP FUNCTION f3;
+ 
+set global automatic_sp_privileges = 1;
+ 
+ 
+--echo	#definer定义。
+--echo	#指定user下 权限验证
+ 
+--echo	#root下执行
+delimiter /;
+CREATE DEFINER= zwc function f1_definer() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 3;
+END;
+/
+delimiter ;/
+ 
+#show function status like '%f1_definer%';
+ 
+--echo	#创建者zwc下 验证权限 报错。
+connection zwc;
+ 
+show grants FOR zwc;
+ 
+--error 1370
+SELECT f1_definer();
+ 
+--error 1370
+ALTER FUNCTION f1_definer SQL SECURITY INVOKER;
+ 
+--error 1370
+DROP FUNCTION f1_definer;
+ 
+--echo	#root下
+connection root1;
+ 
+DROP FUNCTION f1_definer;
+ 
+ 
+ 
+--echo	#当前用户创建者下验证 bug:
+--echo	#报错 ERROR 1227 (42501): Access denied
+##connection zwc;
+##delimiter /
+##CREATE DEFINER= 'zwc' function f2_definer() returns int deterministic
+##begin
+##  INSERT INTO t1 VALUES(1);
+##  RETURN 5;
+##END;
+##/
+##delimiter ;
+ 
+ 
+ 
+set global automatic_sp_privileges = 1;
+ 
+ 
+ 
+--echo	#root下，definer定义为 NULL 为空
+delimiter /;
+--error 1064
+CREATE DEFINER= null function f3_definer() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 3;
+END;
+/
+delimiter ;/
+ 
+delimiter /;
+--error 1064
+CREATE DEFINER is null function f3_definer() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 3;
+END;
+/
+delimiter ;/
+ 
+ 
+delimiter /;
+--error 1064
+CREATE DEFINER = ' ' null function f3_definer() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 3;
+END;
+/
+delimiter ;/
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+--echo	#删除user后再创建，权限验证
+--echo	#创建者下执行
+connection zwc;
+ 
+delimiter /;
+CREATE  function f4_drop_user() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 10;
+END;
+/
+delimiter ;/
+ 
+show grants FOR zwc;
+ 
+SELECT f4_drop_user();
+ 
+ALTER FUNCTION f4_drop_user SQL SECURITY INVOKER;
+ 
+ALTER FUNCTION f4_drop_user COMMENT 'f4 删除user';
+ 
+#show function status like '%f4_drop_user%';
+ 
+ 
+--echo	#root下删除 创建者
+connection root1;
+DROP USER zwc;
+ 
+--echo	#创建者下执行验证权限
+connection zwc;
+ 
+--error 1133
+SELECT f4_drop_user();
+ 
+--error 1133
+ALTER FUNCTION f4_drop_user SQL SECURITY INVOKER;
+ 
+--error 1133
+ALTER FUNCTION f4_drop_user COMMENT 'f4 删除user';
+ 
+#show function status like '%f4_drop_user%';
+ 
+--error 1133
+show grants FOR zwc;
+ 
+ 
+--echo	#root下创建zwc
+connection root1;
+ 
+create user 'zwc' identified by '123';
+grant create on *.* to zwc;
+grant insert on *.* to zwc;
+ 
+GRANT CREATE ROUTINE ON db1.* to zwc;
+show grants for zwc;
+ 
+ 
+ 
+ 
+--echo	#连接创建者下执行
+connection zwc;
+ 
+--error 1133
+SELECT f4_drop_user();
+ 
+--error 1133
+ALTER FUNCTION f4_drop_user SQL SECURITY INVOKER;
+ 
+--error 1133
+ALTER FUNCTION f4_drop_user COMMENT 'f4 删除user';
+ 
+#show function status like '%f4_drop_user%';
+ 
+--error 1133
+show grants FOR zwc;
+ 
+--echo	#root下
+connection root1;
+ 
+DROP FUNCTION f4_drop_user;
+DROP database db1;
+DROP USER zwc;
+ 
+ 
+ 
+ 
+--echo	#rename user后权限验证
+--disable_warnings
+drop database if exists db2;
+--enable_warnings
+ 
+create database db2;
+use db2;
+ 
+--disable_warnings
+--error 0,1396
+drop user zwc2;
+--enable_warnings
+ 
+create user 'zwc2' identified by '123';
+grant create on *.* to zwc2;
+grant insert on *.* to zwc2;
+ 
+GRANT CREATE ROUTINE ON db2.* to zwc2;
+show grants for zwc2;
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (zwc2,$OBMYSQL_MS0,zwc2,123,db2,$OBMYSQL_PORT);
+ 
+ 
+ 
+ 
+ 
+--echo	#创建者 
+connection zwc2;
+use db2;
+ 
+CREATE TABLE t2 (c2 int);
+ 
+delimiter /;
+CREATE  function f4_rename_user() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 10;
+END;
+/
+delimiter ;/
+ 
+show grants for zwc2;
+ 
+ 
+--echo	#root下 rename user
+connection root1;
+ 
+--disable_warnings
+--error 0,1396
+rename user zwc2 to zwc3;
+--enable_warnings
+ 
+--echo	#创建者下执行权限验证  bug: 
+##connection zwc2;
+##SELECT f4_rename_user();
+ 
+##ALTER FUNCTION f4_rename_user SQL SECURITY INVOKER;
+ 
+ 
+##ALTER FUNCTION f4_rename_user COMMENT 'f4 rename user';
+ 
+##show function status like '%f4_rename_user%';
+##--error 1133
+##show grants FOR zwc;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+DROP database db2;
+DROP USER zwc3;
+ 
+ 
+ 
+ 
+ 
+ 
+--echo	#创建user ，user为definer定义的孤儿对象
+--echo	#root下创建 function定义一个孤儿对象
+connection root1;
+ 
+drop database if exists db3;
+CREATE database db3;
+use db3;
+ 
+CREATE TABLE t3(c3 int);
+ 
+delimiter /;
+CREATE  DEFINER = 'gr' function f1_gr() returns int deterministic
+begin
+  INSERT INTO t1 VALUES(1);
+  return 10;
+END;
+/
+delimiter ;/
+ 
+#show function status like '%f1_gr%';
+ 
+--error 0,1396
+drop user gr;
+ 
+create user 'gr' identified by '123';
+grant create on *.* to gr;
+grant insert on *.* to gr;
+ 
+GRANT CREATE ROUTINE ON db3.* to gr;
+show grants for gr;
+ 
+ 
+--echo	#连接 创建者gr
+--source mysql_test/include/check_schema_sync.inc
+connect (gr,$OBMYSQL_MS0,gr,123,db3,$OBMYSQL_PORT);
+ 
+connection gr;
+ 
+--error 1370
+SELECT f1_gr();
+ 
+--error 1370
+ALTER FUNCTION f1_gr SQL SECURITY INVOKER;
+ 
+--error 1370
+ALTER FUNCTION f1_gr COMMENT 'f1 f1_gr u';
+ 
+--error 1370
+DROP FUNCTION f1_gr;
+ 
+show grants FOR gr;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+DROP database db3;
+DROP USER gr;
+ 
+ 
+ 
+ 
+ 
+--echo	#security type
+--echo	#root下创建
+connection root1;
+ 
+CREATE database db1;
+ 
+--error 0,1396
+drop user user1;
+create user 'user1' identified by '123';
+grant CREATE on *.* to user1;
+grant insert on *.* to user1;
+grant SELECT  on *.* to user1;
+ 
+GRANT CREATE ROUTINE ON db1.* to user1;
+show grants for user1;
+ 
+ 
+--source mysql_test/include/check_schema_sync.inc
+connect (user1,$OBMYSQL_MS0,user1,123,db1,$OBMYSQL_PORT);
+ 
+--echo	#user1 
+connection user1;
+use db1;
+ 
+CREATE TABLE t1(c1 int);
+ 
+delimiter /;
+create procedure p1() 
+begin 
+	INSERT INTO t1 VALUES(1); 	
+END;
+/
+delimiter ;/
+ 
+#show procedure status like '%p1%';
+ 
+ 
+--echo	#root下 创建user2 
+--echo	#security type=definer 验证无insert 权限调用 user1.p1，预期调用成功。
+connection root1;
+ 
+--error 0,1396
+drop user user2;
+create user 'user2' identified by '123';
+GRANT EXECUTE ON PROCEDURE  db1.p1 TO user2;
+grant SELECT  on *.* to user2;
+show grants for user2;
+ 
+--echo	#user2
+--source mysql_test/include/check_schema_sync.inc
+connect (user2,$OBMYSQL_MS0,user2,123,db1,$OBMYSQL_PORT);
+ 
+connection user2;
+use db1;
+ 
+CALL p1;
+SELECT * FROM t1;
+ 
+ 
+ 
+--echo	#security type= invoker时, user2 调用user1.p1 ，预期报错无insert权限
+--echo	#user1
+connection user1;
+ 
+alter procedure p1 SQL SECURITY INVOKER ;
+ 
+#show procedure status like '%p1%';
+ 
+ 
+ 
+--echo	#user2
+--echo	#ERROR 1142 (42000): INSERT command denied to user 'user2'@'%' for table 't1'
+connection user2;
+ 
+--error 0,1142
+CALL p1;
+ 
+ 
+--echo	#security type= invoker时,  user1的 权限被回收，user2调用 user1.p1
+ 
+--echo	#root
+connection root1;
+ 
+REVOKE INSERT ON *.* from user1;
+#--error 5362
+revoke execute on procedure db1.p1 from user1;
+ 
+--echo	#user1
+connection user1;
+ 
+show grants for user1;
+--error 1370
+CALL p1;
+ 
+--echo	#user2     
+connection user2;
+ 
+--error 0,1142
+CALL p1;
+ 
+--echo	#给user2 添加insert 权限，调用 user1.p1
+--echo	#root
+connection root1;
+ 
+grant insert on db1.* to user2;
+ 
+ 
+--echo	#user2 
+connection user2;
+ 
+show grants FOR user2;
+ 
+--error 0,1142
+CALL p1;
+ 
+ 
+--echo	#恢复user1 execute和insert权限，user2调用p1
+--echo	#root
+connection root1;
+ 
+GRANT EXECUTE ON PROCEDURE db1.p1 to  user1;
+GRANT INSERT ON db1.* to user1;
+ 
+ 
+--echo	#user1
+connection user1;
+ 
+show grants FOR user1;
+CALL p1;
+ 
+ 
+--echo	#user2
+connection user2;
+ 
+--echo	#缺少insert权限
+--error 0,1142
+CALL p1;
+ 
+ 
+--echo #drop user1, user2调用 p1. 预期成功。
+--echo	#root
+connection root1;
+grant insert  on *.* to user2;
+ 
+DROP USER user1;
+ 
+--echo	#user2
+connection user2;
+use db1;
+ 
+CALL p1;
+ 
+ 
+--echo	#root
+connection root1;
+use db1;
+ 
+DROP PROCEDURE p1;
+ 
+--echo #user2
+--error 1305
+CALL p1;
+ 
+ 
+--echo	#root
+DROP USER user2;
+DROP database db1;
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+--echo	#function  security type =INVOKER
+--echo	#root
+connection root1;
+create database db1;
+use db1;
+ 
+ 
+--error 0,1396
+drop user test1;
+create user 'test1' identified by '123';
+grant CREATE on *.* to test1;
+grant insert on *.* to test1;
+grant SELECT  on *.* to test1;
+ 
+GRANT CREATE ROUTINE ON db1.* to test1;
+show grants for test1;
+ 
+--echo	#连接test1
+--source mysql_test/include/check_schema_sync.inc
+connect (test1,$OBMYSQL_MS0,test1,123,db1,$OBMYSQL_PORT);
+ 
+connection test1;
+use db1;
+ 
+CREATE TABLE t2(c2 int);
+ 
+ 
+delimiter /;
+CREATE  function test1_f1() returns int DETERMINISTIC
+SQL SECURITY INVOKER
+begin
+  INSERT INTO t2 VALUES(1);
+  return 10;
+END;
+/
+delimiter ;/
+ 
+SELECT test1_f1();
+SELECT * FROM t2;
+ 
+#show function status like '%test1_f1%';
+ 
+ 
+ 
+--echo	#root
+connection root1;
+ 
+--error 0,1396
+drop user test2;
+create user 'test2' identified by '123';
+GRANT EXECUTE ON function  db1.test1_f1 TO test2;
+grant insert on db1.* to test2;
+grant SELECT  on *.* to test2;
+show grants for test2;
+ 
+ 
+--echo	#test2 
+--source mysql_test/include/check_schema_sync.inc
+connect (test2,$OBMYSQL_MS0,test2,123,db1,$OBMYSQL_PORT);
+ 
+connection test2;
+ 
+use db1;
+ 
+--echo	#test2调用test1_f1。预期成功。
+SELECT test1_f1();
+ 
+SELECT * FROM t2;
+ 
+ 
+--echo	#收回test1 execute权限，test2调用test1_f1,预期执行成功，security type =INVOKER时，只看当前用户执行权限。 
+--echo	#root
+connection root1;
+ 
+#--error 5362
+revoke execute on function db1.test1_f1 from test1;
+ 
+--echo	#test1
+connection test1;
+ 
+show grants FOR test1;
+ 
+--error 1370
+SELECT test1_f1();
+ 
+--echo	#test2
+connection test2;
+ 
+SELECT test1_f1();
+SELECT * FROM t2;
+ 
+ 
+ 
+--echo	#收回test1 insert权限，test2调用test_f1, 预期执行成功
+--echo	#root
+connection root1;
+ 
+REVOKE INSERT ON *.* FROM  test1;
+ 
+--echo	#test1
+connection test1;
+ 
+show grants FOR test1;
+ 
+--echo	#test2
+connection test2;
+ 
+SELECT test1_f1();
+SELECT * FROM t2;
+ 
+ 
+--echo	#收回test2 execute权限
+--echo	#root
+connection root1;
+
+show grants for test2;
+#--error 5362 
+REVOKE EXECUTE ON FUNCTION db1.test1_f1 FROM test2;
+ 
+--echo	#test2
+connection test2;
+ 
+show grants FOR test2;
+ 
+--error 1370
+SELECT test1_f1();
+ 
+ 
+--echo	#给user2 添加 ALTER ROUTINE 权限。修改 security type =definer
+--echo	#root 
+connection root1;
+ 
+GRANT ALTER ROUTINE ON FUNCTION db1.test1_f1 TO test2;
+ 
+--echo	#test2
+connection test2;
+ 
+show grants FOR test2;
+ 
+alter FUNCTION  test1_f1 SQL SECURITY DEFINER ;
+ 
+--echo	#调用test1_f1; 预期报错，user1没有执行权限。
+--error 1370, 1142
+SELECT test1_f1();
+ 
+ 
+--echo	#给user1 添加执行权限 再 用test2 去验证 
+--echo	#root
+connection root1;
+ 
+GRANT EXECUTE ON PROCEDURE db1.test1_f1 TO test1;
+ 
+--echo	#test1
+connection test1;
+ 
+show grants FOR test1;
+ 
+SELECT test1_f1();
+SELECT * FROM t2;
+ 
+ 
+--echo	#test2
+connection test2;
+ 
+--error 1142,1370 
+SELECT test1_f1();
+SELECT * FROM t2;
+ 
+ 
+--echo	#root
+connection root1;
+ 
+DROP database db1;
+DROP USER test1;
+DROP USER test2;
+ 

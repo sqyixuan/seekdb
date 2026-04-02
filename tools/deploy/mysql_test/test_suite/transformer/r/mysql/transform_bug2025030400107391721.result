@@ -1,0 +1,1295 @@
+drop table if exists orders, users, products;
+create table users(user_id int, city varchar(20), age int);
+create table products(product_id int, category varchar(20), price int);
+create table orders(order_id int, user_id int, product_id int, quantity int, amount int);
+INSERT INTO users VALUES (1, 'New York', 30);
+INSERT INTO users VALUES (2, 'Los Angeles', 25);
+INSERT INTO users VALUES (3, 'Chicago', 40);
+INSERT INTO products VALUES (1, 'Electronics', 500);
+INSERT INTO products VALUES (2, 'Books', 20);
+INSERT INTO products VALUES (3, 'Clothing', 100);
+INSERT INTO orders VALUES (1, 1, 1, 2, 1000);
+INSERT INTO orders VALUES (2, 2, 2, 5, 100);
+INSERT INTO orders VALUES (4, 1, 2, 3, 60);
+INSERT INTO orders VALUES (5, 2, 1, 1, 500);
+alter system flush plan cache;
+result_format: 4
+explain_protocol: 2
+# no_rewrite, do not push count star to p
+EXPLAIN SELECT /*+no_rewrite*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+Query Plan
+===============================================================
+|ID|OPERATOR                       |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SORT                           |    |1       |11          |
+|1 |└─HASH GROUP BY                |    |1       |11          |
+|2 |  └─NESTED-LOOP JOIN CARTESIAN |    |12      |9           |
+|3 |    ├─HASH RIGHT OUTER JOIN    |    |4       |6           |
+|4 |    │ ├─TABLE FULL SCAN        |u   |3       |3           |
+|5 |    │ └─TABLE FULL SCAN        |o   |4       |3           |
+|6 |    └─MATERIAL                 |    |3       |3           |
+|7 |      └─TABLE FULL SCAN        |p   |3       |3           |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([u.city], [o.product_id], [T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      sort_keys([T_FUN_SUM(o.amount), ASC])
+  1 - output([T_FUN_SUM(o.amount)], [u.city], [o.product_id]), filter([T_FUN_SUM(o.amount) > cast(3.5, DECIMAL_INT(33, 0))]), rowset=16
+      group([u.city], [o.product_id]), agg_func([T_FUN_SUM(o.amount)])
+  2 - output([u.city], [o.product_id], [o.amount]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  3 - output([u.city], [o.product_id], [o.amount]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  4 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+no_rewrite*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |         180 |
+| Los Angeles |          2 |         300 |
+| Los Angeles |          1 |        1500 |
+| New York    |          1 |        3000 |
++-------------+------------+-------------+
+
+# hint place_group_by to all, no subsum group by pushdown
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+Query Plan
+==============================================================
+|ID|OPERATOR                     |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |SORT                         |     |1       |13          |
+|1 |└─NESTED-LOOP JOIN           |     |1       |13          |
+|2 |  ├─SUBPLAN SCAN             |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY        |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN      |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN             |VIEW2|3       |10          |
+|6 |    └─HASH GROUP BY          |     |3       |10          |
+|7 |      └─HASH JOIN            |     |3       |8           |
+|8 |        ├─SUBPLAN SCAN       |VIEW4|3       |4           |
+|9 |        │ └─HASH GROUP BY    |     |3       |4           |
+|10|        │   └─TABLE FULL SCAN|u    |3       |3           |
+|11|        └─SUBPLAN SCAN       |VIEW3|4       |4           |
+|12|          └─HASH GROUP BY    |     |4       |4           |
+|13|            └─TABLE FULL SCAN|o    |4       |3           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.o.product_id])
+  6 - output([cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [VIEW4.u.city], [VIEW3.o.product_id]), filter(nil), rowset=16
+      group([VIEW4.u.city], [VIEW3.o.product_id]), agg_func([T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))])
+  7 - output([VIEW4.u.city], [VIEW3.o.product_id], [VIEW4.T_FUN_COUNT(*)], [VIEW3.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      equal_conds([VIEW3.o.user_id = VIEW4.u.user_id]), other_conds(nil)
+  8 - output([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)])
+  9 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      access([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)])
+ 12 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)])
+ 13 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |         180 |
+| Los Angeles |          2 |         300 |
+| Los Angeles |          1 |        1500 |
+| New York    |          1 |        3000 |
++-------------+------------+-------------+
+
+# hint place_group_by to all
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+Query Plan
+===============================================================
+|ID|OPERATOR                      |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SORT                          |     |1       |14          |
+|1 |└─NESTED-LOOP JOIN            |     |1       |14          |
+|2 |  ├─SUBPLAN SCAN              |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY         |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN       |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN              |VIEW2|4       |11          |
+|6 |    └─HASH GROUP BY           |     |4       |11          |
+|7 |      └─HASH RIGHT OUTER JOIN |     |4       |9           |
+|8 |        ├─SUBPLAN SCAN        |VIEW4|3       |4           |
+|9 |        │ └─HASH GROUP BY     |     |3       |4           |
+|10|        │   └─TABLE FULL SCAN |u    |3       |3           |
+|11|        └─SUBPLAN SCAN        |VIEW3|4       |4           |
+|12|          └─HASH GROUP BY     |     |4       |4           |
+|13|            └─TABLE FULL SCAN |o    |4       |3           |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))],
+       [1.5 * cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW2.o.product_id],
+       [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id])
+  6 - output([cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(CASE WHEN VIEW4.T_FUN_COUNT(*) IS NOT NULL THEN VIEW4.T_FUN_COUNT(*) ELSE 1 END, DECIMAL_INT(20,
+       0))), DECIMAL_INT(33, 0))], [cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) * cast(CASE WHEN VIEW4.T_FUN_COUNT(*) IS NOT NULL THEN VIEW4.T_FUN_COUNT(*) ELSE 
+      1 END, DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [VIEW4.u.city], [VIEW3.o.product_id]), filter(nil), rowset=16
+      group([VIEW4.u.city], [VIEW3.o.product_id]), agg_func([T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(CASE WHEN VIEW4.T_FUN_COUNT(*) IS NOT NULL THEN 
+      VIEW4.T_FUN_COUNT(*) ELSE 1 END, DECIMAL_INT(20, 0)))], [T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) * cast(CASE WHEN VIEW4.T_FUN_COUNT(*) IS NOT NULL THEN VIEW4.T_FUN_COUNT(*) 
+      ELSE 1 END, DECIMAL_INT(20, 0)))])
+  7 - output([VIEW4.u.city], [VIEW3.o.product_id], [VIEW4.T_FUN_COUNT(*)], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      equal_conds([VIEW3.o.user_id = VIEW4.u.user_id]), other_conds(nil)
+  8 - output([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)])
+  9 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      access([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)])
+ 12 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+ 13 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+----------------+
+| city        | product_id | total_sales | total_quantity |
++-------------+------------+-------------+----------------+
+| New York    |          2 |         180 |           13.5 |
+| Los Angeles |          2 |         300 |           22.5 |
+| New York    |          1 |        3000 |            9.0 |
++-------------+------------+-------------+----------------+
+
+# hint place_group_by to all
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+Query Plan
+==============================================================
+|ID|OPERATOR                     |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |SORT                         |     |1       |13          |
+|1 |└─NESTED-LOOP JOIN           |     |1       |13          |
+|2 |  ├─SUBPLAN SCAN             |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY        |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN      |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN             |VIEW2|3       |10          |
+|6 |    └─HASH GROUP BY          |     |3       |10          |
+|7 |      └─HASH JOIN            |     |3       |9           |
+|8 |        ├─SUBPLAN SCAN       |VIEW4|3       |4           |
+|9 |        │ └─HASH GROUP BY    |     |3       |4           |
+|10|        │   └─TABLE FULL SCAN|u    |3       |3           |
+|11|        └─SUBPLAN SCAN       |VIEW3|4       |4           |
+|12|          └─HASH GROUP BY    |     |4       |4           |
+|13|            └─TABLE FULL SCAN|o    |4       |3           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))],
+       [1.5 * cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW2.o.product_id],
+       [VIEW1.T_FUN_COUNT(*)], [VIEW2.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id])
+  6 - output([cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) 
+      * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [VIEW4.u.city], [VIEW3.o.product_id]), filter(nil), rowset=16
+      group([VIEW4.u.city], [VIEW3.o.product_id]), agg_func([T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))], [T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) 
+      * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))])
+  7 - output([VIEW4.u.city], [VIEW3.o.product_id], [VIEW4.T_FUN_COUNT(*)], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      equal_conds([VIEW3.o.user_id = VIEW4.u.user_id]), other_conds(nil)
+  8 - output([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)])
+  9 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      access([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)])
+ 12 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+ 13 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+----------------+
+| city        | product_id | total_sales | total_quantity |
++-------------+------------+-------------+----------------+
+| New York    |          2 |         180 |           13.5 |
+| Los Angeles |          2 |         300 |           22.5 |
+| Los Angeles |          1 |        1500 |            4.5 |
+| New York    |          1 |        3000 |            9.0 |
++-------------+------------+-------------+----------------+
+
+# hint place_group_by to all, cross join empty case
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+where p.product_id < 0
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+Query Plan
+==============================================================
+|ID|OPERATOR                     |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |SORT                         |     |1       |13          |
+|1 |└─NESTED-LOOP JOIN           |     |1       |13          |
+|2 |  ├─SUBPLAN SCAN             |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY        |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN      |p    |1       |3           |
+|5 |  └─SUBPLAN SCAN             |VIEW2|3       |10          |
+|6 |    └─HASH GROUP BY          |     |3       |10          |
+|7 |      └─HASH JOIN            |     |3       |9           |
+|8 |        ├─SUBPLAN SCAN       |VIEW4|3       |4           |
+|9 |        │ └─HASH GROUP BY    |     |3       |4           |
+|10|        │   └─TABLE FULL SCAN|u    |3       |3           |
+|11|        └─SUBPLAN SCAN       |VIEW3|4       |4           |
+|12|          └─HASH GROUP BY    |     |4       |4           |
+|13|            └─TABLE FULL SCAN|o    |4       |3           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))],
+       [1.5 * cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW2.o.product_id],
+       [VIEW1.T_FUN_COUNT(*)], [VIEW2.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter([p.product_id < 0]), rowset=16
+      access([p.product_id]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.u.city], [VIEW2.o.product_id])
+  6 - output([cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [cast(T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) 
+      * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [VIEW4.u.city], [VIEW3.o.product_id]), filter(nil), rowset=16
+      group([VIEW4.u.city], [VIEW3.o.product_id]), agg_func([T_FUN_SUM(VIEW3.T_FUN_SUM(o.amount) * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))], [T_FUN_SUM(VIEW3.T_FUN_SUM(o.quantity) 
+      * cast(VIEW4.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))])
+  7 - output([VIEW4.u.city], [VIEW3.o.product_id], [VIEW4.T_FUN_COUNT(*)], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      equal_conds([VIEW3.o.user_id = VIEW4.u.user_id]), other_conds(nil)
+  8 - output([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW4.u.user_id], [VIEW4.u.city], [VIEW4.T_FUN_COUNT(*)])
+  9 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+ 10 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      access([VIEW3.o.user_id], [VIEW3.o.product_id], [VIEW3.T_FUN_SUM(o.amount)], [VIEW3.T_FUN_SUM(o.quantity)])
+ 12 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+ 13 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+where p.product_id < 0
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
++------+------------+-------------+----------------+
+| city | product_id | total_sales | total_quantity |
++------+------------+-------------+----------------+
++------+------------+-------------+----------------+
+
+# always push to cross_join
+EXPLAIN SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+Query Plan
+===============================================================
+|ID|OPERATOR                      |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SORT                          |     |1       |10          |
+|1 |└─NESTED-LOOP JOIN            |     |1       |10          |
+|2 |  ├─SUBPLAN SCAN              |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY         |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN       |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN              |VIEW2|3       |7           |
+|6 |    └─HASH GROUP BY           |     |3       |7           |
+|7 |      └─HASH RIGHT OUTER JOIN |     |4       |6           |
+|8 |        ├─TABLE FULL SCAN     |u    |3       |3           |
+|9 |        └─TABLE FULL SCAN     |o    |4       |3           |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.o.product_id])
+  6 - output([T_FUN_SUM(o.amount)], [u.city], [o.product_id]), filter(nil), rowset=16
+      group([u.city], [o.product_id]), agg_func([T_FUN_SUM(o.amount)])
+  7 - output([u.city], [o.product_id], [o.amount]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  8 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |         180 |
+| Los Angeles |          2 |         300 |
+| Los Angeles |          1 |        1500 |
+| New York    |          1 |        3000 |
++-------------+------------+-------------+
+
+# always push to cross_join and cost-based rewrite to others
+EXPLAIN SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
+Query Plan
+====================================================================
+|ID|OPERATOR                           |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------
+|0 |SORT                               |     |1       |10          |
+|1 |└─NESTED-LOOP JOIN                 |     |1       |10          |
+|2 |  ├─SUBPLAN SCAN                   |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY              |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN            |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN                   |VIEW2|3       |7           |
+|6 |    └─HASH GROUP BY                |     |3       |7           |
+|7 |      └─NESTED-LOOP JOIN CARTESIAN |     |12      |5           |
+|8 |        ├─TABLE FULL SCAN          |u    |3       |3           |
+|9 |        └─MATERIAL                 |     |4       |3           |
+|10|          └─TABLE FULL SCAN        |o    |4       |3           |
+====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([VIEW2.u.city, ASC], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([VIEW2.u.city], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city])
+  6 - output([T_FUN_SUM(o.amount)], [u.city]), filter(nil), rowset=16
+      group([u.city]), agg_func([T_FUN_SUM(o.amount)])
+  7 - output([u.city], [o.amount]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  8 - output([u.city]), filter(nil), rowset=16
+      access([u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([o.amount]), filter(nil), rowset=16
+ 10 - output([o.amount]), filter(nil), rowset=16
+      access([o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
++-------------+-------------+
+| city        | total_sales |
++-------------+-------------+
+| Chicago     |        4980 |
+| Los Angeles |        4980 |
+| New York    |        4980 |
++-------------+-------------+
+
+# always push to all cross_joins
+EXPLAIN SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+, products p2
+WHERE p2.category = 'Books'
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
+Query Plan
+====================================================================
+|ID|OPERATOR                           |NAME |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------
+|0 |SORT                               |     |1       |13          |
+|1 |└─NESTED-LOOP JOIN                 |     |1       |13          |
+|2 |  ├─NESTED-LOOP JOIN CARTESIAN     |     |1       |6           |
+|3 |  │ ├─SUBPLAN SCAN                 |VIEW1|1       |3           |
+|4 |  │ │ └─SCALAR GROUP BY            |     |1       |3           |
+|5 |  │ │   └─TABLE FULL SCAN          |p    |3       |3           |
+|6 |  │ └─SUBPLAN SCAN                 |VIEW2|1       |3           |
+|7 |  │   └─SCALAR GROUP BY            |     |1       |3           |
+|8 |  │     └─TABLE FULL SCAN          |p2   |1       |3           |
+|9 |  └─SUBPLAN SCAN                   |VIEW3|3       |7           |
+|10|    └─HASH GROUP BY                |     |3       |7           |
+|11|      └─NESTED-LOOP JOIN CARTESIAN |     |12      |5           |
+|12|        ├─TABLE FULL SCAN          |u    |3       |3           |
+|13|        └─MATERIAL                 |     |4       |3           |
+|14|          └─TABLE FULL SCAN        |o    |4       |3           |
+====================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW3.u.city], [cast(cast(VIEW1.T_FUN_COUNT(*) * VIEW2.T_FUN_COUNT(*), DECIMAL_INT(40, 0)) * VIEW3.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([VIEW3.u.city, ASC], [cast(cast(VIEW1.T_FUN_COUNT(*) * VIEW2.T_FUN_COUNT(*), DECIMAL_INT(40, 0)) * VIEW3.T_FUN_SUM(o.amount), DECIMAL_INT(33,
+       0)), ASC])
+  1 - output([VIEW3.u.city], [cast(cast(VIEW1.T_FUN_COUNT(*) * VIEW2.T_FUN_COUNT(*), DECIMAL_INT(40, 0)) * VIEW3.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*) * VIEW2.T_FUN_COUNT(*), DECIMAL_INT(40, 0)) * VIEW3.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33,
+       0))]), nl_params_(nil), use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)], [VIEW2.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  3 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  4 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  5 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  6 - output([VIEW2.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_COUNT(*)])
+  7 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  8 - output([T_FUN_COUNT(*)]), filter([p2.category = 'Books']), rowset=16
+      access([p2.category]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([p2.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  9 - output([VIEW3.T_FUN_SUM(o.amount)], [VIEW3.u.city]), filter(nil), rowset=16
+      access([VIEW3.T_FUN_SUM(o.amount)], [VIEW3.u.city])
+ 10 - output([T_FUN_SUM(o.amount)], [u.city]), filter(nil), rowset=16
+      group([u.city]), agg_func([T_FUN_SUM(o.amount)])
+ 11 - output([u.city], [o.amount]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+ 12 - output([u.city]), filter(nil), rowset=16
+      access([u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+ 13 - output([o.amount]), filter(nil), rowset=16
+ 14 - output([o.amount]), filter(nil), rowset=16
+      access([o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+, products p2
+WHERE p2.category = 'Books'
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
++-------------+-------------+
+| city        | total_sales |
++-------------+-------------+
+| Chicago     |        4980 |
+| Los Angeles |        4980 |
+| New York    |        4980 |
++-------------+-------------+
+
+# outer join case, no rewrite
+EXPLAIN SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+Query Plan
+===========================================================
+|ID|OPERATOR                   |NAME|EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------
+|0 |SORT                       |    |1       |10          |
+|1 |└─HASH GROUP BY            |    |1       |10          |
+|2 |  └─NESTED-LOOP OUTER JOIN |    |4       |9           |
+|3 |    ├─HASH JOIN            |    |4       |6           |
+|4 |    │ ├─TABLE FULL SCAN    |u   |3       |3           |
+|5 |    │ └─TABLE FULL SCAN    |o   |4       |3           |
+|6 |    └─MATERIAL             |    |3       |3           |
+|7 |      └─TABLE FULL SCAN    |p   |3       |3           |
+===========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([u.city], [o.product_id], [T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      sort_keys([T_FUN_SUM(o.amount), ASC])
+  1 - output([T_FUN_SUM(o.amount)], [u.city], [o.product_id]), filter([T_FUN_SUM(o.amount) > cast(3.5, DECIMAL_INT(33, 0))]), rowset=16
+      group([u.city], [o.product_id]), agg_func([T_FUN_SUM(o.amount)])
+  2 - output([u.city], [o.product_id], [o.amount]), filter(nil), rowset=16
+      conds([o.user_id < 20]), nl_params_(nil), use_batch=false
+  3 - output([u.city], [o.product_id], [o.user_id], [o.amount]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  4 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+  6 - output(nil), filter(nil), rowset=16
+  7 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |         180 |
+| Los Angeles |          2 |         300 |
+| Los Angeles |          1 |        1500 |
+| New York    |          1 |        3000 |
++-------------+------------+-------------+
+
+# outer join case, no rewrite
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+Query Plan
+============================================================
+|ID|OPERATOR                   |NAME |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------
+|0 |SORT                       |     |1       |12          |
+|1 |└─HASH GROUP BY            |     |1       |12          |
+|2 |  └─NESTED-LOOP OUTER JOIN |     |3       |11          |
+|3 |    ├─HASH JOIN            |     |3       |8           |
+|4 |    │ ├─SUBPLAN SCAN       |VIEW2|3       |4           |
+|5 |    │ │ └─HASH GROUP BY    |     |3       |4           |
+|6 |    │ │   └─TABLE FULL SCAN|u    |3       |3           |
+|7 |    │ └─SUBPLAN SCAN       |VIEW1|4       |4           |
+|8 |    │   └─HASH GROUP BY    |     |4       |4           |
+|9 |    │     └─TABLE FULL SCAN|o    |4       |3           |
+|10|    └─MATERIAL             |     |3       |3           |
+|11|      └─TABLE FULL SCAN    |p    |3       |3           |
+============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW1.o.product_id], [cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(VIEW2.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33,
+       0))]), filter(nil), rowset=16
+      sort_keys([cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(VIEW2.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(VIEW2.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0))], [VIEW2.u.city], [VIEW1.o.product_id]), filter([cast(T_FUN_SUM(VIEW1.T_FUN
+      _SUM(o.amount) * cast(VIEW2.T_FUN_COUNT(*), DECIMAL_INT(20, 0))), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), rowset=16
+      group([VIEW2.u.city], [VIEW1.o.product_id]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(VIEW2.T_FUN_COUNT(*), DECIMAL_INT(20, 0)))])
+  2 - output([VIEW2.u.city], [VIEW1.o.product_id], [VIEW2.T_FUN_COUNT(*)], [VIEW1.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      conds([VIEW1.o.user_id < 20]), nl_params_(nil), use_batch=false
+  3 - output([VIEW2.u.city], [VIEW1.o.product_id], [VIEW1.o.user_id], [VIEW2.T_FUN_COUNT(*)], [VIEW1.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      equal_conds([VIEW1.o.user_id = VIEW2.u.user_id]), other_conds(nil)
+  4 - output([VIEW2.u.user_id], [VIEW2.u.city], [VIEW2.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW2.u.user_id], [VIEW2.u.city], [VIEW2.T_FUN_COUNT(*)])
+  5 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+  6 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  7 - output([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      access([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)])
+  8 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)])
+  9 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+ 10 - output(nil), filter(nil), rowset=16
+ 11 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |         180 |
+| Los Angeles |          2 |         300 |
+| Los Angeles |          1 |        1500 |
+| New York    |          1 |        3000 |
++-------------+------------+-------------+
+
+#outer join case, no rewrite, p is pruned
+EXPLAIN SELECT
+  u.city,
+  o.product_id,
+  SUM(distinct o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+Query Plan
+==========================================================
+|ID|OPERATOR                 |NAME |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------
+|0 |SORT                     |     |1       |9           |
+|1 |└─HASH GROUP BY          |     |1       |9           |
+|2 |  └─SUBPLAN SCAN         |VIEW1|4       |7           |
+|3 |    └─HASH DISTINCT      |     |4       |7           |
+|4 |      └─HASH JOIN        |     |4       |6           |
+|5 |        ├─TABLE FULL SCAN|u    |3       |3           |
+|6 |        └─TABLE FULL SCAN|o    |4       |3           |
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW1.u.city], [VIEW1.o.product_id], [T_FUN_SUM(VIEW1.o.amount)]), filter(nil), rowset=16
+      sort_keys([T_FUN_SUM(VIEW1.o.amount), ASC])
+  1 - output([T_FUN_SUM(VIEW1.o.amount)], [VIEW1.u.city], [VIEW1.o.product_id]), filter([T_FUN_SUM(VIEW1.o.amount) > cast(3.5, DECIMAL_INT(33, 0))]), rowset=16
+      group([VIEW1.u.city], [VIEW1.o.product_id]), agg_func([T_FUN_SUM(VIEW1.o.amount)])
+  2 - output([VIEW1.o.amount], [VIEW1.u.city], [VIEW1.o.product_id]), filter(nil), rowset=16
+      access([VIEW1.o.amount], [VIEW1.u.city], [VIEW1.o.product_id])
+  3 - output([o.amount], [u.city], [o.product_id]), filter(nil), rowset=16
+      distinct([o.amount], [u.city], [o.product_id])
+  4 - output([o.amount], [u.city], [o.product_id]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  5 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  6 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT
+  u.city,
+  o.product_id,
+  SUM(distinct o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+
+| city        | product_id | total_sales |
++-------------+------------+-------------+
+| New York    |          2 |          60 |
+| Los Angeles |          2 |         100 |
+| Los Angeles |          1 |         500 |
+| New York    |          1 |        1000 |
++-------------+------------+-------------+
+
+#for outline reproducible case, only push to cross join
+EXPLAIN SELECT /*+PLACE_GROUP_BY((p))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+Query Plan
+==========================================================
+|ID|OPERATOR                 |NAME |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------
+|0 |SORT                     |     |1       |10          |
+|1 |└─NESTED-LOOP JOIN       |     |1       |10          |
+|2 |  ├─SUBPLAN SCAN         |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY    |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN  |p    |3       |3           |
+|5 |  └─SUBPLAN SCAN         |VIEW2|2       |7           |
+|6 |    └─HASH GROUP BY      |     |2       |7           |
+|7 |      └─HASH JOIN        |     |4       |6           |
+|8 |        ├─TABLE FULL SCAN|u    |3       |3           |
+|9 |        └─TABLE FULL SCAN|o    |4       |3           |
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [1.5 * cast(cast(VIEW1.T_FUN_COUNT(*),
+       DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [VIEW2.o.product_id], [cast(cast(VIEW1.T_FUN_COUNT(*),
+       DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      conds([cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), nl_params_(nil),
+       use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.o.product_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.o.product_id])
+  6 - output([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)], [o.product_id]), filter(nil), rowset=16
+      group([o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+  7 - output([o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  8 - output([u.user_id]), filter(nil), rowset=16
+      access([u.user_id]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY((p))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
++------------+-------------+----------------+
+| product_id | total_sales | total_quantity |
++------------+-------------+----------------+
+|          2 |         480 |           36.0 |
+|          1 |        4500 |           13.5 |
++------------+-------------+----------------+
+
+EXPLAIN SELECT /*+PLACE_GROUP_BY*/
+u.city,
+p.category,
+SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.product_id = p.product_id
+INNER JOIN products p2 ON o.product_id = p.product_id
+GROUP BY u.city,
+         p.category
+HAVING min(o.amount + p.price) > 1
+ORDER BY u.city;
+Query Plan
+===============================================================
+|ID|OPERATOR                      |NAME |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SORT                          |     |1       |14          |
+|1 |└─NESTED-LOOP JOIN CARTESIAN  |     |1       |14          |
+|2 |  ├─SUBPLAN SCAN              |VIEW1|1       |3           |
+|3 |  │ └─SCALAR GROUP BY         |     |1       |3           |
+|4 |  │   └─TABLE FULL SCAN       |p2   |3       |3           |
+|5 |  └─SUBPLAN SCAN              |VIEW2|1       |11          |
+|6 |    └─HASH GROUP BY           |     |1       |11          |
+|7 |      └─HASH RIGHT OUTER JOIN |     |4       |10          |
+|8 |        ├─TABLE FULL SCAN     |u    |3       |3           |
+|9 |        └─HASH JOIN           |     |4       |6           |
+|10|          ├─TABLE FULL SCAN   |p    |3       |3           |
+|11|          └─TABLE FULL SCAN   |o    |4       |3           |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.u.city], [VIEW2.p.category], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([VIEW2.u.city, ASC])
+  1 - output([VIEW2.u.city], [VIEW2.p.category], [VIEW1.T_FUN_COUNT(*)], [VIEW2.T_FUN_SUM(o.amount)]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  2 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  3 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  4 - output([T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p2.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+  5 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.p.category]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.u.city], [VIEW2.p.category])
+  6 - output([T_FUN_SUM(o.amount)], [u.city], [p.category]), filter([T_FUN_MIN(o.amount + p.price) > 1]), rowset=16
+      group([u.city], [p.category]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_MIN(o.amount + p.price)])
+  7 - output([u.city], [p.category], [o.amount], [p.price]), filter(nil), rowset=16
+      equal_conds([o.user_id = u.user_id]), other_conds(nil)
+  8 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([p.category], [o.amount], [p.price], [o.user_id]), filter(nil), rowset=16
+      equal_conds([o.product_id = p.product_id]), other_conds(nil)
+ 10 - output([p.product_id], [p.category], [p.price]), filter(nil), rowset=16
+      access([p.product_id], [p.category], [p.price]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+ 11 - output([o.user_id], [o.product_id], [o.amount]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY*/
+u.city,
+p.category,
+SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.product_id = p.product_id
+INNER JOIN products p2 ON o.product_id = p.product_id
+GROUP BY u.city,
+         p.category
+HAVING min(o.amount + p.price) > 1
+ORDER BY u.city;
++-------------+-------------+-------------+
+| city        | category    | total_sales |
++-------------+-------------+-------------+
+| Los Angeles | Books       |         300 |
+| Los Angeles | Electronics |        1500 |
+| New York    | Electronics |        3000 |
+| New York    | Books       |         180 |
++-------------+-------------+-------------+
+
+#for outline reproducible case, only push to non cross join
+EXPLAIN SELECT /*+PLACE_GROUP_BY((o))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+Query Plan
+================================================================
+|ID|OPERATOR                       |NAME |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------
+|0 |SORT                           |     |1       |12          |
+|1 |└─HASH GROUP BY                |     |1       |12          |
+|2 |  └─NESTED-LOOP JOIN CARTESIAN |     |9       |10          |
+|3 |    ├─HASH JOIN                |     |3       |8           |
+|4 |    │ ├─TABLE FULL SCAN        |u    |3       |3           |
+|5 |    │ └─SUBPLAN SCAN           |VIEW1|4       |4           |
+|6 |    │   └─HASH GROUP BY        |     |4       |4           |
+|7 |    │     └─TABLE FULL SCAN    |o    |4       |3           |
+|8 |    └─MATERIAL                 |     |3       |3           |
+|9 |      └─TABLE FULL SCAN        |p    |3       |3           |
+================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW1.o.product_id], [cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount)), DECIMAL_INT(33, 0))], [1.5 * cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity)),
+       DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount)), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount)), DECIMAL_INT(33, 0))], [VIEW1.o.product_id], [cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity)), DECIMAL_INT(33,
+       0))]), filter([cast(T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity)), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33, 0))]), rowset=16
+      group([VIEW1.o.product_id]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount))], [T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity))])
+  2 - output([VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  3 - output([VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      equal_conds([VIEW1.o.user_id = u.user_id]), other_conds(nil)
+  4 - output([u.user_id]), filter(nil), rowset=16
+      access([u.user_id]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  5 - output([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      access([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)])
+  6 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+  7 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+  8 - output(nil), filter(nil), rowset=16
+  9 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY((o))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
++------------+-------------+----------------+
+| product_id | total_sales | total_quantity |
++------------+-------------+----------------+
+|          2 |         480 |           36.0 |
+|          1 |        4500 |           13.5 |
++------------+-------------+----------------+
+
+#online case
+SELECT/*+PLACE_GROUP_BY*/
+  o.user_id,
+  SUM(o.amount),
+  SUM(o.quantity)
+FROM
+  orders o
+  INNER JOIN products p ON (p.product_id = o.product_id)
+WHERE
+  o.product_id = 2  AND o.user_id = 2
+GROUP BY
+  o.user_id;
++---------+---------------+-----------------+
+| user_id | SUM(o.amount) | SUM(o.quantity) |
++---------+---------------+-----------------+
+|       2 |           100 |               5 |
++---------+---------------+-----------------+
+
+# online case no hint
+EXPLAIN SELECT
+  o.user_id,
+  SUM(o.amount),
+  SUM(o.quantity)
+FROM
+  orders o
+  INNER JOIN products p ON (p.product_id = o.product_id)
+WHERE
+  o.product_id = 2  AND o.user_id = 2
+GROUP BY
+  o.user_id;
+Query Plan
+============================================================
+|ID|OPERATOR                   |NAME |EST.ROWS|EST.TIME(us)|
+------------------------------------------------------------
+|0 |NESTED-LOOP JOIN CARTESIAN |     |1       |6           |
+|1 |├─SUBPLAN SCAN             |VIEW2|1       |3           |
+|2 |│ └─MERGE GROUP BY         |     |1       |3           |
+|3 |│   └─TABLE FULL SCAN      |o    |1       |3           |
+|4 |└─SUBPLAN SCAN             |VIEW1|1       |3           |
+|5 |  └─SCALAR GROUP BY        |     |1       |3           |
+|6 |    └─TABLE FULL SCAN      |p    |1       |3           |
+============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW2.o.user_id], [cast(cast(VIEW1.T_FUN_COUNT(*), DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.amount), DECIMAL_INT(33, 0))], [cast(cast(VIEW1.T_FUN_COUNT(*),
+       DECIMAL_INT(20, 0)) * VIEW2.T_FUN_SUM(o.quantity), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  1 - output([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.o.user_id]), filter(nil), rowset=16
+      access([VIEW2.T_FUN_SUM(o.amount)], [VIEW2.T_FUN_SUM(o.quantity)], [VIEW2.o.user_id])
+  2 - output([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)], [o.user_id]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+  3 - output([o.user_id], [o.amount], [o.quantity]), filter([o.product_id = 2], [o.user_id = 2]), rowset=16
+      access([o.product_id], [o.user_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false,false], 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+  4 - output([VIEW1.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW1.T_FUN_COUNT(*)])
+  5 - output([T_FUN_COUNT_SUM(T_FUN_COUNT(*))]), filter([T_FUN_COUNT_SUM(T_FUN_COUNT(*)) > 0]), rowset=16
+      group(nil), agg_func([T_FUN_COUNT_SUM(T_FUN_COUNT(*))])
+  6 - output([T_FUN_COUNT(*)]), filter([p.product_id = 2]), rowset=16
+      access([p.product_id]), partitions(p0)
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true, 
+      pushdown_aggregation([T_FUN_COUNT(*)])
+SELECT
+  o.user_id,
+  SUM(o.amount),
+  SUM(o.quantity)
+FROM
+  orders o
+  INNER JOIN products p ON (p.product_id = o.product_id)
+WHERE
+  o.product_id = 2  AND o.user_id = 2
+GROUP BY
+  o.user_id;
++---------+---------------+-----------------+
+| user_id | SUM(o.amount) | SUM(o.quantity) |
++---------+---------------+-----------------+
+|       2 |           100 |               5 |
++---------+---------------+-----------------+
+
+# test version control, no push to cross join before 4.3.5.2
+EXPLAIN SELECT /*+PLACE_GROUP_BY OPTIMIZER_FEATURES_ENABLE('4.3.5.1')*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+Query Plan
+=================================================================
+|ID|OPERATOR                        |NAME |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------
+|0 |SORT                            |     |1       |16          |
+|1 |└─HASH GROUP BY                 |     |1       |16          |
+|2 |  └─NESTED-LOOP JOIN CARTESIAN  |     |12      |13          |
+|3 |    ├─SUBPLAN SCAN              |VIEW3|4       |11          |
+|4 |    │ └─HASH GROUP BY           |     |4       |11          |
+|5 |    │   └─HASH RIGHT OUTER JOIN |     |4       |9           |
+|6 |    │     ├─SUBPLAN SCAN        |VIEW2|3       |4           |
+|7 |    │     │ └─HASH GROUP BY     |     |3       |4           |
+|8 |    │     │   └─TABLE FULL SCAN |u    |3       |3           |
+|9 |    │     └─SUBPLAN SCAN        |VIEW1|4       |4           |
+|10|    │       └─HASH GROUP BY     |     |4       |4           |
+|11|    │         └─TABLE FULL SCAN |o    |4       |3           |
+|12|    └─MATERIAL                  |     |3       |3           |
+|13|      └─TABLE FULL SCAN         |p    |3       |3           |
+=================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id], [cast(cast(T_FUN_SUM(VIEW3.SEL_3), DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0))], [1.5 * cast(cast(T_FUN_SUM(VIEW3.SEL_4),
+       DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0))]), filter(nil), rowset=16
+      sort_keys([cast(cast(T_FUN_SUM(VIEW3.SEL_3), DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0)), ASC])
+  1 - output([cast(cast(T_FUN_SUM(VIEW3.SEL_3), DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0))], [VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id], [cast(cast(T_FUN_SUM(VIEW3.SEL_4),
+       DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0))]), filter([cast(cast(T_FUN_SUM(VIEW3.SEL_4), DECIMAL_INT(75, 0)), DECIMAL_INT(33, 0)) > cast(3.5, DECIMAL_INT(33,
+       0))]), rowset=16
+      group([VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id]), agg_func([T_FUN_SUM(VIEW3.SEL_3)], [T_FUN_SUM(VIEW3.SEL_4)])
+  2 - output([VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id], [VIEW3.SEL_3], [VIEW3.SEL_4]), filter(nil), rowset=16
+      conds(nil), nl_params_(nil), use_batch=false
+  3 - output([VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id], [VIEW3.SEL_3], [VIEW3.SEL_4]), filter(nil), rowset=16
+      access([VIEW3.VIEW2.u.city], [VIEW3.VIEW1.o.product_id], [VIEW3.SEL_3], [VIEW3.SEL_4])
+  4 - output([VIEW2.u.city], [VIEW1.o.product_id], [T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(CASE WHEN VIEW2.T_FUN_COUNT(*) IS NOT NULL THEN VIEW2.T_FUN_COUNT(*) 
+      ELSE 1 END, DECIMAL_INT(20, 0)))], [T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity) * cast(CASE WHEN VIEW2.T_FUN_COUNT(*) IS NOT NULL THEN VIEW2.T_FUN_COUNT(*) ELSE 
+      1 END, DECIMAL_INT(20, 0)))]), filter(nil), rowset=16
+      group([VIEW2.u.city], [VIEW1.o.product_id]), agg_func([T_FUN_SUM(VIEW1.T_FUN_SUM(o.amount) * cast(CASE WHEN VIEW2.T_FUN_COUNT(*) IS NOT NULL THEN 
+      VIEW2.T_FUN_COUNT(*) ELSE 1 END, DECIMAL_INT(20, 0)))], [T_FUN_SUM(VIEW1.T_FUN_SUM(o.quantity) * cast(CASE WHEN VIEW2.T_FUN_COUNT(*) IS NOT NULL THEN VIEW2.T_FUN_COUNT(*) 
+      ELSE 1 END, DECIMAL_INT(20, 0)))])
+  5 - output([VIEW2.u.city], [VIEW1.o.product_id], [VIEW2.T_FUN_COUNT(*)], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      equal_conds([VIEW1.o.user_id = VIEW2.u.user_id]), other_conds(nil)
+  6 - output([VIEW2.u.user_id], [VIEW2.u.city], [VIEW2.T_FUN_COUNT(*)]), filter(nil), rowset=16
+      access([VIEW2.u.user_id], [VIEW2.u.city], [VIEW2.T_FUN_COUNT(*)])
+  7 - output([u.user_id], [u.city], [T_FUN_COUNT(*)]), filter(nil), rowset=16
+      group([u.user_id], [u.city]), agg_func([T_FUN_COUNT(*)])
+  8 - output([u.user_id], [u.city]), filter(nil), rowset=16
+      access([u.user_id], [u.city]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([u.__pk_increment]), range(MIN ; MAX)always true
+  9 - output([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      access([VIEW1.o.user_id], [VIEW1.o.product_id], [VIEW1.T_FUN_SUM(o.amount)], [VIEW1.T_FUN_SUM(o.quantity)])
+ 10 - output([o.user_id], [o.product_id], [T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)]), filter(nil), rowset=16
+      group([o.user_id], [o.product_id]), agg_func([T_FUN_SUM(o.amount)], [T_FUN_SUM(o.quantity)])
+ 11 - output([o.user_id], [o.product_id], [o.amount], [o.quantity]), filter(nil), rowset=16
+      access([o.user_id], [o.product_id], [o.amount], [o.quantity]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([o.__pk_increment]), range(MIN ; MAX)always true
+ 12 - output(nil), filter(nil), rowset=16
+ 13 - output(nil), filter(nil), rowset=16
+      access(nil), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([p.__pk_increment]), range(MIN ; MAX)always true
+SELECT /*+PLACE_GROUP_BY OPTIMIZER_FEATURES_ENABLE('4.3.5.1')*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
++-------------+------------+-------------+----------------+
+| city        | product_id | total_sales | total_quantity |
++-------------+------------+-------------+----------------+
+| New York    |          2 |         180 |           13.5 |
+| Los Angeles |          2 |         300 |           22.5 |
+| New York    |          1 |        3000 |            9.0 |
++-------------+------------+-------------+----------------+

@@ -1,0 +1,44 @@
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+===============================================================
+=================  Step 0: prepare env   ======================
+===============================================================
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+===============================================================
+=================  Step 1: create tenant   ====================
+===============================================================
+CREATE RESOURCE UNIT user_unit_config MAX_CPU = 1, MEMORY_SIZE = '2G', MAX_IOPS = 1024, LOG_DISK_SIZE = '3G';
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2');
+ob1.mysql create TENANT oracle resource_pool_list=('cs_replica_pool'), replica_num=2, zone_list = ('z1', 'z2'), locality = "F@z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant oracle;
+ob1.mysql alter system set merger_check_interval = '10s' tenant oracle;
+ob1.mysql alter system set_tp tp_name = "EN_NOT_TRIM_FOR_DEFALUT_CHECKSUM", error_code = 4016, frequency = 1;
+===============================================================
+==== Step 2: create table, add column, add C-Replica  =========
+===============================================================
+create table t1 (k int primary key, c1 int, c2 varchar(4000)) nocompress;
+set ob_query_timeout = 1000000000;
+create sequence seq cache 1000000 noorder;
+insert into t1 select seq.nextval, seq.nextval, randstr(4000, random()) from table(generator(100000));
+alter system major freeze;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN , 1, 600;
+alter table t1 add v3 char (125) not null default ' ';
+insert into t1 (k, c1, c2) values (100001, 100000, randstr(4000, random()));
+alter system major freeze;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN = GLOBAL_BROADCAST_SCN , 1, 600;
+ob1.z1.obs0.check_log_until_success -c "whether to trim space for default checksum.*errsim_code=-4016.*need_trim_default_val=true";
+ob1.mysql alter system set_tp tp_name = "EN_NOT_TRIM_FOR_DEFALUT_CHECKSUM", error_code = 4016, frequency = 0;
+alter table t1 add v4 char (125) not null default ' ';
+insert into t1 (k, c1, c2) values (100002, 100000, randstr(4000, random()));
+alter system minor freeze;
+ob1.mysql alter tenant oracle set locality = "F{1}@z1,C{1}@z2";
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;
+ob1.z2.obs0.check_log_until_success -c "CO_MERGE.*whether to trim space for default checksum.*errsim_code=0.*need_trim_default_val=true";
+ob1.z2.obs0.check_log_until_success -c "CS-Replica.*Successfully get column array";
+ob1.z2.obs0.check_log_until_success -c "column checksum error match(ret=-4103";
+ob1.z2.obs0.check_log_until_success -c "Tips: there is default value with space in oracle mode for this table,";

@@ -1,0 +1,238 @@
+# owner: maolai.cy
+# owner group: sql1
+# tags: optimizer
+# description: GROUPBY_PUSHDOWN with cross join
+
+--disable_warnings
+drop table if exists orders, users, products;
+--enable_warnings
+
+create table users(user_id int, city varchar(20), age int);
+create table products(product_id int, category varchar(20), price int);
+create table orders(order_id int, user_id int, product_id int, quantity int, amount int);
+
+INSERT INTO users VALUES (1, 'New York', 30);
+INSERT INTO users VALUES (2, 'Los Angeles', 25);
+INSERT INTO users VALUES (3, 'Chicago', 40);
+
+INSERT INTO products VALUES (1, 'Electronics', 500);
+INSERT INTO products VALUES (2, 'Books', 20);
+INSERT INTO products VALUES (3, 'Clothing', 100);
+
+INSERT INTO orders VALUES (1, 1, 1, 2, 1000);
+INSERT INTO orders VALUES (2, 2, 2, 5, 100);
+INSERT INTO orders VALUES (4, 1, 2, 3, 60); 
+INSERT INTO orders VALUES (5, 2, 1, 1, 500);
+
+alter system flush plan cache;
+
+--result_format 4
+--explain_protocol 2
+
+--echo # no_rewrite, do not push count star to p
+SELECT /*+no_rewrite*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+
+--echo # hint place_group_by to all, no subsum group by pushdown
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+
+--echo # hint place_group_by to all
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+
+--echo # hint place_group_by to all
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+
+--echo # hint place_group_by to all, cross join empty case
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+where p.product_id < 0
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+
+-- echo # always push to cross_join
+SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING total_sales > 3.5
+ORDER BY total_sales;
+
+-- echo # always push to cross_join and cost-based rewrite to others
+SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
+
+-- echo # always push to all cross_joins
+SELECT
+  u.city,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id or 1=1
+, products p
+, products p2
+WHERE p2.category = 'Books'
+GROUP BY u.city having total_sales > 3.5 order by u.city, total_sales;
+
+-- echo # outer join case, no rewrite
+SELECT
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+
+-- echo # outer join case, no rewrite
+SELECT /*+PLACE_GROUP_BY*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+
+-- echo #outer join case, no rewrite, p is pruned
+SELECT
+  u.city,
+  o.product_id,
+  SUM(distinct o.amount) AS total_sales
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.user_id < 20
+GROUP BY u.city, o.product_id
+HAVING total_sales  > 3.5
+ORDER BY total_sales;
+
+-- echo #for outline reproducible case, only push to cross join
+SELECT /*+PLACE_GROUP_BY((p))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+
+SELECT /*+PLACE_GROUP_BY*/
+u.city,
+p.category,
+SUM(o.amount) AS total_sales
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+LEFT JOIN products p ON o.product_id = p.product_id
+INNER JOIN products p2 ON o.product_id = p.product_id
+GROUP BY u.city,
+         p.category
+HAVING min(o.amount + p.price) > 1
+ORDER BY u.city;
+
+-- echo #for outline reproducible case, only push to non cross join
+SELECT /*+PLACE_GROUP_BY((o))*/
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;
+
+-- echo #online case
+SELECT/*+PLACE_GROUP_BY*/
+  o.user_id,
+  SUM(o.amount),
+  SUM(o.quantity)
+FROM
+  orders o
+  INNER JOIN products p ON (p.product_id = o.product_id)
+WHERE
+  o.product_id = 2  AND o.user_id = 2
+GROUP BY
+  o.user_id;
+
+-- echo # online case no hint
+SELECT
+  o.user_id,
+  SUM(o.amount),
+  SUM(o.quantity)
+FROM
+  orders o
+  INNER JOIN products p ON (p.product_id = o.product_id)
+WHERE
+  o.product_id = 2  AND o.user_id = 2
+GROUP BY
+  o.user_id;
+
+-- echo # test version control, no push to cross join before 4.3.5.2
+SELECT /*+PLACE_GROUP_BY OPTIMIZER_FEATURES_ENABLE('4.3.5.1')*/
+  u.city,
+  o.product_id,
+  SUM(o.amount) AS total_sales,
+  1.5*SUM(o.quantity) AS total_quantity
+FROM orders o
+LEFT JOIN users u ON o.user_id = u.user_id
+, products p
+GROUP BY u.city, o.product_id
+HAVING SUM(o.quantity) > 3.5
+ORDER BY total_sales;

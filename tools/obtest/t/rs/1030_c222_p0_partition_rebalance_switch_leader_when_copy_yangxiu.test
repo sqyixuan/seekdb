@@ -1,0 +1,67 @@
+##############################
+# owner: rongxuan.lc
+# owner group: proxy
+#功能点：
+# unit/partititon 均衡
+#
+#用例场景：
+#1、partition 迁移过程中，主partition切换
+#
+###############################
+
+ob1=OBI(cluster=2:2:2,init_unit_cpu=2,init_unit_num=1);
+ob1.reboot;
+
+ob1.source include/migrate.inc;
+sleep 3;
+
+ob1.create_client;
+## create table : obtest1
+let $difftablegroup=0;
+let $tablenum = 1;
+let $partnum = 2;
+source sql/init_table.sql;
+
+let $pcnt= deploy_get_value(ob1.select select count(*) v from __all_virtual_meta_table where zone='z1',v,1); 
+
+select * from obtest1 limit 10;
+
+ob1.mysql alter system set enable_rebalance=false;
+ob1.mysql alter system set enable_rereplication=false;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+sleep 5;
+## ob1.z1.obs1 stop,触发迁移
+ob1.z1.obs1.stop;
+
+# wait election new leader,切换条件：is_leader_active_() && mm_->is_state_init() && !is_changing_leader();
+sleep 15;
+ob1.mysql alter system set enable_rebalance=true;
+ob1.mysql alter system set enable_rereplication=true;
+sleep 10;
+
+#ob1.z2.obs1.switch_partition obtest:test:obtest1:0;
+#ob1.z3.obs1.switch_partition obtest:test:obtest1:1;
+
+##查找obtest的两个分区的主，尝试切成备；
+#第一个分区；
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "obtest1", table_id, 1); 
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_virtual_table where table_id = $table_id, tenant_id, 1);
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1 and partition_id = 0, svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1 and partition_id = 0, svr_port, 1);
+ob1.mysql alter system switch replica follower partition_id="0%2@$table_id" server="$svr_ip:$svr_port";
+sleep 2;
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1 and partition_id = 1, svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where table_id = $table_id and tenant_id = $tenant_id and role = 1 and partition_id = 1, svr_port, 1);
+ob1.mysql alter system switch replica follower partition_id="1%2@$table_id" server="$svr_ip:$svr_port";
+
+sleep 60;
+# check unit 
+ob1.z1.obs0.check_unit_num 3;
+
+let $ob1_z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $ob1_z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+# check partition
+ob1.check_until_timeout select count(*) v from oceanbase.__all_virtual_meta_table where svr_ip = "$ob1_z1_obs0_ip" and svr_port = $ob1_z1_obs0_port, $pcnt, 360; 
+
+select * from obtest1 partition (p0) limit 5;
+select * from obtest1 partition (p1) limit 5;

@@ -1,0 +1,180 @@
+drop database if exists db_merge;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+============================================
+1. MERGE STRATEGY FAIL - 无冲突场景
+============================================
+create database db_merge;
+use db_merge;
+create table t_a (id int primary key, name varchar(20), score int);
+create table t_b (id int primary key, name varchar(20), score int);
+insert into t_a values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_b values (3, 'Charlie', 70), (4, 'David', 95);
+merge table db_merge.t_b into db_merge.t_a;
+select * from t_a order by id;
+id	name	score
+1	Alice	80
+2	Bob	90
+3	Charlie	70
+4	David	95
+============================================
+2. MERGE STRATEGY FAIL - 有冲突场景（预期报错）
+============================================
+drop table if exists t_c;
+drop table if exists t_d;
+create table t_c (id int primary key, name varchar(20), score int);
+create table t_d (id int primary key, name varchar(20), score int);
+insert into t_c values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d values (1, 'Alice', 99), (3, 'Charlie', 70);
+merge table db_merge.t_d into db_merge.t_c;
+ERROR HY000: MERGE TABLE: 1 conflict(s) detected. Use THEIRS or OURS strategy to resolve. FAIL strategy is not allowed
+============================================
+3. MERGE STRATEGY THEIRS - 冲突用 incoming 覆盖
+============================================
+drop table if exists t_c2;
+drop table if exists t_d2;
+create table t_c2 (id int primary key, name varchar(20), score int);
+create table t_d2 (id int primary key, name varchar(20), score int);
+insert into t_c2 values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d2 values (1, 'Alice', 99), (3, 'Charlie', 70);
+merge table db_merge.t_d2 into db_merge.t_c2 strategy theirs;
+select * from t_c2 order by id;
+id	name	score
+1	Alice	99
+2	Bob	90
+3	Charlie	70
+============================================
+4. MERGE STRATEGY OURS - 冲突保留 current
+============================================
+drop table if exists t_c3;
+drop table if exists t_d3;
+create table t_c3 (id int primary key, name varchar(20), score int);
+create table t_d3 (id int primary key, name varchar(20), score int);
+insert into t_c3 values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d3 values (1, 'Alice', 99), (3, 'Charlie', 70);
+merge table db_merge.t_d3 into db_merge.t_c3 strategy ours;
+select * from t_c3 order by id;
+id	name	score
+1	Alice	80
+2	Bob	90
+3	Charlie	70
+============================================
+5. 无冲突 - incoming 独有行插入
+============================================
+drop table if exists t_e;
+drop table if exists t_f;
+create table t_e (id int primary key, v int);
+create table t_f (id int primary key, v int);
+insert into t_e values (1, 10);
+insert into t_f values (2, 20), (3, 30);
+merge table db_merge.t_f into db_merge.t_e strategy theirs;
+select * from t_e order by id;
+id	v
+1	10
+2	20
+3	30
+============================================
+6. NULL 值的 MERGE
+============================================
+drop table if exists t_null_cur;
+drop table if exists t_null_inc;
+create table t_null_cur (id int primary key, v int);
+create table t_null_inc (id int primary key, v int);
+insert into t_null_cur values (1, 10), (2, NULL);
+insert into t_null_inc values (1, NULL), (2, NULL), (3, 30);
+# id=1: 冲突(10 vs NULL), THEIRS->NULL; id=2: NULL<=>NULL 相同; id=3: incoming独有->插入
+merge table db_merge.t_null_inc into db_merge.t_null_cur strategy theirs;
+select * from t_null_cur order by id;
+id	v
+1	NULL
+2	NULL
+3	30
+============================================
+7. MERGE 后再 DIFF 验证两表一致
+============================================
+drop table if exists t_verify_cur;
+drop table if exists t_verify_inc;
+create table t_verify_cur (id int primary key, name varchar(20));
+create table t_verify_inc (id int primary key, name varchar(20));
+insert into t_verify_cur values (1, 'A');
+insert into t_verify_inc values (1, 'X'), (2, 'B');
+merge table db_merge.t_verify_inc into db_merge.t_verify_cur strategy theirs;
+# MERGE 后两表应该一致，DIFF 无输出
+diff table db_merge.t_verify_inc against db_merge.t_verify_cur;
+__table	__flag	id	name
+============================================
+8. MERGE 幂等性 - 连续执行两次应无变化
+============================================
+drop table if exists t_idem_cur;
+drop table if exists t_idem_inc;
+create table t_idem_cur (id int primary key, v int);
+create table t_idem_inc (id int primary key, v int);
+insert into t_idem_cur values (1, 10);
+insert into t_idem_inc values (1, 20), (2, 30);
+merge table db_merge.t_idem_inc into db_merge.t_idem_cur strategy theirs;
+select * from t_idem_cur order by id;
+id	v
+1	20
+2	30
+# 第二次 MERGE 应该没有变化
+merge table db_merge.t_idem_inc into db_merge.t_idem_cur strategy theirs;
+select * from t_idem_cur order by id;
+id	v
+1	20
+2	30
+============================================
+9. MERGE 跨库
+============================================
+drop database if exists db_merge_cross;
+drop table if exists t_cross_cur;
+create table t_cross_cur (id int primary key, v int);
+insert into t_cross_cur values (1, 10);
+create database db_merge_cross;
+use db_merge_cross;
+create table t_cross_inc (id int primary key, v int);
+insert into t_cross_inc values (1, 99), (2, 200);
+use db_merge;
+merge table db_merge_cross.t_cross_inc into db_merge.t_cross_cur strategy theirs;
+select * from t_cross_cur order by id;
+id	v
+1	99
+2	200
+============================================
+10. 库表名包含引号和反引号
+============================================
+drop database if exists `db'merge``name`;
+create database `db'merge``name`;
+use `db'merge``name`;
+create table `t'cur``name` (id int primary key, v int);
+create table `t'inc``name` (id int primary key, v int);
+insert into `t'cur``name` values (1, 10);
+insert into `t'inc``name` values (1, 99), (2, 200);
+merge table `db'merge``name`.`t'inc``name` into `db'merge``name`.`t'cur``name` strategy theirs;
+select * from `t'cur``name` order by id;
+id	v
+1	99
+2	200
+use db_merge;
+============================================
+11. FAIL 策略 + 纯 PK 表（无冲突可能）
+============================================
+drop table if exists t_pk_only_cur;
+drop table if exists t_pk_only_inc;
+create table t_pk_only_cur (a int, b int, primary key(a, b));
+create table t_pk_only_inc (a int, b int, primary key(a, b));
+insert into t_pk_only_cur values (1, 1), (2, 2);
+insert into t_pk_only_inc values (1, 1), (3, 3);
+# 纯 PK 表不存在值冲突，FAIL 策略应直接成功
+merge table db_merge.t_pk_only_inc into db_merge.t_pk_only_cur;
+select * from t_pk_only_cur order by a, b;
+a	b
+1	1
+2	2
+3	3
+============================================
+12. 清理
+============================================
+drop database if exists `db'merge``name`;
+drop database if exists db_merge;
+drop database if exists db_merge_cross;

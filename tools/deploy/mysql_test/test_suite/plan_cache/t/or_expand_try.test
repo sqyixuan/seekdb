@@ -1,0 +1,87 @@
+#owner: luofan.zp
+
+--result_format 4
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush plan cache global;
+alter system set enable_auto_leader_switch = false;
+
+connection default;
+set ob_enable_plan_cache=on;
+set optimizer_use_sql_plan_baselines = false;
+set optimizer_capture_sql_plan_baselines = false;
+--disable_warnings
+--disable_query_log
+drop table if exists test;
+--enable_query_log
+--enable_warnings
+
+begin;
+create table test (pk1 int, pk2 int, c1 int, c2 int, primary key(pk1, pk2)) partition by hash(pk2) partitions 2;
+
+insert into test values (1, 1, 1, 1);
+insert into test values (2, 2, 2, 2);
+commit;
+
+begin;
+select * from test where pk2 in (1, 2) order by pk2 limit 1;
+select * from test where pk2 in (1, 2) order by pk2 limit 1;
+
+explain select * from test where pk2 in (1, 2) order by pk2 limit 1;
+
+--disable_warnings
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test where pk2 in (?, ?) order by pk2 limit 1';
+--enable_warnings
+commit;
+
+let $cnt = 3;
+
+begin;
+--disable_query_log
+while ($cnt <= 1000)
+{
+  eval insert into test(pk1, pk2, c1, c2) values ($cnt, $cnt, $cnt, $cnt);
+  inc $cnt;
+}
+commit;
+--enable_query_log
+
+select * from test where pk2 in (1, 3) order by pk2 limit 1;
+select * from test where pk2 in (1, 3) order by pk2 limit 1;
+
+explain select * from test where pk2 in (1, 3) order by pk2 limit 1;
+
+--disable_warnings
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test where pk2 in (?, ?) order by pk2 limit 1';
+--enable_warnings
+commit;
+
+connection conn_admin;
+
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'test' and tenant_id = 1002 order by table_id desc limit 1, table_id, 1);
+let $back_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = 0 and role = 2 limit 1, svr_ip, 1);
+let $back_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = 0 and role = 2 limit 1, svr_port, 1);
+
+--disable_query_log
+eval alter system switch replica leader partition_id='0%2@$table_id' server='$back_ip:$back_port';
+--enable_query_log
+
+--sleep 10
+
+connection default;
+
+begin;
+delete from test where pk1 >= 3;
+commit;
+
+begin;
+select * from test where pk2 in (1, 2) order by pk2 limit 1;
+select * from test where pk2 in (1, 2) order by pk2 limit 1;
+
+explain select * from test where pk2 in (1, 2) order by pk2 limit 1;
+
+--disable_warnings
+select hit_count, type from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement like 'select * from test where pk2 in (?, ?) order by pk2 limit 1';
+commit;
+

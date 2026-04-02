@@ -1,0 +1,115 @@
+# owner: liujixiong.ljx
+# owner group:storage
+# test partition split with meta major merge sstable.
+ 
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+ 
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+ 
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant sys;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_user;
+ob1.mysql alter system set _enable_adaptive_compaction = False tenant all_meta;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant sys;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_user;
+ob1.mysql alter system set minor_compact_trigger = 10 tenant all_meta;
+ 
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+ 
+connect (conn1,$ip,root@obtest,,test,$port);
+connect(conn_sys,$ip,root@sys,,oceanbase,$port);
+connection conn1;
+create sequence seq_small INCREMENT BY 1 start with 1 minvalue 1 maxvalue 100000 nocycle noorder nocache;
+create sequence seq_large INCREMENT BY 1 start with 5001 minvalue 1 maxvalue 100000 nocycle noorder nocache;
+create table test_mult_sstables(c1 bigint, c2 bigint, c3 longtext, primary key(c1))
+  partition by range(c1) (
+    partition p0 values less than (1), 
+    partition p1 values less than (10000), 
+    partition p2 values less than MAXVALUE);
+
+insert into test_mult_sstables select seq_small.nextval, random(), randstr(10000, random()) from table(generator(100));
+insert into test_mult_sstables select seq_large.nextval, random(), randstr(10000, random()) from table(generator(100));
+ob1.mysql alter system set_tp tp_no = 735, error_code = 4023, frequency = 1;
+ob1.mysql alter system minor freeze tenant = 'obtest';
+sleep 10;
+
+insert into test_mult_sstables select seq_small.nextval, random(), randstr(10000, random()) from table(generator(100));
+insert into test_mult_sstables select seq_large.nextval, random(), randstr(10000, random()) from table(generator(100)); 
+ob1.mysql alter system set_tp tp_no = 735, error_code = 4023, frequency = 1;
+ob1.mysql alter system minor freeze tenant = 'obtest';
+sleep 10;
+ 
+# there are two sstables
+connection conn1;
+insert into test_mult_sstables select seq_small.nextval, random(), randstr(10000, random()) from table(generator(100));
+insert into test_mult_sstables select seq_large.nextval, random(), randstr(10000, random()) from table(generator(100)); 
+  
+ob1.mysql alter system set_tp tp_no = 735, error_code = 4023, frequency = 1;
+ob1.mysql alter system minor freeze tenant = 'obtest';
+sleep 10;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "obtest", tenant_id, 1);
+ 
+let $idx = 300;
+while ($idx > 0)
+{
+  sleep 1;
+  dec $idx;
+  let $meta_cnt = query_get_value(select count(*) as cnt from oceanbase.__all_virtual_tablet_compaction_history where tenant_id = $tenant_id and type like '%META%', cnt, 1);
+  if ($meta_cnt > 0)
+  {
+    let $idx = -5;
+  }
+}
+
+if ($idx != -5)
+{
+  --echo Unexpected error, without meta major sstable merge.
+}
+ 
+if ($idx == -5)
+{
+  --echo with mete major sstable merge.
+  ob1.mysql set ob_global_debug_sync = 'BEFORE_PARTITION_SPLIT_TASK_CLEANUP wait_for continue_signal execute 10000';
+  sleep 1;
+  send alter table test_mult_sstables reorganize partition p1 into ( partition p1_0 values less than (5000), partition p1_1 values less than (10000));
+  
+  connection conn_sys;
+  sleep 10;
+  --echo data table:
+  --disable_query_log
+  let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+  let $data_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 'test_mult_sstables', table_id, 1);
+  let $src_tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $data_tid and part_name = 'p1', tablet_id, 1);
+  let $dst_tablet_id1 = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $data_tid and part_name = 'p1_0', tablet_id, 1);
+  let $dst_tablet_id2 = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $data_tid and part_name = 'p1_1', tablet_id, 1);
+  eval select * from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $src_tablet_id and table_type != 26 and end_log_scn not in (select end_log_scn from __all_virtual_table_mgr b where b.tenant_id = $tenant_id and b.tablet_id = $dst_tablet_id1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port);
+  eval select * from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $src_tablet_id and table_type != 26 and end_log_scn not in (select end_log_scn from __all_virtual_table_mgr b where b.tenant_id = $tenant_id and b.tablet_id = $dst_tablet_id2 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port);
+  --enable_query_log
+
+  --echo lob meta table:
+  --disable_query_log
+  let $lob_meta_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and data_table_id = $data_tid and table_name like '%AUX_LOB_META%', table_id, 1);
+  let $src_tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $lob_meta_tid and part_name = 'p1', tablet_id, 1);
+  let $dst_tablet_id1 = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $lob_meta_tid and part_name = 'p1_0', tablet_id, 1);
+  let $dst_tablet_id2 = query_get_value(select tablet_id from oceanbase.__all_virtual_part where tenant_id = $tenant_id and table_id = $lob_meta_tid and part_name = 'p1_1', tablet_id, 1);
+  eval select distinct table_type from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $src_tablet_id and end_log_scn not in (select end_log_scn from __all_virtual_table_mgr b where b.tenant_id = $tenant_id and b.tablet_id = $dst_tablet_id1 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port);
+  eval select distinct table_type from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $src_tablet_id and end_log_scn not in (select end_log_scn from __all_virtual_table_mgr b where b.tenant_id = $tenant_id and b.tablet_id = $dst_tablet_id2 and a.svr_ip = b.svr_ip and a.svr_port = b.svr_port);
+  eval select distinct table_type from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $dst_tablet_id1;
+  eval select distinct table_type from __all_virtual_table_mgr a where a.tenant_id = $tenant_id and a.tablet_id = $dst_tablet_id2;
+  --enable_query_log
+
+  ob1.mysql set ob_global_debug_sync = 'BEFORE_PARTITION_SPLIT_TASK_CLEANUP clear';
+  ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+  
+  connection conn1;
+  reap;
+}
+
+

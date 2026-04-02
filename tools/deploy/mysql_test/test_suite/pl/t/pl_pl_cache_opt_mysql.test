@@ -1,0 +1,336 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: hr351303
+#owner group: sql4
+#tags: pl
+#description: opt pl cache match logic test
+
+--result_format 4
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection default;
+
+--error 0,1396
+DROP USER hr;
+
+CREATE USER 'hr' IDENTIFIED BY 'hr';
+GRANT all ON *.* TO hr WITH GRANT OPTION;
+--error 0,1008
+DROP DATABASE henry;
+CREATE DATABASE henry;
+use henry;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn1,$OBMYSQL_MS0,hr,hr,henry,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,hr,hr,henry,$OBMYSQL_PORT);
+
+connection conn1;
+
+#mysql模式临时表被禁掉了, 注释case
+--echo #############测试临时表场景##############
+
+#create temporary table tmp(c1 int);
+#insert into tmp value(1);
+#delimiter /;
+
+#create procedure p1()
+#begin
+#  declare a int;
+#  declare cs cursor for select c1 from tmp;
+#  open cs;
+#  fetch cs into a;
+#  close cs;
+#end;
+#/
+
+#delimiter ;/
+
+#call p1();
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn2;
+
+#sess2 命中sess1生成的计划,执行失败(此时依赖对象只有p1本身,因为编译select语句失败)
+#--error 1146
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn1;
+
+#sess1执行时，命中pl cache中sess1的缓存
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn2;
+#创建同名临时表
+#create temporary table tmp(c1 int, c2 int);
+#insert into tmp value(2,3);
+#sess2在cache中命中缓存的对象
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+#drop table tmp;
+#connection conn1;
+
+#drop procedure p1;
+
+#delimiter /;
+
+#create procedure p1()
+#begin
+#  insert into tmp value(1);
+#end;
+#/
+
+#delimiter ;/
+
+#connection conn_admin;
+#alter system flush pl cache global;
+#alter system flush plan cache global;
+
+#connection conn1;
+
+#call p1();
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn2;
+
+#sess2 hit pl cache
+#--error 1146
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn1;
+
+#sess1 hit pl cache
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+#connection conn2;
+#create temporary table tmp(c1 int, c2 int);
+#sess2 hit pl cache
+--error 1136
+#call p1();
+#select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+#drop table tmp;
+#drop procedure p1;
+
+#connection conn_admin;
+#alter system flush pl cache global;
+#alter system flush plan cache global;
+
+#connection conn2;
+
+--echo #############测试存储过程内部只有sql语句, table ddl变更不影响存储过程缓存##############
+
+create table t2(c1 int);
+insert into t2 value(1);
+
+
+delimiter /;
+
+create procedure p2()
+begin
+  declare a int;
+  declare b int;
+  set b = 1;
+  select count(*) into a from t2 where c1 = b;
+  select a;
+end;
+/
+
+delimiter ;/
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection conn2;
+
+call p2();
+
+drop table t2;
+create table t2(c1 int, c2 int);
+insert into t2 value(1,2);
+
+--echo #hit pl cache, t2定义变更预期不影响p2的缓存
+call p2();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P2' order by gmt_create desc limit 1);
+
+drop table t2;
+
+--error 1146
+call p2();
+
+drop procedure p2;
+
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection conn2;
+
+create table t2(c1 int);
+insert into t2 value(1);
+
+
+delimiter /;
+
+create procedure p2()
+begin
+  select count(*) from t2;
+end;
+/
+
+delimiter ;/
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection conn2;
+
+call p2();
+
+drop table t2;
+create table t2(c1 int, c2 int);
+insert into t2 value(1,2);
+
+--echo #hit pl cache, t2定义变更预期不影响p2的缓存
+call p2();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P2' order by gmt_create desc limit 1);
+drop procedure p2;
+
+delimiter /;
+
+create procedure p2()
+begin
+  declare a int;
+  declare cs cursor for select count(*) from t2;
+  open cs;
+  fetch cs into a;
+  close cs;
+  select a;
+end;
+/
+
+delimiter ;/
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection conn2;
+
+call p2();
+
+drop table t2;
+create table t2(c1 int, c2 int);
+insert into t2 value(1,2);
+
+--echo #hit pl cache, t2定义变更预期不影响p2的缓存
+call p2();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P2' order by gmt_create desc limit 1);
+drop table t2;
+
+--error 1146
+call p2();
+
+drop procedure p2;
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection default;
+
+--disable_warnings
+drop table if exists t1;
+drop procedure if exists p1;
+
+--echo #############测试存储过程内部相关表做truncate变更不影响存储过程缓存##############
+
+create table t1(c1 int, c2 int);
+
+insert into t1 value(1,2);
+
+
+delimiter /;
+
+create procedure p1()
+begin
+  declare var int;
+  declare cs cursor for select c1 from t1;
+  open cs;
+  fetch cs into var;
+  close cs;
+  select var;
+end;
+/
+
+delimiter ;/
+
+connection conn_admin;
+alter system flush pl cache global;
+alter system flush plan cache global;
+
+connection default;
+
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+--echo ####预期缓存命中####
+truncate table t1;
+insert into t1 value(1,2);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+drop table t1;
+create table t1(c1 int, c2 int, primary key(c1,c2)) partition by range(c1) (partition p0 values less than(10));
+insert into t1 value(1,2);
+
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+--echo ####预期缓存命中####
+alter table t1 add partition (partition p1 values less than(20));
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+--echo ####预期缓存失效####
+alter table t1 add (c3 enum('d','f'));
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+--echo ####预期缓存失效####
+alter table t1 modify column c2 double;
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+call p1();
+select type,object_type,hit_count from oceanbase.gv$ob_plan_cache_plan_stat where pl_schema_id=(select routine_id from oceanbase.__all_routine where upper(routine_name)='P1' order by gmt_create desc limit 1);
+
+drop table t1;
+
+--error 1146
+call p1();
+
+drop procedure p1;
+
+DROP DATABASE henry;
+DROP USER hr;

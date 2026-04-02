@@ -1,0 +1,134 @@
+# owner: wyh329796
+# owner group: data
+# Testing Case: basic restore mview with create ls and test cdc
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.z1.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+
+let $backup_cluster_name = deploy_get_value(ob1.get_cluster_name);
+let $backup_cluster_id = deploy_get_value(ob1.get_cluster_id);
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_oracle_tenant   = backup_oracle_tenant;
+let $backup_mysql_tenant    = backup_mysql_tenant;
+
+# 必须先stop掉老的，删除才能有效，不然可能会有残留。
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+CREATE RESOURCE UNIT small_unit MIN_CPU=1, MAX_CPU=1, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL small_pool_1 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL small_pool_2 UNIT small_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set enable_async_syslog = false;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+alter system set ob_compaction_schedule_interval='5s' tenant=all;
+alter system set merger_check_interval='10s' tenant=all;
+alter system set ob_compaction_schedule_interval = '10s' tenant = all;
+
+--echo ===============================================================
+--echo ==================     create tenant   ========================
+--echo ===============================================================
+
+ob1.mysql CREATE RESOURCE POOL resource_pool UNIT = "small_unit", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT backup_mysql_tenant resource_pool_list=('resource_pool'), locality = "F@z1,F@z2,F@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+source include/check_schema_sync.inc;
+connection backup_sys_conn;
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $backup_mysql_tenant_id, resource_pool_id, 1);
+let $ls_cnt = deploy_get_value(ob1.select select count(unique(ls_id)) as ls_cnt from oceanbase.__all_virtual_ls_info where tenant_id = $backup_mysql_tenant_id, ls_cnt, 1);
+let $src_ls_id = 1001;
+--echo create tenant finished
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant backup_mysql_tenant;
+--echo ===============================================================
+--echo ==================     create table ===========================
+--echo ===============================================================
+connect(sys_conn_mysql, $backup_ip, root@$backup_mysql_tenant,,oceanbase, $backup_port);
+connection sys_conn_mysql;
+set global wait_timeout = 288000;
+
+connection sys_conn_mysql;
+create user test IDENTIFIED BY "test";
+grant all on *.* to test WITH GRANT OPTION;
+
+connect(backup_mysql_conn, $backup_ip,test@$backup_mysql_tenant,test,test, $backup_port);
+connection backup_mysql_conn;
+ob1.oblog.gen_conf tb_white_list=backup*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建小表
+create table t1(a int, b int, c int, PRIMARY KEY (a));
+ob1.oblog.next;
+insert into t1(a, b) values(1, 1);
+ob1.oblog.next;
+insert into t1(a, b) values(2, 2);
+ob1.oblog.next;
+insert into t1(a, b) values(3, 3);
+ob1.oblog.next;
+insert into t1(a, b) values(4, 4);
+ob1.oblog.next;
+
+# 创建mview
+create tablegroup tg1 sharding='PARTITION';
+ob1.oblog.next;
+create table mv_tt(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+ob1.oblog.next;
+create table mv_tg(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+ob1.oblog.next;
+insert into mv_tt values(1,1), (2,1),(3,1);
+ob1.oblog.next;
+insert into mv_tg values(1,1), (2,1),(3,2);
+ob1.oblog.next;
+create materialized view mv1 (primary key(mv_tt_c1,mv_tt_c2)) tablegroup='tg1' partition by hash(mv_tt_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+ob1.oblog.next;
+
+select /*+read_consistency(weak) use_nl(mv_tt mv_tg) leading(mv_tt mv_tg) use_das(mv_tg) no_use_nl_materialization(mv_tg)*/ mv_tt.c1 mv_tt_c1,mv_tt.c2 mv_tt_c2,mv_tg.c2 mv_tg_c2,mv_tg.c3 mv_tg_c3 from mv_tt join mv_tg on mv_tt.c2=mv_tg.c2;
+
+# major合并
+ob1.mysql alter system major freeze tenant = '$backup_mysql_tenant';
+# 等待合并结果
+source include/wait_tenant_major_merge.inc;
+
+connection backup_mysql_conn;
+let $major_merge_scn = deploy_get_value(ob1.select select last_merged_scn from oceanbase.__all_virtual_merge_info where tenant_id = $backup_mysql_tenant_id, last_merged_scn, 1);
+ob1.check_until_timeout select min(mv_major_merge_scn) = $major_merge_scn from oceanbase.__all_virtual_ls_info where tenant_id = $backup_mysql_tenant_id and ls_id not like 1, 1 , 180;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $backup_mysql_tenant_id, 1, 120;
+ob1.check_until_timeout select column_value = $major_merge_scn as tenant_mv_merge_scn_check from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $backup_mysql_tenant_id, 1, 60;
+
+sleep 3;
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+############################ 验证创建日志流时, 注册设置位点的多源任务
+
+ob1.oblog.waitUntilRealtime 240;
+
+##### 阻塞收藏夹物化视图merge_scn推进任务
+ob1.mysql alter system set_tp tp_name = ERRSIM_SKIP_COLLECT_MV_MERGE_INFO_TASK, error_code = 4023, frequency = 1;
+let $tenant_mv_merge_scn = deploy_get_value(ob1.select select column_value from __all_virtual_core_table where tenant_id = 1002 and column_name = 'major_refresh_mv_merge_scn', column_value, 1);
+##### 创建新日志流
+ob1.mysql ALTER TENANT backup_mysql_tenant PRIMARY_ZONE='z1,z2';
+ob1.check_until_timeout select count(unique(ls_id)) from __all_virtual_log_stat where tenant_id = $backup_mysql_tenant_id and ls_id not like 1, 3, 120;
+ob1.check_until_timeout select status = 'NORMAL' from __all_virtual_ls_status where tenant_id = 1002 and ls_id = 1003, 1, 120;
+
+--disable_query_log
+eval select mv_publish_scn = $tenant_mv_merge_scn as publish_scn_check, mv_safe_scn = $tenant_mv_merge_scn as safe_scn_check from __all_virtual_ls_info where tenant_id = 1002 and ls_id = 1003;
+--enable_query_log
+ob1.oblog.waitUntilRealtime 240;

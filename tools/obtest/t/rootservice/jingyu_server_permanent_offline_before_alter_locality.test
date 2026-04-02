@@ -1,0 +1,61 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#     In this case we aim to test actions during server permanent offline
+#    (1) create tenant with locality FFF
+#    (2) permanent offline z2 replica
+#    (3) alter locality from "F@z1,F@z2,F@z3" to "F@z1,F@z2"
+#    Bug: 
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_obs0 = $z1_obs0_ip:$z1_obs0_port;
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+let $z2_obs0 = $z2_obs0_ip:$z2_obs0_port;
+let $z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_obs0_port = deploy_get_value(ob1.z3.obs0.port);
+let $z3_obs0 = $z3_obs0_ip:$z3_obs0_port;
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create tenant with unit_num = 1
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_permanent RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_permanent", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_permanent", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo ====              permanent offline z1 replica              ===
+--echo ===============================================================
+--echo test case for permanent offline
+connection sys_conn;
+ob1.mysql alter tenant sys set primary_zone = "z1";
+ob1.mysql alter tenant tenant_for_permanent set primary_zone = "z1";
+ob1.check_until_timeout select count(*) c from oceanbase.CDB_OB_LS_LOCATIONS where role like "%LEADER%" and zone ='z2', 0, 60;
+
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) = 0 as cnt from oceanbase.CDB_OB_LS_LOCATIONS where (tenant_id = $tenant_id or tenant_id = $meta_tenant_id) and role = "LEADER" and member_list like '%$z2_obs0%', 0, 60;
+
+
+--echo ===============================================================
+--echo ====                  alter tenant locality                 ===
+--echo ===============================================================
+connection sys_conn;
+eval ALTER TENANT tenant_for_permanent LOCALITY = "F@z1,F@z2";
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where previous_locality is not null, 2, 10;
+sleep 60;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_TENANTS where previous_locality is not null, 2, 10;

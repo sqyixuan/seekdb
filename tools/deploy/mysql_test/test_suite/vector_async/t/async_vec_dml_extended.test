@@ -1,0 +1,640 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: lana.lgx
+#owner group: seekdb
+#description: Extended DML tests for async vector index
+#  Covers: INSERT (basic, special values, batch, parallel), UPDATE (vector/non-vector, NULL, parallel), 
+#          DELETE (basic, batch, parallel), REPLACE and ON DUPLICATE KEY UPDATE
+
+connection default;
+alter system set ob_vector_memory_limit_percentage = 30;
+
+--echo ========== setup ==========
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists t4;
+drop table if exists t5;
+drop table if exists t6;
+drop table if exists t7;
+drop table if exists t8;
+drop table if exists t9;
+drop table if exists t10;
+drop table if exists t11;
+--enable_warnings
+
+--echo
+--echo ========== 2.1 INSERT Operations ==========
+--echo
+--echo === 2.1.1 Basic INSERT - single row ===
+create table t1 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx1 on t1(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Single INSERT ---
+insert into t1 values (1, '[1.0, 1.0, 1.0]', 'item1');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify data is searchable ---
+select id, name from t1 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 1;
+
+drop table t1;
+
+--echo
+--echo === 2.1.2 Batch INSERT - 10, 100, 1000 rows ===
+create table t2 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx2 on t2(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert 10 rows ---
+--disable_query_log
+let $i = 1;
+while ($i <= 10) {
+  eval insert into t2 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify 10 rows ---
+select count(*) from t2;
+select id from t2 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Insert 100 rows ---
+--disable_query_log
+let $i = 11;
+while ($i <= 110) {
+  eval insert into t2 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify 110 rows ---
+select count(*) from t2;
+select id from t2 order by l2_distance(vec, '[50.0, 50.0, 50.0]') approximate limit 3;
+
+--echo --- Insert 1000 rows ---
+--disable_query_log
+let $i = 111;
+while ($i <= 1110) {
+  eval insert into t2 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify 1110 rows ---
+select count(*) from t2;
+select id from t2 order by l2_distance(vec, '[500.0, 500.0, 500.0]') approximate limit 3;
+
+drop table t2;
+
+--echo
+--echo === 2.1.3 Special values INSERT ===
+create table t3 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx3 on t3(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert NULL vector ---
+insert into t3 values (1, NULL);
+insert into t3 values (2, '[2.0, 2.0, 2.0]');
+insert into t3 values (3, '[3.0, 3.0, 3.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify NULL handling (NULL vectors should not appear in vector search) ---
+select id, vec from t3 order by id;
+select count(*) from t3;
+select id from t3 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 3;
+
+drop table t3;
+
+--echo
+--echo === 2.1.4 Parallel INSERT ===
+create table t4 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx4 on t4(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Parallel INSERT with ENABLE_PARALLEL_DML hint ---
+insert /*+ ENABLE_PARALLEL_DML parallel(2) */ into t4 values (1, '[1.0, 1.0, 1.0]');
+insert /*+ ENABLE_PARALLEL_DML parallel(2) */ into t4 values (2, '[2.0, 2.0, 2.0]');
+insert /*+ ENABLE_PARALLEL_DML parallel(2) */ into t4 values (3, '[3.0, 3.0, 3.0]');
+insert /*+ ENABLE_PARALLEL_DML parallel(2) */ into t4 values (4, '[4.0, 4.0, 4.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify parallel INSERT CDC sync correctness ---
+select count(*) from t4;
+select id from t4 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+
+drop table t4;
+
+--echo
+--echo ========== 2.2 UPDATE Operations ==========
+--echo
+--echo === 2.2.1 Update vector column - single row ===
+create table t5 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx5 on t5(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t5 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t5 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t5 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, name, vec from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Update single row vector ---
+update t5 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector search result changed ---
+select id, name, vec from t5 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+select id, name, vec from t5 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 1;
+
+drop table t5;
+
+
+--echo
+--echo === 2.2.3 Update non-vector column ===
+create table t7 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50),
+  score int
+) organization heap;
+
+create vector index idx7 on t7(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t7 values (1, '[1.0, 1.0, 1.0]', 'item1', 100);
+insert into t7 values (2, '[2.0, 2.0, 2.0]', 'item2', 200);
+insert into t7 values (3, '[3.0, 3.0, 3.0]', 'item3', 300);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, name, score from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Update non-vector columns only ---
+update t7 set name = 'updated1', score = 999 where id = 1;
+update t7 set score = 888 where id = 2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector search results remain the same (order unchanged) ---
+select id, name, score from t7 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t7;
+
+--echo
+--echo === 2.2.4 Update vector column with NULL ===
+create table t8 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx8 on t8(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t8 values (1, '[1.0, 1.0, 1.0]');
+insert into t8 values (2, '[2.0, 2.0, 2.0]');
+insert into t8 values (3, NULL);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, vec from t8 order by id;
+select id from t8 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Update non-NULL vector to NULL ---
+update t8 set vec = NULL where id = 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify NULL vector not in search results ---
+select id, vec from t8 order by id;
+select id from t8 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 3;
+
+--echo --- Update NULL to non-NULL vector ---
+update t8 set vec = '[4.0, 4.0, 4.0]' where id = 3;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify updated vector now appears in search results ---
+select id, vec from t8 order by id;
+select id from t8 order by l2_distance(vec, '[4.0, 4.0, 4.0]') approximate limit 3;
+
+drop table t8;
+
+--echo
+--echo === 2.2.5 Parallel UPDATE ===
+create table t9 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx9 on t9(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t9 values (1, '[1.0, 1.0, 1.0]');
+insert into t9 values (2, '[2.0, 2.0, 2.0]');
+insert into t9 values (3, '[3.0, 3.0, 3.0]');
+insert into t9 values (4, '[4.0, 4.0, 4.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id from t9 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 4;
+
+--echo --- Parallel UPDATE with ENABLE_PARALLEL_DML hint ---
+update /*+ ENABLE_PARALLEL_DML parallel(2) */ t9 set vec = '[10.0, 10.0, 10.0]' where id = 1;
+update /*+ ENABLE_PARALLEL_DML parallel(2) */ t9 set vec = '[20.0, 20.0, 20.0]' where id = 2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify parallel UPDATE CDC sync correctness ---
+select id from t9 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 4;
+
+drop table t9;
+
+--echo
+--echo ========== 2.3 DELETE Operations ==========
+--echo
+--echo === 2.3.1 Basic DELETE - single row ===
+create table t10 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx10 on t10(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t10 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t10 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t10 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select count(*) from t10;
+select id, name from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- Delete single row ---
+delete from t10 where id = 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify deleted data not in search results ---
+select count(*) from t10;
+select id, name from t10 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t10;
+
+--echo
+--echo === 2.3.2 Batch DELETE ===
+create table t11 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx11 on t11(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+--disable_query_log
+let $i = 1;
+while ($i <= 50) {
+  eval insert into t11 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select count(*) from t11;
+select id from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+--echo --- Batch delete ---
+delete from t11 where id <= 20;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify deleted data not in search results ---
+select count(*) from t11;
+select id from t11 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 5;
+
+drop table t11;
+
+--echo
+--echo === 2.3.3 DELETE ALL ===
+create table t12 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx12 on t12(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t12 values (1, '[1.0, 1.0, 1.0]');
+insert into t12 values (2, '[2.0, 2.0, 2.0]');
+insert into t12 values (3, '[3.0, 3.0, 3.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select count(*) from t12;
+select id from t12 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- DELETE ALL ---
+delete from t12;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify empty result ---
+select count(*) from t12;
+select id from t12 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+drop table t12;
+
+--echo
+--echo === 2.3.4 Partial DELETE ===
+create table t13 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx13 on t13(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+--disable_query_log
+let $i = 1;
+while ($i <= 30) {
+  eval insert into t13 values ($i, '[$i.0, $i.0, $i.0]');
+  inc $i;
+}
+--enable_query_log
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select count(*) from t13;
+
+--echo --- Delete partial data (first 10 rows) ---
+delete from t13 where id <= 10;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify remaining data searchable ---
+select count(*) from t13;
+select id from t13 order by l2_distance(vec, '[15.0, 15.0, 15.0]') approximate limit 5;
+
+--echo --- Delete another portion (middle 10 rows) ---
+delete from t13 where id > 15 and id <= 25;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify remaining data correct ---
+select count(*) from t13;
+select id from t13 order by id;
+
+drop table t13;
+
+--echo
+--echo === 2.3.5 Parallel DELETE ===
+create table t14 (
+  id int primary key,
+  vec vector(3)
+) organization heap;
+
+create vector index idx14 on t14(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert test data ---
+insert into t14 values (1, '[1.0, 1.0, 1.0]');
+insert into t14 values (2, '[2.0, 2.0, 2.0]');
+insert into t14 values (3, '[3.0, 3.0, 3.0]');
+insert into t14 values (4, '[4.0, 4.0, 4.0]');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select count(*) from t14;
+
+--echo --- Parallel DELETE with ENABLE_PARALLEL_DML hint ---
+delete /*+ ENABLE_PARALLEL_DML parallel(2) */ from t14 where id <= 2;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify parallel DELETE CDC sync correctness ---
+select count(*) from t14;
+select id from t14 order by l2_distance(vec, '[3.0, 3.0, 3.0]') approximate limit 3;
+
+drop table t14;
+
+--echo
+--echo ========== 2.4 REPLACE and ON DUPLICATE KEY UPDATE ==========
+--echo
+--echo === 2.4.1 REPLACE INTO with primary key conflict ===
+create table t15 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx15 on t15(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t15 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t15 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t15 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, name, vec from t15 order by id;
+select id, name from t15 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- REPLACE with primary key conflict (id=1) ---
+replace into t15 values (1, '[10.0, 10.0, 10.0]', 'replaced1');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify REPLACE behavior (old vector deleted, new vector inserted) ---
+select id, name, vec from t15 order by id;
+select id, name from t15 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 1;
+select id, name from t15 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- REPLACE without conflict (new row) ---
+replace into t15 values (4, '[4.0, 4.0, 4.0]', 'item4');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify new row added ---
+select count(*) from t15;
+select id, name from t15 order by l2_distance(vec, '[4.0, 4.0, 4.0]') approximate limit 1;
+
+drop table t15;
+
+--echo
+--echo === 2.4.2 INSERT ... ON DUPLICATE KEY UPDATE ===
+create table t16 (
+  id int primary key,
+  vec vector(3),
+  name varchar(50)
+) organization heap;
+
+create vector index idx16 on t16(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t16 values (1, '[1.0, 1.0, 1.0]', 'item1');
+insert into t16 values (2, '[2.0, 2.0, 2.0]', 'item2');
+insert into t16 values (3, '[3.0, 3.0, 3.0]', 'item3');
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, name, vec from t16 order by id;
+select id, name from t16 order by l2_distance(vec, '[1.0, 1.0, 1.0]') approximate limit 3;
+
+--echo --- INSERT with ON DUPLICATE KEY UPDATE (update vector column) ---
+insert into t16 values (1, '[11.0, 11.0, 11.0]', 'new1') 
+  on duplicate key update vec = '[10.0, 10.0, 10.0]', name = 'updated1';
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector updated ---
+select id, name, vec from t16 order by id;
+select id, name from t16 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 1;
+
+--echo --- INSERT with ON DUPLICATE KEY UPDATE (update non-vector column only) ---
+insert into t16 values (2, '[22.0, 22.0, 22.0]', 'new2') 
+  on duplicate key update name = 'updated2';
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify only name updated, vector unchanged ---
+select id, name, vec from t16 order by id;
+select id, name from t16 order by l2_distance(vec, '[2.0, 2.0, 2.0]') approximate limit 3;
+
+--echo --- INSERT with ON DUPLICATE KEY UPDATE (no conflict, new row) ---
+insert into t16 values (4, '[4.0, 4.0, 4.0]', 'item4') 
+  on duplicate key update vec = '[44.0, 44.0, 44.0]';
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify new row inserted ---
+select count(*) from t16;
+select id, name from t16 order by l2_distance(vec, '[4.0, 4.0, 4.0]') approximate limit 1;
+
+drop table t16;
+
+--echo
+--echo === 2.4.3 ON DUPLICATE KEY UPDATE with VALUES() function ===
+create table t17 (
+  id int primary key,
+  vec vector(3),
+  counter int default 0
+) organization heap;
+
+create vector index idx17 on t17(vec) with (distance=l2, type=hnsw, lib=vsag, sync_mode=async);
+
+--echo --- Insert initial data ---
+insert into t17 values (1, '[1.0, 1.0, 1.0]', 1);
+insert into t17 values (2, '[2.0, 2.0, 2.0]', 1);
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify initial state ---
+select id, vec, counter from t17 order by id;
+
+--echo --- INSERT with ON DUPLICATE KEY UPDATE using VALUES() ---
+insert into t17 values (1, '[10.0, 10.0, 10.0]', 1) 
+  on duplicate key update vec = values(vec), counter = counter + 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector updated and counter incremented ---
+select id, vec, counter from t17 order by id;
+select id from t17 order by l2_distance(vec, '[10.0, 10.0, 10.0]') approximate limit 2;
+
+--echo --- Repeat ON DUPLICATE KEY UPDATE ---
+insert into t17 values (1, '[11.0, 11.0, 11.0]', 1) 
+  on duplicate key update vec = values(vec), counter = counter + 1;
+
+--echo --- Wait for CDC sync ---
+call dbms_index_manager.refresh();
+
+--echo --- Verify vector updated again ---
+select id, vec, counter from t17 order by id;
+select id from t17 order by l2_distance(vec, '[11.0, 11.0, 11.0]') approximate limit 2;
+
+drop table t17;
+
+--echo
+--echo ========== cleanup ==========
+alter system set ob_vector_memory_limit_percentage = 0;
+PURGE RECYCLEBIN;

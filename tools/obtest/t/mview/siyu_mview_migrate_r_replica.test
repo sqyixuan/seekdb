@@ -1,0 +1,79 @@
+# cast owner: wyh329796
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0);
+source include/mini_ob_config.inc;
+
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'False';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+# get servers' addr in z1, z2 and z3
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant tenant_for_mview
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tenant_for_mview RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "tenant_for_mview", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "tenant_for_mview", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.__all_resource_pool WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+alter system set_tp tp_name = ERRSIM_RECONFIG_CHECK_FAILED, error_code = 7125, frequency = 0;
+alter system set ob_compaction_schedule_interval='5s' tenant=all;
+alter system set merger_check_interval='10s' tenant=all;
+
+# create mview and check ls major mv merge info
+ob_connect(conn_mysql, ob1.z1.obs0, root@tenant_for_mview, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+create tablegroup tg1 sharding='PARTITION';
+create table t1(c1 int,c2 int, primary key(c1,c2)) tablegroup='tg1' partition by hash(c1) partitions 2;
+create table t2(c2 int, c3 int, primary key(c2)) duplicate_scope = 'cluster' duplicate_read_consistency='weak';
+create materialized view mv1 (primary key(t1_c1,t1_c2)) tablegroup='tg1' partition by hash(t1_c1) partitions 2 REFRESH FAST ON DEMAND  ENABLE QUERY REWRITE ENABLE ON QUERY COMPUTATION as select /*+read_consistency(weak) use_nl(t1 t2) leading(t1 t2) use_das(t2) no_use_nl_materialization(t2)*/ t1.c1 t1_c1,t1.c2 t1_c2,t2.c2 t2_c2,t2.c3 t2_c3 from t1 join t2 on t1.c2=t2.c2;
+alter system major freeze;
+source include/wait_tenant_major_merge.inc;
+#### wait tenant major freeze;
+
+let $major_merge_scn = deploy_get_value(ob1.select select last_merged_scn from oceanbase.__all_virtual_merge_info where tenant_id = $tenant_id, last_merged_scn, 1);
+ob1.check_until_timeout select min(mv_major_merge_scn) = $major_merge_scn from oceanbase.__all_virtual_ls_info where tenant_id = $tenant_id and ls_id not like 1, 1 , 180;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $tenant_id, 1, 120;
+ob1.check_until_timeout select column_value = $major_merge_scn as tenant_mv_merge_scn_check from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $tenant_id, 1, 60;
+
+############################ test 1: change locality  ##############################
+ob1.check_until_timeout select paxos_replica_num = 3 as paxos_check from oceanbase.__all_virtual_log_stat where tenant_id = $tenant_id  and role = 'LEADER' and ls_id = 1001, 1, 120;
+connection sys_conn;
+eval ALTER TENANT tenant_for_mview LOCALITY = "F@z1,F@z2,R@z3";
+ob1.check_until_timeout select paxos_replica_num = 2 as paxos_check from oceanbase.__all_virtual_log_stat where tenant_id = $tenant_id  and role = 'LEADER' and ls_id = 1001, 1, 120;
+
+alter system major freeze;
+source include/wait_tenant_major_merge.inc;
+#### wait tenant major freeze;
+
+let $major_merge_scn = deploy_get_value(ob1.select select last_merged_scn from oceanbase.__all_virtual_merge_info where tenant_id = $tenant_id, last_merged_scn, 1);
+## all_core table 已经推进位点
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $tenant_id, 1, 120;
+ob1.check_until_timeout select column_value = $major_merge_scn as tenant_mv_merge_scn_check from oceanbase.__all_virtual_core_table where column_name = 'major_refresh_mv_merge_scn' and tenant_id = $tenant_id, 1, 60;
+
+connection sys_conn;
+eval ALTER TENANT tenant_for_mview LOCALITY = "F@z1,F@z2,F@z3";
+
+#### 检查paxos 副本数目以及r副本上的合并位点已经推进
+ob1.check_until_timeout select paxos_replica_num = 3 as paxos_check from oceanbase.__all_virtual_log_stat where tenant_id = $tenant_id  and role = 'LEADER' and ls_id = 1001, 1, 120;
+ob1.check_until_timeout select min(mv_major_merge_scn) = $major_merge_scn from oceanbase.__all_virtual_ls_info where tenant_id = $tenant_id and ls_id not like 1, 1 , 10;

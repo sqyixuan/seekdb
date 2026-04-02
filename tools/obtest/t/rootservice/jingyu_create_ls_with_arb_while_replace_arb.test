@@ -1,0 +1,84 @@
+# CASE_OWNER:
+#    @jingyu.cr
+# CASE_DESC:
+#    This case is aimed to test create ls twice with different arb_member
+#    We designed following cases to simulate different scenes:
+#
+#    1. create tenant with 2F1A
+#    2. debug sync after has member list
+#    3. create new ls by altering tenant primary zone from z1 to z1,z2
+#    4. switch sys log stream leader of user tenant
+#    5. release debug sync
+#    6. check arb_member is the new one
+
+ob1=OBI(cluster=1:1:1, proxy_num=0, asvr_num=2);
+
+let $extra_conf = "cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+let $arb_extra_conf = "ob_startup_mode=arbitration,cpu_count=8,memory_limit='20G',system_memory='5G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+
+ob1.asvr1.set status=disable;
+# bootstrap
+ob1.reboot;
+sleep 3;
+
+ob1.asvr1.set status=enable;
+ob1.asvr1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# 启动仲裁server
+# 获取仲裁server的ip、port
+let $arb_svr_ip= deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port= deploy_get_value(ob1.asvr0.port);
+let $arb_svr_ip_2= deploy_get_value(ob1.asvr1.ip);
+let $arb_svr_port_2= deploy_get_value(ob1.asvr1.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+# check arbitration service add success
+--disable_query_log
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+
+# create mysql tenant(2F1A)
+--enable_query_log
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='z1;z2', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql", meta_tenant_id, 1);
+let $ls_cnt = deploy_get_value(ob1.select select count(distinct ls_id) as ls_cnt from oceanbase.__all_virtual_ls_meta_table where tenant_id = $mysql_tenant_id, ls_cnt, 1);
+--disable_query_log
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and role = 'LEADER' and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", $ls_cnt, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$meta_tenant_id and role = 'LEADER' and arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 1, 30;
+--enable_query_log
+let $max_ls_id = deploy_get_value(ob1.select select max(ls_id) as max_ls_id from oceanbase.CDB_OB_LS where tenant_id = $mysql_tenant_id, max_ls_id, 1);
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_AFTER_HAS_MEMBER_LIST wait_for signal';
+eval alter tenant mysql primary_zone='z1,z2';
+sleep 5;
+ob1.check_until_timeout select max(ls_id) > $max_ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $mysql_tenant_id, 1, 10;
+let $new_max_ls_id = deploy_get_value(ob1.select select max(ls_id) as new_max_ls_id from oceanbase.CDB_OB_LS where tenant_id = $mysql_tenant_id, new_max_ls_id, 1);
+--disable_query_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $mysql_tenant_id and ls_id = $new_max_ls_id and init_member_list like "%$arb_svr_ip:$arb_svr_port%" and init_member_list like "%flag:0%", 1, 10;
+#--enable_query_log
+#ob1.mysql set ob_global_debug_sync = 'now signal signal';
+#ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = $new_max_ls_id and role = "LEADER", 1, 30;
+
+#replace arbitration service
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = $new_max_ls_id and role = 'LEADER', 1, 60;
+--disable_query_log
+--error 4012
+eval alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+eval alter system switch replica leader ls=1 server='$z2_dst_ip0:$z2_dst_port0' tenant='mysql';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $mysql_tenant_id and ls_id = 1 and role = 'LEADER' and svr_ip like "%$z2_dst_ip0%" and svr_port = $z2_dst_port0, 1, 60;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where tenant_id = $meta_tenant_id and role = 'LEADER' and arbitration_member like "%$arb_svr_ip_2:$arb_svr_port_2%", 1, 30;
+ob1.check_until_timeout select count(*) - 1 as ls_cnt from oceanbase.__all_virtual_log_stat where tenant_id = $mysql_tenant_id and role = 'LEADER' and arbitration_member like "%$arb_svr_ip_2:$arb_svr_port_2%", $ls_cnt, 30;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_ARB_REPLICA_TASK_HISTORY where tenant_id = $mysql_tenant_id and ls_id = $new_max_ls_id and task_type = "REMOVE REPLICA" and arbitration_service like "%$arb_svr_ip:$arb_svr_port%", 1, 10;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_ARB_REPLICA_TASK_HISTORY where tenant_id = $mysql_tenant_id and ls_id = $new_max_ls_id and task_type = "ADD REPLICA" and arbitration_service like "%$arb_svr_ip_2:$arb_svr_port_2%", 1, 10;

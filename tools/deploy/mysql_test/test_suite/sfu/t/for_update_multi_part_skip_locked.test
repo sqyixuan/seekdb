@@ -1,0 +1,298 @@
+
+# owner: laibingzheng.lbz
+#tags: optimizer
+# owner group: IMF
+# tags: skip locked
+--echo #
+--echo # REQ#3892674 - add for select for update skip locked
+--echo #
+
+--disable_abort_on_error
+--disable_query_log
+--disable_result_log
+--error 0,1051
+drop table t1;
+--error 0,1051
+drop table t2;
+--error 0,1051
+drop table tp1;
+--error 0,1051
+drop table tp2;
+
+# use old operator
+connect (conn1, $OBMYSQL_MS0, $OBMYSQL_USR, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connection default;
+--enable_query_log
+--enable_result_log
+
+# 一: 1. two table join (use multi_for_update)
+create table t1 (c1 int, c2 int, c3 int);
+create table t2 (c1 int, c2 int, c3 int, c4 int);
+insert into t1 values(1, 1, 1);
+insert into t1 values(2, 1, 1);
+insert into t1 values(3, 2, 2);
+insert into t2 values(1, 1, 1, 2);
+insert into t2 values(2, 1, 1, 2);
+insert into t2 values(3, 3, 2, 2);
+commit;
+set autocommit = 0;
+
+--sorted_result
+select * from t1, t2 where t1.c2 = t2.c2 for update;
+connection conn1;
+select * from t1, t2 where t1.c3 = t2.c3 for update nowait;
+explain select * from t1, t2 where t1.c3 = t2.c3 for update skip locked;
+select * from t1, t2 where t1.c3 = t2.c3 for update skip locked;
+explain select * from t1 where t1.c1 in (select t2.c1 from t2 where t2.c4 = 2) for update skip locked;
+select * from t1 where t1.c1 in (select t2.c1 from t2 where t2.c4 = 2) for update nowait;
+select * from t1 where t1.c1 in (select t2.c1 from t2 where t2.c4 = 2) for update skip locked;
+commit;
+
+connection default;
+commit;
+set autocommit = 1;
+
+# 2. sub select not use multi_for_update
+set autocommit = 0;
+select t1.c1 from t1 where t1.c2 = 2 for update;
+connection conn1;
+select * from t1 where t1.c1 in (select t2.c1 from t2 where t2.c4 = 2) for update skip locked;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table t1;
+drop table t2;
+
+# 3. multi partiton table join with single partition table
+create table tp2 (c1 int, c2 int) partition by hash(c1) partitions 4;
+create index idx2 on tp2(c2) global;
+insert into tp2 values (1, 1);
+insert into tp2 values (2, 2);
+insert into tp2 values (3, 3);
+create table t1 (c1 int, c2 int, c3 int);
+insert into t1 values(1, 1, 1);
+insert into t1 values(2, 1, 1);
+insert into t1 values(3, 2, 2);
+commit;
+set autocommit = 0;
+
+explain select tp2.c2, t1.c2 from tp2, t1 where t1.c2 = 1 and tp2.c2 = 1 for update;
+select tp2.c2, t1.c2 from tp2, t1 where t1.c2 = 1 and tp2.c2 = 1 for update;
+connection conn1;
+explain select tp2.c2, t1.c2 from tp2, t1 for update skip locked;
+select tp2.c2, t1.c2 from tp2, t1 for update skip locked;
+commit;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table tp2;
+drop table t1;
+
+# 4. two table with primary key join
+create table t1 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2, c3));
+create table t2 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2));
+insert into t1 values(1,'dkz',3);
+insert into t1 values(2, 'dkz', 3);
+insert into t1 values(3, 'dsr', 3);
+insert into t2 values(1, 'dkz', 3);
+insert into t2 values(2, 'dkz', 3);
+insert into t2 values(3, 'dsr', 3);
+
+set autocommit = 0;
+select * from t1 where c1 = 1 for update;
+connection conn1;
+select * from t1, t2 where t1.c2 = t2.c2 for update nowait;
+commit;
+explain select t1.c1, t1.c2, t2.c1, t2.c2 from t1, t2 where t1.c2 = t2.c2 for update skip locked;
+select t1.c1, t1.c2, t2.c1, t2.c2 from t1, t2 where t1.c2 = t2.c2 for update skip locked;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table t1;
+drop table t2;
+
+
+# 二: 1. partition table with global index 
+create table tp1 (c1 int primary key, c2 int) partition by hash(c1) partitions 4;
+create index idx1 on tp1(c2) global;
+insert into tp1 values (1, 1);
+insert into tp1 values (2, 2);
+insert into tp1 values (3, 3);
+set autocommit = 0;
+
+explain select * from tp1 where c2 = 1 for update;
+select * from tp1 where c2 = 1 for update;
+# use global index
+connection conn1;
+explain select * from tp1 where c2  = 1 OR c2  = 2 for update nowait;
+select * from tp1 where c2  = 1 OR c2  = 2 for update nowait;
+explain select * from tp1 where c2  = 1 OR c2  = 2 for update skip locked;
+select * from tp1 where c2  = 1 OR c2  = 2 for update skip locked;
+commit;
+
+connection default;
+commit;
+set autocommit = 1;
+
+#  2. select 1(special case)
+set autocommit = 0;
+select * from tp1 where c2 = 1 for update;
+
+# use multi_for_update
+connection conn1;
+explain select 1 from tp1 for update skip locked;
+select 1 from tp1 for update skip locked;
+commit;
+
+connection default;
+commit;
+
+# use primary key not use multi_for_update
+set autocommit = 0;
+
+explain select /*+index(tp1 primary)*/ 1 from tp1 where c1 = 1 or c1 = 2 for update;
+select /*+index(tp1 primary)*/ 1 from tp1 where c1 = 1 or c1 = 2 for update;
+connection conn1;
+explain select /*+index(tp1 primary)*/ 1 from tp1 for update skip locked;
+select /*+index(tp1 primary)*/ 1 from tp1 for update skip locked;
+commit;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table tp1;
+
+# two multi partition table join
+create table tp1 (c1 int primary key, c2 int) partition by hash(c1) partitions 4;
+create table tp2 (c1 int, c2 int) partition by hash(c1) partitions 4;
+create index idx1 on tp1(c2) global;
+create index idx2 on tp2(c2) global;
+insert into tp1 values (1, 1);
+insert into tp1 values (2, 1);
+insert into tp1 values (3, 3);
+insert into tp2 values (1, 1);
+insert into tp2 values (2, 1);
+insert into tp2 values (3, 2);
+commit;
+set autocommit = 0;
+
+select * from tp1 where c1 = 1 for update;
+connection conn1;
+explain select * from tp1, tp2 where tp1.c2 = tp2.c2 for update skip locked;
+select * from tp1, tp2 where tp1.c2 = tp2.c2 for update skip locked;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table tp1;
+drop table tp2;
+
+
+# two multi partition table partation by generate_column,  join, sub_select
+create table tp1(c1 int, c2 int, c3 int GENERATED ALWAYS AS (c1+1), c4 int) partition by hash(c3) partitions 4;
+create table tp2(c1 int, c2 int, c3 int GENERATED ALWAYS AS (c1+1), c4 int) partition by hash(c3) partitions 4;
+create index idx1 on tp1(c2) global;
+create index idx2 on tp2(c2) global;
+insert into tp1(c1,c2,c4) values(1,1,1);
+insert into tp1(c1,c2,c4) values(2,2,2);
+insert into tp1(c1,c2,c4) values(3,2,3);
+insert into tp2(c1,c2,c4) values(1,1,1);
+insert into tp2(c1,c2,c4) values(2,2,2);
+insert into tp2(c1,c2,c4) values(3,3,3);
+commit;
+set autocommit = 0;
+
+select * from tp1 where c1 = 1 for update;
+connection conn1;
+explain select * from tp1, tp2 where tp1.c3 = tp2.c3 for update skip locked;
+select * from tp1, tp2 where tp1.c3 = tp2.c3 for update skip locked;
+commit;
+explain select * from tp1, tp2 where tp1.c3 = tp2.c3 for update;
+select * from tp1, tp2 where tp1.c3 = tp2.c3 for update; 
+commit;
+
+connection default;
+commit;
+set autocommit = 0;
+select * from(select * from tp1 where c4 > 0 order by c3 ) limit 2 for update;
+connection conn1;
+select * from(select * from tp1 where c4 > 0 order by c3 ) limit 3 for update skip locked;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table tp1;
+drop table tp2;
+
+# 无主键多分区表, 全局唯一分区索引，hint 全局索引
+create table tp2 (c1 int, c2 int, c3 int) partition by hash(c1) partitions 4;
+create unique index tp2_idx2 on tp2(c2) partition by hash(c2) partitions 2;
+insert into tp2 values (1,1,1);
+insert into tp2 values (2,2,1);
+insert into tp2 values (3,3,2);
+insert into tp2 values (4,4,3);
+insert into tp2 values (5,5,4);
+commit;
+set autocommit = 0;
+
+explain select /*+index(tp2 tp2_idx2)*/ * from tp2 where c2 > 1 for update;
+select /*+index(tp2 tp2_idx2)*/ * from tp2 where c2 > 1 for update;
+connection conn1;
+explain select /*+index(tp2 tp2_idx2)*/ * from tp2 where c2 > 0 for update skip locked;
+select /*+index(tp2 tp2_idx2)*/ * from tp2 where c2 > 0 for update skip locked;
+
+connection default;
+commit;
+set autocommit = 1;
+drop table tp2;
+
+# 针对left join，涉及两张表的情况，左表有数据，右表是null，补充case
+create table t1(c1 number, c2 number);
+create table t2(c1 number, c2 number);
+insert into t1 values (1, 1);
+insert into t1 values (2, 2);
+insert into t2 values (5, 4);
+
+commit;
+set autocommit = 0;
+select * from t1 where c1 = 2 for update;
+connection conn1;
+select * from (select * from t1) t left join t2 on t.c1=t2.c1 for update skip locked;
+connection default;
+commit;
+set autocommit = 1;
+drop table t1;
+drop table t2;
+
+# bug:
+CREATE TABLE t1(a NUMBER,b NUMBER);
+INSERT INTO t1 VALUES(10,50);
+INSERT INTO t1 VALUES(20,60);
+INSERT INTO t1 VALUES(30,70);
+CREATE TABLE t2(a NUMBER,c NUMBER);
+INSERT INTO t2 VALUES(10,1300);
+INSERT INTO t2 VALUES(10,2450);
+INSERT INTO t2 VALUES(20,800);
+INSERT INTO t2 VALUES(30,900);
+
+set autocommit = 0;
+select * from t2 left join t1 on t2.a = t1.a where t2.c > 2000 for update;
+
+connection conn1;
+set autocommit = 0;
+--sorted_result
+select * from t2 left join t1 on t2.a = t1.a for update skip locked;
+
+connection default;
+--sorted_result
+select * from t2 left join t1 on t2.a = t1.a for update skip locked;
+commit;
+set autocommit = 1;
+connection conn1;
+commit;
+set autocommit = 1;
+drop table t1;
+drop table t2;

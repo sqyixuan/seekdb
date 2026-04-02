@@ -1,0 +1,101 @@
+# owner: lixia.yq
+# owner group: storage [shared_storage]
+# description: this case is use for test checksum error & clear checksum error
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set default_compress_func='none';
+ob1.mysql alter system set debug_sync_timeout='100000s';
+
+let $proxy_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@obtest,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval='10s' tenant obtest;
+ob1.mysql alter system set compaction_low_thread_score=10 tenant obtest;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+--source include/compaction/create_table_for_compaction.inc
+
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='test01', tablet_id, 1);
+
+# EN_MAKE_DATA_CKM_ERROR_BY_WRITE_WRONG_ROW
+ob1.mysql alter system set_tp tp_no=747, error_code=4103, frequency=1;
+
+let $__cnt__=0;
+let $__row_cnt__=300;
+--source include/compaction/insert_rows_for_compaction.inc
+
+#########################################################################
+# TEST_1.1: make all server output wrong row, will cause checksum error
+#########################################################################
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+
+# meet CHECKSUM ERROR
+ob1.check_until_timeout select count(*) > 0 from CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and info = 'CHECKSUM_ERROR', 1, 600;
+
+# when meet first checksum error, will stop verify
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_column_checksum_error_info where tenant_id=$tenant_id and data_table_id !=0 and index_table_id != 0 and data_column_ckm != 0 and index_column_ckm != 0, 1, 100;
+
+#########################################################################
+# TEST_1.2: drop index idx01 before clear checksum error
+#########################################################################
+connection conn_mysql;
+alter table test01 drop index idx01;
+
+ob1.mysql alter system clear merge error tenant obtest;
+
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_column_checksum_error_info where tenant_id=$tenant_id and data_table_id !=0 and index_table_id != 0 and data_column_ckm != 0 and index_column_ckm != 0, 1, 100;
+ob1.check_until_timeout select count(*) > 0 from CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and info = 'CHECKSUM_ERROR', 1, 100;
+
+#########################################################################
+# TEST_1.3: drop index idx04 before clear checksum error
+#########################################################################
+connection conn_mysql;
+alter table test04 drop index idx04;
+
+ob1.mysql alter system clear merge error tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+#########################################################################
+# TEST_2.1: make one server output wrong row, will cause data checksum error
+#########################################################################
+# EN_MAKE_DATA_CKM_ERROR_BY_WRITE_WRONG_ROW
+ob1.mysql alter system set_tp tp_no=747, error_code=4103, frequency=0;
+ob1.mysql alter system set_tp tp_no=747, error_code=1, frequency=1;
+
+connection conn_mysql;
+--disable_query_log
+update test01 set c4 = 100;
+update test04 set c4 = 100;
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant='obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+
+#########################################################################
+# TEST_2.2: tablet meta table will show error
+#########################################################################
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and tablet_id=$tablet_id and status = 1, 1, 600;
+ob1.check_until_timeout select count(*) > 0 from CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and info = 'CHECKSUM_ERROR', 1, 500;
+
+#########################################################################
+# TEST_2.3: remove ls replica on server 1
+#########################################################################
+ob1.mysql alter tenant obtest locality='F@z2,F@z3';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 300;
+
+# sleep to wait ls refresh new locality
+sleep 30;
+ob1.mysql alter system clear merge error tenant obtest;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;

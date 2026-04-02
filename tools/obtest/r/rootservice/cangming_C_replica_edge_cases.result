@@ -1,0 +1,307 @@
+ob1=OBI(cluster=2:2:2:2, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance = 'false';
+CREATE RESOURCE UNIT uc MAX_CPU 2, MEMORY_SIZE '4G';
+CREATE RESOURCE POOL rp UNIT = 'uc', UNIT_NUM = 2;
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('rp'), primary_zone = 'z1', LOCALITY = 'F@z1,R@z2,C@z3,F@z4' set ob_tcp_invited_nodes='%';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_DISASTER_RECOVERY wait_for signal1 execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC wait_for signal2 execute 10000';
+CREATE TABLE t1 (c1 int,c2 int) PARTITION BY HASH(c1) PARTITIONS 8;
+=========================================================
+case 1: wrong replica type for normal ls
+=========================================================
+-- normal ls F in C-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- normal ls R in C-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z3_dst0:[0-9]*:0") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	LOW	READONLY	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	HIGH	READONLY	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- normal ls C in F-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 1, server = '$z4_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z4_dst_ip0' and svr_port = $z4_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z4_dst_ip0 -p $z4_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z4_dst0:[0-9]*:1") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	LOW	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	HIGH	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	FULL	add paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	FULL	add paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- normal ls C in R-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R', server = '$z2_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z2_dst_ip0' and svr_port = $z2_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z2_dst_ip0 -p $z2_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z2_dst0:[0-9]*:1") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	LOW	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE NON PAXOS REPLICA	HIGH	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+=========================================================================
+case 2: wrong replica type during shrinking, do locality alignment first
+=========================================================================
+alter resource tenant tt1 unit_num = 1 delete unit_group = (1002);
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+1002	1002	MIGRATE REPLICA	HIGH	FULL	shrink unit task
+1002	1002	MIGRATE REPLICA	HIGH	FULL	shrink unit task
+1002	1002	MIGRATE REPLICA	HIGH	FULL	shrink unit task
+1002	1002	MIGRATE REPLICA	HIGH	READONLY	shrink unit task
+1002	1002	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	READONLY	migrate replica due to unit group not match
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	MIGRATE REPLICA	HIGH	FULL	shrink unit task
+1002	1002	MIGRATE REPLICA	HIGH	FULL	shrink unit task
+1002	1002	MIGRATE REPLICA	HIGH	READONLY	shrink unit task
+1002	1002	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	FULL	migrate replica due to unit group not match
+1002	1002	MIGRATE REPLICA	LOW	READONLY	migrate replica due to unit group not match
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+alter resource tenant tt1 unit_num = 2;
+ob1.check_until_timeout select count(*) cnt from __all_virtual_balance_task, 0, 120;
+ob1.check_until_timeout select count(*) cnt from __all_virtual_balance_job, 0, 120;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1002 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	MIGRATE REPLICA	LOW	COLUMNSTORE	migrate replica due to unit group not match
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1002	MIGRATE REPLICA	LOW	COLUMNSTORE	migrate replica due to unit group not match
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+ob1.check_until_timeout select job_status from __all_rootservice_job where job_type = 'ALTER_RESOURCE_TENANT_UNIT_NUM' order by job_id desc limit 1, SUCCESS, 60;
+=========================================================
+case 3: wrong replica type for duplicate ls
+=========================================================
+CREATE TABLE dup_t1 (c1 int,c2 int) DUPLICATE_SCOPE= 'cluster';
+-- duplicate ls F in C-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 3;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and member_list like "%$z3_dst0%", 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE PAXOS REPLICA	HIGH	FULL	remove redundant paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- duplicate ls R in C-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C', server = '$z3_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z3_dst_ip0' and svr_port = $z3_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z3_dst_ip0 -p $z3_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z3_dst0:[0-9]*:0") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	LOW	READONLY	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	HIGH	READONLY	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	COLUMNSTORE	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- duplicate ls C in F-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'F', new_paxos_replica_number = 1, server = '$z4_dst1';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z4_dst_ip1' and svr_port = $z4_dst_port1, 0, 60;
+ob1.sh ./etc/ob_admin -h $z4_dst_ip1 -p $z4_dst_port1 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z4_dst1:[0-9]*:1") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	TYPE TRANSFORM	HIGH	FULL	type transform according to locality
+1002	1003	REMOVE NON PAXOS REPLICA	LOW	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	TYPE TRANSFORM	HIGH	FULL	type transform according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	LOW	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	HIGH	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+-- duplicate ls C in R-zone
+ob1.sh ./etc/ob_admin -h $ls_leader_ip -p $ls_leader_port remove_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'R', server = '$z2_dst0';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and svr_ip = '$z2_dst_ip0' and svr_port = $z2_dst_port0, 0, 60;
+ob1.sh ./etc/ob_admin -h $z2_dst_ip0 -p $z2_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and ls_id = $ls_id and role = "LEADER" and REGEXP_LIKE(learner_list, "$z2_dst0:[0-9]*:1") = 1, 1, 60;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	LOW	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	REMOVE NON PAXOS REPLICA	HIGH	COLUMNSTORE	remove redundant non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;
+one step
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from V$OB_LS_REPLICA_TASK_PLAN where tenant_id = 1002 and ls_id = 1003 order by priority, task_type, target_replica_type;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select (count(*) != 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 30;
+select tenant_id, ls_id, task_type, priority, target_replica_type, comment from CDB_OB_LS_REPLICA_TASKS;
+tenant_id	ls_id	task_type	priority	target_replica_type	comment
+1002	1003	ADD REPLICA	HIGH	READONLY	add non-paxos replica according to locality
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select (count(*) = 0) as cnt from oceanbase.CDB_OB_LS_REPLICA_TASKS where tenant_id = $tenant_id and ls_id = $ls_id, 1, 200;

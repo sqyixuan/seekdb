@@ -1,0 +1,68 @@
+# owner: jingyan.kfy
+# owner group: storage
+# description: test mutex of remove replica and change replica
+#
+--disable_query_log
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter resource pool obtestpool unit_num 2;
+
+#在zone1上建立连接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$ip,admin@obtest,admin,oceanbase,$port);
+connect (conn2,$ip,root@sys,,oceanbase,$port);
+
+sleep 5;
+connection conn1;
+use test;
+create table test01 (c1 int primary key, c2 int) locality="F,R@z1, F,R@z2, F,R@z3";
+let $cnt =1;
+while ($cnt < 10)
+{
+	eval insert into test01 values($cnt, $cnt);
+	inc $cnt;
+}
+
+let $tid = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = "test01", table_id, 1);
+
+# set debug sync, and remove one follower
+ob1.mysql alter system set debug_sync_timeout = '10000s';
+sleep 2;
+
+let $leader_zone= deploy_get_value(ob1.select select zone from oceanbase.__all_virtual_meta_table where table_id = $tid and partition_id = 0 and role = 1, zone, 1);
+let $follower_zone = deploy_get_value(ob1.select select distinct(zone) follower_zone from oceanbase.__all_server having follower_zone != '$leader_zone', follower_zone, 1);
+let $dst_ip_port = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from oceanbase.__all_virtual_meta_table where table_id = $tid and partition_id = 0 and role = 2 and replica_type = 16 and zone = '$follower_zone', addr, 1);
+let $dst = deploy_get_value(ob1.get_obs_by_addr $dst_ip_port);
+let $drop_ip_port = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from oceanbase.__all_virtual_meta_table where table_id = $tid and partition_id = 0 and replica_type != 16 and zone = '$follower_zone', addr, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip addr from oceanbase.__all_virtual_meta_table where table_id = $tid and partition_id = 0 and replica_type != 16 and zone = '$follower_zone', addr, 1);
+
+connection conn2;
+
+#删除F副本
+eval alter system drop replica partition_id='0%1@$tid' server='$drop_ip_port';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_BUILD_MIGRATE_PARTITION_INFO wait_for signal1';
+sleep 2;
+#将R副本转换成F副本
+ob1.mysql alter system change replica partition_id='0%1@$tid' server='$dst_ip_port' change replica_type='F';
+ob1.check_until_timeout select action from __all_virtual_partition_migration_status  where table_id=$tid, PREPARE, 10;
+sleep 5;
+
+#将刚刚转换的F副本删除，预期对于正在进行转换的副本，不允许删除，但错误码不会上报，因此此处返回成功
+eval alter system drop replica partition_id='0%1@$tid' server='$dst_ip_port';
+
+ob1.mysql set ob_global_debug_sync = 'NOW signal signal1';
+
+ob1.check_until_timeout select value3 from __all_rootservice_event_history where module = 'balancer' and event = 'finish_type_tranform'  and value1 like '%tid:$tid%', 0, 300;
+
+eval alter system drop replica partition_id='0%1@$tid' server='$dst_ip_port';
+
+ob1.mysql alter system major freeze;
+ob1.check_until_timeout select value from __all_zone where zone='' and name='last_merged_version', 2,3600;

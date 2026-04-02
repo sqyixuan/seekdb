@@ -1,0 +1,77 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#     alter resource pool split
+
+ob1=OBI(cluster=2:2:2, proxy_num=0, node_cpu_count=64, node_cpu_reserved=2);
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql CREATE RESOURCE UNIT test_unit MAX_CPU 1, memory_size '4G';
+ob1.mysql CREATE RESOURCE UNIT test_unit2 MAX_CPU 2, memory_size '4G';
+
+connection sys_conn;
+
+CREATE RESOURCE POOL tt1_pool0 UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+CREATE RESOURCE POOL tt2_pool0 UNIT = 'test_unit', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+CREATE RESOURCE POOL tt3_pool0 UNIT = 'test_unit', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+CREATE RESOURCE POOL not_grant UNIT = 'test_unit', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2', 'z3');
+
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('tt1_pool0') set ob_tcp_invited_nodes='%';
+CREATE TENANT tt2 RESOURCE_POOL_LIST = ('tt2_pool0') set ob_tcp_invited_nodes='%';
+CREATE TENANT tt3 RESOURCE_POOL_LIST = ('tt3_pool0'), locality = "F@z1,F@z2" set ob_tcp_invited_nodes='%';
+
+select resource_pool_id, name, unit_count, unit_config_id, zone_list, tenant_id, replica_type from oceanbase.__all_resource_pool where resource_pool_id != 1 order by resource_pool_id desc;
+select unit_id, resource_pool_id, zone, status from oceanbase.__all_unit where resource_pool_id != 1 order by unit_id desc;
+
+--error 4651
+ALTER RESOURCE POOL tt1_pool0 SPLIT INTO ('tt1_pool0', 'tt1_pool1', 'tt1_pool2') ON ('z1', 'z2', 'z3');
+--error 1210
+ALTER RESOURCE POOL tt1_pool0 SPLIT INTO ('tt1_pool1', 'tt1_pool1', 'tt1_pool2') ON ('z1', 'z2', 'z3');
+--error 1210
+ALTER RESOURCE POOL tt1_pool0 SPLIT INTO ('tt1_pool1', 'tt1_pool2', 'tt1_pool3') ON ('z1', 'z1', 'z3');
+--error 1210
+ALTER RESOURCE POOL tt1_pool0 SPLIT INTO ('tt1_pool1', 'tt1_pool2', 'tt1_pool3') ON ('z1', 'z2');
+# tt1 do it
+ALTER RESOURCE POOL tt1_pool0 SPLIT INTO ('tt1_pool1', 'tt1_pool2', 'tt1_pool3') ON ('z1', 'z2', 'z3');
+# tt2 do it
+ALTER RESOURCE POOL tt2_pool0 SPLIT INTO ('tt2_pool1', 'tt2_pool2', 'tt2_pool3') ON ('z1', 'z2', 'z3');
+# tt3 do it
+ALTER RESOURCE POOL tt3_pool0 SPLIT INTO ('tt3_pool2', 'tt3_pool3') ON ('z1', 'z2');
+# not grant do it
+ALTER RESOURCE POOL not_grant SPLIT INTO ('not_grant1', 'not_grant2', 'not_grant3') ON ('z1', 'z2', 'z3');
+
+# 对tt1租户做两次locality变更
+ALTER TENANT tt1 locality = "F@z1,F@z2,F@z3";
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt1", tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ALTER TENANT tt1 locality = "F@z1,F@z2";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ALTER TENANT tt1 resource_pool_list = ('tt1_pool1','tt1_pool2');
+DROP RESOURCE POOL tt1_pool3;
+
+# 对tt2租户的resource pool做shrink
+# TODO
+#ALTER RESOURCE POOL tt2_pool1 unit_num = 1;
+#ALTER RESOURCE POOL tt2_pool2 unit_num = 1;
+#ALTER RESOURCE POOL tt2_pool3 unit_num = 1;
+#ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where STATUS = 'DELETING', 0, 600;
+
+# 对tt3租户做locality变更
+ALTER TENANT tt3 locality = "F@z1,F@z2";
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt3', tenant_id, 1);
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $tenant_id and previous_locality != '', 0, 600;
+ALTER TENANT tt3 resource_pool_list = ('tt3_pool2','tt3_pool3');
+
+ALTER RESOURCE POOL not_grant1 unit_num = 1;
+ALTER RESOURCE POOL not_grant2 unit_num = 1;
+ALTER RESOURCE POOL not_grant3 unit_num = 1;
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where STATUS = 'DELETING', 0, 600;
+
+select resource_pool_id, name, unit_count, unit_config_id, zone_list, tenant_id, replica_type from oceanbase.__all_resource_pool where resource_pool_id != 1 order by resource_pool_id desc;
+select unit_id, resource_pool_id, zone, status from oceanbase.__all_unit where resource_pool_id != 1 order by unit_id desc;

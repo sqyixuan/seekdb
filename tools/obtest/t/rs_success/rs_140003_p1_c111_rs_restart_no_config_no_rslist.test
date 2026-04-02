@@ -1,0 +1,67 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试RS重启的时候和OBS相互依赖导致RS启动较慢的问题；
+#
+#RS在上任过程中，需要刷新schema，读取__all_ddl_operation表。
+#但是从location caceh中读取到__all_ddl_operation表的leader为宕机前的旧数据；
+#因此__all_ddl_operation表的读取失败，同时由于读取失败的错误码为-4242，导致刷新schema的SQL并没有触发location cache的刷新。导致持续RS启动失败；
+#等一段时间过去后，locationcache 项过期了，再次访问location cache后会触发刷新，此时就能读到__all_ddl_operation表真实的leader，（就是RS本机）。后续RS就能上任成功了；
+#
+#那为什么__all_ddl_operation表的读取失败返回错误码为-4242呢？
+#因为__all_core_table被接管以后集群立即宕机了，导致所有OBS上面保存的rootservice_list中都不包含新的RS。 OBS在启动后，需要等成功心跳以后才能触发刷新schema，由于RS_mgr找不到rs，所以OBS一直没刷新schema，所以才返回-4242.
+
+#问题表现为：内部表中leader为旧主；旧主上的rootservicelist不对； 新leader不容许汇报；
+#不带config url;
+#ABC; A为旧主；后把A宕机；禁止__all_ddl_operation表的leader更新；
+#
+#
+####case1:
+#在没有RS主动寻址OBS的基础上，让OBS本地ROOTSERVICE_LIST不对的情况下，能找到RS；
+#
+ob1=OBI(cluster=1:1:1,proxy_num=1);
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+sleep 3;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+alter system set debug_sync_timeout = '100000s';
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+ob_connect(tt1_conn, ob1.proxy0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 5;
+insert into t values (1,2),(3,4),(5,6);
+select * from t;
+
+ob1.mysql alter system set obconfig_url= '';
+ob1.mysql alter system set all_server_list = '';
+ob1.mysql alter system set rootservice_list = '';
+##验证ob1.z3.obs1的配置项已经生效；
+ob1.check_until_timeout select count(*) from __all_virtual_sys_parameter_stat where name = 'rootservice_list' and value !='', 0, 30;
+##停止RS的主动寻址功能；
+
+##重启ob1.z3.obs1,验证他能注册RS成功；
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where start_service_time > 0, 2, 120;
+ob1.mysql set ob_global_debug_sync = 'HUNG_HEARTBEAT_CHECK wait_for continue_signal';
+sleep 4;
+ob1.z3.obs0.nstart;
+ob1.check_until_timeout select count(*) from __all_server where start_service_time > 0, 3, 120;

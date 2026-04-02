@@ -1,0 +1,71 @@
+#
+#       owner : tingshuai.yts
+# owner group : outline
+# description :
+#   测试限流功能，在restart和majore freeze后是否仍旧有效
+#
+
+
+## ob1=OBI(cluster=1:1:1);
+ob1=OBI(cluster=1,proxy_num=0);
+## ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.reboot;
+sleep 5;
+
+let $scheduler_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $scheduler_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_admin,$scheduler_ip,admin,admin,oceanbase,$scheduler_port);
+connection conn_admin;
+
+## create yts_tt tenant
+source t/outline/create_tenant_for_outline.sql;
+connect (conn_yts,$scheduler_ip,root@yts_tt,,,$scheduler_port);
+connection conn_yts;
+
+## prepare data for test
+--disable_warnings
+drop database if exists ol_db;
+create database ol_db;
+--enable_warnings
+use ol_db;
+create table t1(c1 int primary key, c2 int, c3 int, key(c2), key(c3,c2));
+create table t2(c1 int primary key, c2 int, c3 int, key(c2), key(c3,c2));
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+create outline olt_1 on select /*+max_concurrent(0)*/ c2,c1 from t1 where c1 = 2 and c2 = ?;
+
+## first test
+source t/outline/test_concurrent_limit.sql;
+
+##### test restart #####
+--echo
+ob1.z1.obs0.restart;
+sleep 90;
+--echo
+connect (conn_yts1,$scheduler_ip,root@yts_tt,,,$scheduler_port);
+connection conn_yts1;
+use ol_db;
+## restart test
+source t/outline/test_concurrent_limit.sql;
+
+##### test major freeze #####
+--echo
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+--echo
+use ol_db;
+## major free test
+source t/outline/test_concurrent_limit.sql;
+
+## test drop outline
+drop outline olt_1;
+select  c2,c1 from t1 where c1 = 2 and c2 = "2";
+select  c2,c1 from t1 where c1 = 2 and c2 = "1";
+select  c2,c1 from t1 where c1 = 2 and c2 = 1;
+select  c2,c1 from t1 where c1 = 2 and c2 = true;
+
+drop database ol_db;
+## delete tenant
+connect (conn_admin,$scheduler_ip,admin,admin,oceanbase,$scheduler_port);
+connection conn_admin;
+source t/outline/delete_tenant_of_outline.sql;

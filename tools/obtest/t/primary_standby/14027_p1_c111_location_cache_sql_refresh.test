@@ -1,0 +1,155 @@
+# owner: rongxuan.lc
+# description: 本case是为了location cache会定期用sql刷新location cache;
+###异地部署的情况下，本地OBS感知不到异地R副本的位置变更，通过迁移R副本的位置来测试定期刷新；
+###当定时任务间隔很小的时候，能很快从proxy_schema表中获取到R的变更；否则获取不到；
+###同时需要需要测试限流的作用，如果单位时间内限流次数很小的话，不能保证所有副本都刷新完成；如果限流次数很大的话，能把所有副本都刷新完成；
+
+ob1=OBI(cluster=3:3:3,proxy_num=1,locality=HZ:HZ:SH);
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+ob_connect(sys1_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys1_conn;
+set ob_query_timeout = 30000000;
+eval  CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+eval  CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 3, ZONE_LIST = ('z1','z2','z3');
+eval  CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_1'), locality='f@z1,f@z2,f,r@z3', primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+let $tablenum=2;
+source sql/init_table.sql;
+create table tt (c1 int primary key, c2 int) partition by hash(c1) partitions 10;
+ob_connect(sys_conn, ob1.z1.obs0, root, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+alter system set balancer_idle_time = '10s';
+alter system set server_data_copy_out_concurrency = 30;
+alter system set server_data_copy_in_concurrency = 30;
+alter system set data_copy_concurrency = 60;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+##预热location cache
+connection sys1_conn;
+select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_1' and database_name='test' and table_name='tt' and partition_id = 0;
+##发起迁移；
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 'tt', table_id, 1);
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) src from __all_virtual_meta_table where table_id = $table_id and partition_id = 0 and replica_type=16, src, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) dest from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) dest from __all_virtual_meta_table where table_id = $table_id and partition_id = 0, dest, 1);
+
+--disable_query_log
+eval alter system move replica partition_id '0%10@$table_id' source '$src' destination '$dest';
+--enable_query_log
+##等待迁移结束；
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module like '%balan%' and event like '%finish%' and value1 like '%$table_id%', 1, 120;
+let $partition_dest = deploy_get_value(ob1.select select concat(svr_ip,":", inner_port)  partition_dest from __all_server where zone = 'z3' and concat(svr_ip,":",svr_port) = '$dest', partition_dest, 1);
+connection sys_conn;
+--disable_query_log
+eval select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_1' and database_name='test' and table_name='tt' and partition_id = 0 and concat(svr_ip,":",sql_port) = '$partition_dest'; 
+##调小定时任务的配置项；
+alter system set FORCE_REFRESH_LOCATION_CACHE_INTERVAL = '1s';
+sleep 3;
+eval select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_1' and database_name='test' and table_name='tt' and partition_id = 0 and concat(svr_ip,":",sql_port) = '$partition_dest'; 
+--enable_query_log
+
+###测试限流
+#
+connection sys1_conn;
+alter system set FORCE_REFRESH_LOCATION_CACHE_INTERVAL = '1h';
+eval  CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST = ('z1','z2','z3');
+eval  CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_2'), locality='f@z1,f@z2,f,r@z3', primary_zone='z1' set ob_tcp_invited_nodes='%';
+sleep 5;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_2', tenant_id, 1);
+ob_connect(tt2_conn, ob1.proxy0, root@tenant_2, , test, , USE_MYSQL_CONNECTOR);
+connection tt2_conn;
+create table tt (c1 int primary key, c2 int) partition by hash(c1) partitions 20;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 'tt', table_id, 1);
+##发起一次迁移，测试z1感知不到；
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) src from __all_virtual_meta_table where table_id = $table_id and partition_id = 0 and replica_type=16, src, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $resource_pool_id and concat(svr_ip,":",svr_port) = '$src', unit_id, 1);
+let $dest = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) dest from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) dest from __all_virtual_meta_table where table_id = $table_id and partition_id = 0, dest, 1);
+
+
+connection sys1_conn;
+##初始化location cache 
+let $partition_id = 0;
+let $count = 20;
+--disable_query_log
+while ($partition_id < $count)
+{
+  eval select partition_id, count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_2' and database_name='test' and table_name='tt' and partition_id = $partition_id;
+  inc $partition_id;
+}
+--enable_query_log
+
+--disable_query_log
+eval alter system migrate unit $unit_id destination '$dest';
+--enable_query_log
+
+#等待迁移结束；
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 1, 10; 
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_ip != '', 0, 240; 
+
+let $partition_dest = deploy_get_value(ob1.select select concat(svr_ip,":", inner_port)  partition_dest from __all_server where zone = 'z3' and concat(svr_ip,":",svr_port) = '$dest', partition_dest, 1);
+let $partition_id = 0;
+let $count = 10;
+##验证所有z1的location cache不感知；
+--disable_query_log
+while ($partition_id < $count)
+{
+  echo '$partition_id';
+  let $replica_type = deploy_get_value(ob1.select select replica_type from __all_virtual_meta_table where table_id = '$table_id' and partition_id = $partition_id and concat(svr_ip,":",svr_port) = '$dest', replica_type, 1);
+  if ($replica_type == 16) 
+  {
+    eval select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_2' and database_name='test' and table_name='tt' and partition_id = $partition_id and concat(svr_ip,":",sql_port) = '$partition_dest'; 
+  }
+  inc $partition_id;
+}
+--enable_query_log
+#设置限流 = 3；
+connection sys1_conn;
+alter system set FORCE_REFRESH_LOCATION_CACHE_INTERVAL = '1s';
+alter system set force_refresh_location_cache_threshold = 2;
+sleep 5;
+
+#遍历所有的分区，确认前面3个分区刷新成，后面2个未刷新成功；
+echo 'after alter system force_refresh_location_cache_threshold =2';
+let $partition_id = 0;
+let $count = 8;
+##验证所有z1的location cache不感知；
+--disable_query_log
+while ($partition_id < $count)
+{
+  echo '$partition_id';
+  let $replica_type = deploy_get_value(ob1.select select replica_type from __all_virtual_meta_table where table_id = '$table_id' and partition_id = $partition_id and concat(svr_ip,":",svr_port) = '$dest', replica_type, 1);
+  if ($replica_type == 16) 
+  {
+    eval select count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_2' and database_name='test' and table_name='tt' and partition_id = $partition_id and concat(svr_ip,":",sql_port) = '$partition_dest'; 
+  }
+  inc $partition_id;
+}
+##后面的几个副本使用hint的方式进行刷新；
+connection sys1_conn;
+alter system set FORCE_REFRESH_LOCATION_CACHE_INTERVAL = '1h';
+alter system set force_refresh_location_cache_threshold = 2;
+sleep 5;
+let $partition_id = 10;
+let $count = 16;
+##验证所有z1的location cache不感知；
+--disable_query_log
+while ($partition_id < $count)
+{
+  echo '$partition_id';
+  let $replica_type = deploy_get_value(ob1.select select replica_type from __all_virtual_meta_table where table_id = '$table_id' and partition_id = $partition_id and concat(svr_ip,":",svr_port) = '$dest', replica_type, 1);
+  if ($replica_type == 16) 
+  {
+    eval select /*+ FORCE_REFRESH_LOCATION_CACHE*/ count(*) from oceanbase.__all_virtual_proxy_schema where tenant_name='tenant_2' and database_name='test' and table_name='tt' and partition_id = $partition_id and concat(svr_ip,":",sql_port) = '$partition_dest'; 
+  }
+  inc $partition_id;
+}

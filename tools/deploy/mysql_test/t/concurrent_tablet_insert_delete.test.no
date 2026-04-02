@@ -1,0 +1,187 @@
+# Test concurrent tablet detlete and report.
+
+alter system set balance_worker_idle_time = '2h' ;
+alter system set check_server_task_interval = '2h' ;
+alter system set network_timeout = '1s' ;
+sleep 1;
+
+## <case 1> tablet deleted while reporting, report abort
+--echo case 1
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1 (k int, v int, primary key(k)) replica_num = 1;
+
+let $table_id = query_get_value(select table_id v from oceanbase.__all_virtual_table where table_name = 't1', v, 1);
+let $meta_table_name = query_get_value(select '__' '$table_id' '__meta__'  v, v, 1);
+
+let $cluster_id = query_get_value(select cluster_id v from $meta_table_name, v, 1);
+let $cs_ip = query_get_value(select ip v from $meta_table_name, v, 1);
+let $cs_port = query_get_value(select port v from $meta_table_name, v, 1);
+let $data_version = query_get_value(select data_version v from $meta_table_name, v, 1);
+
+--disable_query_log
+let $fake_cs_ip_min = 1.1.1.1;
+let $fake_cs_ip_max = 99.99.99.99;
+let $ip_cmp = query_get_value(select '$fake_cs_ip_min' < '$cs_ip' v, v, 1);
+--echo ip compare value: $ip_cmp
+let $ip_cmp = query_get_value(select '$fake_cs_ip_max' > '$cs_ip' v, v, 1);
+--echo ip compare value: $ip_cmp
+
+eval replace into __all_server (cluster_id, svr_type, svr_ip, svr_port, inner_port, svr_role, svr_version) values ($cluster_id, 'chunkserver', '$fake_cs_ip_min', $cs_port, 0, 0, 'SVN');
+eval replace into __all_server (cluster_id, svr_type, svr_ip, svr_port, inner_port, svr_role, svr_version) values ($cluster_id, 'chunkserver', '$fake_cs_ip_max', $cs_port, 0, 0, 'SVN');
+
+# wait cs sync __all_server
+sleep 3;
+
+eval delete from $meta_table_name;
+eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$fake_cs_ip_max', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+
+connect (conn,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn;
+set session ob_trx_timeout = 200000000;
+begin;
+# eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$cs_ip', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+eval select 1 from $meta_table_name for update;
+
+connection default;
+
+# wait delete execute
+sleep 1;
+
+eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$fake_cs_ip_min', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+connection conn2;
+set session ob_trx_timeout = 200000000;
+begin;
+eval select 1 from $meta_table_name where ip = '$fake_cs_ip_min' for update;
+
+connection default;
+
+# wait report
+sleep 3;
+
+connection conn;
+rollback;
+
+# wait delete execute
+sleep 1;
+connection conn2;
+rollback;
+connection default;
+
+# wait finish
+sleep 3;
+
+--enable_query_log
+let $replica_count = query_get_value("select count(*) as v from $meta_table_name", v, 1);
+--echo root table replica count: $replica_count
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+## <case 2> tablet report finished first, then be deleted
+--echo case 2
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1 (k int, v int, primary key(k)) replica_num = 1;
+
+let $table_id = query_get_value(select table_id v from oceanbase.__all_virtual_table where table_name = 't1', v, 1);
+let $meta_table_name = query_get_value(select '__' '$table_id' '__meta__'  v, v, 1);
+
+let $cluster_id = query_get_value(select cluster_id v from $meta_table_name, v, 1);
+let $cs_ip = query_get_value(select ip v from $meta_table_name, v, 1);
+let $cs_port = query_get_value(select port v from $meta_table_name, v, 1);
+let $data_version = query_get_value(select data_version v from $meta_table_name, v, 1);
+
+--disable_query_log
+let $fake_cs_ip = $fake_cs_ip_min;
+# fake_cs_ip less than cs_ip, report thread lock fake cs's replica first
+eval replace into __all_server (cluster_id, svr_type, svr_ip, svr_port, inner_port, svr_role, svr_version) values ($cluster_id, 'chunkserver', '$fake_cs_ip', $cs_port, 0, 0, 'SVN');
+
+# wait cs sync __all_server
+sleep 3;
+
+eval delete from $meta_table_name;
+eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$fake_cs_ip', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+
+connection conn;
+begin;
+eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$cs_ip', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+
+connection default;
+
+# wait report
+sleep 3;
+
+
+# wait delete execute
+sleep 1;
+connection conn;
+rollback;
+connection default;
+
+# wait finish
+sleep 3;
+
+--enable_query_log
+let $replica_count = query_get_value("select count(*) v from $meta_table_name", v, 1);
+--echo root table replica count: $replica_count
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+
+## <case 3> report and delete execute in random sequence.
+--echo case 3
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+create table t1 (k int, v int, primary key(k)) replica_num = 1;
+
+let $table_id = query_get_value(select table_id v from oceanbase.__all_virtual_table where table_name = 't1', v, 1);
+let $meta_table_name = query_get_value(select '__' '$table_id' '__meta__'  v, v, 1);
+
+let $cluster_id = query_get_value(select cluster_id v from $meta_table_name, v, 1);
+let $cs_ip = query_get_value(select ip v from $meta_table_name, v, 1);
+let $cs_port = query_get_value(select port v from $meta_table_name, v, 1);
+let $data_version = query_get_value(select data_version v from $meta_table_name, v, 1);
+
+--disable_query_log
+let $fake_cs_ip = 8.8.8.8;
+eval replace into __all_server (cluster_id, svr_type, svr_ip, svr_port, inner_port, svr_role, svr_version) values ($cluster_id, 'chunkserver', '$fake_cs_ip', $cs_port, 0, 0, 'SVN');
+
+# wait cs sync __all_server
+sleep 3;
+
+eval delete from $meta_table_name;
+eval insert into $meta_table_name (table_id, endkey_16, ip, port, startkey_16, cluster_id, data_version, checksum , row_checksum, column_checksum, row_count, data_size, status) values ($table_id, __OB__MAX__, '$fake_cs_ip', $cs_port, __OB__MIN__, $cluster_id, $data_version, 0, 0, '', 0, 0, 0);
+
+connection conn;
+begin;
+eval select 1 from $meta_table_name for update;
+
+connection default;
+
+# wait delete execute
+sleep 1;
+
+# wait report
+sleep 3;
+
+connection conn;
+rollback;
+connection default;
+
+# wait finish
+sleep 3;
+
+--enable_query_log
+let $replica_count = query_get_value("select count(*) v from $meta_table_name", v, 1);
+--echo root table replica count: $replica_count
+
+# drop table if exists t1;
+

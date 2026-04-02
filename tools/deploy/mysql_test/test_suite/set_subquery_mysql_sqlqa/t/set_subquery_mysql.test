@@ -1,0 +1,346 @@
+# owner: zhanyue.zzy
+# description: set subquery
+
+
+--echo 切换default用户
+--disable_result_log
+connection default;
+--error 0,1396
+DROP USER lyq_test;
+CREATE USER 'lyq_test' IDENTIFIED BY '123456';
+--enable_result_log
+GRANT ALL ON *.* TO lyq_test with grant option;
+
+--echo 切换lyq_test用户
+connect(lyq_test,$OBMYSQL_MS0,lyq_test,123456,test,$OBMYSQL_PORT);
+
+--echo 设置全局变量
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 BIGINT
+);
+
+INSERT INTO t1 (c1, c2) VALUES(1, 12345),(2, 12345),(3, 45687);
+
+
+SET GLOBAL max_connections = (SELECT DISTINCT a.c2
+FROM t1 AS a
+WHERE a.c1 IN (
+    SELECT b.c1
+    FROM t1 AS b
+    WHERE b.c2 = 12345
+    GROUP BY b.c1
+    HAVING COUNT(*) > 0
+)
+AND a.c2 = 12345
+GROUP BY a.c1, a.c2
+HAVING COUNT(a.c1) > 0
+ORDER BY a.c2 DESC);
+SHOW VARIABLES LIKE 'max_connections';
+
+
+--echo 切换lyq_test用户
+disconnect lyq_test;
+connect(lyq_test,$OBMYSQL_MS0,lyq_test,123456,test,$OBMYSQL_PORT);
+
+SHOW VARIABLES LIKE 'max_connections';
+--error 1242
+SET GLOBAL max_connections = (SELECT c2 from t1);
+--error 1232
+SET GLOBAL max_connections = (SELECT c2 from t1 where c1 = 5);
+--error 1232
+SET GLOBAL max_connections = (SELECT 'aaa' from dual);
+--error 1232
+SET GLOBAL max_connections = (SELECT '' from dual);
+--error 1232
+SET GLOBAL max_connections = (SELECT null from dual);
+
+SET GLOBAL max_connections = (SELECT 2147483647 from dual);
+
+--echo 设置用户定义变量
+--echo 切换lyq_test用户
+disconnect lyq_test;
+connect(lyq_test,$OBMYSQL_MS0,lyq_test,123456,test,$OBMYSQL_PORT);
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 INT,
+  c3 INT
+);
+
+INSERT INTO t1 (c1, c2, c3) VALUES(1, 2, 3),(4, 5, 6),(7, 8, 9);
+
+SET @my_variable = (SELECT 
+  DISTINCT c1 AS single_result 
+FROM 
+  (SELECT c1 FROM t1 WHERE c1 = ANY (SELECT DISTINCT c1 FROM t1 WHERE c1 IN (SELECT c1 FROM t1 GROUP BY c1 HAVING COUNT(c1) = 1)) ORDER BY c1 LIMIT 1) AS subquery);
+
+select @my_variable;
+
+SET @my_variable = (SELECT 'aaa' from dual);
+select @my_variable;
+SET @my_variable = (SELECT '' from dual);
+select @my_variable;
+SET @my_variable = (SELECT null from dual);
+select @my_variable;
+
+--echo 设置校对集
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 VARCHAR(20),
+  c2 VARCHAR(20)
+);
+
+INSERT INTO t1 (c1, c2) VALUES('utf8', 'utf8mb4_general_ci'),('other', 'some_value'),('mb4', 'another_value');
+
+SET collation_connection = ((SELECT DISTINCT t1.c2 FROM t1 WHERE t1.c1 LIKE 'utf8' GROUP BY t1.c2 HAVING COUNT(t1.c2) > 0 ORDER BY t1.c2)
+UNION ALL
+(SELECT t2.c2 FROM t1 AS t2 WHERE t2.c2 = ALL (SELECT t2.c2 FROM t1 WHERE t1.c2 LIKE 'utf8mb4_general_ci') GROUP BY t2.c2 HAVING COUNT(t2.c2) = 1 ORDER BY t2.c2)
+LIMIT 1);
+
+#SET collation_connection =(SELECT 123 from dual);
+--echo ob报Unknown collation: '123'，mysql 可以
+--error 1231
+SET collation_connection = 123;
+--error 1273
+SET collation_connection =(SELECT '' from dual);
+--error 1231
+SET collation_connection =(SELECT null from dual);
+
+SHOW VARIABLES LIKE 'collation_connection';
+
+--echo 用于修改 OceanBase 数据库当前登录用户或其他用户的密码
+--error 1064
+SET PASSWORD = PASSWORD(SELECT 123456 from dual);
+
+--echo 交互式超时设置
+
+SET wait_timeout=(SELECT 1234567 from dual);
+SHOW VARIABLES LIKE 'wait_timeout';
+
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 INT
+);
+
+INSERT INTO t1 (c1, c2) VALUES(1, 23456),(2, 123456),(3, 3456);
+
+SET wait_timeout=(SELECT DISTINCT 12345678 AS result
+FROM t1
+RIGHT JOIN (
+  SELECT c1 
+  FROM t1
+  WHERE c1 LIKE '%2%' 
+  GROUP BY c1 
+  HAVING COUNT(c1) > 0 
+  ORDER BY c1
+) AS derived_table ON EXISTS (
+  SELECT c1 FROM t1 WHERE c1 = derived_table.c1
+)
+LIMIT 1);
+
+SHOW VARIABLES LIKE 'wait_timeout';
+--error 1232
+set ob_trx_timeout = (SELECT '10000000000' from dual);
+--error 1232
+set ob_query_timeout = (SELECT '' from dual);
+--error 1232
+SET wait_timeout=(SELECT null from dual);
+
+--echo 开始新事务
+
+SET autocommit = 1;
+SHOW VARIABLES LIKE 'autocommit';
+
+SET autocommit = (WITH dummy AS (SELECT c1 from t1 where c1 = 1)
+SELECT DISTINCT IFNULL(dummy.c1, 0) AS result FROM dummy
+LEFT JOIN t1 ON dummy.c1 = t1.c1 WHERE  t1.c1 LIKE '1%' AND 0 = SOME (SELECT dummy.c1) GROUP BY dummy.c1 HAVING COUNT(dummy.c1) > -1
+UNION ALL
+SELECT 0 FROM t1 RIGHT JOIN dummy ON dummy.c1 = t1.c1 GROUP BY dummy.c1 HAVING COUNT(dummy.c1) > -1 ORDER BY result LIMIT 1); 
+
+SHOW VARIABLES LIKE 'autocommit';
+
+--error 1242
+SET autocommit = (SELECT c1 from t1);
+--error 1231
+SET autocommit = (SELECT c2 from t1 where c1 = 5);
+--error 1231
+SET autocommit = (SELECT 'aaa' from dual);
+--error 1231
+SET autocommit = (SELECT '' from dual);
+--error 1231
+SET autocommit = (SELECT null from dual);
+
+SET autocommit = 1;
+SHOW VARIABLES LIKE 'autocommit';
+
+--echo 设置会话级或全局级的时区
+--echo 切换lyq_test用户
+disconnect lyq_test;
+connect(lyq_test,$OBMYSQL_MS0,lyq_test,123456,test,$OBMYSQL_PORT);
+
+SET time_zone = '+08:00';
+SHOW VARIABLES LIKE 'time_zone';
+
+--error 1242
+SET time_zone = (SELECT c1 from t1);
+--error 1232
+SET time_zone = (SELECT c2 from t1 where c1 = 5);
+--error 1298
+SET time_zone = (SELECT 'aaa' from dual);
+--error 1232
+SET time_zone = (SELECT 8 from dual);
+--error 1232
+SET time_zone = (SELECT null from dual);
+
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 INT,
+  c3 VARCHAR(20)
+) PARTITION BY RANGE COLUMNS(c1) (
+  PARTITION p0 VALUES LESS THAN (1),
+  PARTITION p1 VALUES LESS THAN (10),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE)
+);
+
+INSERT INTO t1 (c1, c2, c3) VALUES(1, 23456, '+08:00'),(2, 123456, '+00:00'),(3, 3456, '+08:30');
+
+--error 0,1051
+drop table t2;
+CREATE TABLE t2 (
+  c1 INT,
+  c2 INT
+);
+
+INSERT INTO t2 (c1, c2) VALUES(1, 23456),(2, 123456),(3, 3456);
+
+SET time_zone = (SELECT DISTINCT c3 AS time_zone FROM t1 AS a
+INNER JOIN t2 AS b ON a.c1 = b.c1
+WHERE a.c1 IS NOT NULL and b.c1 = 2);
+
+SHOW VARIABLES LIKE 'time_zone';
+
+SET time_zone = '+08:00';
+SHOW VARIABLES LIKE 'time_zone';
+
+--echo 最大执行时间
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 INT
+);
+
+INSERT INTO t1 (c1, c2) VALUES(1, 23456),(2, 123456),(3, 3456);
+
+--error 1242
+SET max_execution_time = (SELECT c1 from t1);
+--error 1232
+SET max_execution_time = (SELECT c2 from t1 where c1 = 5);
+--error 1232
+SET max_execution_time = (SELECT 'aaa' from dual);
+
+SET max_execution_time = (SELECT 8 from dual);
+--error 1232
+SET max_execution_time = (SELECT null from dual);
+
+SHOW VARIABLES LIKE 'max_execution_time';
+--error 1241
+SET SESSION max_execution_time = (WITH c1_100_records AS (
+    SELECT c1
+    FROM t1
+    WHERE c1 = 3
+)SELECT t1.*
+FROM t1
+JOIN (
+    SELECT c1
+    FROM c1_100_records
+    GROUP BY c1
+    HAVING COUNT(*) = 1
+) AS filter ON t1.c1 = filter.c1);
+
+SET SESSION max_execution_time = (
+WITH c1_100_records AS (
+    SELECT c1
+    FROM t1
+    WHERE c1 = 3
+)SELECT t1.c1
+FROM t1
+JOIN (
+    SELECT c1
+    FROM c1_100_records
+    GROUP BY c1
+    HAVING COUNT(*) = 1
+) AS filter ON t1.c1 = filter.c1);
+
+SHOW VARIABLES LIKE 'max_execution_time';
+
+
+--echo 切换lyq_test用户
+disconnect lyq_test;
+connect(lyq_test,$OBMYSQL_MS0,lyq_test,123456,test,$OBMYSQL_PORT);
+
+--echo 设置会话变量
+--error 1231
+SET sql_mode=(SELECT 'aaa' from dual);
+SET sql_mode=(SELECT 123456 from dual);
+SET sql_mode=(SELECT '' from dual);
+SET sql_mode=(SELECT null from dual);
+--echo ob可以执行，mysql 报Variable 'sql_mode' can't be set to the value of 'NULL'
+SET sql_mode=null;
+SHOW VARIABLES LIKE 'sql_mode';
+
+
+--error 0,1051
+drop table t1;
+CREATE TABLE t1 (
+  c1 INT,
+  c2 INT,
+  c3 VARCHAR(20)
+) PARTITION BY RANGE COLUMNS(c1) (
+  PARTITION p0 VALUES LESS THAN (1),
+  PARTITION p1 VALUES LESS THAN (10),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE)
+);
+
+INSERT INTO t1 (c1, c2, c3) VALUES(1, 23456, '+08:00'),(2, 123456, '+00:00'),(3, 3456, '+08:30');
+
+--error 0,1051
+drop table t2;
+CREATE TABLE t2 (
+  c1 INT,
+  c2 INT
+);
+
+INSERT INTO t2 (c1, c2) VALUES(1, 23456),(2, 123456),(3, 3456);
+
+SET sql_mode=(SELECT CONCAT(@@sql_mode, ',PIPES_AS_CONCAT,NO_ENGINE_SUBSTITUTION')),time_zone=(SELECT DISTINCT c3 AS time_zone FROM t1 AS a
+INNER JOIN t2 AS b ON a.c1 = b.c1
+WHERE a.c1 IS NOT NULL and b.c1 = 2);
+
+SHOW VARIABLES LIKE 'sql_mode';
+SHOW VARIABLES LIKE 'time_zone';
+
+
+SET @@GLOBAL.sql_mode = (SELECT CONCAT(@@sql_mode, ',STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION')),time_zone=(SELECT DISTINCT c3 AS time_zone FROM t1 AS a
+INNER JOIN t2 AS b ON a.c1 = b.c1
+WHERE a.c1 IS NOT NULL and b.c1 = 1);
+
+SHOW VARIABLES LIKE 'sql_mode';
+SHOW VARIABLES LIKE 'time_zone';
+SELECT @@global.sql_mode;
+SELECT @@global.time_zone;
+
+
+
+
+
+

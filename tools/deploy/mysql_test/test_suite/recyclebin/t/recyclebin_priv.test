@@ -1,0 +1,131 @@
+# owner: dachuan.sdc
+# owner group: sql2
+# description:
+#
+# test of recyclebin of normal tenant
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+let $count = 5;
+let $zone_count = 1;
+let $unit_num = 1;
+
+set @@recyclebin = off;
+
+######################################################################
+##create tenant
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+#let $zone2 = query_get_value(select zone from oceanbase.__all_virtual_zone_stat, zone, 2);
+--disable_warnings
+--disable_query_log
+#eval CREATE RESOURCE UNIT if not exists resource_unit MAX_CPU=1, MEMORY_SIZE='2G';
+#--echo create resource pool resource_pool
+#eval CREATE RESOURCE POOL if not exists resource_pool UNIT='resource_unit', UNIT_NUM=$unit_num, ZONE_LIST=('$zone1');
+--enable_query_log
+#eval CREATE TENANT if not exists tenant_test RESOURCE_POOL_LIST=('resource_pool') set ob_tcp_invited_nodes='%';
+--source mysql_test/include/check_tenant_sync.inc
+--enable_warnings
+disconnect obsys;
+connection default;
+
+--echo connect(con1, localhost, hualong,,test);
+let $__tenant_name__ = 'sys';
+--source mysql_test/include/get_tenant_server.inc
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+disconnect obsys;
+connection default;
+
+connect (tenant_test_root,$TE_SERVER_IP, root,,*NO-ONE*,$TE_SERVER_PORT);
+
+set @@recyclebin = off;
+--disable_warnings
+drop database if exists db1;
+--enable_warnings
+--disable_warnings
+drop user if exists hualong;
+--enable_warnings
+create user hualong;
+grant CREATE, SELECT, INSERT, DELETE, DROP, ALTER, UPDATE, CREATE VIEW, INDEX on *.* to hualong;
+
+######################################################################
+
+--source mysql_test/include/check_schema_sync.inc
+connect(tenant_test_hualong, $TE_SERVER_IP, hualong,, *NO-ONE*,$TE_SERVER_PORT); 
+
+
+create database db1;
+create table db1.tr1(c1 int primary key, c2 int, key(c2));
+create view db1.v1 as select * from db1.tr1;
+
+connection default;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $database_id = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'db1', database_id, 1);
+let $tr1_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tr1' and database_id = $database_id, table_id, 1);
+let $tr1_index_id = query_get_value(select table_id from oceanbase.__all_virtual_table where data_table_id = $tr1_id and database_id = $database_id, table_id, 1);
+disconnect obsys;
+connection default;
+
+connection tenant_test_hualong;
+set @@recyclebin = on;
+drop table db1.tr1;
+
+connection default;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tr1_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $tr1_id and type = 1, object_name, 1);
+let $tr1_index_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where table_id = $tr1_index_id and type = 2, object_name, 1);
+disconnect obsys;
+connection default;
+
+connection tenant_test_hualong;
+--error 1046
+flashback table $tr1_index_objname to before drop;
+--error 1046
+flashback table $tr1_objname to before drop;
+
+drop database db1;
+
+connection default;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $db1_objname = query_get_value(select object_name from oceanbase.__all_virtual_recyclebin where database_id = $database_id and type = 4, object_name, 1);
+disconnect obsys;
+connection default;
+
+connection tenant_test_hualong;
+--disable_query_log
+--echo flashback database hualong
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+eval flashback database $db1_objname to before drop;
+
+--echo purge index
+--error 1046
+eval purge table $tr1_index_objname;
+
+--echo purge table 
+--error 1046
+eval purge table $tr1_objname;
+
+--echo purge database
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+eval purge database $db1_objname;
+
+--enable_query_log
+
+#########################################################
+##clear
+connection default;
+set @@recyclebin = off;
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+#drop tenant tenant_test force;
+#drop resource pool resource_pool;
+#drop resource unit resource_unit;
+disconnect obsys;
+connection default;

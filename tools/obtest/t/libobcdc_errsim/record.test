@@ -1,0 +1,69 @@
+##############
+#owner: bohou.ws
+#test point: obcdc handle ObTxRecordLog
+#refer to t/trans/3045_c22_scatter_log_ids_shouwu.test
+##############
+# prepare cluster and tenant
+ob1=OBI(cluster=1, proxy_num=1);
+ob1.z1.obs0.set extra_config=_private_buffer_size='1B';
+ob1.reboot;
+
+sleep 5;
+source include/liboblog/create_tenant_with_gts.inc;
+
+connection oblog_conn_sys;
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+set ob_trx_idle_timeout=100000000000;
+alter system set_tp tp_no = 363, error_code = 4013, frequency = 1;
+#alter system set _private_buffer_size = '1B';
+
+connection oblog_conn_tt;
+
+create database obcdc_db;
+use obcdc_db;
+let $size=50;
+let $cnt=20;
+
+let $start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+let $start_tstamp_usec2 = $start_tstamp_usec;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+--disable_query_log
+eval create table t_big(c1 int primary key, c2 varchar($size), c3 varchar($size)) partition by hash (c1) partitions 2;
+let $t_idx=0;
+set autocommit=0;
+begin;
+while ($cnt > 0)
+{
+  eval insert into t_big values ($t_idx, repeat('a', $size), repeat('b', $size));
+  inc $t_idx;
+  dec $cnt;
+  if ($cnt==2)
+  {
+    let $start_tstamp_usec2 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+  }
+}
+commit;
+
+truncate table t_big;
+--enable_query_log
+
+ob1.oblog.next;
+ob1.oblog.stop;
+ob1.oblog.check_log "handle record_log(ret=0, ret=\"OB_SUCCESS\", tls_id={tenant_id:1004, ls_id:{id:1001}}";
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec;
+ob1.oblog.restart;
+ob1.oblog.next;
+ob1.oblog.stop;
+ob1.oblog.check_log "handle record_log(ret=0, ret=\"OB_SUCCESS\", tls_id={tenant_id:1004, ls_id:{id:1001}}";
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* log_level=TLOG.*:DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_usec2;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+ob1.oblog.stop;
+ob1.oblog.check_log "handle record_log(ret=-4022, ret=\"OB_ITEM_NOT_SETTED\", tls_id={tenant_id:1004, ls_id:{id:1001}}";

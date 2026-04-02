@@ -1,0 +1,44 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    C副本在共享存储模式下禁用
+#    1. locality中不能包含C副本
+#    2. 日志流副本运维命令和ob_admin命令不允许添加C副本
+
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=0);
+ob1.reboot;
+ob_connect(sys_conn, ob1.z1.obs0,root@sys, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+# check shared-storage mode
+ob1.check_until_timeout select count(*) c from __all_virtual_sys_parameter_stat where name like '%startup%', 2, 1;
+
+CREATE RESOURCE UNIT uc MAX_CPU 2, MEMORY_SIZE '4G';
+CREATE RESOURCE POOL rp UNIT = 'uc', UNIT_NUM = 1;
+
+--echo ================ CASE 1: tenant locality ========================
+--error 1235
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('rp'), LOCALITY = 'F@z1,C@z2' set ob_tcp_invited_nodes='%';
+CREATE TENANT tt1 RESOURCE_POOL_LIST = ('rp'), LOCALITY = 'F@z1' set ob_tcp_invited_nodes='%';
+--error 1235
+ALTER TENANT tt1 SET LOCALITY = 'F@z1,C@z2';
+
+--echo ================ CASE 2: LS command      ========================
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name = 'tt1', tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from __all_virtual_ls where tenant_id = $tenant_id and ls_id != 1, ls_id, 1);
+--disable_query_log
+--error 1235
+eval alter system add replica ls=1 server='$z2_dst0' replica_type='C' tenant='tt1';
+--error 1235
+eval alter system add replica ls=$ls_id server='$z2_dst0' replica_type='C' tenant='tt1';
+--enable_query_log
+
+--echo ================ CASE 3: ob_admin command========================
+ob1.sh ./etc/ob_admin -h $z2_dst_ip0 -p $z2_dst_port0 add_ls_replica tenant_id = $tenant_id , ls_id = $ls_id, replica_type = 'C';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_SERVER_EVENT_HISTORY where module like "%ob_admin%" and svr_ip = "$z2_dst_ip0" and svr_port = $z2_dst_port0 and value4 like "%OB_NOT_SUPPORTED%" and value3 like "%tenant_id = $tenant_id , ls_id = $ls_id, replica_type = C%" and value6 like "%add ls replica trigger by ob_admin%", 1, 10;
+
+

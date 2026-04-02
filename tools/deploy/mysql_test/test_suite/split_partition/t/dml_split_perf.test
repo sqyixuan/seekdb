@@ -1,0 +1,178 @@
+# owner: lihongqin.lhq
+# owner group: storage
+# description: this case is use for testing parallel dml with online split partition
+#
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+alter system set debug_sync_timeout = '60s';
+sleep 3;
+set ob_global_debug_sync = 'reset';
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+set ob_query_timeout = 1000000000;
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+set ob_query_timeout = 1000000000;
+connect (conn3,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+set ob_query_timeout = 1000000000;
+connection default;
+set ob_query_timeout = 1000000000;
+
+let $tenant_id = `select effective_tenant_id() from dual`;
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+--enable_warnings
+purge recyclebin;
+
+--echo
+--echo # prepare data
+create table t1(c1 int, c2 text, c3 int, primary key(c1)) LOB_INROW_THRESHOLD=100 partition by range(c1) size('10g') (partition p0 values less than (maxvalue));
+create table t2(c1 int auto_increment primary key, c2 text, c3 int);
+insert into t2 select row_number() over (), randstr(256, random()), 0 from table(generator(32768));
+select count(*), min(c1), max(c1) from t2;
+
+sleep 5;
+
+--echo
+--echo # large insert
+let $base_start = `select time_to_usec(current_timestamp(6)) from dual`;
+insert /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select * from t2;
+let $base_trace_id = `select last_trace_id() from dual`;
+let $base_used = `select time_to_usec(current_timestamp(6)) - $base_start from dual`;
+truncate table t1;
+
+let $test_start = `select time_to_usec(current_timestamp(6)) from dual`;
+send insert /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select * from t2;
+connection conn1;
+select sleep(1 + RAND() * 3);
+send alter table t1 reorganize partition p0 into (partition p0 values less than (1000), partition p1 values less than (maxvalue));
+connection default;
+reap;
+let $test_trace_id = `select last_trace_id() from dual`;
+let $test_used = `select time_to_usec(current_timestamp(6)) - $test_start from dual`;
+connection conn1;
+reap;
+connection default;
+let $inc_used = `select $test_used - $base_used from dual`;
+#if ($inc_used >= 100000) {
+#--echo dml slowed down during split:base_used=$base_used, test_used=$test_used, inc_used=$inc_used, base_trace_id=$base_trace_id, test_trace_id=$test_trace_id
+#}
+
+#connection obsys;
+#--disable_query_log
+#eval select retry_cnt from gv\$ob_sql_audit where tenant_id = $tenant_id and trace_id = '$test_trace_id' and query_sql = 'insert /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select * from t2';
+#--enable_query_log
+
+connection default;
+select count(*) from t1 partition (p0);
+select count(*) from t1 partition (p1);
+select count(*) from t1;
+
+
+--echo
+--echo # batch replace with all row replaced
+send replace /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select c1, c2, 1 from t1;
+connection conn1;
+select sleep(1 + RAND() * 3);
+send alter table t1 reorganize partition p1 into (partition p1 values less than (10000), partition p2 values less than (maxvalue));
+connection default;
+reap;
+let $test_trace_id = `select last_trace_id() from dual`;
+connection conn1;
+reap;
+
+#connection obsys;
+#--disable_query_log
+#eval select retry_cnt from gv\$ob_sql_audit where tenant_id = $tenant_id and trace_id = '$test_trace_id' and query_sql = 'replace /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select c1, c2, 1 from t1';
+#--enable_query_log
+
+connection default;
+select count(*) from t1 partition (p0);
+select count(*) from t1 partition (p1);
+select count(*) from t1 partition (p2);
+select count(*) from t1;
+select sum(c1), sum(c3) from t1;
+
+--echo
+--echo # insert into on duplicate key update with all row update
+send insert /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select c1, c2, 5 from t1 as tt on duplicate key update t1.c3 = tt.c3 + 1;
+connection conn1;
+select sleep(1 + RAND() * 3);
+send alter table t1 reorganize partition p2 into (partition p2 values less than (20000), partition p3 values less than (maxvalue));
+connection default;
+reap;
+let $test_trace_id = `select last_trace_id() from dual`;
+connection conn1;
+reap;
+
+#connection obsys;
+#--disable_query_log
+#eval select retry_cnt from gv\$ob_sql_audit where tenant_id = $tenant_id and trace_id = '$test_trace_id' and query_sql = 'insert /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ into t1 select c1, c2, 5 from t1 as tt on duplicate key update t1.c3 = tt.c3 + 1';
+#--enable_query_log
+
+connection default;
+select count(*) from t1 partition (p0);
+select count(*) from t1 partition (p1);
+select count(*) from t1 partition (p2);
+select count(*) from t1 partition (p3);
+select count(*) from t1;
+select sum(c1), sum(c3) from t1;
+
+--echo
+--echo # large update
+send update /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ t1 set c1 = c1+10000000, c3 = c3 + 1 where c1 >= 20000;
+connection conn1;
+select sleep(1 + RAND() * 3);
+send alter table t1 reorganize partition p3 into (partition p3 values less than (25000), partition p4 values less than (maxvalue));
+connection default;
+reap;
+let $test_trace_id = `select last_trace_id() from dual`;
+connection conn1;
+reap;
+
+#connection obsys;
+#--disable_query_log
+#eval select retry_cnt from gv\$ob_sql_audit where tenant_id = $tenant_id and trace_id = '$test_trace_id' and query_sql = 'update /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ t1 set c1 = c1+10000000, c3 = c3 + 1 where c1 >= 20000';
+#--enable_query_log
+
+connection default;
+select count(*) from t1 partition (p0);
+select count(*) from t1 partition (p1);
+select count(*) from t1 partition (p2);
+select count(*) from t1 partition (p3);
+select count(*), min(c1), max(c1) from t1 partition (p4);
+select count(*) from t1;
+select sum(c1), sum(c3) from t1;
+
+--echo
+--echo # large delete
+select min(c1) + (select floor(count(*)/2) from t1 partition(p4)) from t1 partition(p4);
+send delete /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ from t1 partition(p4);
+connection conn1;
+select sleep(1 + RAND() * 3);
+send alter table t1 reorganize partition p4 into (partition p4 values less than (10032769), partition p5 values less than (maxvalue));
+connection default;
+reap;
+let $test_trace_id = `select last_trace_id() from dual`;
+connection conn1;
+reap;
+
+#connection obsys;
+#--disable_query_log
+#eval select retry_cnt from gv\$ob_sql_audit where tenant_id = $tenant_id and trace_id = '$test_trace_id' and query_sql = 'delete /*+enable_parallel_dml parallel(4) query_timeout(10000000000)*/ from t1 partition(p4)';
+#--enable_query_log
+
+connection default;
+select count(*) from t1 partition (p0);
+select count(*) from t1 partition (p1);
+select count(*) from t1 partition (p2);
+select count(*) from t1 partition (p3);
+select count(*) from t1 partition (p4);
+select count(*) from t1 partition (p5);
+select count(*) from t1;
+select sum(c1), sum(c3) from t1;
+
+drop table t1;
+drop table t2;
+

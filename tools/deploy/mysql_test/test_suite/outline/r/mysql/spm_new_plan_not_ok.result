@@ -1,0 +1,89 @@
+alter system set enable_auto_leader_switch = false;
+alter system set large_query_threshold  = 100000000000;
+drop database if exists spm_db;
+create database spm_db;
+use spm_db;
+CREATE TABLE t1(c1_pk INT PRIMARY KEY, c2_skew INT, c3_unique INT, key idx_u(c2_skew));
+
+//init table data, 构造c2_skew列为1000行100， 1行111, 使用c2_skew ＝ 111生成新计划,使用c2_skew = 100演进, 最终不使用走index的新计划，选择使用主键扫描
+
+set global optimizer_use_sql_plan_baselines = true;
+set global optimizer_capture_sql_plan_baselines = true;
+set _optimizer_adaptive_cursor_sharing = false;
+
+//生成baseline
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 111;
+sum(c1_pk + c2_skew + c3_unique)
+2115
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	0	0	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+
+select sql_text,outline_data  from oceanbase.__all_virtual_tenant_plan_baseline where sql_text = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?' and tenant_id = 1002;
+sql_text	outline_data
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+
+//构造好的计划baseline: full scan
+select outline_data  from oceanbase.__all_virtual_tenant_plan_baseline where sql_text = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?' and tenant_id = 1002;
+outline_data
+/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/
+alter system flush plan cache global;
+use spm_db;
+set global optimizer_use_sql_plan_baselines = true;
+set global optimizer_capture_sql_plan_baselines = true;
+set autocommit = 0;
+
+//第1次执行,plan cache为空，添加新版本计划, 标记需要演进
+//预期:有1个走索引计划, evolution = 1，evo_executions = 1;
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 111;
+sum(c1_pk + c2_skew + c3_unique)
+2115
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	1	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+
+//第2次执行, 进入plan cache, 有演进标记， 按50%获取执行老计划, 本次会从baseline中获取outline data并生成计划, add进plan cache
+//预期:有两个计划, 一个计划走索引(evo_executions = 1)，一个计划走主键扫描(evo_executions = 1)
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 111;
+sum(c1_pk + c2_skew + c3_unique)
+2115
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	1	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	1	/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/
+
+//第3次执行, 按50%获取老计划执行, 本次需要执行新计划(evo_executions = 2)
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 100;
+sum(c1_pk + c2_skew + c3_unique)
+1101000
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	2	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	1	/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/
+
+//演进 执行16次select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 100;
+
+//第20次执行, 预期两个计划：走索引计划, evo_executions=10, 走主键扫描计划, evo_executions=10
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 100;
+sum(c1_pk + c2_skew + c3_unique)
+1101000
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	10	/*+ BEGIN_OUTLINE_DATA INDEX(@"SEL$1" "spm_db.t1"@"SEL$1" "idx_u") END_OUTLINE_DATA*/
+7B2EEF7D0BBF189782665D92CF8A1C8F	1	10	/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/
+
+//第21次执行, 预期: 演进结束，保留1个全表扫描的plan, evolution = 0, 表示演进结束;
+//预期：one plan with full scan
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = 100;
+sum(c1_pk + c2_skew + c3_unique)
+1101000
+select sql_id, evolution, evo_executions, outline_data  from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?';
+sql_id	evolution	evo_executions	outline_data
+7B2EEF7D0BBF189782665D92CF8A1C8F	0	10	/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/
+commit;
+set autocommit = 1;
+//演进结果确认
+//预期仅一行记录, outline data为走全表扫描计划
+select sql_text, outline_data  from oceanbase.__all_virtual_tenant_plan_baseline where sql_text = 'select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?' and tenant_id = 1002;
+sql_text	outline_data
+select sum(c1_pk + c2_skew + c3_unique) from t1 where c2_skew = ?	/*+ BEGIN_OUTLINE_DATA FULL(@"SEL$1" "spm_db.t1"@"SEL$1") END_OUTLINE_DATA*/

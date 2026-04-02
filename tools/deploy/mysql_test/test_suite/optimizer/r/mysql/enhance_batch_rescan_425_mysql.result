@@ -1,0 +1,1249 @@
+result_format: 4
+drop table if exists t1;
+create table t1(c1 int primary key, c2 int ,c3 int, c4 int) partition by hash(c1) partitions 4;
+insert into t1
+with recursive cte as (select 1 as c1 union all select c1+1 from cte where c1 < 1000)
+select c1, c1, c1, c1 from cte;
+
+explain_protocol: 1
+==================================================================================
+====================== test new behaviors in 4_2_5 ===============================
+==================================================================================
+## basic test
+EXPLAIN BASIC select /*+leading(a) use_nl(b)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c1;
+Query Plan
+=============================================
+|ID|OPERATOR                       |NAME    |
+---------------------------------------------
+|0 |SCALAR GROUP BY                |        |
+|1 |└─PX COORDINATOR               |        |
+|2 |  └─EXCHANGE OUT DISTR         |:EX10000|
+|3 |    └─MERGE GROUP BY           |        |
+|4 |      └─NESTED-LOOP JOIN       |        |
+|5 |        ├─PX PARTITION ITERATOR|        |
+|6 |        │ └─TABLE FULL SCAN    |a       |
+|7 |        └─DISTRIBUTED TABLE GET|b       |
+=============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [b.c1], [b.c2], [b.c3], [b.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=true
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([b.c1], [b.c2], [b.c3], [b.c4]), filter(nil), rowset=256
+      access([GROUP_ID], [b.c1], [b.c2], [b.c3], [b.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX), 
+      range_cond([:0 = b.c1])
+select /*+leading(a) use_nl(b)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c1;
++--------------------------+--------------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(b.c1+b.c2+b.c3+b.c4) |
++--------------------------+--------------------------+
+|                  2002000 |                  2002000 |
++--------------------------+--------------------------+
+
+## allowed all rescan path use das
+EXPLAIN BASIC select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, (
+    select c1, c2, c3 from t1 b union all select c3, c2, c1 from t1 c where c1 < 4
+) v where a.c2 = v.c1;
+Query Plan
+========================================================
+|ID|OPERATOR                                  |NAME    |
+--------------------------------------------------------
+|0 |SCALAR GROUP BY                           |        |
+|1 |└─PX COORDINATOR                          |        |
+|2 |  └─EXCHANGE OUT DISTR                    |:EX10000|
+|3 |    └─MERGE GROUP BY                      |        |
+|4 |      └─NESTED-LOOP JOIN                  |        |
+|5 |        ├─PX PARTITION ITERATOR           |        |
+|6 |        │ └─TABLE FULL SCAN               |a       |
+|7 |        └─SUBPLAN SCAN                    |v       |
+|8 |          └─UNION ALL                     |        |
+|9 |            ├─DISTRIBUTED TABLE GET       |b       |
+|10|            └─DISTRIBUTED TABLE RANGE SCAN|c       |
+========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+  8 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=256
+  9 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 = b.c1])
+ 10 - output([c.c3], [c.c2], [c.c1]), filter([:0 = c.c3]), rowset=256
+      access([c.c1], [c.c3], [c.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([c.c1]), range(NULL ; 4), 
+      range_cond([c.c1 < 4])
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, (
+    select c1, c2, c3 from t1 b union all select c3, c2, c1 from t1 c where c1 < 4
+) v where a.c2 = v.c1;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2002024 |             1501518 |
++--------------------------+---------------------+
+
+## enhance batch rescan 1. upper op is subplan filter/semi join/anti join
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3)) s_val
+from t1 a;
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |SCALAR GROUP BY                  |        |
+|1 |└─PX COORDINATOR                 |        |
+|2 |  └─EXCHANGE OUT DISTR           |:EX10000|
+|3 |    └─MERGE GROUP BY             |        |
+|4 |      └─SUBPLAN FILTER           |        |
+|5 |        ├─PX PARTITION ITERATOR  |        |
+|6 |        │ └─TABLE FULL SCAN      |a       |
+|7 |        └─NESTED-LOOP JOIN       |        |
+|8 |          ├─DISTRIBUTED TABLE GET|b       |
+|9 |          └─DISTRIBUTED TABLE GET|c       |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(subquery(1)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(subquery(1)))])
+  1 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))])
+  4 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([a.c3(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([a.c3]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c3]), filter(nil), rowset=256
+      access([a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([1]), filter(nil), rowset=256
+      conds(nil), nl_params_([b.c2(:1)]), use_batch=false
+  8 - output([b.c2]), filter(nil), rowset=256
+      access([b.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([b.c1 = :0])
+  9 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([c.c1]), range(MIN ; MAX), 
+      range_cond([:1 = c.c1])
+select /*+no_rewrite*/ sum((select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3)) s_val
+from t1 a;
++-------+
+| s_val |
++-------+
+|  1000 |
++-------+
+EXPLAIN BASIC select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─NESTED-LOOP SEMI JOIN      |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |a       |
+|7 |        └─SUBPLAN SCAN             |VIEW1   |
+|8 |          └─NESTED-LOOP JOIN       |        |
+|9 |            ├─DISTRIBUTED TABLE GET|b       |
+|10|            └─DISTRIBUTED TABLE GET|c       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)])
+  4 - output([a.c3], [a.c1], [a.c2], [a.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c3(:1)]), use_batch=false
+  5 - output([a.c1], [a.c3], [a.c2], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c3], [a.c2], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c3], [a.c2], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output(nil), filter(nil), rowset=256
+      access(nil)
+  8 - output([b.c1]), filter(nil), rowset=256
+      conds(nil), nl_params_([b.c2(:2)]), use_batch=false
+  9 - output([b.c1], [b.c2]), filter(nil), rowset=256
+      access([b.c1], [b.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([b.c1 = :1])
+ 10 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([c.c1]), range(MIN ; MAX), 
+      range_cond([:2 = c.c1])
+select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
++------------------------+
+| sum(c1 + c2 + c3 + c4) |
++------------------------+
+|                2002000 |
++------------------------+
+EXPLAIN BASIC select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where not exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─NESTED-LOOP ANTI JOIN      |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |a       |
+|7 |        └─SUBPLAN SCAN             |VIEW1   |
+|8 |          └─NESTED-LOOP JOIN       |        |
+|9 |            ├─DISTRIBUTED TABLE GET|b       |
+|10|            └─DISTRIBUTED TABLE GET|c       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)])
+  4 - output([a.c3], [a.c1], [a.c2], [a.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c3(:1)]), use_batch=false
+  5 - output([a.c1], [a.c3], [a.c2], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c3], [a.c2], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c3], [a.c2], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output(nil), filter(nil), rowset=256
+      access(nil)
+  8 - output([b.c1]), filter(nil), rowset=256
+      conds(nil), nl_params_([b.c2(:2)]), use_batch=false
+  9 - output([b.c1], [b.c2]), filter(nil), rowset=256
+      access([b.c1], [b.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([b.c1 = :1])
+ 10 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([c.c1]), range(MIN ; MAX), 
+      range_cond([:2 = c.c1])
+select /*+no_semi_to_inner leading(a) use_nl(view1)*/ sum(c1 + c2 + c3 + c4) from t1 a
+where not exists (select /*+leading(b) use_nl(c)*/ 1 from t1 b, t1 c where b.c2 = c.c1 and b.c1 = a.c3);
++------------------------+
+| sum(c1 + c2 + c3 + c4) |
++------------------------+
+|                   NULL |
++------------------------+
+
+## enhance batch rescan 2. semi/anti join
+EXPLAIN BASIC select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where exists (select 1 from t1 b where a.c2 = b.c1);
+Query Plan
+===================================================
+|ID|OPERATOR                             |NAME    |
+---------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |
+|1 |└─PX COORDINATOR                     |        |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|
+|3 |    └─MERGE GROUP BY                 |        |
+|4 |      └─NESTED-LOOP SEMI JOIN        |        |
+|5 |        ├─EXCHANGE IN DISTR          |        |
+|6 |        │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|7 |        │   └─PX PARTITION ITERATOR  |        |
+|8 |        │     └─TABLE FULL SCAN      |a       |
+|9 |        └─PX PARTITION ITERATOR      |        |
+|10|          └─TABLE GET                |b       |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+  6 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=1
+  7 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  8 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  9 - output(nil), filter(nil), rowset=256
+      affinitize, force partition granule
+ 10 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX), 
+      range_cond([:0 = b.c1])
+select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where exists (select 1 from t1 b where a.c2 = b.c1);
++------------------------+
+| sum(c1 + c2 + c3 + c4) |
++------------------------+
+|                2002000 |
++------------------------+
+EXPLAIN BASIC select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where not exists (select 1 from t1 b where a.c2 = b.c1);
+Query Plan
+===================================================
+|ID|OPERATOR                             |NAME    |
+---------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |
+|1 |└─PX COORDINATOR                     |        |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|
+|3 |    └─MERGE GROUP BY                 |        |
+|4 |      └─NESTED-LOOP ANTI JOIN        |        |
+|5 |        ├─EXCHANGE IN DISTR          |        |
+|6 |        │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|7 |        │   └─PX PARTITION ITERATOR  |        |
+|8 |        │     └─TABLE FULL SCAN      |a       |
+|9 |        └─PX PARTITION ITERATOR      |        |
+|10|          └─TABLE GET                |b       |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+  6 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=1
+  7 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  8 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  9 - output(nil), filter(nil), rowset=256
+      affinitize, force partition granule
+ 10 - output(nil), filter(nil), rowset=256
+      access(nil), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX), 
+      range_cond([:0 = b.c1])
+select /*+no_semi_to_inner leading(a) use_nl(b)*/ sum(c1 + c2 + c3 + c4) from t1 a where not exists (select 1 from t1 b where a.c2 = b.c1);
++------------------------+
+| sum(c1 + c2 + c3 + c4) |
++------------------------+
+|                   NULL |
++------------------------+
+
+## enhance batch rescan 3. subplan contain limit
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select a.c2+a.c3 from t1 a where a.c1 = t_outer.c2 limit 1)) s_val from t1 t_outer;
+Query Plan
+===============================================
+|ID|OPERATOR                         |NAME    |
+-----------------------------------------------
+|0 |SCALAR GROUP BY                  |        |
+|1 |└─PX COORDINATOR                 |        |
+|2 |  └─EXCHANGE OUT DISTR           |:EX10000|
+|3 |    └─MERGE GROUP BY             |        |
+|4 |      └─SUBPLAN FILTER           |        |
+|5 |        ├─PX PARTITION ITERATOR  |        |
+|6 |        │ └─TABLE FULL SCAN      |t_outer |
+|7 |        └─LIMIT                  |        |
+|8 |          └─DISTRIBUTED TABLE GET|a       |
+===============================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(subquery(1)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(subquery(1)))])
+  1 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))])
+  4 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  6 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  7 - output([a.c2 + a.c3]), filter(nil), rowset=256
+      limit(1), offset(nil)
+  8 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+select /*+no_rewrite*/ sum((select a.c2+a.c3 from t1 a where a.c1 = t_outer.c2 limit 1)) s_val from t1 t_outer;
++---------+
+| s_val   |
++---------+
+| 1001000 |
++---------+
+EXPLAIN BASIC select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 = b.c1 limit 1) v;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─NESTED-LOOP JOIN           |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |a       |
+|7 |        └─SUBPLAN SCAN             |v       |
+|8 |          └─LIMIT                  |        |
+|9 |            └─DISTRIBUTED TABLE GET|b       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+  8 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      limit(1), offset(nil)
+  9 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3]), partitions(p[0-3])
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 = b.c1])
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 = b.c1 limit 1) v;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2002000 |             1501500 |
++--------------------------+---------------------+
+
+## enhance batch rescan 4. start_up filter contain exec param
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 > 1 and t_outer.c2 = 1)) s_val
+from t1 t_outer;
+Query Plan
+======================================================
+|ID|OPERATOR                                |NAME    |
+------------------------------------------------------
+|0 |SCALAR GROUP BY                         |        |
+|1 |└─PX COORDINATOR                        |        |
+|2 |  └─EXCHANGE OUT DISTR                  |:EX10000|
+|3 |    └─MERGE GROUP BY                    |        |
+|4 |      └─SUBPLAN FILTER                  |        |
+|5 |        ├─PX PARTITION ITERATOR         |        |
+|6 |        │ └─TABLE FULL SCAN             |t_outer |
+|7 |        └─SCALAR GROUP BY               |        |
+|8 |          └─DISTRIBUTED TABLE RANGE SCAN|a       |
+======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(subquery(1)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(subquery(1)))])
+  1 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))])
+  4 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  6 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  7 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+  8 - output([a.c2], [a.c3]), filter(nil), startup_filter([:0 = 1]), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(1 ; MAX), 
+      range_cond([a.c1 > 1])
+select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 > 1 and t_outer.c2 = 1)) s_val
+from t1 t_outer;
++---------+
+| s_val   |
++---------+
+| 1000998 |
++---------+
+EXPLAIN BASIC select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a left join (select c1, c2, c3 from t1 b) v
+on a.c2 = v.c1 and a.c1 >= 0;
+Query Plan
+===================================================
+|ID|OPERATOR                             |NAME    |
+---------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |
+|1 |└─PX COORDINATOR                     |        |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|
+|3 |    └─MERGE GROUP BY                 |        |
+|4 |      └─NESTED-LOOP OUTER JOIN       |        |
+|5 |        ├─EXCHANGE IN DISTR          |        |
+|6 |        │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|7 |        │   └─PX PARTITION ITERATOR  |        |
+|8 |        │     └─TABLE FULL SCAN      |a       |
+|9 |        └─SUBPLAN SCAN               |v       |
+|10|          └─PX PARTITION ITERATOR    |        |
+|11|            └─TABLE GET              |b       |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)], [a.c1(:1)]), use_batch=false
+  5 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+  6 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=1
+  7 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  8 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  9 - output([v.c1], [v.c2], [v.c3]), filter(nil), startup_filter([:1 >= 0]), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+ 10 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      affinitize, force partition granule
+ 11 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 = b.c1])
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a left join (select c1, c2, c3 from t1 b) v
+on a.c2 = v.c1 and a.c1 >= 0;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2002000 |             1501500 |
++--------------------------+---------------------+
+
+## enhance batch rescan 5. global index is index back and contain index scan filter
+create index g_idx_t1_c4_c1_c2 on t1(c4, c1, c2) global;
+EXPLAIN BASIC select /*+full(a) leading(a) use_nl(b) use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 <= 100000 and b.c2 >= 0;
+Query Plan
+================================================================
+|ID|OPERATOR                              |NAME                |
+----------------------------------------------------------------
+|0 |SCALAR GROUP BY                       |                    |
+|1 |└─PX COORDINATOR                      |                    |
+|2 |  └─EXCHANGE OUT DISTR                |:EX10000            |
+|3 |    └─MERGE GROUP BY                  |                    |
+|4 |      └─NESTED-LOOP JOIN              |                    |
+|5 |        ├─PX PARTITION ITERATOR       |                    |
+|6 |        │ └─TABLE RANGE SCAN          |a                   |
+|7 |        └─DISTRIBUTED TABLE RANGE SCAN|b(g_idx_t1_c4_c1_c2)|
+================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [b.c1], [b.c2], [b.c4], [b.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(NULL ; 100000], 
+      range_cond([a.c1 <= 100000])
+  7 - output([b.c1], [b.c2], [b.c4], [b.c3]), filter([b.c2 >= 0]), rowset=256
+      access([b.c1], [b.c2], [b.c4], [b.c3]), partitions(p0)
+      is_index_back=true, is_global_index=true, filter_before_indexback[true], 
+      range_key([b.c4], [b.c1], [b.c2]), range(MIN ; MAX), 
+      range_cond([:0 = b.c4])
+select /*+full(a) leading(a) use_nl(b) use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 <= 100000 and b.c2 >= 0;
++--------------------------+--------------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(b.c1+b.c2+b.c3+b.c4) |
++--------------------------+--------------------------+
+|                  2002000 |                  2002000 |
++--------------------------+--------------------------+
+EXPLAIN BASIC select /*+full(a) leading(a) use_nl(b) no_use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 < 100000 and b.c2 >= 0;
+Query Plan
+=======================================================
+|ID|OPERATOR                     |NAME                |
+-------------------------------------------------------
+|0 |SCALAR GROUP BY              |                    |
+|1 |└─NESTED-LOOP JOIN           |                    |
+|2 |  ├─PX COORDINATOR           |                    |
+|3 |  │ └─EXCHANGE OUT DISTR     |:EX10000            |
+|4 |  │   └─PX PARTITION ITERATOR|                    |
+|5 |  │     └─TABLE RANGE SCAN   |a                   |
+|6 |  └─TABLE RANGE SCAN         |b(g_idx_t1_c4_c1_c2)|
+=======================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(b.c1 + b.c2 + b.c3 + b.c4)])
+  1 - output([a.c2], [a.c1], [a.c3], [a.c4], [b.c1], [b.c2], [b.c4], [b.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  2 - output([a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+  3 - output([a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      dop=1
+  4 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(NULL ; 100000), 
+      range_cond([a.c1 < 100000])
+  6 - output([b.c1], [b.c2], [b.c4], [b.c3]), filter([b.c2 >= 0]), rowset=256
+      access([b.c1], [b.c2], [b.c4], [b.c3]), partitions(p0)
+      is_index_back=true, is_global_index=true, filter_before_indexback[true], 
+      range_key([b.c4], [b.c1], [b.c2]), range(MIN ; MAX), 
+      range_cond([:0 = b.c4])
+select /*+full(a) leading(a) use_nl(b) no_use_das(b) index(b g_idx_t1_c4_c1_c2)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(b.c1+b.c2+b.c3+b.c4) from t1 a, t1 b where a.c2 = b.c4 and a.c1 < 100000 and b.c2 >= 0;
++--------------------------+--------------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(b.c1+b.c2+b.c3+b.c4) |
++--------------------------+--------------------------+
+|                  2002000 |                  2002000 |
++--------------------------+--------------------------+
+drop index g_idx_t1_c4_c1_c2 on t1;
+
+## enhance batch rescan 6. exec_pram contain subquery
+EXPLAIN BASIC select sum(s_val2), sum(s_val2) from (
+    select /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2) s_val1,
+           /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = s_val1) s_val2
+    from t1 t_outer);
+Query Plan
+==========================================================
+|ID|OPERATOR                             |NAME           |
+----------------------------------------------------------
+|0 |SCALAR GROUP BY                      |               |
+|1 |└─PX COORDINATOR                     |               |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10000       |
+|3 |    └─MERGE GROUP BY                 |               |
+|4 |      └─SUBPLAN SCAN                 |ANONYMOUS_VIEW1|
+|5 |        └─SUBPLAN FILTER             |               |
+|6 |          ├─SUBPLAN FILTER           |               |
+|7 |          │ ├─PX PARTITION ITERATOR  |               |
+|8 |          │ │ └─TABLE FULL SCAN      |t_outer        |
+|9 |          │ └─SCALAR GROUP BY        |               |
+|10|          │   └─DISTRIBUTED TABLE GET|a              |
+|11|          └─SCALAR GROUP BY          |               |
+|12|            └─DISTRIBUTED TABLE GET  |a              |
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(ANONYMOUS_VIEW1.s_val2))], [T_FUN_SUM(T_FUN_SUM(ANONYMOUS_VIEW1.s_val2))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(ANONYMOUS_VIEW1.s_val2))])
+  1 - output([T_FUN_SUM(ANONYMOUS_VIEW1.s_val2)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(ANONYMOUS_VIEW1.s_val2)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(ANONYMOUS_VIEW1.s_val2)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(ANONYMOUS_VIEW1.s_val2)])
+  4 - output([ANONYMOUS_VIEW1.s_val2]), filter(nil), rowset=256
+      access([ANONYMOUS_VIEW1.s_val2])
+  5 - output([subquery(1)], [subquery(1)]), filter(nil), rowset=256
+      exec_params_([subquery(1)(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  6 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  7 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  8 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  9 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+ 10 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+ 11 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+ 12 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([cast(a.c1, DECIMAL_INT(42, 0)) = :1])
+select sum(s_val2), sum(s_val2) from (
+    select /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2) s_val1,
+           /*+no_rewrite*/ (select sum(a.c2+a.c3) from t1 a where a.c1 = s_val1) s_val2
+    from t1 t_outer);
++-------------+-------------+
+| sum(s_val2) | sum(s_val2) |
++-------------+-------------+
+|      501000 |      501000 |
++-------------+-------------+
+
+## enhance batch rescan 7. exists onetime expr / init plan
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = 3)) onetime_val
+from t1 t_outer;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |SCALAR GROUP BY              |        |
+|1 |└─SUBPLAN FILTER             |        |
+|2 |  ├─PX COORDINATOR           |        |
+|3 |  │ └─EXCHANGE OUT DISTR     |:EX10000|
+|4 |  │   └─PX PARTITION ITERATOR|        |
+|5 |  │     └─TABLE FULL SCAN    |t_outer |
+|6 |  ├─SCALAR GROUP BY          |        |
+|7 |  │ └─DISTRIBUTED TABLE GET  |a       |
+|8 |  └─SCALAR GROUP BY          |        |
+|9 |    └─DISTRIBUTED TABLE GET  |a       |
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(subquery(1))], [T_FUN_SUM(:1)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))], [T_FUN_SUM(:1)])
+  1 - output([subquery(1)], [:1]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_([subquery(2)(:1)]), init_plan_idxs_(nil), use_batch=false
+  2 - output([t_outer.c2]), filter(nil), rowset=256
+  3 - output([t_outer.c2]), filter(nil), rowset=256
+      dop=1
+  4 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  5 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  6 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+  7 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+  8 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+  9 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p3)
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range[3 ; 3], 
+      range_cond([a.c1 = 3])
+select /*+no_rewrite*/ sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum((select /*+use_das(a)*/ sum(a.c2+a.c3) from t1 a where a.c1 = 3)) onetime_val
+from t1 t_outer;
++---------+-------------+
+| s_val   | onetime_val |
++---------+-------------+
+| 1001000 |        6000 |
++---------+-------------+
+
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum(t_outer.c1 in (select a.c2+a.c3 from t1 a where a.c1 < 3)) use_init_plan_val
+from t1 t_outer;
+Query Plan
+===========================================
+|ID|OPERATOR                     |NAME    |
+-------------------------------------------
+|0 |SCALAR GROUP BY              |        |
+|1 |└─SUBPLAN FILTER             |        |
+|2 |  ├─PX COORDINATOR           |        |
+|3 |  │ └─EXCHANGE OUT DISTR     |:EX10000|
+|4 |  │   └─PX PARTITION ITERATOR|        |
+|5 |  │     └─TABLE FULL SCAN    |t_outer |
+|6 |  ├─SCALAR GROUP BY          |        |
+|7 |  │ └─DISTRIBUTED TABLE GET  |a       |
+|8 |  └─PX COORDINATOR           |        |
+|9 |    └─EXCHANGE OUT DISTR     |:EX20000|
+|10|      └─PX PARTITION ITERATOR|        |
+|11|        └─TABLE RANGE SCAN   |a       |
+===========================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(subquery(1))], [T_FUN_SUM(t_outer.c1 = ANY(subquery(2)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))], [T_FUN_SUM(t_outer.c1 = ANY(subquery(2)))])
+  1 - output([t_outer.c1 = ANY(subquery(2))], [subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_([2]), use_batch=false
+  2 - output([t_outer.c2], [t_outer.c1]), filter(nil), rowset=256
+  3 - output([t_outer.c2], [t_outer.c1]), filter(nil), rowset=256
+      dop=1
+  4 - output([t_outer.c1], [t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  5 - output([t_outer.c1], [t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c1], [t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  6 - output([T_FUN_SUM(a.c2 + a.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + a.c3)])
+  7 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+  8 - output([a.c2 + a.c3]), filter(nil), rowset=256
+  9 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      dop=1
+ 10 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      force partition granule
+ 11 - output([a.c2], [a.c3]), filter(nil), rowset=256
+      access([a.c2], [a.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(NULL ; 3), 
+      range_cond([a.c1 < 3])
+select /*+no_rewrite*/ sum((select sum(a.c2+a.c3) from t1 a where a.c1 = t_outer.c2)) s_val,
+        sum(t_outer.c1 in (select a.c2+a.c3 from t1 a where a.c1 < 3)) use_init_plan_val
+from t1 t_outer;
++---------+-------------------+
+| s_val   | use_init_plan_val |
++---------+-------------------+
+| 1001000 |                 2 |
++---------+-------------------+
+
+## can not batch rescan: 1. right child contain gi
+EXPLAIN BASIC select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3+v.c4)
+from t1 a, (select /*+no_rewrite no_use_das(b)*/ * from t1 b) v
+where a.c2 = v.c1;
+Query Plan
+===================================================
+|ID|OPERATOR                             |NAME    |
+---------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |
+|1 |└─PX COORDINATOR                     |        |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|
+|3 |    └─MERGE GROUP BY                 |        |
+|4 |      └─NESTED-LOOP JOIN             |        |
+|5 |        ├─EXCHANGE IN DISTR          |        |
+|6 |        │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|
+|7 |        │   └─PX PARTITION ITERATOR  |        |
+|8 |        │     └─TABLE FULL SCAN      |a       |
+|9 |        └─SUBPLAN SCAN               |v       |
+|10|          └─PX PARTITION ITERATOR    |        |
+|11|            └─TABLE GET              |b       |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3 + v.c4)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3], [v.c4]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+  6 - output([PARTITION_ID], [a.c2], [a.c1], [a.c3], [a.c4]), filter(nil), rowset=256
+      (#keys=1, [a.c2]), dop=1
+  7 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  8 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  9 - output([v.c1], [v.c2], [v.c3], [v.c4]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3], [v.c4])
+ 10 - output([b.c1], [b.c2], [b.c3], [b.c4]), filter(nil), rowset=256
+      affinitize, force partition granule
+ 11 - output([b.c1], [b.c2], [b.c3], [b.c4]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3], [b.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 = b.c1])
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3+v.c4)
+from t1 a, (select /*+no_rewrite no_use_das(b)*/ * from t1 b) v
+where a.c2 = v.c1;
++--------------------------+--------------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3+v.c4) |
++--------------------------+--------------------------+
+|                  2002000 |                  2002000 |
++--------------------------+--------------------------+
+
+## can not batch rescan: 2. right child contain join/subplan filter
+EXPLAIN BASIC select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3)
+from t1 a, (select a.c1, a.c2, b.c3 from t1 a, t1 b where a.c2 = b.c1) v
+where a.c2 = v.c1;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─NESTED-LOOP JOIN           |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |a       |
+|7 |        └─SUBPLAN SCAN             |v       |
+|8 |          └─NESTED-LOOP JOIN       |        |
+|9 |            ├─DISTRIBUTED TABLE GET|a       |
+|10|            └─DISTRIBUTED TABLE GET|b       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:1)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+  8 - output([a.c1], [a.c2], [b.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:2)]), use_batch=true
+  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
+      access([a.c1], [a.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([:1 = a.c1])
+ 10 - output([b.c3]), filter(nil), rowset=256
+      access([GROUP_ID], [b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX), 
+      range_cond([:2 = b.c1])
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3)
+from t1 a, (select a.c1, a.c2, b.c3 from t1 a, t1 b where a.c2 = b.c1) v
+where a.c2 = v.c1;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2002000 |             1501500 |
++--------------------------+---------------------+
+
+EXPLAIN BASIC select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.s_val)
+from t1 a, (select /*+no_rewrite*/ c1, (select sum(b.c2+b.c3) sum_val from t1 b where a.c2 = b.c1) s_val from t1 a) v
+where a.c2 = v.c1;
+Query Plan
+===================================================
+|ID|OPERATOR                             |NAME    |
+---------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |
+|1 |└─PX COORDINATOR                     |        |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10000|
+|3 |    └─MERGE GROUP BY                 |        |
+|4 |      └─NESTED-LOOP JOIN             |        |
+|5 |        ├─PX PARTITION ITERATOR      |        |
+|6 |        │ └─TABLE FULL SCAN          |a       |
+|7 |        └─SUBPLAN SCAN               |v       |
+|8 |          └─SUBPLAN FILTER           |        |
+|9 |            ├─DISTRIBUTED TABLE GET  |a       |
+|10|            └─SCALAR GROUP BY        |        |
+|11|              └─DISTRIBUTED TABLE GET|b       |
+===================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(cast(v.c1, DECIMAL_INT(43, 0)) + v.s_val)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.s_val]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:1)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.s_val]), filter(nil), rowset=256
+      access([v.c1], [v.s_val])
+  8 - output([a.c1], [subquery(1)]), filter(nil), rowset=256
+      exec_params_([a.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  9 - output([a.c1], [a.c2]), filter(nil), rowset=256
+      access([a.c1], [a.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([:1 = a.c1])
+ 10 - output([T_FUN_SUM(b.c2 + b.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(b.c2 + b.c3)])
+ 11 - output([b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c2], [b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 = b.c1])
+select /*+leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.s_val)
+from t1 a, (select /*+no_rewrite*/ c1, (select sum(b.c2+b.c3) sum_val from t1 b where a.c2 = b.c1) s_val from t1 a) v
+where a.c2 = v.c1;
++--------------------------+-------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.s_val) |
++--------------------------+-------------------+
+|                  2002000 |           1501500 |
++--------------------------+-------------------+
+
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select sum(a.c2+b.c3) from t1 a, t1 b where a.c1 = t_outer.c2 and a.c2 = b.c1)) s_val
+from t1 t_outer;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─SUBPLAN FILTER             |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |t_outer |
+|7 |        └─SCALAR GROUP BY          |        |
+|8 |          └─NESTED-LOOP JOIN       |        |
+|9 |            ├─DISTRIBUTED TABLE GET|a       |
+|10|            └─DISTRIBUTED TABLE GET|b       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(subquery(1)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(subquery(1)))])
+  1 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))])
+  4 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  6 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  7 - output([T_FUN_SUM(a.c2 + b.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c2 + b.c3)])
+  8 - output([a.c2], [b.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:1)]), use_batch=false
+  9 - output([a.c2]), filter(nil), rowset=256
+      access([a.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+ 10 - output([b.c3]), filter(nil), rowset=256
+      access([b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX), 
+      range_cond([:1 = b.c1])
+select /*+no_rewrite*/ sum((select sum(a.c2+b.c3) from t1 a, t1 b where a.c1 = t_outer.c2 and a.c2 = b.c1)) s_val
+from t1 t_outer;
++---------+
+| s_val   |
++---------+
+| 1001000 |
++---------+
+
+EXPLAIN BASIC select /*+no_rewrite*/ sum((select (select sum(b.c2+b.c3) from t1 b where a.c2 = b.c1) from t1 a where a.c1 = t_outer.c2)) s_val
+from t1 t_outer;
+Query Plan
+=================================================
+|ID|OPERATOR                           |NAME    |
+-------------------------------------------------
+|0 |SCALAR GROUP BY                    |        |
+|1 |└─PX COORDINATOR                   |        |
+|2 |  └─EXCHANGE OUT DISTR             |:EX10000|
+|3 |    └─MERGE GROUP BY               |        |
+|4 |      └─SUBPLAN FILTER             |        |
+|5 |        ├─PX PARTITION ITERATOR    |        |
+|6 |        │ └─TABLE FULL SCAN        |t_outer |
+|7 |        └─SUBPLAN FILTER           |        |
+|8 |          ├─DISTRIBUTED TABLE GET  |a       |
+|9 |          └─SCALAR GROUP BY        |        |
+|10|            └─DISTRIBUTED TABLE GET|b       |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(subquery(1)))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(subquery(1)))])
+  1 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(subquery(1))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(subquery(1))])
+  4 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([t_outer.c2(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([t_outer.c2]), filter(nil), rowset=256
+      force partition granule
+  6 - output([t_outer.c2]), filter(nil), rowset=256
+      access([t_outer.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_outer.c1]), range(MIN ; MAX)always true
+  7 - output([subquery(1)]), filter(nil), rowset=256
+      exec_params_([a.c2(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  8 - output([a.c2]), filter(nil), rowset=256
+      access([a.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true, 
+      range_cond([a.c1 = :0])
+  9 - output([T_FUN_SUM(b.c2 + b.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(b.c2 + b.c3)])
+ 10 - output([b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c2], [b.c3]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:1 = b.c1])
+select /*+no_rewrite*/ sum((select (select sum(b.c2+b.c3) from t1 b where a.c2 = b.c1) from t1 a where a.c1 = t_outer.c2)) s_val
+from t1 t_outer;
++---------+
+| s_val   |
++---------+
+| 1001000 |
++---------+
+
+## can not batch rescan: 3. right child use index desc scan
+EXPLAIN BASIC select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 desc limit 1) v;
+Query Plan
+==========================================================
+|ID|OPERATOR                                  |NAME      |
+----------------------------------------------------------
+|0 |SCALAR GROUP BY                           |          |
+|1 |└─PX COORDINATOR                          |          |
+|2 |  └─EXCHANGE OUT DISTR                    |:EX10000  |
+|3 |    └─MERGE GROUP BY                      |          |
+|4 |      └─NESTED-LOOP JOIN                  |          |
+|5 |        ├─PX PARTITION ITERATOR           |          |
+|6 |        │ └─TABLE FULL SCAN               |a         |
+|7 |        └─SUBPLAN SCAN                    |v         |
+|8 |          └─TOP-N SORT                    |          |
+|9 |            └─DISTRIBUTED TABLE RANGE SCAN|b(Reverse)|
+==========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+  8 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      sort_keys([b.c1, DESC]), topn(1), local merge sort
+  9 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3]), partitions(p[0-3])
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, keep_ordering=true, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 > b.c1])
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 desc limit 1) v;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2001996 |             1498500 |
++--------------------------+---------------------+
+EXPLAIN BASIC select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 limit 1) v;
+Query Plan
+========================================================
+|ID|OPERATOR                                  |NAME    |
+--------------------------------------------------------
+|0 |SCALAR GROUP BY                           |        |
+|1 |└─PX COORDINATOR                          |        |
+|2 |  └─EXCHANGE OUT DISTR                    |:EX10000|
+|3 |    └─MERGE GROUP BY                      |        |
+|4 |      └─NESTED-LOOP JOIN                  |        |
+|5 |        ├─PX PARTITION ITERATOR           |        |
+|6 |        │ └─TABLE FULL SCAN               |a       |
+|7 |        └─SUBPLAN SCAN                    |v       |
+|8 |          └─TOP-N SORT                    |        |
+|9 |            └─DISTRIBUTED TABLE RANGE SCAN|b       |
+========================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4))], [T_FUN_SUM(T_FUN_SUM(v.c1 + v.c2 + v.c3))])
+  1 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+  2 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      dop=1
+  3 - output([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)]), filter(nil), rowset=256
+      group(nil), agg_func([T_FUN_SUM(a.c1 + a.c2 + a.c3 + a.c4)], [T_FUN_SUM(v.c1 + v.c2 + v.c3)])
+  4 - output([a.c2], [a.c1], [a.c3], [a.c4], [v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([a.c2(:0)]), use_batch=false
+  5 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      force partition granule
+  6 - output([a.c1], [a.c2], [a.c3], [a.c4]), filter(nil), rowset=256
+      access([a.c1], [a.c2], [a.c3], [a.c4]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, 
+      range_key([a.c1]), range(MIN ; MAX)always true
+  7 - output([v.c1], [v.c2], [v.c3]), filter(nil), rowset=256
+      access([v.c1], [v.c2], [v.c3])
+  8 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      sort_keys([b.c1, ASC]), topn(1), local merge sort
+  9 - output([b.c1], [b.c2], [b.c3]), filter(nil), rowset=256
+      access([b.c1], [b.c2], [b.c3]), partitions(p[0-3])
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, keep_ordering=true, 
+      range_key([b.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 > b.c1])
+select /*+no_rewrite leading(a) use_nl(v)*/ sum(a.c1+a.c2+a.c3+a.c4), sum(v.c1+v.c2+v.c3) from t1 a, lateral (select c1, c2, c3 from t1 b where a.c2 > b.c1 order by b.c1 limit 1) v;
++--------------------------+---------------------+
+| sum(a.c1+a.c2+a.c3+a.c4) | sum(v.c1+v.c2+v.c3) |
++--------------------------+---------------------+
+|                  2001996 |                2997 |
++--------------------------+---------------------+
+
+drop table if exists t1;

@@ -1,0 +1,77 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：
+# 1. big row redo log回放过程中，要保证只回放到第一条redo log所在的memstore上
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+#在zone1上建立连接
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+connect (conn2,$l_ip1,root@obtest,,test,$l_port1);
+connect (conn2,$l_ip1,root@obtest,,test,$l_port1);
+
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z2', svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z2', svr_port, 1);
+let $host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $observer = deploy_get_value(ob1.get_obs_by_addr $host);
+
+connection conn1;
+alter system set enable_auto_leader_switch = false;
+connection conn2;
+use test;
+drop table if exists t1;
+create table t1(a longtext, b longblob, c longtext, d longtext, e longtext);
+create table t2(a longtext, b longblob, c longtext, d longtext, e longtext);
+set ob_query_timeout=100000000;
+sleep 5;
+
+#############################
+#case1 : big row回放过程中，发生minor freeze，last_replay_log_id选取了big row的中间redo log
+#        该行的所有redo log，全部回放到frozen memstore上
+connection conn1;
+alter system set_tp tp_no = 42, error_code = 4013, frequency = 1;
+connection conn2;
+begin;
+--disable_query_log
+insert into t1 values(repeat('a', 3242880), repeat('b', 3242880), repeat('c', 3242880), repeat('d', 3242880), repeat('e', 3242880));
+--enable_query_log
+commit;
+#该事务为单分区事务，总共写9条redo log，1条sp commit log；
+#当log_id=5时，clog提交回放任务卡住5s，因此last_replay_log_id＝4
+#这里sleep 1s是为了保证log_id=5之前的redo log已经提交回放到replay engine
+connection conn1;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+sleep 5;
+alter system set_tp tp_no = 42, error_code = 4013, frequency = 0;
+#预期总共打印出6条日志
+#$observer.count_log 'big row redo log uses the first mestore minor freezing';
+
+#case2 : 事务日志回放过程中，发生minor freeze，last replay log id取了两个big row的中间
+alter system set_tp tp_no = 42, error_code = 4013, frequency = 1;
+connection conn2;
+begin;
+--disable_query_log
+#这一行的修改涉及4条redo log
+insert into t1 values(repeat('a', 1024000), repeat('b', 1024000), repeat('c', 1024000), repeat('d', 1024000), repeat('e', 2048000));
+insert into t1 values('aaa', 'bbb', 'ccc', 'ddd', 'eee');
+#这一行的修改涉及4条redo log
+insert into t1 values(repeat('a', 1024000), repeat('b', 1024000), repeat('c', 1024000), repeat('d', 1024000), repeat('e', 2048000));
+--enable_query_log
+commit;
+#该事务总共涉及9条redo log，其中前面4条属于第一次修改，第5条redo log属于第二次修改，最终4条属于第三次的修改
+#minor freeze过程中，选取last_replay_log_id=5，那么前面4条和后面4条的redo log将回放到不同的memstore上
+connection conn1;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+sleep 5;
+alter system set_tp tp_no = 42, error_code = 4013, frequency = 0;
+#预期总共打印3条日志
+#$observer.count_log 'clear memtable for cur log success';

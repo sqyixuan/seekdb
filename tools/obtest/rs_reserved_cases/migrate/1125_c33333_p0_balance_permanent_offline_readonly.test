@@ -1,0 +1,95 @@
+####33333
+####永久下线只读型副本
+##清空所有replica, 保持环境干净 
+ob1=OBI(cluster=3:3:3:3:3, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 5;
+ob1.mysql alter system set server_data_copy_in_concurrency = 5;
+sleep 4;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3', 'z4', 'z5');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3,F@z4,R@z4,F@z5,R@z5' set ob_tcp_invited_nodes='%';
+
+# login as new tenant and create a table
+#let $obs=deploy_get_value(ob1.z1.obs0.ip);
+#let $port =deploy_get_value(ob1.z1.obs0.mysql_port);
+##查找当前tenant的ip/port;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where  tenant_name = "tenant_$case_index", tenant_id, 1);
+
+let $obs = deploy_get_value(ob1.select select svr_ip from __all_unit where resource_pool_id = 1002 and zone = 'z1' order by unit_id, svr_ip, svr_port limit 1, svr_ip, 1);
+let $rpc_port= deploy_get_value(ob1.select select svr_port from __all_unit where resource_pool_id = 1002 and zone = 'z1' order by unit_id, svr_ip, svr_port limit 1, svr_port, 1);
+let $port = deploy_get_value(ob1.select select inner_port from __all_server where svr_ip='$obs' and svr_port=$rpc_port, inner_port, 1);
+
+sleep 2;
+connect(conn1,$obs,root@tenant_$case_index,,,$port);
+connection conn1;
+CREATE DATABASE obtest;
+use obtest;
+create table test_2 (pk int primary key) partition by hash(pk) partitions 5;
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = "test_2", table_id, 1);
+
+
+##需要先把系统表迁走，省的麻烦
+##找到z5里面的系统表位置
+## 在关闭迁移的情况下，系统表一定位于ob1.z5.obs0上面；
+#避免stop  obs0;
+###在z5中找一个只读副本的机器下线掉；
+
+let $dest_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $dest_port = deploy_get_value(ob1.z5.obs0.port);
+let $dest_ip2 = deploy_get_value(ob1.z5.obs1.ip);
+let $dest_port2 = deploy_get_value(ob1.z5.obs1.port);
+let $dest_ip3 = deploy_get_value(ob1.z5.obs2.ip);
+let $dest_port3 = deploy_get_value(ob1.z5.obs2.port);
+
+let $stop_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $stop_port = deploy_get_value(ob1.z5.obs0.port);
+
+--disable_query_log
+let $replica_num = deploy_get_value(ob1.select select count(*)c from __all_virtual_partition_table where  zone='z5' and svr_ip='$dest_ip2' and svr_port = $dest_port2 and replica_type = 16, c, 1);
+  --disable_query_log
+if ($replica_num > 0)
+{
+  ob1.z5.obs1.stop;
+  let $stop_ip = $dest_ip2;
+  let $stop_port = $dest_port2;
+}
+if ($replica_num <= 0)
+{
+  ob1.z5.obs2.stop;
+  let $stop_ip = $dest_ip3;
+  let $stop_port = $dest_port3;
+}
+--enable_query_log
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_partition_table where svr_ip="$stop_ip" and svr_port=$stop_port and replica_type = 16, c, 1);
+
+##设置永久下线的时间；
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_temporary_offline_time = '15s';
+
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set enable_rebalance = 'true';
+###检查原来的机器上没有副本；
+ob1.check_until_timeout select count(*) c from __all_virtual_partition_table where zone='z5' and svr_ip="$stop_ip" and svr_port=$stop_port and replica_type = 16, 0, 360;
+ob1.check_until_timeout select count(*) c from __all_virtual_partition_table where zone='z5' and replica_type = 16 and table_id = "$table_id", 5, 560; 
+
+###todo
+# 下线后，触发rebuild

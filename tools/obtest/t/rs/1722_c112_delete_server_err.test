@@ -1,0 +1,79 @@
+#owner: zhengshi
+#owner group: rs
+#功能：验证修复delete server不成功，原因是永久下线导致schema不存在。
+
+
+
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_num=1);
+
+ob1.z3.obs1.set status=disable;
+ob1.reboot;
+
+
+let $obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $obs1_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $obs1_port = deploy_get_value(ob1.z2.obs0.port);
+let $obs2_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs2_port = deploy_get_value(ob1.z3.obs0.port);
+
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+connection sys_conn;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_2'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_2 RESOURCE_POOL_LIST = ('pool_3'), locality='F@z1,F@z2,F@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+connect(t1_conn, $proxy_ip, root@tenant_1,,test, $proxy_port);
+connection t1_conn;
+create table t1(c1 int);
+create table t2(c1 int) partition by hash(c1) partitions 10;
+let $t1_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "t1", table_id, 1);
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "t2", table_id, 1);
+
+
+
+ob1.z3.obs0.force_stop;
+
+
+set ob_query_timeout = 10000000;
+sleep 20;
+connection sys_conn;
+drop tenant tenant_2 force;
+connection t1_conn;
+set recyclebin = off;
+drop table t1;
+drop table t2;
+sleep 20;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $t1_id, 1, 400; 
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $t2_id, 10, 400; 
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set replica_safe_remove_time = '60s';
+
+ob1.z3.obs1.set status=enable;
+ob1.z3.obs1.start;
+sleep 10;
+ob1.z3.obs1.add;
+sleep 50;
+connection sys_conn;
+eval alter system delete server '$obs2_ip:$obs2_port';
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_status = "INPROGRESS" , 0, 480;
+
+#eval alter system delete server '$obs2_ip:$obs2_port';
+
+#ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_status = "INPROGRESS" , 0, 480;
+
+

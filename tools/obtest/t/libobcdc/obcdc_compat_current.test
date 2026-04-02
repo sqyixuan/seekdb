@@ -1,0 +1,93 @@
+# owner: wenyue.zxl
+# owner group: obcdc
+# test point: basic correctness check for libobcdc, besides compat_backward, there are needs to
+#   test whether obcdc can work correctly when fetching logs from the latest observer.
+
+ob1=OBI(cluster=1:1:1,oblog_version=current);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+####################### start timestamp usec #################
+ob_connect(compat2_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+set global recyclebin=off;
+let $compat_current_start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+################ create oracle and mysql tenant ##############
+#mysql tenant: oblog_tt
+source include/liboblog/tenant/create_mysql_tenant_with_gts.inc;
+let $log_backup_dest_cdc_mysql = deploy_get_value(ob1.get_log_backup_dest cdc_mysql);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_cdc_mysql';
+######## if log_archive_dest is S3, please set archive_lag_target >= '60s'
+ob1.mysql alter system set archive_lag_target = '5s' tenant = 'cdc_mysql';
+--enable_all_result_log
+#oracle tenant: oracle
+source include/liboblog/tenant/create_oracle_tenant.inc;
+let $log_backup_dest_oracle = deploy_get_value(ob1.get_log_backup_dest oracle);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_oracle';
+######## if log_archive_dest is S3, please set archive_lag_target >= '60s'
+ob1.mysql alter system set archive_lag_target = '5s' tenant = 'oracle';
+--enable_all_result_log
+
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_ARCHIVELOG where status = 'DOING', 2, 600;
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1004";
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1006";
+connection compat2_conn;
+let $compat_current_start_tstamp_usec_tenant_created = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+############### test ###################
+
+source include/liboblog/mysql_basic.inc;
+source include/liboblog/oracle_basic.inc;
+source include/liboblog/lob_basic.inc;
+source include/liboblog/json_basic.inc;
+source include/liboblog/xml_basic.inc;
+source include/liboblog/geometry_basic.inc;
+
+###################### fetch history ##################
+
+ob1.oblog.gen_conf tb_white_list=*.*.* log_level=INFO skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $compat_current_start_tstamp_usec;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+sleep 40;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### tenant_sync_mode(mysql) + fetch archive log ###########
+ob1.oblog.gen_conf tb_white_list=cdc_mysql.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_cdc_mysql tenant_user=obcdc@cdc_mysql tenant_password=obcdc tenant_endpoint=$ip:$port;
+ob1.oblog.set_start_tstamp_usec $compat_current_start_tstamp_usec_tenant_created;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+sleep 40;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### tenant_sync_mode(oracle) + fetch archive log ###########
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_oracle tenant_user=obtest@oracle tenant_password=obtest tenant_endpoint=$ip:$port;
+ob1.oblog.set_start_tstamp_usec $compat_current_start_tstamp_usec_tenant_created;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+sleep 40;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### tenant_sync_mode(mysql) + integrate mode ###########
+ob1.oblog.gen_conf tb_white_list=cdc_mysql.*.* log_level=INFO meta_data_refresh_mode=data_dict tenant_user=obcdc@cdc_mysql tenant_password=obcdc tenant_endpoint=$ip:$port;
+ob1.oblog.set_start_tstamp_usec $compat_current_start_tstamp_usec_tenant_created;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+sleep 40;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### tenant_sync_mode(oracle) + integrate mode ###########
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO meta_data_refresh_mode=data_dict tenant_user=obtest@oracle tenant_password=obtest tenant_endpoint=$ip:$port;
+ob1.oblog.set_start_tstamp_usec $compat_current_start_tstamp_usec_tenant_created;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+sleep 40;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;

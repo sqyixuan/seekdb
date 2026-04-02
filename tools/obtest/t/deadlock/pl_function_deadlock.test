@@ -1,0 +1,84 @@
+##############################
+# owner: wx372254
+# group: transaction
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0,locality=HZ:HZ:HZ);
+ob1.reboot;
+ob1.mysql alter system set syslog_io_bandwidth_limit='3000M';
+ob1.mysql alter system set _lcl_op_interval='100ms';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+sleep 10;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection sys_conn;
+### 创建oracle租户
+
+ob1.mysql create resource unit box1 max_cpu 2, max_memory 2073741824, max_iops 128, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY=2073741824, MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+###  primary_zone='z1,z2;z3'会有两个primary zone，每个副本会创建出两个日志流，之后该租户创建表的时候，第一张表会在1001日志流上，第二张表会在1002日志流上
+ob1.mysql create tenant tt1 replica_num = 3, resource_pool_list=('pool1'), primary_zone='z1,z2;z3' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant tt1 set variables nls_date_format='YYYY-MM-DD HH24:MI:SS';
+ob1.mysql alter tenant tt1 set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF';
+ob1.mysql alter tenant tt1 set variables nls_timestamp_tz_format='YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+sleep 2;
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_server where start_service_time <= 0 or status = "inactive", 0, 120;
+ob_connect(cli1_conn, ob1.z1.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+ob_connect(cli2_conn, ob1.z1.obs0, SYS@tt1, , SYS, , USE_OB_CONNECTOR);
+
+### 创建两张表
+connection cli1_conn;
+create table t1(a int);
+create table t2(a int);
+insert into t1 values (1), (2);
+insert into t2 values (1), (2);
+
+### 把两张表的leader分开
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='tt1', tenant_id, 1);
+let $table_id1 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t1', table_id, 1);
+let $table_id2 = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name='t2', table_id, 1);
+let $ls_id1 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$table_id1', ls_id, 1);
+let $ls_id2 = deploy_get_value(ob1.select select ls_id from __all_virtual_tablet_to_ls where table_id='$table_id2', ls_id, 1);
+let $z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_obs0_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_obs0_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_obs0_port = deploy_get_value(ob1.z2.obs0.port);
+ob1.mysql alter system switch replica leader ls = $ls_id1 server = '$z1_obs0_ip:$z1_obs0_port' tenant='tt1';
+ob1.mysql alter system switch replica leader ls = $ls_id2 server = '$z2_obs0_ip:$z2_obs0_port' tenant='tt1';
+sleep 5;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where id = $ls_id1 and tenant_id = $tenant_id and role = 'LEADER' and concat(svr_ip, ':', svr_port) like '%$z1_obs0_ip:$z1_obs0_port%', 1, 30;
+echo $ls_id1, $tenant_id, $z1_obs0_ip, $z1_obs0_port;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_log_stat where id = $ls_id2 and tenant_id = $tenant_id and role = 'LEADER' and concat(svr_ip, ':', svr_port) like '%$z2_obs0_ip:$z2_obs0_port%', 1, 30;
+echo $ls_id2, $tenant_id, $z2_obs0_ip, $z2_obs0_port;
+
+connection cli1_conn;
+set autocommit = false;
+connection cli2_conn;
+set autocommit = false;
+
+### 创建死锁
+connection cli1_conn;
+update t1 set a=11 where a=1;
+
+### 为了让两个事务的开始时间有差异
+sleep 5;
+
+connection cli2_conn;
+CREATE OR REPLACE FUNCTION func1 RETURN int AS BEGIN UPDATE t1 SET a=44 WHERE a=1; RETURN 10; END;
+update t2 set a=22 where a=1;
+send DECLARE i int; BEGIN i:=func1(); END;
+
+connection cli1_conn;
+send update t2 set a=33 where a=1;
+
+connection cli2_conn;
+--error 60
+reap;
+rollback;
+
+connection cli1_conn;
+reap;
+commit;

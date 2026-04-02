@@ -1,0 +1,1267 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: yibo.tyf
+#owner group: sql1
+# tags: optimizer
+#description: transform模块测试，对比transform以后的结果与非transform的结果,验证transform正确性
+
+--disable_warnings
+DROP DATABASE IF EXISTS AGG_SUBQUERY;
+--enable_warnings
+CREATE DATABASE AGG_SUBQUERY;
+USE AGG_SUBQUERY;
+
+# test rewrite for count
+# 对于COUNT，我们仅在FROM里面只有一张基表的时候才改写
+#               value,  count,     id
+create table T1(a1 int, a2 int, a3 int);
+#               value,  t1_id,     id
+create table T2(b1 int, b2 int, b3 int);
+
+insert into T1 values(233333, 3, 0);
+insert into T1 values(244444, 1, 1);
+insert into T1 values(255555, 0, 2);
+insert into T1 values(255555, 2, 3);
+
+insert into T2 values(24, 0, 0);
+insert into T2 values(24, 0, 0);
+
+insert into T2 values(25, 1, 0);
+insert into T2 values(25, 1, 0);
+
+insert into T2 values(26, 3, 0);
+insert into T2 values(26, 3, 0);
+
+select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3);
+explain select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3);
+
+explain select /*+no_rewrite*/ a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3);
+select/*+no_rewrite*/ a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3);
+
+select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3);
+explain select a1 from T1 LEFT OUTER JOIN (select count(b1) as cnt, b2 from T2 group by b2) AS TEMP on TEMP.b2 = T1.a3  where a2 = IFNULL(cnt, 0);
+
+# test rewrite for sum
+#               value,  sum,       id
+create table T3(a1 int, a2 int, a3 int);
+#               value,  t1_id,     id
+create table T4(b1 int, b2 int, b3 int);
+
+insert into T3 values(233333, 37, 0);
+insert into T3 values(244444, 158, 1);
+insert into T3 values(255555, 0, 2);
+insert into T3 values(255555, 56, 3);
+
+insert into T4 values(24, 0, 0);
+insert into T4 values(12, 0, 0);
+
+insert into T4 values(25, 1, 0);
+insert into T4 values(133, 1, 0);
+
+insert into T4 values(26, 3, 0);
+insert into T4 values(26, 3, 0);
+sleep 3;
+
+select a1 from T3 where a2 = (select sum(b1) from T4 where T4.b2 = T3.a3);
+explain select a1 from T3 where a2 = (select sum(b1) from T4 where T4.b2 = T3.a3);
+
+explain select /*+no_rewrite*/ a1 from T3 where a2 = (select sum(b1) from T4 where T3.a2 = T4.b3);
+select /*+no_rewrite*/ a1 from T3 where a2 = (select sum(b1) from T4 where T3.a2 = T4.b3);
+
+select a1 from T3 where a2 = (select sum(b1) from T4 where T4.b2 = T3.a3);
+explain select a1 from T3, (select sum(b1) as sum_b1, b2 from T4 group by b2) AS TEMP where TEMP.b2 = T3.a3 and a2 = sum_b1;
+
+# test for multi-condition
+explain select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3 AND T2.b3 = T1.a3);
+explain select a1 from T3 where a2 = (select sum(b1) from T4 where T4.b2 = T3.a3 AND T4.b3 = T3.a3);
+
+# 多个表的情况
+explain select T1.a1 from T1, T3 where T1.a2 = (select sum(b1) from T2 where T1.a3 = T2.b1 and T2.b1 = T3.a3);
+
+# test for multi-subquery
+explain select a1 from T1 where a2 = (select sum(b1) from T2 where T2.b2 = T1.a3) AND (select sum(a1) from T3 where T3.a2 = a3);
+
+# 对于count，我们现在要求FROM里面只有一项，所以这种情况SUM会发生改写，而COUNT不会发生改写
+explain select a1 from T1 where a2 = (select sum(b1) from T2 where T2.b2 = T1.a3) AND (select count(a1) from T3 where T3.a2 = a3);
+
+explain select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3) AND (select sum(a1) from T3 where T3.a2 = a3);
+explain select a1 from T1 where a2 = (select count(b1) from T2 where T2.b2 = T1.a3) AND (select count(a1) from T3 where T3.a2 = a3);
+
+# 子查询中的WHERE子句非连接条件中包含了没有在SELECT中的列
+# 改写的时候需要将这一列加入到SELECT ITEM中
+SELECT a1 FROM T1 WHERE a2 = (SELECT COUNT(b1) FROM T2 WHERE T2.b2 = T1.a3 AND T2.b3 = 5);
+
+#bug 16651881, [rqg]复杂子查询resolve报-4016 
+#
+CREATE TABLE table0_bigint(
+`col_decimal_20_0` decimal(20,0) DEFAULT NULL,
+`col_char_20` char(20) DEFAULT NULL,
+`col_timestamp_6` timestamp(6) NULL DEFAULT NULL,
+`pk` bigint(20) NOT NULL,
+`col_bigint` bigint(20) DEFAULT NULL,
+PRIMARY KEY (`pk`)
+);
+
+#Q1 最原始语句
+SELECT CAST(CONCAT(CAST(CONCAT(col_char_20, SUBSTR('v', 1, 20)) AS CHAR(100)), col_char_20) AS CHAR(100))
+FROM table0_bigint
+WHERE CAST(CONCAT(col_char_20, SUBSTR((
+SELECT GROUP_CONCAT(99 ORDER BY (
+SELECT coalesce((
+SELECT SUM(2335)
+FROM table0_bigint
+WHERE EXISTS (
+SELECT *
+FROM table0_bigint table1
+INNER JOIN table0_bigint table2 USING (pk)
+WHERE table1.col_bigint > ROUND(CEIL(-100))
+ORDER BY table1.pk DESC, table1.col_decimal_20_0 ASC, table1.pk
+LIMIT 6
+)
+ORDER BY pk DESC, col_timestamp_6, col_char_20 DESC, pk DESC
+), (
+SELECT SUM(ROUND(FLOOR(-99999)))
+FROM table0_bigint
+WHERE SUBSTR('vunm', 1, 20) <> CAST(CONCAT(col_char_20, SUBSTR('g', 1, 20)) AS CHAR(100))
+ORDER BY col_decimal_20_0, col_timestamp_6 DESC, col_char_20 ASC, pk
+), -100)
+) ASC, pk ASC SEPARATOR '')
+FROM table0_bigint
+WHERE ROUND(ABS(col_decimal_20_0)) > col_decimal_20_0
+ORDER BY pk DESC, col_bigint ASC, pk ASC, pk ASC
+LIMIT 5, 3
+), 1, 20)) AS CHAR(100)) <=> COALESCE(col_char_20, col_char_20, col_char_20)
+FOR UPDATE;
+
+#Q2 简化重现的例子
+create table tt(c int);
+SELECT GROUP_CONCAT(99 ORDER BY (
+    SELECT 44
+    FROM dual
+    WHERE EXISTS (
+    SELECT 1
+    FROM tt x join tt y using(c)
+    )
+) ASC )
+FROM dual;
+
+#不报错
+SELECT GROUP_CONCAT(99 ORDER BY (
+    SELECT 44
+    FROM dual
+    WHERE EXISTS (
+    SELECT 1
+    FROM tt x , tt y where x.c = y.c
+    )
+) ASC )
+FROM dual;
+
+#报错
+SELECT sum(
+    (SELECT 44
+    FROM dual
+    WHERE EXISTS (
+    SELECT 1
+    FROM tt x join tt y using(c)
+    ))
+)
+FROM dual;
+
+#报错
+SELECT sum(
+    (SELECT 1
+    FROM tt x join tt y using(c))
+)
+FROM dual;
+
+SELECT sum(
+    (SELECT 1
+    FROM tt x left join tt y on x.c = y.c)
+)
+FROM dual;
+
+#不报错
+SELECT sum(
+    (SELECT 1
+    FROM tt x, tt y where x.c = y.c)
+)
+FROM dual;
+
+USE AGG_SUBQUERY;
+drop database AGG_SUBQUERY;
+--disable_warnings
+
+
+--disable_query_log
+drop database if exists transformer;
+create database transformer;
+use transformer;
+
+create table agg_t1(c1 int);
+insert into agg_t1 values (1);
+insert into agg_t1 values (1);
+insert into agg_t1 values (2);
+insert into agg_t1 values (3);
+insert into agg_t1 values (10);
+
+create table agg_t2(c2 int);
+insert into agg_t2 values (1);
+insert into agg_t2 values (12);
+insert into agg_t2 values (2);
+insert into agg_t2 values (1);
+insert into agg_t2 values (10);
+
+create table pt1(c1 int primary key, c2 int, c3 varchar(32)) partition by hash (c1) partitions 3;
+insert into pt1 values (1, 1, 'o');
+insert into pt1 values (2, 5, 'c');
+insert into pt1 values (3, 5, 'b');
+insert into pt1 values (4, 6, 'o');
+insert into pt1 values (5, 7, 'd');
+insert into pt1 values (6, 8, 'c');
+
+create table t1(c1 int primary key, c2 int);
+insert into t1 values (1, 1);
+insert into t1 values (2, 5);
+insert into t1 values (3, 2);
+insert into t1 values (4, 6);
+insert into t1 values (5, 4);
+insert into t1 values (6, 7);
+
+create table t2(c1 int primary key, c2 int, c3 varchar(32));
+insert into t2 values (1, 1, 'o');
+insert into t2 values (2, 5, 'c');
+insert into t2 values (3, 5, 'b');
+insert into t2 values (4, 6, 'o');
+insert into t2 values (5, 7, 'd');
+insert into t2 values (6, 8, 'c');
+
+create table t3(c1 int primary key, c2 int, c3 varchar(32));
+insert into t3 values (1, 2, '3');
+insert into t3 values (2, 5, '4');
+insert into t3 values (3, 6, '1');
+insert into t3 values (4, 5, '1');
+insert into t3 values (5, 5, '5');
+insert into t3 values (6, 5, 'c');
+
+create table t4(c1 int , c2 int , c3 int, primary key(c1,c2));
+insert into t4 values (1, 2, 3);
+insert into t4 values (1, 5, 4);
+insert into t4 values (2, 6, 1);
+insert into t4 values (2, 5, 1);
+insert into t4 values (3, 5, 5);
+insert into t4 values (3, 7, 1);
+
+create table t5(c1 int , c2 int , c3 int primary key);
+insert into t5 values (3, 2, 1);
+insert into t5 values (4, 5, 2);
+insert into t5 values (1, 6, 3);
+insert into t5 values (1, 5, 4);
+insert into t5 values (5, 5, 5);
+insert into t5 values (1, 7, 6);
+
+create table t6(c1 int , c2 int , c3 int, c4 int,
+  index idx_t9 (c2, c3) local
+);
+insert into t6 values (3, 2, 1, 1);
+insert into t6 values (4, 5, 2, 5);
+insert into t6 values (1, 6, 3, 5);
+insert into t6 values (1, 5, 4, 6);
+insert into t6 values (5, 5, 5, 7);
+insert into t6 values (1, 7, 6, 8);
+
+create table t7(c1 int, c2 int , c3 int not null);
+insert into t7 values (3, 2, 1);
+insert into t7 values (4, 5, 5);
+insert into t7 values (1, 6, 5);
+insert into t7 values (1, 5, 6);
+insert into t7 values (5, 5, 7);
+insert into t7 values (1, 7, 8);
+
+CREATE TABLE `cb_loan_acctacctstathist_11` (`acctnbr` varchar(34) NOT NULL COMMENT '账号',  `effdatetime` date NOT NULL COMMENT '生效时间',   `acctstatcd` varchar(4) NOT NULL COMMENT '账户状态',   `postdate` date NOT NULL COMMENT '交易日期',   `mainttellerid` varchar(20) DEFAULT NULL COMMENT '维护柜员',   `maintbranchnbr` varchar(12) DEFAULT NULL COMMENT '维护机构',   `gmt_create` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '维护日期',   `gmt_modified` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '维护时间 ',   `timeuniqueextn` bigint(20) NOT NULL COMMENT '时间唯一流水号',   PRIMARY KEY (`acctnbr`, `effdatetime`, `timeuniqueextn`),   KEY `idx_acctacctstathist_acctnbr_postdate` (`acctnbr`, `postdate`) BLOCK_SIZE 16384,   KEY `idx_acctacctstathist_timeuniqueextn_acctstatcd` (`timeuniqueextn`, `acctstatcd`) BLOCK_SIZE 16384);
+
+CREATE TABLE `cb_loan_acctloaninfotemp_11` (   `acctnbr` varchar(34) NOT NULL COMMENT '贷款账号',   `processyn` int(11) NOT NULL COMMENT '账号是否已处理',   `gmt_create` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '维护日期',   `gmt_modified` datetime(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '维护时间',   `shardingkey` varchar(4) NOT NULL COMMENT '分库分表字段',   PRIMARY KEY (`acctnbr`));
+
+CREATE TABLE `B` (
+  `col_int` int(11) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_datetime` datetime DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_date_key` date DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_date` date DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_datetime_key` datetime DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  index idx3 (col_varchar_10) local,
+  index idx7 (col_date_key) local,
+  index idx1 (col_int_key) local,
+  index idx5 (col_varchar_20_key) local,
+  index idx9 (col_datetime_key) local
+) DEFAULT CHARSET = utf8mb4 REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE;
+
+CREATE TABLE `CC` (
+  `col_datetime` datetime DEFAULT NULL,
+  `col_datetime_key` datetime DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_date_key` date DEFAULT NULL,
+  `col_date` date DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  index idx9 (col_datetime_key) local,
+  index idx3 (col_varchar_10_key) local,
+  index idx5 (col_varchar_20_key) local,
+  index idx7 (col_date_key) local,
+  index idx1 (col_int_key) local
+) DEFAULT CHARSET = utf8mb4 REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE;
+
+sleep 3;
+--enable_warnings
+--enable_query_log
+# schema END
+
+explain select max(c1) from t1;
+explain select /*+ NO_REWRITE */max(c1) from t1;
+--sorted_result
+select max(c1) from t1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t1;
+
+
+explain select min(c1) from t1;
+explain select /*+ NO_REWRITE */min(c1) from t1;
+--sorted_result
+select min(c1) from t1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) from t1;
+
+
+# select alias test
+explain select max(c1) as max from t1;
+explain select /*+ NO_REWRITE */max(c1) as max from t1;
+--sorted_result
+select max(c1) as max from t1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from t1;
+
+explain select min(c1) as min from t1;
+explain select /*+ NO_REWRITE */min(c1) as min from t1;
+--sorted_result
+select min(c1) as min from t1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from t1;
+
+
+# index test
+explain select max(c2) from t6;
+explain select /*+ NO_REWRITE */max(c2) from t6;
+--sorted_result
+select max(c2) from t6;
+--sorted_result
+select /*+ NO_REWRITE */max(c2) from t6;
+
+explain select max(c3) from t7;
+explain select /*+ NO_REWRITE */max(c3) from t7;
+--sorted_result
+select max(c3) from t7;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t7;
+
+explain select * from t6 where c2 = (select max(c2) from t6);
+explain select /*+ NO_REWRITE */* from t6 where c2 = (select /*+ NO_REWRITE */max(c2) from t6);
+--sorted_result
+select * from t6 where c2 = (select max(c2) from t6);
+--sorted_result
+select /*+ NO_REWRITE */* from t6 where c2 = (select /*+ NO_REWRITE */max(c2) from t6);
+
+
+# table alias test
+explain select max(c1) from t1 as tmp;
+explain select /*+ NO_REWRITE */max(c1) from t1 as tmp;
+--sorted_result
+select max(c1) from t1 as tmp;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t1 as tmp;
+
+explain select c1 from t1 where c1 > (select max(c1) from t1);
+explain select /*+ NO_REWRITE */c1 from t1 where c1 > (select /*+ NO_REWRITE */max(c1) from t1);
+--sorted_result
+select c1 from t1 where c1 > (select max(c1) from t1);
+--sorted_result
+select /*+ NO_REWRITE */c1 from t1 where c1 > (select /*+ NO_REWRITE */max(c1) from t1);
+
+
+# having test
+explain select max(c1) as max from t1 having max(c1) > 1;
+explain select /*+ NO_REWRITE */max(c1) as max from t1 having max(c1) > 1;
+--sorted_result
+select max(c1) as max from t1 having max(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from t1 having max(c1) > 1;
+
+explain select min(c1) as min from t1 having min(c1) > 1;
+explain select /*+ NO_REWRITE */min(c1) as min from t1 having min(c1) > 1;
+--sorted_result
+select min(c1) as min from t1 having min(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from t1 having min(c1) > 1;
+
+explain select max(c1) as max from t1 having max(c1);
+explain select /*+ NO_REWRITE */max(c1) as max from t1 having max(c1);
+--sorted_result
+select max(c1) as max from t1 having max(c1);
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from t1 having max(c1);
+
+explain select min(c1) as min from t1 having true;
+explain select /*+ NO_REWRITE */min(c1) as min from t1 having true;
+--sorted_result
+select min(c1) as min from t1 having true;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from t1 having true;
+
+explain select max(c1) from t4 having false;
+explain select /*+ NO_REWRITE */max(c1) from t4 having false;
+--sorted_result
+select max(c1) from t4 having false;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t4 having false;
+
+
+# distribute test
+explain select max(c1) from pt1;
+explain select /*+ NO_REWRITE */max(c1) from pt1;
+--sorted_result
+select max(c1) from pt1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from pt1;
+
+explain select max(c1) as max from pt1;
+explain select /*+ NO_REWRITE */max(c1) as max from pt1;
+--sorted_result
+select max(c1) as max from pt1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from pt1;
+
+explain select min(c1) from pt1;
+explain select /*+ NO_REWRITE */min(c1) from pt1;
+--sorted_result
+select min(c1) from pt1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) from pt1;
+
+explain select min(c1) as min from pt1;
+explain select /*+ NO_REWRITE */min(c1) as min from pt1;
+--sorted_result
+select min(c1) as min from pt1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from pt1;
+
+explain select * from (select max(c1) from pt1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) from pt1) as tmp_table;
+--sorted_result
+select * from (select max(c1) from pt1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) from pt1) as tmp_table;
+
+explain select * from t2 where t2.c1 > (select max(c1) from pt1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) from pt1);
+--sorted_result
+select * from t2 where t2.c1 > (select max(c1) from pt1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) from pt1);
+
+explain select * from (select min(c1) as min from pt1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min from pt1) as tmp_table;
+--sorted_result
+select * from (select min(c1) as min from pt1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min from pt1) as tmp_table;
+
+explain select * from t2 where t2.c1 > (select min(c1) as min from pt1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) as min from pt1);
+--sorted_result
+select * from t2 where t2.c1 > (select min(c1) as min from pt1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) as min from pt1);
+
+
+# test subquery
+explain select * from (select max(c1) from t1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) from t1) as tmp_table;
+--sorted_result
+select * from (select max(c1) from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) from t1) as tmp_table;
+explain select * from t2 where t2.c1 > (select max(c1) from t1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) from t1);
+--sorted_result
+select * from t2 where t2.c1 > (select max(c1) from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) from t1);
+
+explain select * from (select max(c1) as max from t1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) as max from t1) as tmp_table;
+--sorted_result
+select * from (select max(c1) as max from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) as max from t1) as tmp_table;
+
+explain select * from t2 where t2.c1 > (select max(c1) as max from t1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) as max from t1);
+--sorted_result
+select * from t2 where t2.c1 > (select max(c1) as max from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) as max from t1);
+
+explain select * from (select min(c1) from t1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) from t1) as tmp_table;
+--sorted_result
+select * from (select min(c1) from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) from t1) as tmp_table;
+
+explain select * from t2 where t2.c1 > (select min(c1) from t1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) from t1);
+--sorted_result
+select * from t2 where t2.c1 > (select min(c1) from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) from t1);
+
+explain select * from (select min(c1) as min from t1) as tmp_table;
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min from t1) as tmp_table;
+--sorted_result
+select * from (select min(c1) as min from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min from t1) as tmp_table;
+
+explain select * from t2 where t2.c1 > (select min(c1) as min from t1);
+explain select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) as min from t1);
+--sorted_result
+select * from t2 where t2.c1 > (select min(c1) as min from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) as min from t1);
+#do not transform max/min
+explain select max(c1) from t4;
+explain select /*+ NO_REWRITE */max(c1) from t4;
+--sorted_result
+select max(c1) from t4;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t4;
+
+explain select min(c1) from t4;
+explain select /*+ NO_REWRITE */min(c1) from t4;
+--sorted_result
+select min(c1) from t4;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) from t4;
+
+explain select max(c1 + 1) + 1 from t1 limit 1;
+explain select /*+ NO_REWRITE */max(c1 + 1) + 1 from t1 limit 1;
+--sorted_result
+select max(c1 + 1) + 1 from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1 + 1) + 1 from t1 limit 1;
+
+explain select max(c1) from t1 limit 1;
+explain select /*+ NO_REWRITE */max(c1) from t1 limit 1;
+--sorted_result
+select max(c1) from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t1 limit 1;
+
+explain select min(c1) from t1 limit 1;
+explain select /*+ NO_REWRITE */min(c1) from t1 limit 1;
+--sorted_result
+select min(c1) from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) from t1 limit 1;
+
+explain select min(c1) as min from t1 limit 1;
+explain select /*+ NO_REWRITE */min(c1) as min from t1 limit 1;
+--sorted_result
+select min(c1) as min from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from t1 limit 1;
+
+explain select min(c1 + 1) + 1 from t1 limit 1;
+explain select /*+ NO_REWRITE */min(c1 + 1) + 1 from t1 limit 1;
+--sorted_result
+select min(c1 + 1) + 1 from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1 + 1) + 1 from t1 limit 1;
+
+explain select max(c1) as max from t1 limit 1;
+explain select /*+ NO_REWRITE */max(c1) as max from t1 limit 1;
+--sorted_result
+select max(c1) as max from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from t1 limit 1;
+
+explain select max(c1 + 1) + 1 as max from t1 limit 1;
+explain select /*+ NO_REWRITE */max(c1 + 1) + 1 as max from t1 limit 1;
+--sorted_result
+select max(c1 + 1) + 1 as max from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1 + 1) + 1 as max from t1 limit 1;
+
+explain select min(c1 + 1) + 1 as min from t1 limit 1;
+explain select /*+ NO_REWRITE */min(c1 + 1) + 1 as min from t1 limit 1;
+--sorted_result
+select min(c1 + 1) + 1 as min from t1 limit 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1 + 1) + 1 as min from t1 limit 1;
+
+explain select max(c1) as max from t1 having min(c1) > 1;
+explain select /*+ NO_REWRITE */max(c1) as max from t1 having min(c1) > 1;
+--sorted_result
+select max(c1) as max from t1 having min(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max from t1 having min(c1) > 1;
+
+explain select min(c1) as min from t1 having max(c1) > 1;
+explain select /*+ NO_REWRITE */min(c1) as min from t1 having max(c1) > 1;
+--sorted_result
+select min(c1) as min from t1 having max(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min from t1 having max(c1) > 1;
+
+explain select max(c1) from t1 having 1 in (select c1 from t2);
+explain select /*+ NO_REWRITE */max(c1) from t1 having 1 in (select /*+ NO_REWRITE */c1 from t2);
+--sorted_result
+select max(c1) from t1 having 1 in (select c1 from t2);
+--sorted_result
+select /*+ NO_REWRITE */max(c1) from t1 having 1 in (select /*+ NO_REWRITE */c1 from t2);
+
+explain select * from (select * from t1 where c1 + c2 in (select c2 from t3) and not exists(select c1 from t2 where c1 > 5 group by c1)) as v where v.c1 in (select c3 from t2);
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */* from t1 where c1 + c2 in (select /*+ NO_REWRITE */c2 from t3) and not exists(select /*+ NO_REWRITE */c1 from t2 where c1 > 5 group by c1)) as v where v.c1 in (select /*+ NO_REWRITE */c3 from t2);
+--sorted_result
+select * from (select * from t1 where c1 + c2 in (select c2 from t3) and not exists(select c1 from t2 where c1 > 5 group by c1)) as v where v.c1 in (select c3 from t2);
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */* from t1 where c1 + c2 in (select /*+ NO_REWRITE */c2 from t3) and not exists(select /*+ NO_REWRITE */c1 from t2 where c1 > 5 group by c1)) as v where v.c1 in (select /*+ NO_REWRITE */c3 from t2);
+
+explain select max(c4) from t6;
+explain select /*+ NO_REWRITE */max(c4) from t6;
+--sorted_result
+select max(c4) from t6;
+--sorted_result
+select /*+ NO_REWRITE */max(c4) from t6;
+
+
+# max/min(const) simplify
+explain select min(999) from t4 having max(c1) > 0;
+explain select /*+ NO_REWRITE */min(999) from t4 having max(c1) > 0;
+--sorted_result
+select min(999) from t4 having max(c1) > 0;
+--sorted_result
+select /*+ NO_REWRITE */min(999) from t4 having max(c1) > 0;
+
+explain select min(999) from t4 group by c1;
+explain select /*+ NO_REWRITE */min(999) from t4 group by c1;
+--sorted_result
+select min(999) from t4 group by c1;
+--sorted_result
+select /*+ NO_REWRITE */min(999) from t4 group by c1;
+
+explain select max(999+abs(-1)) from t4 group by c2;
+explain select /*+ NO_REWRITE */max(999+abs(-1)) from t4 group by c2;
+--sorted_result
+select max(999+abs(-1)) from t4 group by c2;
+--sorted_result
+select /*+ NO_REWRITE */max(999+abs(-1)) from t4 group by c2;
+
+explain select max(1+2) from t4 limit 10;
+explain select /*+ NO_REWRITE */max(1+2) from t4 limit 10;
+--sorted_result
+select max(1+2) from t4 limit 10;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4 limit 10;
+
+explain select max(1+2) from t4;
+explain select /*+ NO_REWRITE */max(1+2) from t4;
+--sorted_result
+select max(1+2) from t4;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4;
+
+explain select min(1+2) from t4 where c2 = 1;
+explain select /*+ NO_REWRITE */min(1+2) from t4 where c2 = 1;
+--sorted_result
+select min(1+2) from t4 where c2 = 1;
+--sorted_result
+select /*+ NO_REWRITE */min(1+2) from t4 where c2 = 1;
+
+explain select max(1+2), 3 from t4;
+explain select /*+ NO_REWRITE */max(1+2), 3 from t4;
+--sorted_result
+select max(1+2), 3 from t4;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2), 3 from t4;
+
+explain select max(1+2) from t4,t5 where t4.c1 = t5.c1;
+explain select /*+ NO_REWRITE */max(1+2) from t4,t5 where t4.c1 = t5.c1;
+--sorted_result
+select max(1+2) from t4,t5 where t4.c1 = t5.c1;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4,t5 where t4.c1 = t5.c1;
+
+explain select min(1+2) from t4 inner join t5 on t4.c1=t5.c1;
+explain select /*+ NO_REWRITE */min(1+2) from t4 inner join t5 on t4.c1=t5.c1;
+--sorted_result
+select min(1+2) from t4 inner join t5 on t4.c1=t5.c1;
+--sorted_result
+select /*+ NO_REWRITE */min(1+2) from t4 inner join t5 on t4.c1=t5.c1;
+
+explain select max(1+2) from t4 left join t5 using(c1);
+explain select /*+ NO_REWRITE */max(1+2) from t4 left join t5 using(c1);
+--sorted_result
+select max(1+2) from t4 left join t5 using(c1);
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4 left join t5 using(c1);
+
+explain select * from t4 where exists(select max(t4.c2) from t5);
+explain select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */max(t4.c2) from t5);
+--sorted_result
+select * from t4 where exists(select max(t4.c2) from t5);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */max(t4.c2) from t5);
+
+explain select * from t4 where exists(select max(t4.c2 + 1) from t5);
+explain select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */max(t4.c2 + 1) from t5);
+--sorted_result
+select * from t4 where exists(select max(t4.c2 + 1) from t5);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */max(t4.c2 + 1) from t5);
+
+explain select * from t4 where exists(select min(999+1) from t5 group by t5.c2);
+explain select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */min(999+1) from t5 group by t5.c2);
+--sorted_result
+select * from t4 where exists(select min(999+1) from t5 group by t5.c2);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */min(999+1) from t5 group by t5.c2);
+
+explain select * from t4 where exists(select min(999+1) from t5 where t5.c1 = 1 and t5.c2 = 1 group by t5.c2);
+explain select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */min(999+1) from t5 where t5.c1 = 1 and t5.c2 = 1 group by t5.c2);
+--sorted_result
+select * from t4 where exists(select min(999+1) from t5 where t5.c1 = 1 and t5.c2 = 1 group by t5.c2);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where exists(select /*+ NO_REWRITE */min(999+1) from t5 where t5.c1 = 1 and t5.c2 = 1 group by t5.c2);
+
+explain select * from t4 where c1 in (select max(999+1) from t5);
+explain select /*+ NO_REWRITE */* from t4 where c1 in (select /*+ NO_REWRITE */max(999+1) from t5);
+--sorted_result
+select * from t4 where c1 in (select max(999+1) from t5);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where c1 in (select /*+ NO_REWRITE */max(999+1) from t5);
+
+explain select * from t4 where c1 in (select max(999+1) from t5 where t5.c1=2 and t5.c2=3);
+explain select /*+ NO_REWRITE */* from t4 where c1 in (select /*+ NO_REWRITE */max(999+1) from t5 where t5.c1=2 and t5.c2=3);
+--sorted_result
+select * from t4 where c1 in (select max(999+1) from t5 where t5.c1=2 and t5.c2=3);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where c1 in (select /*+ NO_REWRITE */max(999+1) from t5 where t5.c1=2 and t5.c2=3);
+
+explain select * from t4 where c1 > any(select min(999+1) from t5 group by t5.c2);
+explain select /*+ NO_REWRITE */* from t4 where c1 > any(select /*+ NO_REWRITE */min(999+1) from t5 group by t5.c2);
+--sorted_result
+select * from t4 where c1 > any(select min(999+1) from t5 group by t5.c2);
+--sorted_result
+select /*+ NO_REWRITE */* from t4 where c1 > any(select /*+ NO_REWRITE */min(999+1) from t5 group by t5.c2);
+
+explain select max(1) from t4 order by 1;
+explain select /*+ NO_REWRITE */max(1) from t4 order by 1;
+--sorted_result
+select max(1) from t4 order by 1;
+--sorted_result
+select /*+ NO_REWRITE */max(1) from t4 order by 1;
+
+explain select max(1+2) from t4 order by c1;
+explain select /*+ NO_REWRITE */max(1+2) from t4 order by c1;
+--sorted_result
+select max(1+2) from t4 order by c1;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4 order by c1;
+
+explain select max(1+2) from t4 order by c2,c3;
+explain select /*+ NO_REWRITE */max(1+2) from t4 order by c2,c3;
+--sorted_result
+select max(1+2) from t4 order by c2,c3;
+--sorted_result
+select /*+ NO_REWRITE */max(1+2) from t4 order by c2,c3;
+
+explain select max(1 + 1) from t4 group by c1 order by 1;
+explain select /*+ NO_REWRITE */max(1 + 1) from t4 group by c1 order by 1;
+--sorted_result
+select max(1 + 1) from t4 group by c1 order by 1;
+--sorted_result
+select /*+ NO_REWRITE */max(1 + 1) from t4 group by c1 order by 1;
+
+explain select min(1 + 1) from t4 group by c1 order by 1;
+explain select /*+ NO_REWRITE */min(1 + 1) from t4 group by c1 order by 1;
+--sorted_result
+select min(1 + 1) from t4 group by c1 order by 1;
+--sorted_result
+select /*+ NO_REWRITE */min(1 + 1) from t4 group by c1 order by 1;
+
+# transform prefix const column in index
+explain select max(c3) from t6 where c2 = 1;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 = 1;
+--sorted_result
+select max(c3) from t6 where c2 = 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 = 1;
+
+explain select max(c3) from t6 where 1 = c2;
+explain select /*+ NO_REWRITE */max(c3) from t6 where 1 = c2;
+--sorted_result
+select max(c3) from t6 where 1 = c2;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where 1 = c2;
+
+explain select max(c3) from t6 where c2 is TRUE;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 is TRUE;
+--sorted_result
+select max(c3) from t6 where c2 is TRUE;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 is TRUE;
+
+explain select max(c3) from t6 where c2 = 1 and c1 = 1;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 = 1 and c1 = 1;
+--sorted_result
+select max(c3) from t6 where c2 = 1 and c1 = 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 = 1 and c1 = 1;
+
+explain select max(c3) from t6 where c2 != 1;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 != 1;
+--sorted_result
+select max(c3) from t6 where c2 != 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 != 1;
+
+explain select max(c3) from t6 where c2 >1;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 >1;
+--sorted_result
+select max(c3) from t6 where c2 >1;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 >1;
+
+explain select max(c3) from t6 where c2 <1;
+explain select /*+ NO_REWRITE */max(c3) from t6 where c2 <1;
+--sorted_result
+select max(c3) from t6 where c2 <1;
+--sorted_result
+select /*+ NO_REWRITE */max(c3) from t6 where c2 <1;
+
+
+explain SELECT MIN(1) FROM agg_t2 ORDER BY (SELECT AVG(c2) FROM agg_t1);
+explain select /*+ NO_REWRITE */MIN(1) FROM agg_t2 ORDER BY (select /*+ NO_REWRITE */AVG(c2) FROM agg_t1);
+# BUG: 
+# SELECT MIN(1) FROM agg_t2 ORDER BY (SELECT AVG(c2) FROM agg_t1);
+
+explain SELECT MIN(DISTINCT OUTR . `col_varchar_10`) AS X FROM B AS OUTR WHERE (OUTR . `col_varchar_10_key` , OUTR . `col_varchar_20_key`) IN (SELECT DISTINCT INNR . `col_varchar_10` AS X , INNR . `col_varchar_10_key` AS Y FROM CC AS INNR2 LEFT JOIN CC AS INNR ON (INNR2 . `col_int` > INNR . `pk`) WHERE INNR . `pk` = INNR . `col_int_key` AND OUTR . `col_datetime` IS NOT NULL) AND OUTR . `col_varchar_20` = 'b' HAVING X = NULL ORDER BY OUTR . `col_date_key` , OUTR . `pk`;
+explain select /*+ NO_REWRITE */MIN(DISTINCT OUTR . `col_varchar_10`) AS X FROM B AS OUTR WHERE (OUTR . `col_varchar_10_key` , OUTR . `col_varchar_20_key`) IN (select /*+ NO_REWRITE */DISTINCT INNR . `col_varchar_10` AS X , INNR . `col_varchar_10_key` AS Y FROM CC AS INNR2 LEFT JOIN CC AS INNR ON (INNR2 . `col_int` > INNR . `pk`) WHERE INNR . `pk` = INNR . `col_int_key` AND OUTR . `col_datetime` IS NOT NULL) AND OUTR . `col_varchar_20` = 'b' HAVING X = NULL ORDER BY OUTR . `col_date_key` , OUTR . `pk`;
+
+# transform with some constant expressions
+explain select 5, max(c2) from t6;
+explain select /*+ NO_REWRITE */5, max(c2) from t6;
+--sorted_result
+select 5, max(c2) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, max(c2) from t6;
+
+explain select max(c2), 5 from t6;
+explain select /*+ NO_REWRITE */max(c2), 5 from t6;
+--sorted_result
+select max(c2), 5 from t6;
+--sorted_result
+select /*+ NO_REWRITE */max(c2), 5 from t6;
+
+explain select 5, min(c2) from t6;
+explain select /*+ NO_REWRITE */5, min(c2) from t6;
+--sorted_result
+select 5, min(c2) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, min(c2) from t6;
+
+explain select min(c2), 5 from t6;
+explain select /*+ NO_REWRITE */min(c2), 5 from t6;
+--sorted_result
+select min(c2), 5 from t6;
+--sorted_result
+select /*+ NO_REWRITE */min(c2), 5 from t6;
+
+explain select 5, 5, min(c2), 7 + 5, floor(5) from t6;
+explain select /*+ NO_REWRITE */5, 5, min(c2), 7 + 5, floor(5) from t6;
+--sorted_result
+select 5, 5, min(c2), 7 + 5, floor(5) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, 5, min(c2), 7 + 5, floor(5) from t6;
+
+explain select abs(-55), max(c2), 3 + 2, 5 from t6;
+explain select /*+ NO_REWRITE */abs(-55), max(c2), 3 + 2, 5 from t6;
+--sorted_result
+select abs(-55), max(c2), 3 + 2, 5 from t6;
+--sorted_result
+select /*+ NO_REWRITE */abs(-55), max(c2), 3 + 2, 5 from t6;
+
+
+# do not transform with more than one non-constant
+explain select 5, max(c2), c1 from t6;
+explain select /*+ NO_REWRITE */5, max(c2), c1 from t6;
+--sorted_result
+select 5, max(c2), c1 from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, max(c2), c1 from t6;
+
+explain select c1, min(c2), 233333 from t6;
+explain select /*+ NO_REWRITE */c1, min(c2), 233333 from t6;
+--sorted_result
+select c1, min(c2), 233333 from t6;
+--sorted_result
+select /*+ NO_REWRITE */c1, min(c2), 233333 from t6;
+
+
+#bug 
+explain select * from (select c1 as col from t1) as L where col = (select max(c1) from t1 where L.col > 5);
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */c1 as col from t1) as L where col = (select /*+ NO_REWRITE */max(c1) from t1 where L.col > 5);
+--sorted_result
+select * from (select c1 as col from t1) as L where col = (select max(c1) from t1 where L.col > 5);
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */c1 as col from t1) as L where col = (select /*+ NO_REWRITE */max(c1) from t1 where L.col > 5);
+
+
+explain select * from (select a.acctnbr as l1, a.timeuniqueextn as l2  from cb_loan_acctacctstathist_11 a left join cb_loan_acctloaninfotemp_11 b on a.acctnbr = b.acctnbr where a.acctstatcd not in ('CLS', 'DENI') and b.acctnbr is null) as l where l.l2 = (select max(a2.timeuniqueextn) from cb_loan_acctacctstathist_11 a2 where a2.acctnbr = l.l1 and a2.postdate <= '2018-11-10');
+explain select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */a.acctnbr as l1, a.timeuniqueextn as l2  from cb_loan_acctacctstathist_11 a left join cb_loan_acctloaninfotemp_11 b on a.acctnbr = b.acctnbr where a.acctstatcd not in ('CLS', 'DENI') and b.acctnbr is null) as l where l.l2 = (select /*+ NO_REWRITE */max(a2.timeuniqueextn) from cb_loan_acctacctstathist_11 a2 where a2.acctnbr = l.l1 and a2.postdate <= '2018-11-10');
+
+## 利用主键进行min/max 改写
+explain select max(c2) from t4 where t4.c1 = 1;
+explain select /*+ NO_REWRITE */ max(c2) from t4 where t4.c1 = 1;
+--sorted_result
+select max(c2) from t4 where t4.c1 = 1;
+--sorted_result
+select /*+ NO_REWRITE */ max(c2) from t4 where t4.c1 = 1;
+
+explain select min(c2) from t4 where t4.c1 = 1;
+explain select /*+ NO_REWRITE */ min(c2) from t4 where t4.c1 = 1;
+select min(c2) from t4 where t4.c1 = 1;
+select /*+ NO_REWRITE */ min(c2) from t4 where t4.c1 = 1;
+
+explain select max(c2) - 4 from t4 where t4.c1 = 1;
+explain select /*+ NO_REWRITE */ max(c2) - 4 from t4 where t4.c1 = 1;
+--sorted_result
+select max(c2) - 4 from t4 where t4.c1 = 1;
+--sorted_result
+select /*+ NO_REWRITE */ max(c2) - 4 from t4 where t4.c1 = 1;
+
+explain select min(c2) + 4 from t4 where t4.c1 = 1;
+explain select /*+ NO_REWRITE */ min(c2) + 4 from t4 where t4.c1 = 1;
+--sorted_result
+select min(c2) + 4 from t4 where t4.c1 = 1;
+--sorted_result
+select /*+ NO_REWRITE */ min(c2) + 4 from t4 where t4.c1 = 1;
+
+## 
+## max/min 在表达式中
+explain select 5, abs(max(c2)+1) from t6;
+explain select /*+ NO_REWRITE */5, abs(max(c2)+1) from t6;
+--sorted_result
+select 5, abs(max(c2)+1) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, abs(max(c2)+1) from t6;
+
+explain select 5, sqrt(abs(min(c2) * 4)) from t6;
+explain select /*+ NO_REWRITE */5, sqrt(abs(min(c2) * 4)) from t6;
+--sorted_result
+select 5, sqrt(abs(min(c2) * 4)) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, sqrt(abs(min(c2) * 4)) from t6;
+
+## 不可改写
+explain select 5, max(abs(c2)) from t6;
+explain select /*+ NO_REWRITE */5, max(abs(c2)) from t6;
+--sorted_result
+select 5, max(abs(c2)) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, max(abs(c2)) from t6;
+
+explain select 5, min(abs(c2)) from t6;
+explain select /*+ NO_REWRITE */5, min(abs(c2)) from t6;
+--sorted_result
+select 5, min(abs(c2)) from t6;
+--sorted_result
+select /*+ NO_REWRITE */5, min(abs(c2)) from t6;
+
+explain select max(c2) + min(c2) from t6;
+explain select /*+ NO_REWRITE */ max(c2) + min(c2) from t6;
+--sorted_result
+select max(c2) + min(c2) from t6;
+--sorted_result
+select /*+ NO_REWRITE */ max(c2) + min(c2) from t6;
+
+## 测试 select into
+explain select max(c2) into @v from t6;
+select max(c2) into @v from t6;
+select @v;
+
+explain select /*+no_rewrite*/ max(c2) into @v from t6;
+select /*+no_rewrite*/ max(c2) into @v from t6;
+select @v;
+
+##bug: 
+--disable_warnings
+DROP TABLE IF EXISTS `B`,`C`,`BB`,`CC`;
+--enable_warnings
+--disable_result_log
+CREATE TABLE `B` (
+  `pk` int(11) NOT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `col_varchar` varchar(1) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_varchar_key` varchar(1) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx1` (`pk`, `col_int_key`) ,
+  KEY `idx3` (`pk`, `col_varchar_key`) ,
+  KEY `idx7` (`pk`, `col_varchar_20_key`) ,
+  KEY `idx5` (`pk`, `col_varchar_10_key`) 
+) ;
+
+CREATE TABLE `C` (
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_varchar_key` varchar(1) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_varchar` varchar(1) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx5` (`pk`, `col_varchar_10_key`) ,
+  KEY `idx1` (`pk`, `col_int_key`) ,
+  KEY `idx7` (`pk`, `col_varchar_20_key`) ,
+  KEY `idx3` (`pk`, `col_varchar_key`) 
+) ;
+
+CREATE TABLE `BB` (
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_varchar` varchar(1) DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_varchar_key` varchar(1) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx7` (`pk`, `col_varchar_20_key`) ,
+  KEY `idx1` (`pk`, `col_int_key`) ,
+  KEY `idx5` (`pk`, `col_varchar_10_key`) ,
+  KEY `idx3` (`pk`, `col_varchar_key`) 
+) ;
+
+CREATE TABLE `CC` (
+  `col_varchar_10_key` varchar(10) DEFAULT NULL,
+  `col_int_key` int(11) DEFAULT NULL,
+  `col_varchar` varchar(1) DEFAULT NULL,
+  `col_varchar_20` varchar(20) DEFAULT NULL,
+  `pk` int(11) NOT NULL,
+  `col_varchar_10` varchar(10) DEFAULT NULL,
+  `col_varchar_20_key` varchar(20) DEFAULT NULL,
+  `col_varchar_key` varchar(1) DEFAULT NULL,
+  `col_int` int(11) DEFAULT NULL,
+  PRIMARY KEY (`pk`),
+  KEY `idx5` (`pk`, `col_varchar_10_key`) ,
+  KEY `idx1` (`pk`, `col_int_key`) ,
+  KEY `idx7` (`pk`, `col_varchar_20_key`) ,
+  KEY `idx3` (`pk`, `col_varchar_key`) 
+);
+--disable_query_log
+INSERT INTO `B` VALUES (1,7,'j','i',8,'a',NULL,'m','d');
+INSERT INTO `C` VALUES ('p',7,'b',4,'z','h',NULL,1,'j'),(NULL,2,'s',3,'v','w',NULL,2,'f');
+INSERT INTO `BB` VALUES ('i',NULL,NULL,7,'d',1,'w',NULL,3),('v',NULL,'p',9,NULL,2,NULL,'d',NULL),(NULL,'r','f',NULL,'u',3,'r',NULL,6),('f',NULL,'o',NULL,'e',4,'j',NULL,0),(NULL,'p',NULL,7,'f',5,'a','d',7),('l','v','i',5,'c',6,'e','k',0),('s','v','q',1,'t',7,'z',NULL,NULL),('a','b',NULL,5,'o',8,'f','l',0),(NULL,'e',NULL,2,'l',9,'m','v',7),('j','i','u',NULL,NULL,10,'l','p',1),('p',NULL,NULL,0,'c',11,'f','h',5),('p','m','e',3,'t',12,NULL,'w',0),(NULL,'k','g',1,NULL,13,'q','d',5),('k','m','j',5,NULL,14,'k','a',7),(NULL,'q',NULL,NULL,NULL,15,'y','y',1),('o','e',NULL,1,'g',16,'i','a',NULL),('c',NULL,'j',NULL,'r',17,NULL,'g',6),('z','r','r',6,'k',18,'n','m',9),('t','z','f',0,'j',19,NULL,'a',8),(NULL,'x','n',1,'p',20,'l',NULL,6),('l','g','v',6,NULL,21,NULL,'q',1),('c','i','t',7,'r',22,'z',NULL,0),('n','m','g',9,NULL,23,NULL,NULL,1),('y','k','i',7,'i',24,'p',NULL,6),('k','y','y',0,'e',25,'b',NULL,4),(NULL,'h','l',3,'g',26,'o','a',NULL),('o','c','i',5,NULL,27,'z','f',NULL),('a','j','e',7,NULL,28,'u','f',6);
+INSERT INTO `CC` VALUES ('q',0,NULL,'n',1,'p','o',NULL,2),(NULL,NULL,'l','r',2,'u','u','z',9),('m',NULL,'b','d',3,NULL,'e','d',5),('y',4,'w','r',4,'n','r','i',4),('e',NULL,'f','t',5,'p','n','h',9),('g',7,NULL,'f',6,'g','o','i',1),('a',NULL,'i','n',7,'y',NULL,'h',3),('s',1,'e','a',8,'s','j','m',1),('u',8,NULL,'g',9,'m','b','u',1),('c',7,'f','t',10,'r','g','t',4),('l',0,'l',NULL,11,'a','j','w',3),(NULL,7,'y','r',12,'u','c','f',1),(NULL,9,'m','q',13,NULL,'f','m',9),(NULL,6,NULL,'h',14,NULL,'h',NULL,NULL),('o',1,NULL,'h',15,'l',NULL,'e',8),('l',5,'y','b',16,'b','q','a',NULL),('r',3,'q','m',17,'a','f','s',NULL),('a',NULL,'k','r',18,'o','k','t',3),(NULL,6,NULL,'n',19,'i',NULL,NULL,4),('t',NULL,'i','x',20,'q','r','i',4),('j',1,'e','r',21,'h','u','h',3),(NULL,NULL,'w','b',22,'k',NULL,'p',NULL),(NULL,3,'u','m',23,NULL,'s',NULL,NULL),('a',9,'m','o',24,'c','c','e',4),('x',6,'m','r',25,'k',NULL,'j',4),('c',1,'w','d',26,'m','h','l',NULL),('d',2,'l','g',27,NULL,NULL,'w',2),(NULL,NULL,'o','q',28,'h',NULL,'t',3),(NULL,5,'y','s',29,NULL,'m','j',NULL);
+select count(*) from B;
+select count(*) from C;
+select count(*) from BB;
+select count(*) from CC;
+--enable_query_log
+--enable_result_log
+
+explain SELECT COUNT(table2 . `pk`) AS field1,
+       table1 . col_varchar_20_key AS field2
+FROM (
+        (SELECT SUBQUERY1_t2 . *
+         FROM (C AS SUBQUERY1_t1
+               RIGHT  JOIN (CC AS SUBQUERY1_t2
+                            INNER JOIN C AS SUBQUERY1_t3 ON (SUBQUERY1_t3 . `col_varchar_20` = SUBQUERY1_t2 . `col_varchar_key`)) ON (SUBQUERY1_t3 . `col_varchar_key` = SUBQUERY1_t2 . `col_varchar_key`))
+         WHERE SUBQUERY1_t1 . `col_int_key` <= 6 ) AS table1
+      LEFT OUTER JOIN
+        (SELECT SUBQUERY2_t1 . *
+         FROM (BB AS SUBQUERY2_t1
+               INNER JOIN B AS SUBQUERY2_t2 ON (SUBQUERY2_t2 . `col_int_key` = SUBQUERY2_t1 . `pk`))
+         WHERE SUBQUERY2_t2 . `col_varchar_10_key` >= SUBQUERY2_t1 . `col_varchar_20_key` ) AS table2 ON (table2 . `col_varchar_key` = table1 . `col_varchar`))
+WHERE (table1 . `col_int_key` !=
+         (SELECT MIN(SUBQUERY3_t1 . `pk`) AS SUBQUERY3_field1
+          FROM C AS SUBQUERY3_t1
+          WHERE SUBQUERY3_t1 . `col_varchar` IN
+              (SELECT CHILD_SUBQUERY1_t1 . `col_varchar_20` AS CHILD_SUBQUERY3_field1
+               FROM (CC AS CHILD_SUBQUERY1_t1
+                     RIGHT OUTER JOIN ((C AS CHILD_SUBQUERY1_t2
+                                        INNER JOIN CC AS CHILD_SUBQUERY1_t3 ON (CHILD_SUBQUERY1_t3 . `col_varchar_key` = CHILD_SUBQUERY1_t2 . `col_varchar_key`))) ON (CHILD_SUBQUERY1_t3 . `col_varchar_10_key` = CHILD_SUBQUERY1_t2 . `col_varchar_key`))
+               WHERE CHILD_SUBQUERY1_t2 . `pk` > SUBQUERY3_t1 . `pk` ) ))
+  AND (table1 . `pk` NOT BETWEEN 241 AND (241 + 167)
+       OR table1 . `pk` BETWEEN 241 AND (241 + 54))
+  OR (table1 . `pk` != table1 . `col_int_key`
+      AND table1 . `col_varchar_10` > table2 . `col_varchar_key`)
+GROUP BY field2
+ORDER BY 1,
+         field1,
+         field2
+;
+SELECT COUNT(table2 . `pk`) AS field1,
+       table1 . col_varchar_20_key AS field2
+FROM (
+        (SELECT SUBQUERY1_t2 . *
+         FROM (C AS SUBQUERY1_t1
+               RIGHT  JOIN (CC AS SUBQUERY1_t2
+                            INNER JOIN C AS SUBQUERY1_t3 ON (SUBQUERY1_t3 . `col_varchar_20` = SUBQUERY1_t2 . `col_varchar_key`)) ON (SUBQUERY1_t3 . `col_varchar_key` = SUBQUERY1_t2 . `col_varchar_key`))
+         WHERE SUBQUERY1_t1 . `col_int_key` <= 6 ) AS table1
+      LEFT OUTER JOIN
+        (SELECT SUBQUERY2_t1 . *
+         FROM (BB AS SUBQUERY2_t1
+               INNER JOIN B AS SUBQUERY2_t2 ON (SUBQUERY2_t2 . `col_int_key` = SUBQUERY2_t1 . `pk`))
+         WHERE SUBQUERY2_t2 . `col_varchar_10_key` >= SUBQUERY2_t1 . `col_varchar_20_key` ) AS table2 ON (table2 . `col_varchar_key` = table1 . `col_varchar`))
+WHERE (table1 . `col_int_key` !=
+         (SELECT MIN(SUBQUERY3_t1 . `pk`) AS SUBQUERY3_field1
+          FROM C AS SUBQUERY3_t1
+          WHERE SUBQUERY3_t1 . `col_varchar` IN
+              (SELECT CHILD_SUBQUERY1_t1 . `col_varchar_20` AS CHILD_SUBQUERY3_field1
+               FROM (CC AS CHILD_SUBQUERY1_t1
+                     RIGHT OUTER JOIN ((C AS CHILD_SUBQUERY1_t2
+                                        INNER JOIN CC AS CHILD_SUBQUERY1_t3 ON (CHILD_SUBQUERY1_t3 . `col_varchar_key` = CHILD_SUBQUERY1_t2 . `col_varchar_key`))) ON (CHILD_SUBQUERY1_t3 . `col_varchar_10_key` = CHILD_SUBQUERY1_t2 . `col_varchar_key`))
+               WHERE CHILD_SUBQUERY1_t2 . `pk` > SUBQUERY3_t1 . `pk` ) ))
+  AND (table1 . `pk` NOT BETWEEN 241 AND (241 + 167)
+       OR table1 . `pk` BETWEEN 241 AND (241 + 54))
+  OR (table1 . `pk` != table1 . `col_int_key`
+      AND table1 . `col_varchar_10` > table2 . `col_varchar_key`)
+GROUP BY field2
+ORDER BY 1,
+         field1,
+         field2
+;
+
+--result_format 4
+--explain_protocol 2
+--sorted_result
+select min(c1), min(c1) + 100 from t1;
+--sorted_result
+select /*+ NO_REWRITE */ min(c1), min(c1) + 100 from t1;
+--sorted_result
+select max(c1), min(c1) from t1;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from t1 having min(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from t1 having min(c1) > 1;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from t1 having min(c1);
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from t1 having min(c1);
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from t1 having true;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from t1 having false;
+--sorted_result
+select * from (select min(c1) as min, min(c1) + 100 as min2 from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from t1) as tmp_table;
+
+# distributed table
+--sorted_result
+select min(c1), min(c1) + 100 from pt1;
+--sorted_result
+select /*+ NO_REWRITE */ min(c1), min(c1) + 100 from pt1;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from pt1 having min(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from pt1 having min(c1) > 1;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from pt1 having min(c1);
+--sorted_result
+select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from pt1 having min(c1);
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from pt1 having true;
+--sorted_result
+select min(c1) as min, min(c1) + 100 as min2 from pt1 having false;
+--sorted_result
+select * from (select min(c1) as min, min(c1) + 100 as min2 from pt1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min, min(c1) + 100 as min2 from pt1) as tmp_table;
+
+--sorted_result
+select max(c1), max(c1) + 100 from pt1;
+--sorted_result
+select /*+ NO_REWRITE */ max(c1), max(c1) + 100 from pt1;
+--sorted_result
+select max(c1) as max, max(c1) + 100 as max2 from pt1 having max(c1) > 1;
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max, max(c1) + 100 as max2 from pt1 having max(c1) > 1;
+--sorted_result
+select max(c1) as max, max(c1) + 100 as max2 from pt1 having max(c1);
+--sorted_result
+select /*+ NO_REWRITE */max(c1) as max, max(c1) + 100 as max2 from pt1 having max(c1);
+--sorted_result
+select max(c1) as max, max(c1) + 100 as max2 from pt1 having true;
+--sorted_result
+select * from (select max(c1) as max, max(c1) + 100 as max2 from pt1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) as max, max(c1) + 100 as max2 from pt1) as tmp_table;
+
+# in subquery
+--sorted_result
+select * from (select min(c1), min(c1) + min(c1) from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1), min(c1) + min(c1) from t1) as tmp_table;
+--sorted_result
+select * from t2 where t2.c1 > (select min(c1) + min(c1) from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) + min(c1) from t1);
+--sorted_result
+select * from (select min(c1) as min, min(c1) + min(c1) as min2 from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */min(c1) as min, min(c1) + min(c1) as min2 from t1) as tmp_table;
+--sorted_result
+select * from t2 where t2.c1 > (select min(c1) + min(c1) as min2 from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */min(c1) + min(c1) as min2 from t1);
+
+--sorted_result
+select * from (select max(c1), max(c1) + max(c1) from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1), max(c1) + max(c1) from t1) as tmp_table;
+--sorted_result
+select * from t2 where t2.c1 > (select max(c1) + max(c1) from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) + max(c1) from t1);
+--sorted_result
+select * from (select max(c1) as max, max(c1) + max(c1) as max2 from t1) as tmp_table;
+--sorted_result
+select /*+ NO_REWRITE */* from (select /*+ NO_REWRITE */max(c1) as max, max(c1) + max(c1) as max2 from t1) as tmp_table;
+--sorted_result
+select * from t2 where t2.c1 > (select max(c1) + max(c1) as max2 from t1);
+--sorted_result
+select /*+ NO_REWRITE */* from t2 where t2.c1 > (select /*+ NO_REWRITE */max(c1) + max(c1) as max2 from t1);
+
+drop database transformer;
+set @@session.ob_enable_transformation = 1;

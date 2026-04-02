@@ -1,0 +1,127 @@
+#
+# owner:千溪
+# owner group:obcdc
+# 测试点：测试libobcdc的向前兼容性，采用最新版本libobcdc向老版本observer取日志
+# 1. 要求schema模块向前兼容，新版本schema可以连接老版本observer构建起来
+# 2. 要求libobcdc取日志模块向前兼容
+# OB版本是4.0.0.0
+# libobcdc版本是当前版本
+
+#ob1=OBI(cluster=1:1:1,oblog_version=current);
+#use currnet ob version, cause ob4000 not support modify int column. Wait next 4_0_0_0 release
+ob1=OBI(cluster=1:1:1,version=4_1_0_0,oblog_version=current);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+let $IS_EQUAL_OR_GREATER_THAN_227=1;
+let $is_equal_or_greater_than_227=1;
+
+let $SCHEMA_SPLIT_MODE=1;
+let $is_schema_split_mode=0;
+
+let $change_column_SUPPORT=1;
+let $change_column_NOT_SUPPORT=0;
+let $is_change_column_support=0;
+
+let $FULLTEXT_INDEX_SUPPORT=1;
+let $is_fulltext_index_support=0;
+
+####################### 准备起始时间戳
+ob_connect(compat2_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_OB_CONNECTOR);
+set global recyclebin=off;
+
+########### 1. 先创建租户
+# 创建oracle租户: oracle
+source include/liboblog/tenant/create_oracle_tenant.inc;
+let $log_backup_dest_oracle = deploy_get_value(ob1.get_log_backup_dest oracle);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_oracle';
+--enable_all_result_log
+
+# 创建mysql租户: cdc_mysql
+source include/liboblog/tenant/create_mysql_tenant_with_gts.inc;
+let $log_backup_dest_cdc_mysql = deploy_get_value(ob1.get_log_backup_dest cdc_mysql);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest_cdc_mysql';
+--enable_all_result_log
+
+ob1.mysql alter system archivelog;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_ARCHIVELOG where status = 'DOING', 2, 600;
+
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1004";
+ob1.z1.obs0.check_log_until_success -c "get_data_dict_meta_info(tenant_id_=1006";
+
+connection compat2_conn;
+let $compat2_start_tstamp_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+########### 2. source 相关场景测试, 在source中不允许新建租户，除了有删除租户场景
+source include/oblog_compat_backward_common.inc;
+source include/all_ddl_type.inc;
+source include/all_ddl_type_1.4.4.inc;
+source include/all_ddl_type_1.4.50.inc;
+# note: 4.0 not support recyclebin yet.
+#source include/all_ddl_type_1.4.61.inc;
+source include/all_ddl_type_generate_column.inc;
+source include/liboblog/all_ddl_type_1.4.71.inc;
+#note: 4.0 not support synonym yet.
+#source include/liboblog/2_0_synonym.inc;
+########## 2_1_feature
+source include/liboblog/all_ddl_type_2.1.inc;
+source include/liboblog/all_ddl_type_2.3.inc;
+
+####################### liboblog回拉所有租户，保证回拉成功，能够实时
+ob1.oblog.gen_conf tb_white_list=*.*.* log_level=INFO skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+ob1.oblog.restart;
+sleep 30;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### liboblog回拉部分租户，保证回拉成功，能够实时
+ob1.oblog.gen_conf tb_white_list=cdc_mysql.*.* log_level=INFO skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+ob1.oblog.restart;
+sleep 30;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### liboblog数据字典模式 回拉oracle租户，保证回拉成功，能够实时
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO meta_data_refresh_mode=data_dict;
+ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+ob1.oblog.restart;
+sleep 30;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### liboblog数据字典模式消费归档日志 回拉mysql租户，保证回拉成功，能够实时
+ob1.oblog.gen_conf tb_white_list=cdc_mysql.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_cdc_mysql;
+ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+ob1.oblog.restart;
+sleep 30;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+####################### liboblog数据字典模式消费归档日志 回拉oracle租户，保证回拉成功，能够实时
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_oracle;
+ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+ob1.oblog.restart;
+sleep 30;
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;
+
+# not support tenant to sync data from OB4.1 and lower version
+####################### liboblog租户模式  回拉mysql租户，保证回拉成功，能够实时
+#ob1.oblog.gen_conf tb_white_list=cdc_mysql.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_cdc_mysql tenant_user=obcdc@cdc_mysql tenant_password=obcdc tenant_endpoint=$ip:$port;
+#ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+#ob1.oblog.restart;
+#sleep 30;
+#ob1.oblog.checkRealTime;
+#ob1.oblog.stop;
+
+####################### liboblog数据字典模式消费归档日志 回拉oracle租户，保证回拉成功，能够实时
+#ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=INFO meta_data_refresh_mode=data_dict fetching_log_mode=direct archive_dest=$log_backup_dest_oracle tenant_user=obtest@oracle tenant_password=obtest tenant_endpoint=$ip:$port;
+#ob1.oblog.set_start_tstamp_usec $compat2_start_tstamp_usec;
+#ob1.oblog.restart;
+#sleep 30;
+#ob1.oblog.checkRealTime;
+#ob1.oblog.stop;

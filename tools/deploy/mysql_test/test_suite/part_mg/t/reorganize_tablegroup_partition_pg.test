@@ -1,0 +1,238 @@
+#owner: msy164651
+#owner group: rs
+#description: 分区分裂测试
+
+#测试分裂后，表结构是正确的，数据是一致的
+#case1 简单测试，分裂后数据正常
+#case2 在tablegroup中添加一张表，进行分裂
+#case3 分裂后和某张表内的分区名重复，删除这张表进行分裂(TODO 目前pg不支持删除)
+#case4 分裂rangecolumn分区
+#case5 分裂超多表的tablegroup
+#case8 错误验证
+connection default;
+--disable_warnings
+set @@recyclebin = off;
+drop table if exists t1, t2, t3, t4;
+sleep 3;
+drop tablegroup if exists tg456;
+drop tablegroup if exists tg4561;
+drop tablegroup if exists tg4562;
+--enable_warnings
+#case 1
+create tablegroup tg456 binding true partition by range (partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (1000));
+create table t1 (c1 int primary key ,c2 int ,c3 int) tablegroup = 'tg456' partition by range (c1)(partition p0 values less than (10),partition p1 values less than (100),partition p3 values less than (1000));
+insert into t1 values (2,1,1),(9,8,8),(12,12,12),(16,16,16),(111,111,111),(555,555,111);
+#let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id,1);
+let $db_id = query_get_value(select database_id from oceanbase.__all_database where database_name = 'test', database_id, 1);
+let $t1_id = query_get_value(select table_id from oceanbase.__all_table where table_name ='t1' and database_id = $db_id, table_id, 1);
+connection default;
+alter tablegroup tg456 reorganize partition p0 into (partition p0 values less than (5), partition p01 values less than (10));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg456;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1; 
+select * from t1 partition(p0);
+select * from t1 partition(p01);
+
+alter tablegroup tg456 reorganize partition p2 into (partition p2 values less than(599), partition p3 values less than (1000));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--echo "gc partition tid = t1"
+--disable_query_log
+eval select count(*) >=4 from oceanbase.__all_tenant_gc_partition_info where table_id = $t1_id & 0xffffffffff;
+--enable_query_log
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1; 
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg456;
+select * from t1 partition(p2);
+select * from t1 partition(p3);
+#case 2 
+create table t2 (c1 int primary key ,c2 int ,c3 int) tablegroup = 'tg456' partition by range (c1) (partition p0 values less than (5),partition p1 values less than (10),partition p2 values less than (100), partition p3 values less than(599), partition p4 values less than (1000));
+insert into t2 values (2,1,1),(9,8,8),(12,12,12),(16,16,16),(111,111,111),(555,555,111),(987,3435,45464547),(777,777,777);
+insert into t1 values (987,3435,45464547),(777,777,777);
+#connection conn_sys;
+let $t2_id = query_get_value(select table_id from oceanbase.__all_table where table_name ='t2' and database_id = $db_id, table_id, 1);
+#connection default;
+alter tablegroup tg456 reorganize partition p3 into (partition p4 values less than(888), partition p5 values less than(1000));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--echo "gc partition tid = t1, tid = t2"
+--disable_query_log
+eval select count(*)>=6 from oceanbase.__all_tenant_gc_partition_info where table_id = $t1_id & 0xffffffffff;
+eval select count(*)>=6 from oceanbase.__all_tenant_gc_partition_info where table_id = $t2_id & 0xffffffffff;
+--enable_query_log
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg456;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t2;
+select * from t1 partition(p4);
+select * from t1 partition(p5);
+select * from t2 partition(p3);
+select * from t2 partition(p4);
+select * from t2 partition(p5);
+
+#case 3
+#--error 1517
+#alter tablegroup tg456 reorganize partition p1 into (partition p1 values less than(50), partition p3 values less than (100));
+#alter table t2 set tablegroup = '';
+#alter tablegroup tg456 reorganize partition p1 into (partition p1 values less than(50), partition p3 values less than (100));
+#--source mysql_test/include/check_split_partition_ok.inc
+#--source mysql_test/include/show_create_table_old_version_replica2.inc
+#show create tablegroup tg456;
+#--source mysql_test/include/show_create_table_old_version_replica2.inc
+#show create table t1;
+#--source mysql_test/include/show_create_table_old_version_replica2.inc
+#show create table t2;
+#select * from t1 partition(p1);
+#select * from t1 partition(p2);
+#select * from t1 partition(p3);
+#--echo "gc partition t1"
+#--disable_query_log
+#eval select count(*)>=7 from oceanbase.__all_tenant_gc_partition_info where table_id = $t1_id;
+#--enable_query_log
+
+#case 4
+create tablegroup tg4561 binding true partition by range columns 2 (partition p0 values less than (10,10),partition p1 values less than (100,100),partition p2 values less than (maxvalue,maxvalue));
+create table t3 (c1 int ,c2 int ,c3 int, primary key (c1,c2)) tablegroup ='tg4561' partition by range columns (c1,c2)(partition p0 values less than (10,10),partition p1 values less than (100,100),partition p4 values less than (maxvalue,maxvalue));
+insert into t3 values (2,1,1),(9,8,8),(12,12,12),(16,16,16),(111,111,111),(555,555,111),(324543,3435,45464547);
+#connection conn_sys;
+let $t3_id = query_get_value(select table_id from oceanbase.__all_table where table_name ='t3' and database_id = $db_id, table_id, 1);
+#connection default;
+alter tablegroup tg4561 reorganize partition p0 into (partition p0 values less than (7,7), partition p3 values less than (10,10));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg4561;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t3;
+select * from t3 partition(p0);
+select * from t3 partition(p3);
+--echo "t3 gc partition"
+--disable_query_log
+eval select count(*)>=4 from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id & 0xffffffffff;
+--enable_query_log
+
+
+--error 1517
+alter tablegroup tg4561 reorganize partition p1 into (partition p1 values less than (50,55), partition p3 values less than(100,100));
+--error 1517
+alter tablegroup tg4561 reorganize partition p1 into (partition p1 values less than (50,55), partition p4 values less than(100,100));
+alter tablegroup tg4561 reorganize partition p1 into (partition p1 values less than (50,55), partition p5 values less than(100,100));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg4561;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t3;
+select * from t3 partition(p1);
+select * from t3 partition(p5);
+--echo "t3 gc partition "
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id & 0xffffffffff;
+--enable_query_log
+alter tablegroup tg4561 reorganize partition p2 into (partition p2 values less than (300,55),partition p6 values less than (500,345), partition p7 values less than (1000,100), partition p8 values less than(maxvalue,maxvalue));
+--source mysql_test/include/check_split_partition_ok.inc
+connection default;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create tablegroup tg4561;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t3;
+select * from t3 partition(p2);
+select * from t3 partition(p6);
+select * from t3 partition(p7);
+select * from t3 partition(p8);
+--echo "t3 gc partition"
+--disable_query_log
+eval select count(*) from oceanbase.__all_tenant_gc_partition_info where table_id = $t3_id & 0xffffffffff;
+--enable_query_log
+#case 5
+create tablegroup tg4562 binding true partition by range (partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (MAXVALUE));
+create table t4 (c1 int primary key ,c2 int ,c3 int) tablegroup='tg4562' partition by range (c1)(partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (MAXVALUE));
+
+--let $cnt=1001
+--disable_query_log
+while ($cnt)
+{
+
+ eval INSERT INTO t4 VALUES($cnt, $cnt, $cnt);
+ dec $cnt;
+}
+
+--let $sql=alter tablegroup tg4562 reorganize partition p2 into(
+--let $count=101
+while($count<110)
+{
+
+  --let $sql=$sql partition p$count values less than ($count),
+  inc $count;
+}
+--let $sql=$sql partition p$count values less than(maxvalue))
+set @@session.ob_query_timeout=1000000000;
+set @@session.ob_trx_timeout=1000000000;
+eval $sql;
+
+#--source mysql_test/include/check_split_partition_ok.inc
+#connection conn_sys;
+let $t4_id = query_get_value(select table_id from oceanbase.__all_table where table_name ='t4' and database_id = $db_id, table_id, 1);
+let $tg4562_id = query_get_value(select tablegroup_id from oceanbase.__all_tablegroup where tablegroup_name ='tg4562', tablegroup_id, 1);
+--echo "all part of tg4562 and t4"
+eval select count(*) > 10 from oceanbase.__all_part where table_id = $tg4562_id;
+eval select count(*) > 10 from oceanbase.__all_part where table_id = $t4_id;
+#connection default;
+--enable_query_log
+while($count>101)
+{
+
+  eval select * from t4 partition (p$count);
+  dec $count;
+}
+
+#case 6
+drop table t1,t2,t3;
+drop tablegroup tg456;
+drop tablegroup tg4561;
+#drop tablegroup tg4562;
+create tablegroup tg456 binding true partition by range (partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (MAXVALUE));
+#create table t1 (c1 int primary key ,c2 int ,c3 int) tablegroup ='tg456' partition by range (c1)(partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (MAXVALUE));
+#只支持一个分区的分裂
+--error 1235
+alter tablegroup tg456 reorganize partition p0,p1 into (partition p1 values less than (100));
+##分列后的分区名不可重复
+--error 1517
+alter tablegroup tg456 reorganize partition p0 into (partition p2 values less than (5), partition p1 values less than (10));
+##分裂必须有多个
+--disable_result_log
+--error 5599
+alter tablegroup tg456 reorganize partition p0 into (partition pi values less than (10));
+--enable_result_log
+##分裂必须有多个，并且分区前后的范围应该是一致的
+--error 1520
+alter tablegroup tg456 reorganize partition p0 into (partition pj values less than (5),partition pi values less than (100));
+##分裂后的范围必须是一致的
+--error 1493,14037
+alter tablegroup tg456 reorganize partition p1 into (partition pi values less than (10), partition pj values less than (20));
+##分裂后的最大值应该还是要保持递增的顺序
+--error 1493,14037
+alter tablegroup tg456 reorganize partition p1 into (partition pi values less than (10), partition pj values less than (100));
+##顺序不对
+--error 1493,14037
+alter tablegroup tg456 reorganize partition p1 into (partition pi values less than (100), partition pj values less than (50));
+##分区名重复
+--error 1517
+alter tablegroup tg456 reorganize partition p1 into (partition p1 values less than (30), partition p2 values less than (100));
+##分区名重复
+--error 1517
+alter tablegroup tg456 reorganize partition p1 into (partition p1 values less than (30), partition p1 values less than (100));
+##分区表必须有主键列
+create table t1 (c1 int ,c2 int ,c3 int) tablegroup ='tg456' partition by range (c1)(partition p0 values less than (10),partition p1 values less than (100),partition p2 values less than (MAXVALUE));
+--error 1235
+alter tablegroup tg456 reorganize partition p1 into (partition p1 values less than (30), partition p5 values less than (100));
+drop table t1;
+drop tablegroup tg456;
+
+

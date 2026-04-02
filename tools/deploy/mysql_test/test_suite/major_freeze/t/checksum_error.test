@@ -1,0 +1,78 @@
+#owner: binifei.bnf 
+#owner group: rootserver
+#tags: checksum error
+
+connect (sys_conn,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+connection sys_conn;
+alter system set enable_major_freeze = true;
+# Note: there may be unfinished major_merge, which are launched according to major_freeze_duty_time.
+# Therefore, we need to disable daily_merge and wait the launched major_merge to finish here.
+alter system set major_freeze_duty_time = 'Disable' tenant sys;
+alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+--source mysql_test/include/wait_daily_merge.inc
+connection sys_conn;
+# non-partitioned_table
+--disable_warnings
+drop table if exists test;
+drop table if exists save_column_checksum;
+--enable_warnings
+create table test(c1 int primary key, c2 int);
+create index test_idx_c2 on test(c2);
+create table save_column_checksum(tablet_id bigint primary key, ori_b_column_checksums varbinary(65535));
+insert into test values(0, 2);
+insert into test values(1, 2);
+insert into test values(2, 2);
+
+# launch one major freeze for generating checksums into __all_tablet_replica_checksum
+connection sys_conn;
+alter system major freeze tenant = sys;
+--source mysql_test/include/wait_daily_merge.inc
+
+connection sys_conn;
+let $idx_tablet_id = query_get_value(select tablet_id from __all_table where table_name like "%test_idx_c2%", tablet_id, 1);
+#let $b_column_checksums_last_modified_time = query_get_value(select gmt_modified from __all_virtual_tablet_replica_checksum 
+#                                                where tablet_id = $idx_tablet_id, gmt_modified, 1);
+#let $ori_epoch = query_get_value(select value from __all_service_epoch where name = 'freeze_service_epoch', value, 1);
+--disable_query_log
+eval insert into save_column_checksum select tablet_id, b_column_checksums from __all_virtual_tablet_replica_checksum where tablet_id = $idx_tablet_id limit 1;
+--enable_query_log
+alter system major freeze tenant = sys;
+
+############################################################
+# in the case of checksum_error, expect new major freezes to be forbidden
+let $__ret_forbidden__ = 100;
+if ($__j__ == -5)
+{
+    let $ori_max_frozen_scn = query_get_value(select max(frozen_scn) as max_frozen_scn from oceanbase.__all_freeze_info, max_frozen_scn, 1);
+    alter system major freeze tenant = sys;
+    let $new_max_frozen_scn = query_get_value(select max(frozen_scn) as max_frozen_scn from oceanbase.__all_freeze_info, max_frozen_scn, 1);
+    # check whether generating new frozen_scn
+    if ($ori_max_frozen_scn == $new_max_frozen_scn)
+    {
+        let $__ret_forbidden__ = -5;
+        --echo succeed to forbid launching one new major freeze
+    }
+    if ($ori_max_frozen_scn != $new_max_frozen_scn)
+    {
+        --echo fail to forbid launching one new major freeze
+    }
+    alter system major freeze tenant = sys;
+    alter system major freeze tenant = all_user;
+    alter system major freeze tenant = all_meta;
+}
+
+############################################################
+# resume b_column_checksums and clear merge error, expect one new major freeze to be successful
+if ($__ret_forbidden__ == -5)
+{
+    --disable_query_log
+    #eval update __all_tablet_replica_checksum set b_column_checksums = (select /*+ QUERY_TIMEOUT(100000000) */ ori_b_column_checksums from save_column_checksum where tablet_id = $idx_tablet_id) where tablet_id = $idx_tablet_id;
+    alter system clear merge error;
+    --enable_query_log
+    # wait until finishing the last major freeze with merge error
+    --source mysql_test/include/wait_daily_merge.inc
+    connection sys_conn;
+    alter system major freeze tenant = sys;
+    --source mysql_test/include/wait_daily_merge.inc
+}

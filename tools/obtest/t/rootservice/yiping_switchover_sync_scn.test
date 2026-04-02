@@ -1,0 +1,219 @@
+# CASE_OWNER:
+#    @shouju.zyp
+# CASE_DESC:
+
+
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+
+let $backup_ip       = deploy_get_value(ob1.z1.obs0.ip);
+let $backup_port     = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $backup_svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $backup_dest = deploy_get_value(ob1.get_backup_dest);
+let $backup_mysql_tenant  = backup_mysql_tenant;
+let $restore_mysql_tenant = restore_mysql_tenant;
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest $backup_mysql_tenant);
+let $data_backup_dest = deploy_get_value(ob1.get_data_backup_dest $backup_mysql_tenant);
+
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST=('z1', 'z2', 'z3');
+# 创建主租户
+ob1.mysql CREATE TENANT $backup_mysql_tenant RESOURCE_POOL_LIST = ('pool_1'), primary_zone = "RANDOM" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+let $backup_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$backup_mysql_tenant', tenant_id, 1);
+############日志流切主###################
+ob1.z1.obs0.mysql alter system set debug_sync_timeout = '100000s';
+sleep 3;
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'BEFORE_WAIT_SYS_LS_END_SCN wait_for continue_signal';
+ob_connect(sys_conn_0, ob1.z2.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn_0;
+send set ob_query_timeout = 30000000;
+sleep 3;
+--disable_all_result_log
+send ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+--enable_all_result_log
+sleep 3;
+ob1.z1.obs0.mysql  alter system switch replica leader ls=1001 server='$backup_ip:$backup_svr_port' tenant=$backup_mysql_tenant;
+ob1.z1.obs0.mysql  alter system switch replica leader ls=1002 server='$backup_ip:$backup_svr_port' tenant=$backup_mysql_tenant;
+ob1.z1.obs0.mysql  alter system switch replica leader ls=1003 server='$backup_ip:$backup_svr_port' tenant=$backup_mysql_tenant;
+sleep 3;
+
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'now signal continue_signal';
+
+ob1.z2.obs0.check_rs_log_until_success "ls on this server is not master";
+ob1.z3.obs0.check_rs_log_until_success "ls on this server is not master";
+
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where TENANT_ID = $backup_mysql_tenant_id and TENANT_ROLE = 'STANDBY' and SWITCHOVER_STATUS = 'NORMAL',1,30;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+ob1.z1.obs0.mysql set ob_global_debug_sync = 'BEFORE_WAIT_SYS_LS_END_SCN clear';
+
+# 设置归档源
+ob_connect(backup_mysql_conn, ob1.z1.obs0,root@$backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_conn;
+--disable_all_result_log
+eval alter system set data_backup_dest='$data_backup_dest';
+eval alter system set log_archive_dest='location=$log_backup_dest piece_switch_interval=1d';
+--enable_all_result_log
+# 准备一些数据
+create table t1(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t1(a, b) values(1, 1);
+create table t2(a int primary key, b int, c int) partition by hash (a) partitions 100;
+insert into t2(a, b) values(1, 1);
+create user mytest identified by "test";
+grant SELECT on OCEANBASE.* to mytest;
+
+# 打开归档
+ob1.mysql alter system archivelog;
+# 检查归档状态
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+# 执行数据备份
+ob1.mysql alter system backup database;
+# 检查备份状态
+ob1.check_until_timeout select count(*) c from __all_backup_job_history where tenant_id = 1, 1, 600;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_JOB_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+ob1.check_until_timeout select result from oceanbase.CDB_OB_BACKUP_TASK_HISTORY where tenant_id = $backup_mysql_tenant_id, 0, 10;
+
+connect(backup_sys_conn, $backup_ip, root@sys,,oceanbase, $backup_port);
+connection backup_sys_conn;
+use oceanbase;
+
+let $restore_path = $log_backup_dest,$data_backup_dest;
+let $restore_checkpoint1 = `select ceil(min_restore_scn / 1000) as min_restore_scn from CDB_OB_BACKUP_SET_FILES where tenant_id = $backup_mysql_tenant_id`;
+let $restore_checkpoint2 = `select ceil(UNIX_TIMESTAMP(current_timestamp(6)) * 1000000)`;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint1' from CDB_OB_ARCHIVELOG, 1, 600;
+ob1.check_until_timeout select floor(checkpoint_scn / 1000) > '$restore_checkpoint2' from CDB_OB_ARCHIVELOG, 1, 600;
+let $restore_checkpoint = $restore_checkpoint2;
+let $restore_checkpoint = `select usec_to_time(floor(checkpoint_scn/1000)) from CDB_OB_ARCHIVELOG`;
+
+--disable_all_result_log
+# 在目标集群上执行RESTORE命令，使用租户的备份和归档，创建并恢复出备租户
+ob1.mysql alter system restore $restore_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool_2&primary_zone=z1';
+--enable_all_result_log
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1003, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1004 and restore_status = 0, 12, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1004, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+let $restore_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='$restore_mysql_tenant', tenant_id, 1);
+
+# 更改备租户恢复终点
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT $restore_mysql_tenant UNTIL UNLIMITED;
+
+connection backup_mysql_conn;
+use test;
+#主租户
+alter system set tde_method = 'internal';
+sleep 15;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 60;
+#创建加密表空间
+CREATE TABLESPACE sectest_ts1 encryption = 'y';
+#创建加密表et1
+CREATE TABLE et1 (c1 int, c2 int) TABLESPACE sectest_ts1;
+source include/check_schema_sync.inc;
+#确认表是否加密
+select table_name,encryptionalg,encrypted from oceanbase.V$OB_ENCRYPTED_TABLES;
+insert into et1 values (1, 1), (2, 2), (3, 3), (4, 4), (5, 5);
+select * from et1;
+select count(*) from et1;
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_mysql_tenant_id and role = 'LEADER' order by end_scn DESC limit 1, end_scn, 1);
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE tenant_id = $restore_mysql_tenant_id and READABLE_SCN >= $check_scn, 1, 180;
+
+let $p_refreshed_schema_v=deploy_get_value(ob1.select select refreshed_schema_version from __all_virtual_server_schema_info where tenant_id = $backup_mysql_tenant_id order by refreshed_schema_version desc limit 1, refreshed_schema_version, 1);
+ob1.check_until_timeout SELECT count(*) FROM __all_virtual_server_schema_info where tenant_id= $restore_mysql_tenant_id and received_schema_version < $p_refreshed_schema_v, 0,30;
+
+connect(restore_mysql_conn, $backup_ip, root@restore_mysql_tenant,,oceanbase, $backup_port);
+#备租户
+connection restore_mysql_conn;
+use test;
+sleep 3;
+alter system set tde_method = 'internal';
+select count(*) from test.et1;
+
+ob1.mysql alter system set_tp tp_name = ERRSIM_USER_LS_SYNC_SCN, error_code = 4016, frequency = 1;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+--disable_all_result_log
+--error 4012
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+--enable_all_result_log
+ob1.mysql alter system set_tp tp_name = ERRSIM_USER_LS_SYNC_SCN, error_code = 4016, frequency = 0;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+
+let $obs3_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs3_port = deploy_get_value(ob1.z3.obs0.port);
+
+ob1.z3.obs0.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip='$obs3_ip' and svr_port=$obs3_port and status='INACTIVE',1,120;
+--error 4179
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC wait_for continue_signal';
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+sleep 30;
+ob1.mysql alter system set_tp tp_name = CHECK_SERVER_EMPTY_WHEN_LS_HAS_NO_LEADER, error_code = 4016, frequency = 1;
+--error 4179
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+ob1.mysql alter system set_tp tp_name = CHECK_SERVER_EMPTY_WHEN_LS_HAS_NO_LEADER, error_code = 4016, frequency = 0;
+--error 4179
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+ob1.mysql set ob_global_debug_sync = 'now signal continue_signal';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_SEND_DRTASK_RPC clear';
+# wait clear meta table
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id=$backup_mysql_tenant_id and svr_ip='$obs3_ip' and svr_port=$obs3_port, 0,120;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id=$backup_mysql_tenant_id and role=1 and member_list like '%$obs3_ip:$obs3_port%',0,120;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT $backup_mysql_tenant;
+
+ob1.z3.obs0.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time > 0 and status = 'ACTIVE', 3, 100;
+let $restore_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name="restore_mysql_tenant", tenant_id, 1);
+ob1.mysql drop tenant $restore_mysql_tenant force;
+ob1.check_until_timeout select count(*) from __all_virtual_unit where tenant_id=$restore_mysql_tenant_id, 0, 120;
+############### 测试备库有日志流正在创建也可以so成功，正在创建的日志流被create_abort ##############
+--disable_all_result_log
+# 在目标集群上执行RESTORE命令，使用租户的备份和归档，创建并恢复出备租户
+ob1.mysql alter system restore standby_mysql_tenant from '$restore_path' until time='$restore_checkpoint' with 'pool_list=pool_2&primary_zone=z1';
+--enable_all_result_log
+ob1.check_until_timeout SELECT status FROM __all_tenant WHERE tenant_id = 1005, NORMAL, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_meta_table where tenant_id = 1006 and restore_status = 0, 12, 600;
+ob1.check_until_timeout select status FROM __all_tenant WHERE tenant_id = 1006, NORMAL, 200;
+ob1.check_until_timeout select count(*) FROM __all_restore_job, 0, 200;
+
+# 更改备租户恢复终点
+ob1.mysql ALTER SYSTEM RECOVER STANDBY TENANT standby_mysql_tenant UNTIL UNLIMITED;
+
+ob1.mysql CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$backup_ip:$backup_port USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1', RESOURCE_POOL_LIST=('pool_2');
+let $standby_mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where TENANT_ID = $standby_mysql_tenant_id and TENANT_ROLE = 'STANDBY' and SWITCHOVER_STATUS = 'NORMAL',1,30;
+
+ob1.mysql alter tenant $backup_mysql_tenant PRIMARY_ZONE='z2';
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS',1,60;
+let $job_id = deploy_get_value(ob1.select select job_id from DBA_OB_TENANT_JOBS where job_type = 'ALTER_TENANT_PRIMARY_ZONE' and job_status = 'INPROGRESS', job_id, 1);
+ob1.check_until_timeout select count(*) from DBA_OB_TENANT_JOBS where job_id = $job_id and job_status = 'SUCCESS',1,180;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+sleep 3;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_AFTER_HAS_MEMBER_LIST wait_for signal';
+sleep 3;
+ob1.mysql alter tenant $backup_mysql_tenant PRIMARY_ZONE='z1,z2;z3';
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $backup_mysql_tenant_id and status = 'CREATING', 1,60;
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT $backup_mysql_tenant;
+# 主库扩容，但创建日志流卡住
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $standby_mysql_tenant_id and status = 'CREATING', 1,60;
+# ERRSIM导致so失败，保证过了create_abort日志流逻辑但是还没启动primary ls service线程
+# 否则create_abort的日志流在__all_ls_status表中会被线程删掉
+connection sys_conn;
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 9089, frequency = 1;
+--error 9089
+ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+alter system set_tp tp_name = ERRSIM_TENANT_ROLE_TRANS_WAIT_SYNC_ERROR, error_code = 9089, frequency = 0;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_status where tenant_id = $standby_mysql_tenant_id and status = 'CREATE_ABORT', 1,3;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';

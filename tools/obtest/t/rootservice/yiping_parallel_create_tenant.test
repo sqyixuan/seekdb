@@ -1,0 +1,310 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.reboot;
+
+let $z1s0ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1s0port= deploy_get_value(ob1.z1.obs0.port);
+let $z1s0mysqlport= deploy_get_value(ob1.z1.obs0.mysql_port);
+let $z2s0ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2s0port= deploy_get_value(ob1.z2.obs0.port);
+let $z2s0mysqlport= deploy_get_value(ob1.z2.obs0.mysql_port);
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $port = deploy_get_value(ob1.z1.obs0.port);
+
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.check_until_timeout select role from oceanbase.__all_ls_meta_table where tenant_id=1 and ls_id=1 and zone='z1', 1, 40;
+ob1.check_until_timeout select count(*)>0 from oceanbase.__all_rootservice_event_history where event='full_rootservice' and value1=0 and value2 like '%$ip:$port%' order by 1 desc, 1, 10;
+
+ob1.mysql alter system set syslog_io_bandwidth_limit='300M';
+
+ob1.mysql create resource unit box max_cpu 2, memory_size='6G';
+ob1.mysql create resource pool pool unit = 'box', unit_num = 1;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob_connect(conn_sys1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+--echo ============================================================
+--echo 正常创建租户
+--echo ============================================================
+ob1.mysql create tenant mysql resource_pool_list=('pool');
+# 成功提前推高用户日志流状态
+ob1.z1.obs0.check_rs_log_until_success -c 'succeed to advance user ls status for creating tenant.*tenant_id_.$user_tenant_id';
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo 验证wait table writable不会hung住
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+connection conn_sys1;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT wait_for signal_create_meta_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT wait_for signal_create_user_tenant$user_tenant_id execute 10000';
+
+send create tenant mysql resource_pool_list=('pool'), primary_zone='z2';
+
+ob1.z1.obs0.check_rs_log_until_success -c 'meta table is not created.*user_tenant_id.$user_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_meta_tenant$user_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_user_tenant$user_tenant_id';
+
+reap;
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+# 三个线程
+# 创建meta租户 BEFORE_CREATE_META_TENANT
+# 创建user租户 BEFORE_CREATE_USER_TENANT
+# 写ls相关表   BEFORE_CREATE_TENANT_FILL_USER_LS_INFO
+# 两个case验证user和meta之间create_normal_tenant没有顺序关系
+# 一个case验证ls和user/meta之间没有顺序关系
+
+--echo ============================================================
+--echo 三个线程顺序：meta user ls
+--echo ============================================================
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+connection conn_sys1;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT wait_for signal_create_meta_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT wait_for signal_create_user_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_TENANT_FILL_USER_LS_INFO wait_for signal_fill_user_ls_info$user_tenant_id execute 10000';
+
+send create tenant mysql resource_pool_list=('pool'), primary_zone='z2';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_meta_tenant$user_tenant_id';
+ob1.z1.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$meta_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_user_tenant$user_tenant_id';
+ob1.z1.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$user_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_TENANT_FILL_USER_LS_INFO clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_fill_user_ls_info$user_tenant_id';
+
+reap;
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo 三个线程顺序：user meta ls
+--echo ============================================================
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+connection conn_sys1;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT wait_for signal_create_meta_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT wait_for signal_create_user_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_TENANT_FILL_USER_LS_INFO wait_for signal_fill_user_ls_info$user_tenant_id execute 10000';
+
+send create tenant mysql resource_pool_list=('pool'), primary_zone='z2';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_user_tenant$user_tenant_id';
+ob1.z1.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$user_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_META_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_meta_tenant$user_tenant_id';
+ob1.z1.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$meta_tenant_id';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_TENANT_FILL_USER_LS_INFO clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_fill_user_ls_info$user_tenant_id';
+
+reap;
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+
+--echo ============================================================
+--echo 第一次无主选举在primary_zone指定的机器上
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+ob1.mysql create tenant mysql resource_pool_list=('pool'), primary_zone='z2';
+connection conn_sys1;
+--disable_query_log
+eval select (svr_ip='$z2s0ip' and svr_port=$z2s0port) passed from __all_server_event_history where module='election' and value1=$user_tenant_id and value2=1 and event='decentralized to be leader' order by value4 limit 1;
+--enable_query_log
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo 多个primary_zone 
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+ob1.mysql create tenant mysql resource_pool_list=('pool'), primary_zone='z1,z2';
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+--echo ============================================================
+--echo meta租户create_normal_tenant失败自动删除租户
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_META_NORMAL_TENANT_ERROR, error_code=4016, frequency = 1;
+
+connection conn_sys1;
+
+--error 4016
+create tenant mysql resource_pool_list=('pool');
+eval select count(*) from dba_ob_tenants where tenant_id in ($meta_tenant_id, $user_tenant_id);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_META_NORMAL_TENANT_ERROR, error_code=4016, frequency = 0;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo user租户create_normal_tenant失败自动删除租户
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_NORMAL_TENANT_ERROR, error_code=4016, frequency = 1;
+
+connection conn_sys1;
+
+--error 4016
+create tenant mysql resource_pool_list=('pool');
+eval select count(*) from dba_ob_tenants where tenant_id in ($meta_tenant_id, $user_tenant_id);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_NORMAL_TENANT_ERROR, error_code=4016, frequency = 0;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo user租户create normal tenant前rs切主
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_NORMAL_TENANT wait_for signal_create_meta_tenant$user_tenant_id execute 10000';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_CREATE_NORMAL_TENANT_RESULT wait_for signal_check$user_tenant_id execute 10000';
+
+connection conn_sys1;
+
+send create tenant mysql resource_pool_list=('pool');
+
+# 等待meta租户创建完成
+ob1.z1.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$meta_tenant_id';
+let $full_rootservice_count = deploy_get_value(ob1.select select count(*) a from dba_ob_rootservice_event_history where event='full_rootservice', a, 1);
+
+ob1.mysql alter tenant sys set primary_zone='z2'; 
+ob1.check_until_timeout select role from __all_ls_meta_table where tenant_id=1 and ls_id=1 and zone='z2', 1, 600;
+ob1.check_until_timeout select count(*) - $full_rootservice_count a from dba_ob_rootservice_event_history where event='full_rootservice', 1, 600;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CREATE_USER_NORMAL_TENANT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_create_meta_tenant$user_tenant_id';
+
+ob1.z2.obs0.check_rs_log_until_success -c 'STEP 2. finish create normal tenant.*tenant_id.$user_tenant_id';
+let $full_rootservice_count = deploy_get_value(ob1.select select count(*) a from dba_ob_rootservice_event_history where event='full_rootservice', a, 1);
+
+ob1.mysql alter tenant sys set primary_zone='z1'; 
+ob1.check_until_timeout select role from __all_ls_meta_table where tenant_id=1 and ls_id=1 and zone='z1', 1, 600;
+ob1.check_until_timeout select count(*) - $full_rootservice_count a from dba_ob_rootservice_event_history where event='full_rootservice', 1, 600;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_CHECK_CREATE_NORMAL_TENANT_RESULT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_check$user_tenant_id';
+
+reap;
+
+# 删租户
+ob1.mysql drop tenant mysql force;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo meta租户create_normal_tenant失败会导致create_user_ls退出
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_META_NORMAL_TENANT_ERROR, error_code=4016, frequency = 1;
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_LS_ERROR, error_code=4002, frequency = 1;
+
+connection conn_sys1;
+
+--error 4016
+create tenant mysql resource_pool_list=('pool');
+eval select count(*) from dba_ob_tenants where tenant_id in ($meta_tenant_id, $user_tenant_id);
+
+ob1.z1.obs0.check_rs_log_until_success -c 'finish create user ls.*OB_CANCELED.*user_tenant_id.$user_tenant_id';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_META_NORMAL_TENANT_ERROR, error_code=4016, frequency = 0;
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_LS_ERROR, error_code=4002, frequency = 0;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo user租户create_normal_tenant失败会导致create_user_ls退出
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_NORMAL_TENANT_ERROR, error_code=4016, frequency = 1;
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_LS_ERROR, error_code=4002, frequency = 1;
+
+connection conn_sys1;
+
+--error 4016
+create tenant mysql resource_pool_list=('pool');
+eval select count(*) from dba_ob_tenants where tenant_id in ($meta_tenant_id, $user_tenant_id);
+
+ob1.z1.obs0.check_rs_log_until_success -c 'finish create user ls.*OB_CANCELED.*user_tenant_id.$user_tenant_id';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_NORMAL_TENANT_ERROR, error_code=4016, frequency = 0;
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_LS_ERROR, error_code=4002, frequency = 0;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;
+
+--echo ============================================================
+--echo 创建tablet失败时，创建user ls线程会快速失败
+--echo ============================================================
+
+let $max_used_tenant_id = deploy_get_value(ob1.select select value from __all_sys_stat where name='ob_max_used_tenant_id', value, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+1 a, a, 1);
+let $user_tenant_id = deploy_get_value(ob1.select select $max_used_tenant_id+2 a, a, 1);
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_SYS_TABLETS_ERROR, error_code=4016, frequency = 1;
+
+connection conn_sys1;
+
+--error 4016
+create tenant mysql resource_pool_list=('pool');
+eval select count(*) from dba_ob_tenants where tenant_id in ($meta_tenant_id, $user_tenant_id);
+
+ob1.z1.obs0.check_rs_log_until_success -c 'failed to check user tenant table writable.*OB_CANCELED.*user_tenant_id.$user_tenant_id';
+
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_NORMAL_TENANT_ERROR, error_code=4016, frequency = 0;
+ob1.mysql alter system set_tp tp_name=ERRSIM_CREATE_USER_LS_ERROR, error_code=4002, frequency = 0;
+ob1.check_until_timeout select count(*) from gv\$ob_units where tenant_id in ($meta_tenant_id, $user_tenant_id), 0, 600;

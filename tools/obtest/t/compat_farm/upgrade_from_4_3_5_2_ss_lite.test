@@ -1,0 +1,941 @@
+##
+# owner      : xiaoqizhang.zxq
+# owner group: qa
+# description: 测试从4.3.5.2 升级到4_3_5_relese分支
+##
+ob1=OBI(cluster=1:1:1,version=4_3_5_2,oblog_version=current,asvr_num=1);
+ob1.proxy0.set extra_config=syslog_level=debug;
+# 本地测试环境可能需要指定网卡名(非bond0时)
+# let $arb_extra_conf = "memory_limit='1G',log_disk_size='5G',devname='eth0'";
+let $arb_extra_conf = "memory_limit='1G',log_disk_size='5G'";
+ob1.asvr0.set extra_config=$arb_extra_conf;
+
+ob1.reboot;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system set leak_mod_to_check='ModulePageAlloc';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system ob_compaction_schedule_interval ="10s";
+#ob1.mysql alter system set syslog_level='ERROR';
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_rpc_port = deploy_get_value(ob1.z1.obs0.port);
+let $z1_mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $not_changed = deploy_get_value(ob1.select select count(*) as not_changed from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", not_changed, 1);
+ob1.mysql alter tenant sys set primary_zone = "z1";
+--disable_query_log
+if ($not_changed == 0)
+{
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", 1, 120;
+ob1.check_until_timeout select (rs_svr_ip = "$z1_ip" and rs_svr_port = $z1_rpc_port) as passed from __all_rootservice_event_history where event = "full_rootservice" order by gmt_create desc limit 1, 1, 120;
+}
+--enable_query_log
+
+# 2.创建oracle租户
+ob1.mysql create resource unit box1 max_cpu 2,memory_size 5368709120;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+## TODO 打开 4.2 修改配置项ls_gc_delay_time默认值为0s, 不开启场景，延迟删除功能默认关闭, OBCDC依赖于数据字典或者后续Online Schema（待支持）才能获取多版本日志流
+#ob1.mysql alter tenant oracle set primary_zone = 'z1';
+ob_connect(conn_oracle, ob1.proxy0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+
+# 获取仲裁server的ip、port
+let $arb_svr_ip=deploy_get_value(ob1.asvr0.ip);
+let $arb_svr_port=deploy_get_value(ob1.asvr0.port);
+# add arbitration service, mytest.jar已经为本集群做了这一步
+# check arbitration service add success
+ob1.check_until_timeout select count(*) from DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 30;
+
+# 建开启仲裁服务的租户mysql
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE='2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, zone_list = ('z1', 'z2', 'z3');
+
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'),  locality='F@z1, F@z2', primary_zone='z2', enable_arbitration_service=true set ob_tcp_invited_nodes='%';
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+
+# check arbitration member exist for tenant's ls
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and arbitration_member not like "%$arb_svr_ip:$arb_svr_port%", 0, 30;
+
+# 升级仲裁 Server 版本
+ob1.asvr0.force_stop;
+ob1.asvr0.upgrade;
+ob1.asvr0.nstart;
+ob1.check_until_timeout select count(*) from GV\$OB_ARBITRATION_SERVICE_STATUS where STATUS!= 'ACTIVE', 0, 30;
+# 验证升级仲裁 Server 版本后重启
+ob1.asvr0.force_stop;
+ob1.asvr0.nstart;
+ob1.check_until_timeout select count(*) from GV\$OB_ARBITRATION_SERVICE_STATUS where STATUS!= 'ACTIVE', 0, 30;
+# 3. 创建链接
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn_obtest,$ip,root@mysql,, test,$port);
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_mysql,$ip,root@sys,,*NO-ONE*,$port);
+ob_connect(conn_oracle,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+source include/liboblog/compat/oblog_before_upgrade.inc;
+
+let $start_data_version=deploy_get_value(ob1.select select column_value a from __all_core_table where column_name='current_data_version', a, 1);
+
+# 4. 修改配置项&系统变量
+# 4.1 配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s' tenant all;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all;
+
+# 4.2 系统变量
+ob1.mysql set global ob_sql_audit_percentage=80;
+# 4.3 proxy配置项
+alter proxyconfig set server_state_refresh_interval='1s';
+
+
+# 5.数据准备
+
+# online ddl type change
+source include/online_ddl_compat_check_prepare.inc;
+source include/rename_table_add_table_lock_prepare.inc;
+
+connection conn_obtest;
+use test;
+create table t(c1 int, c2 int);
+create table t_part(c1 int, c2 int) partition by hash(c1) partitions 8;
+insert into t values(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9), (10, 10);
+insert into t_part values(1, 1);
+insert into t_part values(2, 2);
+insert into t_part values(3, 3);
+insert into t_part values(4, 4);
+insert into t_part values(5, 5);
+insert into t_part values(6, 6);
+insert into t_part values(7, 7);
+insert into t_part values(8, 8);
+insert into t_part values(9, 9);
+insert into t_part values(10, 10);
+commit;
+
+connection conn_oracle;
+# 验证oracle 模式trigger
+create table t_test_trg_ora(c1 int);
+create or replace trigger trg_t_test_trg_ora before insert on t_test_trg_ora for each row begin null; end;
+insert into t_test_trg_ora values (1);
+
+connection conn_mysql;
+use test;
+create table t_cg_0(c1 int, c2 int unique, c3 text);
+create table t_cg_1(c1 int, c2 int unique, c3 text);
+create table t_cg_2(c1 int, c2 int unique, c3 text);
+create table t_cg_3(c1 int, c2 int unique, c3 text);
+
+create index idx0 on t_cg_0(c1);
+create index idx1 on t_cg_1(c1);
+create index idx2 on t_cg_2(c1);
+create index idx3 on t_cg_3(c1);
+
+connection conn_mysql;
+source t/compat/include_for_obtest/prepare_for_cache_policy.inc;
+
+use test;
+# 验证mysql 模式trigger
+create table t_test_trg_mysql(c1 int);
+create trigger trg_t_test_trg_mysql before insert on t_test_trg_mysql for each row set @var_test_trg = 1;
+
+create database db1;
+create tablegroup tg;
+create table db1.tb_normal (pk int primary key,c1 varchar(1024) default '0', c2 timestamp(6) default now(6), c3 timestamp default now(), index i1(c2), index i2(c1)) tablegroup tg;
+create table db1.tb_increment (pk int primary key auto_increment,c1 int, c2 datetime(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), index i1(c2)) tablegroup tg;
+create table db1.tb_bigtable (c1 varchar(65536),c2 varchar(65536),c3 varchar(65536),c4 varchar(65536), pk bigint primary key auto_increment) COMPRESSION = 'none' tablegroup tg;
+
+create table db1.global_t6(a int, b int, c int, primary key(a)) partition by hash(a) partitions 2;
+create index gkey on db1.global_t6(b) global;
+insert into db1.global_t6 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+
+create table db1.global_t7(a int, b int, c int, primary key(a));
+insert into db1.global_t7 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+
+create table test.tb_table_gencol(pk1 bigint, pk2 varchar(2048),c1 varchar(65536), c2 varchar(65536),ac1 bigint auto_increment,
+ts timestamp(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),  gmt_create timestamp(6) default now(6), gmt_modified timestamp(6) default now(6),
+gen_c1 varchar(10) GENERATED ALWAYS AS (substr(c1,1,10)) virtual,
+gen_c2 varchar(10) GENERATED ALWAYS AS (substr(c2,1,10)) stored,
+primary key(pk1, pk2),index i1(ts));
+
+create table test.tablegencol(c1 bigint primary key,user_id varchar(32) NOT NULL default '' comment 'Alipay User ID', address varchar(256) NOT NULL default '' comment 'address', index(user_id,address(255)));
+create table test.table_hash(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+create table test.table_range(c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200), partition p2 values less than MAXVALUE);
+create table test.table_hash_range (c1 int primary key, c2 int) partition by hash(c1) subpartition by range(c1) subpartition template(SUBPARTITION c0 VALUES LESS THAN(1990), SUBPARTITION c1 VALUES LESS THAN (2000), SUBPARTITION c2 VALUES LESS THAN MAXVALUE) partitions 2;
+create table test.table_range_hash (c1 int primary key, c2 int) partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1980), PARTITION c1 VALUES LESS THAN (1990), PARTITION c2 VALUES LESS THAN (1995), PARTITION c3 VALUES LESS THAN (2000), PARTITION c4 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg_old;
+create table test.table_with_tg(c1 int primary key, c2 int) tablegroup tg_old;
+
+
+create table test.t_parent(c1 int, c2 int, constraint t_parent_pk primary key(c1, c2));
+create table test.t_child(c1 int, c2 int, constraint t_child_fk foreign key(c2, c1) references test.t_parent(c1, c2));
+
+create table test.t_check_1(c1 int, c2 int, constraint cst1 check(c1 = c2));
+create table test.t_check_2(c1 int, c2 int, constraint cst2 check(c2 = c1));
+
+create table test.local_var(c1 timestamp, c2_local_var date as (c1), index i1 (c2_local_var));
+insert into test.local_var(c1) values('2011-01-01 00:00:00');
+
+--disable_query_log
+--disable_result_log
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+
+--enable_query_log
+--enable_result_log
+
+# for dblink test
+ob_connect(conn_oracle, ob1.proxy0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+create user dblink_test IDENTIFIED BY 123;
+grant all on *.* to dblink_test WITH GRANT OPTION;
+grant dba to dblink_test;
+ob_connect(conn_oracle_dblink_test, ob1.proxy0, dblink_test@oracle, 123, dblink_test, USE_OB_CONNECTOR);
+create table dblink_t1(a number, b varchar2(60));
+insert into dblink_t1 values (1, 'a'), (2, 'b'), (3, 'c');
+commit;
+
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 number, c2 date default Date '2012-01-02', c3 timestamp default Timestamp '2012-12-01 01:02:03.123456789', c4 timestamp with time zone default Timestamp '2012-12-01 01:02:03.123456789 +02:00');
+insert into t1 (pk, c1) values(1,1),(2,2);
+delete from t1 where pk=1;
+select pk, c1, to_char(c2), to_char(c3), to_char(c4) from t1;
+
+create table global_t1(a int, b int, c int, primary key(a)) partition by hash(a) partitions 2;
+create index gkey on global_t1(b) global;
+insert into global_t1 values(1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4), (5, 5, 5);
+create table global_t2(a int, b int, c int, primary key(a));
+insert into global_t2 values(1, 5, 1), (2, 4, 2), (3, 3, 3), (4, 2, 4), (5, 1, 5);
+
+create tablespace tp1;
+
+create table t_parent(c1 int, c2 int, constraint t_parent_pk primary key(c1, c2));
+create table t_child(c1 int, c2 int, constraint t_child_fk foreign key(c2, c1) references t_parent(c1, c2));
+
+create table t_check_1(c1 int, c2 int, constraint cst1 check(c1 = c2));
+create table t_check_2(c1 int, c2 int, constraint cst2 check(c2 = c1));
+
+create table t_notnull_pk(c1 int primary key, c2 int, c3 int not null);
+desc t_notnull_pk;
+create table t_notnull_nopk(c2 int, c3 int not null) partition by hash(c2,c3) partitions 3;
+
+create table t_56_rowkey(c00 int not null,c01 int default 8,c02 int default 8,c03 int default 8,c04 int default 8,c05 int default 8,c06 int default 8,c07 int default 8,c08 int default 8,c09 int default 8,c10 int default 8,c11 int default 8,c12 int default 8,c13 int default 8,c14 int default 8,c15 int default 8,c16 int default 8,c17 int default 8,c18 int default 8,c19 int default 8,c20 int default 8,c21 int default 8,c22 int default 8,c23 int default 8,c24 int default 8,c25 int default 8,c26 int default 8,c27 int default 8,c28 int default 8,c29 int default 8,c30 int default 8,c31 int default 8,c32 int default 8,c33 int default 8,c34 int default 8,c35 int default 8,c36 int default 8,c37 int default 8,c38 int default 8,c39 int default 8,c40 int default 8,c41 int default 8,c42 int default 8,c43 int default 8,c44 int default 8,c45 int default 8,c46 int default 8,c47 int default 8,c48 int default 8,c49 int default 8,c50 int default 8,c51 int default 8,c52 int default 8,c53 int default 8,c54 int default 8,c55 int default 8,c56 varchar(10) default null,c57 int default 8,primary key(c00,c01,c02,c03,c04,c05,c06,c07,c08,c09,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50,c51,c52,c53,c54,c55));
+insert into t_56_rowkey (c00) values(1);
+insert into t_56_rowkey (c00, c57) values(2, 2);
+insert into t_56_rowkey (c00, c56, c57) values(3, 'hehe', 3);
+
+#test dblink schema compatibility
+--disable_query_log
+--disable_result_log
+eval create database link oci_link connect to dblink_test@oracle identified by 123 host '$ip:$port';
+--enable_result_log
+--enable_query_log
+select * from dblink_t1@oci_link;
+
+# test obcdc
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn_obtest_z2,$ipz2,root@sys,,db1,$portz2);
+connect (conn_obcdc_z2,$ipz2,root@mysql,,oblog_db,$portz2);
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# ash-pl 测试
+source include/feature_case_in_upgrade.inc;
+
+# 6. 第1次合并
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system major freeze tenant=all;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    # all tenant should major merge complete
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+# 7. 写入数据
+connection conn_mysql;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(101,'101'),(102,'102'),(103,'103'),(104,'104');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=104;
+commit;
+# 升级前开启SPM
+set global optimizer_use_sql_plan_baselines = 1;
+set global optimizer_capture_sql_plan_baselines = 1;
+
+#
+#ob1.mysql alter tenant obtest set primary_zone='z1';
+#ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='obtest'),0,60;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+
+# 升级ob集群之前，仲裁server已经升级，在这种混跑阶段测试仲裁升降级功能
+# kill z2触发降级;
+ob1.z2.obs0.force_stop;
+let $z2_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port0 = deploy_get_value(ob1.z2.obs0.port);
+# 确认降级成功
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and degraded_list not like '%$z2_ip0:$z2_port0%', 0, 30;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and status='INACTIVE',1,60;
+
+# start follower触发升级
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+# 确认升级成功
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like '%$z2_ip0:$z2_port0%', 0, 120;
+
+source include/check_schema_sync.inc;
+
+sleep 10;
+# 7 打开升级配置, 升级前检查
+let $count = 25;
+while ($count > 0)
+{
+   let $upgrade_checker=deploy_get_value(ob1.upgrade_check_before);
+   if ($upgrade_checker == true)
+   {
+        let $count = -1;
+    }
+   if ($upgrade_checker == false)
+   {
+        dec $count;
+        sleep 10;
+   }
+}
+if($count == 0)
+{
+   --exit
+}
+# 8.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+#sleep 5;
+#8.1 升级z2
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader',0,20;
+ob1.z2.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',ACTIVE,20;
+#8.2 验证版本混部情况下SQL转发情况
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+let $server_portz1=deploy_get_value(ob1.z1.obs0.port);
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+let $server_portz2=deploy_get_value(ob1.z2.obs0.port);
+
+
+#8.2 验证版本混部情况下SQL转发情况
+connect (conn_obtest_z1,$ipz1,root@sys,,db1,$portz1);
+connect (conn_mysql_z1,$ipz1,root@mysql,,test,$portz1);
+
+connect (conn_obtest_z2,$ipz2,root@sys,,db1,$portz2);
+connect (conn_obcdc_z2,$ipz2,root@mysql,,oblog_db,$portz2);
+connect (conn_mysql_z2,$ipz2,root@mysql,,test,$portz2);
+
+let $ipz3=deploy_get_value(ob1.z3.obs0.ip);
+let $portz3=deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_obtest_z3,$ipz3,root@sys,,db1,$portz3);
+
+#8.2.1 distribute sql
+## z2(新)
+connection conn_mysql_z2;
+use test;
+--sorted_result
+select /*+ parallel(4)*/ * from t, t_part where t.c1 = t_part.c1;
+
+## z1(旧)
+connection conn_mysql_z1;
+use test;
+--sorted_result
+select /*+ parallel(4)*/ * from t, t_part where t.c1 = t_part.c1;
+
+#8.2.2 z2(新)->z1(旧) remote dml
+#ob1.mysql alter tenant obtest set primary_zone='z2';
+let $server1_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $server1_port = deploy_get_value(ob1.z2.obs0.port);
+ob1.mysql alter system stop server '$server1_ip:$server1_port';
+#ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='obtest'),0,60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='sys'),0,60;
+connection conn_obtest_z2;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(301,'301'),(302,'302'),(303,'303'),(304,'304');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=304;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (301,301),(302,302);
+replace into db1.tb_increment(pk,c1) values (301,302);
+delete from db1.tb_increment where pk=302;
+commit;
+set autocommit=1;
+select pk,c1 from db1.tb_normal order by pk;
+select pk,c1 from db1.tb_increment order by pk limit 1;
+select a.pk,a.c1,b.c1 from db1.tb_normal a join db1.tb_increment b where a.pk=b.pk order by a.pk limit 2;
+show tables like 'tb_normal';
+show create table db1.tb_increment;
+#test global index dml
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(10, 100, 10);
+update global_t6 set b=7 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set a=100 where b=2;
+update global_t6 set b=19 where b=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set c=100 where b>=10;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=2 or a=3;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where b>=100;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(1, 1, 1), (5, 6, 2), (4, 2, 1);
+--sleep 1
+select /*+index(global_t6 primary)*/ * from global_t6;
+delete from global_t6 where b < 7 and b >1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+replace into global_t6 values(2, 2, 2), (3, 3, 3), (4, 4, 4);
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+# test for update (oracle mode)
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+commit;
+--sorted_result
+select * from global_t1 for update;
+--sorted_result
+select * from global_t1, global_t2 where global_t1.a = global_t2.a for update;
+commit;
+
+
+ob_connect(conn_oracle_obtest_z1,ob1.z1.obs0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+#dml
+insert into t1 (pk, c1) values(4,4);
+update t1 set c1=0 where pk=2;
+select pk, c1, to_char(c2), to_char(c3), to_char(c4) from t1;
+
+# 8.2.3 sys租户sql
+ob1.z1.mysql_p show global variables like 'max_user_connections';
+ob1.z1.mysql_p show variables like 'max_user_connections';
+ob1.z1.mysql_p show create table oceanbase.__all_table;
+ob1.z1.mysql show parameters like 'zone_merge_concurrency';
+
+ob1.z2.mysql_p show global variables like 'max_user_connections';
+ob1.z2.mysql_p show variables like 'max_user_connections';
+ob1.z2.mysql_p show create table oceanbase.__all_table;
+ob1.z2.mysql show parameters like 'zone_merge_concurrency';
+
+# 8.2.4 转储
+ob1.mysql alter system minor freeze tenant = all;
+connection conn_obtest_z1;
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(601,'601'),(602,'602'),(603,'603'),(604,'604');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=604;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (601,601),(602,602);
+replace into db1.tb_increment(pk,c1) values (601,602);
+delete from db1.tb_increment where pk=602;
+commit;
+set autocommit=1;
+# 8.2.5 测试obcdc
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 8.2.6 ash-pl 测试
+source include/feature_case_in_upgrade.inc;
+
+#
+ob1.mysql alter system start server '$server1_ip:$server1_port';
+
+# 8.2.7 补副本成员变更兼容性测试
+source include/upgrade_from_434_member_change.inc;
+
+let $z2_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port0 = deploy_get_value(ob1.z2.obs0.port);
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.z2.obs0.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and status='INACTIVE',1,60;
+#确认降级成功
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and degraded_list not like '%$z2_ip0:$z2_port0%', 0, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where role = 1 and member_list like '%$z2_ip0:$z2_port0%', 0, 120;
+ob1.mysql alter system set server_permanent_offline_time = '3600s';
+
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+source include/check_schema_sync.inc;
+
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like '%$z2_ip0:$z2_port0%', 0, 120;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_rootservice_event_history where event like '%finish_add%' and value6 like '%ret:0%',1,120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task,0,120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where role = 1 and member_list not like '%$z2_ip0:$z2_port0%', 0, 180;
+
+let $leader_count = query_get_value(select count(1) as cnt from oceanbase.__all_virtual_ls_meta_table where role = 1, cnt, 1);
+let $zone2_ls_count = query_get_value(select count(1) as cnt from oceanbase.__all_virtual_ls_meta_table where svr_ip = '$z2_ip0' and svr_port = $z2_port0, cnt, 1);
+
+if($leader_count != $zone2_ls_count)
+{
+  --exit
+}
+##primary and standby switch
+#ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT mysql;
+#ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT mysql;
+#
+#ob1.z2.obs0.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT oracle;
+#ob1.z2.obs0.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT oracle;
+
+connection conn_obtest_z1;
+
+#8.3 升级z1
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader',0,20;
+ob1.z1.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+sleep 2;
+
+#8.3.1 旧(z3)->新(z1)
+#ob1.mysql alter tenant obtest set primary_zone='z1';
+#ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='obtest'),0,60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where zone != 'z1' and role='leader' and tenant_id = (select tenant_id from __all_tenant where tenant_name='sys'),0,60;
+connection conn_obtest_z3;
+set autocommit=0;
+set @@session.ob_query_timeout = 120000000;
+insert into db1.tb_normal(pk,c1) values(401,'401'),(402,'402'),(403,'403'),(404,'404');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=404;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (401,401),(402,402);
+replace into db1.tb_increment(pk,c1) values (401,402);
+delete from db1.tb_increment where pk=402;
+commit;
+set autocommit=1;
+select pk,c1 from db1.tb_normal order by pk;
+select pk,c1 from db1.tb_increment order by pk limit 1;
+select a.pk,a.c1,b.c1 from db1.tb_normal a join db1.tb_increment b where a.pk=b.pk order by a.pk limit 2;
+show tables like 'tb_normal';
+show create table db1.tb_increment;
+#test global index dml
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(11, 100, 10);
+update global_t6 set b=7 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set a=100 where b=2;
+update global_t6 set b=19 where b=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+update global_t6 set c=100 where b>=10;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where a=2 or a=3;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6 where b>=100;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+delete from global_t6;
+select /*+index(global_t6 primary)*/ * from global_t6;
+insert into global_t6 values(2, 1, 1), (6, 6, 2), (5, 2, 1);
+--sleep 1
+select /*+index(global_t6 primary)*/ * from global_t6;
+delete from global_t6 where b < 7 and b >1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+insert into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4) on duplicate key update b=b+1;
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+replace into global_t6 values(20, 2, 2), (30, 3, 3), (40, 4, 4);
+select /*+index(global_t6 gkey)*/ a, b from global_t6;
+select /*+index(global_t6 primary)*/ a, b, c from global_t6;
+# test for update (oracle mode)
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+commit;
+--sorted_result
+select * from global_t1 for update;
+--sorted_result
+select * from global_t1, global_t2 where global_t1.a = global_t2.a for update;
+commit;
+
+#8.3.2  local dml
+connect (conn_obtest_z1,$ipz1,root@sys,,db1,$portz1);
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(501,'501'),(502,'502'),(503,'503'),(504,'504');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=504;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (501,501),(502,502);
+replace into db1.tb_increment(pk,c1) values (501,502);
+delete from db1.tb_increment where pk=502;
+commit;
+set autocommit=1;
+select pk,c1 from db1.tb_normal order by pk;
+select pk,c1 from db1.tb_increment order by pk limit 1;
+select a.pk,a.c1,b.c1 from db1.tb_normal a join db1.tb_increment b where a.pk=b.pk order by a.pk limit 2;
+show tables like 'tb_normal';
+show create table db1.tb_increment;
+
+# 8.3.3 转储
+ob1.mysql alter system minor freeze tenant = all;
+connect (conn_obtest_z2,$ipz2,root@sys,,db1,$portz2);
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(701,'701'),(702,'702'),(703,'703'),(704,'704');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=704;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (701,701),(702,702);
+replace into db1.tb_increment(pk,c1) values (701,702);
+delete from db1.tb_increment where pk=702;
+commit;
+set autocommit=1;
+#ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT mysql;
+#ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT mysql;
+#
+#ob1.z2.obs0.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT oracle;
+#ob1.z2.obs0.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT oracle;
+
+
+# kill z1触发降级;
+ob1.z1.obs0.force_stop;
+let $z1_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port0 = deploy_get_value(ob1.z1.obs0.port);
+# 确认降级成功
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where tenant_id=$mysql_tenant_id and degraded_list not like '%$z1_ip0:$z1_port0%', 0, 30;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and status='INACTIVE',1,60;
+
+# start follower触发升级
+ob1.z1.obs0.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+# 确认升级成功
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where degraded_list like '%$z1_ip0:$z1_port0%', 0, 120;
+
+source include/check_schema_sync.inc;
+
+#8.3 升级z3
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z3';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z3',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z3' and role='leader',0,20;
+ob1.z3.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z3' and (start_service_time is null and status='INACTIVE'),1,60;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z3';
+sleep 2;
+# 8.3.1 转储
+ob1.mysql alter system minor freeze tenant = all;
+connect (conn_obtest_z3,$ipz3,root@sys,,db1,$portz3);
+set autocommit=0;
+insert into db1.tb_normal(pk,c1) values(801,'801'),(802,'802'),(803,'803'),(804,'804');
+update db1.tb_normal set c1=concat(c1,'_x') where pk > 100;
+delete from db1.tb_normal where pk=804;
+update db1.tb_increment set pk=pk+1 order by pk desc limit 1;
+insert into db1.tb_increment(pk,c1) values (801,801),(802,802);
+replace into db1.tb_increment(pk,c1) values (801,802);
+delete from db1.tb_increment where pk=802;
+commit;
+set autocommit=1;
+# 8.3.2. 测试obcdc
+connect (conn_obcdc_z2,$ipz2,root@mysql,,oblog_db,$portz2);
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+##8.3.2 升级前switchover一次
+#ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT mysql;
+#ob1.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT mysql;
+#ob1.z2.obs0.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT oracle;
+#ob1.z2.obs0.mysql ALTER SYSTEM ACTIVATE STANDBY TENANT oracle;
+
+# 8.3.3 ash-pl 测试
+source include/feature_case_in_upgrade.inc;
+
+# 8.3.4 检查storage_cache_policy
+alter system set _enable_parallel_table_creation = true;
+sleep 3;
+--error 1235,4179
+create table test.scp_test_table(c1 int, c2 int, c3 int) storage_cache_policy = (global = 'hot');
+alter system set _enable_parallel_table_creation = false;
+sleep 3;
+--error 1235,4179
+create table test.scp_test_table(c1 int, c2 int, c3 int) storage_cache_policy = (global = 'hot');
+--error 1235,4179
+alter table db1.tb_increment storage_cache_policy = (global = 'hot');
+show create table db1.tb_increment;
+# 9. 执行升级后SQL
+#
+ob1.upgrade_commond_for_server post;
+connection conn_sys;
+ob1.z1.obs0.mysql select * from mysql.db;
+ob1.z1.obs0.mysql select * from mysql.user;
+ob1.z2.obs0.mysql select * from mysql.db;
+ob1.z2.obs0.mysql select * from mysql.user;
+ob1.z3.obs0.mysql select * from mysql.db;
+ob1.z3.obs0.mysql select * from mysql.user;
+
+connect (conn_sys,$z1_ip,root@sys,,oceanbase,$z1_mysql_port);
+connection conn_sys;
+let $count=deploy_get_value(ob1.select select count(*) a from oceanbase.dba_ob_tenants, a, 1);
+let $i=0;
+while ($i<$count)
+{
+  inc $i;
+  let $tenant=deploy_get_value(ob1.select select tenant_name a from oceanbase.dba_ob_tenants order by tenant_id desc, a, $i);
+  eval alter system change tenant $tenant;
+  eval update oceanbase.__all_core_table set column_value=$start_data_version where table_name='__all_global_stat' and row_id=1 and column_name='current_data_version';
+}
+
+ob1.mysql alter system run upgrade job 'upgrade_all';
+ob1.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',2,3600;
+ob1.mysql alter system set _enable_parallel_table_creation = false tenant=all_user;
+ob1.mysql alter system set _enable_parallel_table_creation = false tenant=all_meta;
+ob1.mysql alter system set _enable_parallel_table_creation = false tenant=sys;
+ob1.mysql alter system run upgrade job 'upgrade_all';
+ob1.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',3,3600;
+ob1.mysql alter system run upgrade job 'upgrade_all';
+ob1.check_until_timeout select count(1) from __All_rootservice_job where job_type='UPGRADE_ALL' and job_status='SUCCESS',4,3600;
+ob1.mysql alter system set _enable_parallel_table_creation = true tenant=all_user;
+ob1.mysql alter system set _enable_parallel_table_creation = true tenant=all_meta;
+ob1.mysql alter system set _enable_parallel_table_creation = true tenant=sys;
+# 自检
+set @@session.ob_query_timeout = 600000000;
+alter system run job 'root_inspection';
+set @@session.ob_query_timeout = 10000000;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_upgrade_inspection where info != 'succeed',0,180;
+#验证max_ls_id
+ob1.mysql_p select tenant_id, max_ls_id from oceanbase.__all_virtual_tenant_info order by tenant_id;
+
+# 10. 升级后检查
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_mysql,$ip,root@sys,,*NO-ONE*,$port);
+ob_connect(conn_oracle,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 10.1 DML
+#验证oracle 模式 trigger
+connection conn_oracle;
+create or replace trigger trg_t_test_trg_ora before insert on t_test_trg_ora for each row begin null; end;
+insert into t_test_trg_ora values (1);
+connection conn_mysql;
+use test;
+#验证mysql 模式 trigger
+insert into t_test_trg_mysql values (1);
+
+let $cnt=200;
+while($cnt <= 300)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval update db1.tb_normal set c1=$cnt where pk = $cnt;
+  eval update db1.tb_increment set c1 = $cnt where pk = $cnt;
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval replace into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval replace into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval replace into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_range(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval replace into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+select pk1,pk2,gen_c1,gen_c2 from test.tb_table_gencol order by pk1,pk2 limit 10;
+select * from test.table_hash where c1 = 1;
+select * from test.table_range where c1 = 1;
+select * from test.table_hash_range where c1 = 1;
+select * from test.table_range_hash where c1 = 1;
+select count(*) from test.table_hash;
+# 验证升级后SPM配置项正确设置
+select tenant_id, name, value from oceanbase.GV$OB_PARAMETERS where name = 'sql_plan_management_mode' and tenant_id = effective_tenant_id();
+select sname, spare4 from oceanbase.__all_optstat_global_prefs where sname = 'ONLINE_ESTIMATE_PERCENT';
+
+# 10.2 DDL
+connection conn_mysql;
+create table db1.t1_after(pk int primary key, c1 int);
+source t/compat/include_for_obtest/test_for_cache_policy.inc;
+connection conn_oracle;
+create table t2_after(pk int primary key, c1 int);
+# 验证升级后SPM配置项正确设置
+select tenant_id, name, value from sys.GV$OB_PARAMETERS where name = 'sql_plan_management_mode' and tenant_id = effective_tenant_id();
+select sname, spare4 from sys.ALL_VIRTUAL_OPTSTAT_GLOBAL_PREFS_REAL_AGENT where sname = 'ONLINE_ESTIMATE_PERCENT';
+connection conn_mysql;
+use test;
+#alter table t_cg_0 add column group(all columns);
+#alter table t_cg_1 add column group(each column);
+alter table t_cg_2 add column c4 int;
+alter table t_cg_2 drop column c2;
+#alter table t_cg_2 add index idx2_1(c1) with column group(all columns, each column);
+alter table t_cg_3 add column c4 int;
+alter table t_cg_3 change column c4 c6 int;
+drop table t_cg_0;
+drop table t_cg_1;
+drop table t_cg_2;
+drop table t_cg_3;
+
+# 10.2.1 ddl: column type change
+source include/online_ddl_compat_check_upgraded.inc;
+source include/rename_table_add_table_lock_upgraded.inc;
+
+# 10.3 新建租户
+#ob1.mysql create resource pool pool2 unit = 'box1', unit_num = 1;
+#ob1.mysql create tenant tt1 replica_num = 1, resource_pool_list=('pool2') set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+#ob1.mysql create resource pool pool3 unit = 'box1', unit_num = 1;
+#ob1.mysql create tenant tt2 replica_num = 1, resource_pool_list=('pool3') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+#connect (conn_tt1,$ip,root@obtest,,*NO-ONE*,$port);
+#ob_connect(conn_tt2, ob1.proxy0, SYS@tt2, ,SYS, , USE_OB_CONNECTOR);
+#connection conn_tt1;
+#create table test.t1 (c1 int);
+#insert into test.t1 values(1);
+#select * from test.t1;
+#connection conn_tt2;
+#create table t1 (c1 int);
+#insert into t1 values(1);
+#select * from t1;
+
+# 10.4 合并
+connection conn_sys;
+set @@session.ob_query_timeout = 120000000;
+ob1.mysql alter system set merger_check_interval='10s' tenant sys;
+ob1.mysql alter system set merger_check_interval='10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval='10s' tenant all_meta;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all_meta;
+alter system major freeze tenant sys;
+alter system major freeze tenant all_user;
+alter system major freeze tenant all_meta;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    # all tenant should major merge complete
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+connect (conn_obcdc_z2,$ipz2,root@mysql,,oblog_db,$portz2);
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 10.4 ash-pl 测试
+source include/feature_case_in_upgrade.inc;
+
+# 10.5 重启
+#ob1.force_stop;
+#sleep 10;
+#ob1.nstart;
+#ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_server where start_service_time <= 0, 0 ,600;
+#source include/check_schema_sync_for_restart.inc;
+
+
+connect(conn_obtest,$ip,root@mysql,,,$port);
+source include/liboblog/compat/oblog_after_upgrade.inc;
+
+
+# 10.6 test local session var
+connection conn_mysql;
+select * from test.local_var;
+set @@session.time_zone='-8:00';
+select * from test.local_var;
+set @@session.time_zone='+8:00';
+select * from test.local_var;
+select column_name,cur_default_value_v2,local_session_vars from oceanbase.__all_column where column_name='C2_LOCAL_VAR';
+##add column
+alter table test.local_var add column C2_LOCAL_VAR_3 time as (cast (c1 as time));
+select column_name,cur_default_value_v2,local_session_vars from oceanbase.__all_column where column_name='C2_LOCAL_VAR_3';
+##alter column
+alter table test.local_var modify c1 date;
+select column_name,cur_default_value_v2,local_session_vars from oceanbase.__all_column where column_name='C2_LOCAL_VAR';
+alter table test.local_var modify c1 timestamp;
+select column_name,cur_default_value_v2,local_session_vars from oceanbase.__all_column where column_name='C2_LOCAL_VAR';
+
+create table test.local_var_2(c1 timestamp, c2_local_var_2 date as (cast(c1 as date)), index i1 (c2_local_var_2));
+select column_name,cur_default_value_v2,local_session_vars from oceanbase.__all_column where column_name='C2_LOCAL_VAR_2';

@@ -1,0 +1,306 @@
+# owner: huangrenhuang.hrh
+# owner group: 系统组
+# description: olap async job
+# tags: pl
+# author: huangrenhuang.hrh
+
+
+purge recyclebin;
+--result_format 4
+--error 0,1396
+drop user hrh@'%';
+--enable_warnings
+create user hrh identified by 'hrh';
+grant all on *.* to hrh WITH GRANT OPTION;
+--source mysql_test/include/check_schema_sync.inc
+connect (conn_hrh,$OBMYSQL_MS0,hrh,hrh,test,$OBMYSQL_PORT);
+connect (conn_sys,$OBMYSQL_MS0,root@sys,,test,$OBMYSQL_PORT);
+connect (conn_root,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection conn_hrh;
+SET character_set_client = 'utf8mb4';
+SET character_set_connection = 'utf8mb4';
+SET character_set_results = 'utf8mb4';
+
+
+--echo ------------------------------------------------------------------------------------
+--echo ################## 环境
+--error 0,1051
+drop table source_table;
+CREATE TABLE source_table ( 
+  id int
+);
+--error 0,1051
+drop table write_table;
+CREATE TABLE write_table ( 
+  id int
+);
+--error 0,1051
+drop table load_table;
+CREATE TABLE load_table ( W0_TEST0 INT , W0_TEST1 CHAR(100) , W0_TEST2 TIME );
+
+--error 0,1051
+drop table external_table;
+create external table external_table( W0_TEST0 INT , W0_TEST1 CHAR(100) , W0_TEST2 TIME ) format (type = 'PARQUET') location '/tmp/asdf/asdf';
+
+insert into source_table values(1);
+insert into source_table values(2);
+
+--echo ################## olap job grammar
+--echo ############ submit job
+--echo ###### case 1
+--disable_result_log
+submit job insert overwrite write_table select id from source_table where id = 1;
+--enable_result_log
+let $wait_condition= select count(*) = 1 from write_table where id = 1;
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+select * from write_table where id = 1;
+
+--echo ###### case 2
+--disable_result_log
+submit job insert into write_table(id) select id from source_table where id = 2;
+--enable_result_log
+let $wait_condition= select count(*) = 1 from write_table where id = 2;
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+select * from write_table where id = 2;
+
+--echo ###### case 3
+--disable_result_log
+submit job create table copy_table AS select * from source_table;
+--enable_result_log
+let $wait_condition = select count(*)=2 from copy_table;
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+select * from copy_table;
+
+--echo ###### case 4
+let $LOAD_SOURCE_DATA_FOLDER = "$PWD/mysql_test/test_suite/olap_async_job/data/";
+--source mysql_test/include/copy_data_for_load_dir.inc
+--disable_result_log
+submit job LOAD DATA INFILE 'data_for_mysqltest_loaddata/data/A0.txt' REPLACE INTO TABLE load_table FIELDS TERMINATED BY ',' ;
+--enable_result_log
+let $wait_condition= select count(*) = 4 from load_table;
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+select * from load_table order by W0_TEST0 DESC , W0_TEST1 DESC , W0_TEST2 DESC;
+
+--echo ###### case 5 外表
+--disable_result_log
+submit job insert overwrite load_table select * from external_table;
+--enable_result_log
+let $wait_condition = select count(*)=0 from load_table;
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+select * from load_table order by W0_TEST0 DESC , W0_TEST1 DESC , W0_TEST2 DESC;
+
+drop table source_table;
+drop table write_table;
+drop table copy_table;
+drop table load_table;
+drop table external_table;
+
+--echo ###### case 6
+--error 0,1051
+drop table t;
+CREATE TABLE t ( 
+  id int
+);
+
+--error 1235
+submit job SELECT id FROM t;
+--error 1235
+submit job SELECT COUNT(*) FROM t;
+--error 1235
+submit job UPDATE t SET id = 20 WHERE id = 1;
+--error 1235
+submit job DELETE FROM t WHERE id = 2;
+
+--echo ############ show job
+--echo ###### 测试 root 用户, 数据准备
+--echo 进入 sys 注入一个错误的 job name, 后续 submit job 都会生成错误的 job name
+connection conn_sys;
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 1;
+--echo 清空所有 job 信息
+alter system change tenant sys;
+delete from OCEANBASE.__all_scheduler_job_run_detail_v2 where job > 0;
+alter system change tenant sys;
+connection conn_root;
+--disable_result_log
+--echo 这里生成的 job 是错误的 job name 
+submit insert into t values(1);
+--enable_result_log
+--echo 进入 sys 取消错误注入, 后续 submit job 都会生成正确的 job name
+connection conn_sys;
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 0;
+
+--echo 进入 root 开始测试
+connection conn_root;
+--echo ###### case 1 查询所有 job, 第一个应该是 ERRSIM_JOB
+let $job_name = query_get_value(show job status, 'job_id', 1);
+--echo $job_name;
+
+--echo ###### case 2 再创建 2 个 JOB, show job status 应该只有 3 个
+--disable_result_log
+submit job insert into t values(1);
+submit job insert into t values(1);
+--enable_result_log
+
+--echo 获取第 4 行，应该为空
+let $job_name = query_get_value(show job status, 'job_id', 4);
+--echo $job_name;
+
+--echo ###### case 3 show job status 第 3 个 JOB 一定是 ERRSIM_JOB
+let $job_name = query_get_value(show job status, 'job_id', 3);
+--echo $job_name;
+
+--echo ###### case 4 show job status where 应该只有一个 job 
+--echo 获取第 2 行，应该为空
+let $job_name = query_get_value(show job status where job = 'ERRSIM_JOB', 'job_id', 2);
+--echo $job_name;
+
+--echo ###### case 5 show job status where 应该只有一个 job, 查询第一行 一定是 ERRSIM_JOB
+let $job_name = query_get_value(show job status where job = 'ERRSIM_JOB', 'job_id', 1);
+--echo $job_name;
+
+--echo 等待 ERRSIM_JOB 从 JOB 表删除 ...
+let $wait_condition = select count(*)=0 from OCEANBASE.__all_tenant_scheduler_job where job_name = 'ERRSIM_JOB' and job_class='OLAP_ASYNC_JOB_CLASS';
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+
+--echo ###### 测试普通用户,数据准备
+--echo 在登陆 hrh 前开启错误 job name 注入
+connection conn_sys;
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 1; 
+
+--echo 进入 hrh 开始测试
+connection conn_hrh;
+--echo 创建一个错误 job
+--disable_result_log
+submit job insert into t values(1);
+--enable_result_log
+
+--echo 回到 sys 关闭错误注入
+connection conn_sys;
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 0; 
+
+--echo 回到 hrh 开始测试
+connection conn_hrh;
+
+--echo ###### case 6 普通用户只能看见自己的 job, 应该只有一行
+--echo 获取第 2 行，应该为空
+let $job_name = query_get_value(show job status, 'job_id', 2);
+--echo $job_name;
+
+--echo ###### case 7 普通用户只能看见自己的 job, 第 1 个 JOB 一定是 ERRSIM_JOB
+let $job_name = query_get_value(show job status, 'job_id', 1);
+--echo $job_name;
+
+--echo ###### case 8 再创建 2 个 JOB, show job status 应该只有 3 个
+--disable_result_log
+submit job insert into t values(1);
+submit job insert into t values(1);
+--enable_result_log
+
+--echo 获取第 4 行，应该为空
+let $job_name = query_get_value(show job status, 'job_id', 4);
+--echo $job_name;
+
+--echo ###### case 9 show job status 第 3 个 JOB 一定是 ERRSIM_JOB
+let $job_name = query_get_value(show job status, 'job_id', 3);
+--echo $job_name;
+
+--echo ###### case 10 show job status where 应该只有一个 job 
+--echo 获取第 2 行，应该为空
+let $job_name = query_get_value(show job status where job = 'ERRSIM_JOB', 'job_id', 2);
+--echo $job_name;
+
+--echo ###### case 11 show job status where 应该只有一个 job, 查询第一行 一定是 ERRSIM_JOB
+let $job_name = query_get_value(show job status where job = 'ERRSIM_JOB', 'job_id', 1);
+--echo $job_name;
+
+--echo 回到 root, 应该能看到所有用户的 job
+connection conn_root;
+
+--echo ###### case 12 root 应该能看到所有用户的 job
+--echo 现在一共 6 个 job 获取第 6 行，应该为 ERRSIM_JOB
+let $job_name = query_get_value(show job status, 'job_id', 6);
+--echo $job_name;
+
+--echo ############ cancel job
+--echo ###### 数据准备
+--echo 等所有 JOB 都执行完 ...
+let $wait_condition = select count(*)=0 from OCEANBASE.__all_tenant_scheduler_job where job_class='OLAP_ASYNC_JOB_CLASS';
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+
+--echo 进入 sys
+connection conn_sys;
+--echo 注入一个错误的 job name, 后续 submit job 都会生成错误的 job name
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 1;
+--echo 注入一个错误的 job start date, 后续 submit job 都会生成错误的 job start date
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_START_TIME, error_code = 4000, frequency = 1;
+--echo 清空所有 job 信息
+alter system change tenant sys;
+delete from OCEANBASE.__all_scheduler_job_run_detail_v2 where job > 0;
+alter system change tenant sys;
+
+--echo 回到 root 开始测试
+connection conn_root;
+
+--echo ###### case 1 删除一个不存在的 job 
+--error 0,4018
+cancel job 'un_konow_job';
+
+--echo ###### case 2 删除一个已提交, 但未调度的 job
+--disable_result_log
+--echo 这里生成的 job 是错误的 job name 和 开始时间为 4000年
+submit job insert into t values(1);
+--enable_result_log
+
+--echo 获取 ERRSIM_JOB 的状态，应该是 SUBMITED
+let $job_status = query_get_value(show job status where job = 'ERRSIM_JOB', 'status', 1);
+--echo $job_status;
+
+cancel job 'ERRSIM_JOB';
+
+--echo 获取 ERRSIM_JOB 的状态，应该是 CANCELED
+let $job_status = query_get_value(show job status where job = 'ERRSIM_JOB', 'status', 1);
+--echo $job_status;
+
+--echo 等待这个 job 实际被删除 ...
+let $wait_condition = select count(*)=0 from OCEANBASE.__all_tenant_scheduler_job where job_name = 'ERRSIM_JOB' and job_class='OLAP_ASYNC_JOB_CLASS';
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+
+--echo ###### case 3 删除一个正在运行的 job
+--echo 数据准备
+connection conn_sys;
+--echo 注入一个错误的 job name, 后续 submit job 都会生成错误的 job name
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 1;
+--echo 恢复 job start date
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_START_TIME, error_code = 4000, frequency = 0;
+--echo 清空所有 job 信息
+alter system change tenant sys;
+delete from OCEANBASE.__all_scheduler_job_run_detail_v2 where job > 0;
+alter system change tenant sys;
+
+--echo 回到 root 开始测试
+connection conn_root;
+--echo 这里会创建一个 job name 是 ERRSIM_JOB, 超时时间 60 秒
+--disable_result_log
+submit job select /*+QUERY_TIMEOUT(60000000)*/ sleep(60);
+--enable_result_log
+
+--echo 等这个 job 被调度 ...
+let $wait_condition = select count(*)=1 from OCEANBASE.__all_tenant_scheduler_job where job_name = 'ERRSIM_JOB' and state = 'SCHEDULED' and job_class='OLAP_ASYNC_JOB_CLASS';
+--source mysql_test/test_suite/mysql8_t_2/include/wait_condition.inc
+
+--echo 获取 ERRSIM_JOB 的状态，应该是 RUNNING
+let $job_status = query_get_value(show job status where job = 'ERRSIM_JOB', 'status', 1);
+--echo $job_status;
+
+cancel job 'ERRSIM_JOB';
+
+--echo 获取 ERRSIM_JOB 的状态，应该是 CANCELED
+let $job_status = query_get_value(show job status where job = 'ERRSIM_JOB', 'status', 1);
+--echo $job_status;
+
+connection conn_sys;
+--echo 清空错误注入
+alter system set_tp tp_name = ERRSIM_SUBMIT_ERR_JOB_NAME, error_code = 4000, frequency = 0;
+
+--echo 回到 root
+connection conn_root;

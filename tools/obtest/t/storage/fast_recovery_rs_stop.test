@@ -1,0 +1,97 @@
+# owner: yunshan.tys
+# owner group: storage
+# description: this case is used for fast recorvery
+#
+
+ob1=OBI(cluster=5,init_unit_cpu=1,init_unit_num=1);
+ob1.z1.obs0.set extra_config=_single_zone_deployment_on=true;
+ob1.z1.obs1.set extra_config=_single_zone_deployment_on=true;
+ob1.z1.obs2.set extra_config=_single_zone_deployment_on=true;
+ob1.z1.obs3.set extra_config=_single_zone_deployment_on=true;
+ob1.z1.obs4.set extra_config=_single_zone_deployment_on=true;
+ob1.z1.obs5.set extra_config=_single_zone_deployment_on=true;
+
+ob1.reboot;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs4.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs4.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+connection sys_conn;
+
+set ob_trx_timeout=100000000;
+set ob_query_timeout=100000000;
+
+ob1.mysql create resource pool pool_1 unit_num=3, zone_list=('z1'), unit='unit_1';
+
+ob1.mysql create tenant tenant_1 RESOURCE_POOL_LIST = ('pool_1') set ob_tcp_invited_nodes='%';
+let $tenant1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1);
+let $svr_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port0 = deploy_get_value(ob1.z1.obs0.port);
+
+let $svr_ip1 = deploy_get_value(ob1.z1.obs1.ip);
+let $svr_port1 = deploy_get_value(ob1.z1.obs1.port);
+
+let $svr_ip2 = deploy_get_value(ob1.z1.obs2.ip);
+let $svr_port2 = deploy_get_value(ob1.z1.obs2.port);
+
+let $svr_ip3 = deploy_get_value(ob1.z1.obs3.ip);
+let $svr_port3 = deploy_get_value(ob1.z1.obs3.port);
+
+use test;
+create table t_1(c1 int primary key) partition by hash(c1) partitions 10;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "t_1", table_id, 1);
+
+let $cnt = 1;
+
+while ($cnt <= 100) 
+{
+  eval insert into test.t_1 values($cnt);
+  inc $cnt;
+}
+
+#1. 正常快速恢复流程，rs宕机
+
+ob1.mysql alter system set server_permanent_offline_time = 40;
+
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where is_in_sync = 0 and is_offline = 0, 0, 480;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+
+$rs.force_stop;
+
+sleep 180;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = "$rs_ip" and svr_port = "$rs_port" and status = 'active', 0, 480; 
+
+ob1.check_until_timeout select count(*) > 1 from oceanbase.__all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$rs_ip:$rs_port%', 1, 480;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$rs_ip:$rs_port%' and event = 'finish_recovery', 1, 480;
+
+#2. rs宕机一段时间后重启
+ob1.mysql alter system major freeze;
+
+ob1.check_version 3;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where is_in_sync = 0 and is_offline = 0, 0, 480;
+
+$rs.start;
+
+sleep 50;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where svr_ip = "$rs_ip" and svr_port = "$rs_port", 0, 480; 
+
+ob1.check_until_timeout select count(*) from test.t_1, 100, 480;

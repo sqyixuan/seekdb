@@ -1,0 +1,97 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: laibingzheng.lbz
+# owner group: sql2
+# 测试 pdml-delete的计划
+# tags: dml, optimizer 
+# description: 添加测试表示在计划层次上已经禁止掉的pdml release的功能
+
+--result_format 4
+--disable_warnings
+--enable_info
+## local uniqu index
+--error 0,942
+drop table if exists t1;
+CREATE TABLE t1 (c1 int NOT NULL, c2 int NOT NULL, c3 int NOT NULL, c4 int, PRIMARY KEY (c1, c2), UNIQUE KEY ui1(c1, c3) LOCAL) PARTITION BY HASH(c1);
+INSERT INTO t1 values (1,1,1,1);
+INSERT INTO t1 values (1,2,2,2);
+explain update /*+parallel(8),enable_parallel_dml*/ t1 set c3 = c1;
+explain update /*+parallel(8),enable_parallel_dml*/ t1 set c4 = c1;
+--error 1062
+update /*+parallel(8),enable_parallel_dml*/ t1 set c3 = c1;
+
+## unique index
+--error 0,942
+drop table if exists pindex;
+--error 0,942
+drop table if exists source;
+create table source(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create table pindex(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create unique index i2 on pindex(c2) global;
+insert into source(c1,c2) values(1,2),(2,3),(3,4),(4,5);
+# 计划将是multi part dml计划
+explain basic insert /*+parallel(8),enable_parallel_dml*/ into pindex select * from source;
+insert /*+parallel(8),enable_parallel_dml*/ into pindex select * from source;
+select * from pindex order by c1;
+select /*+index (pindex i2)*/ c2, c1 from pindex order by c2;
+# 计划将是multi part dml计划
+explain basic delete /*+parallel(8),enable_parallel_dml*/ from pindex;
+delete /*+parallel(8),enable_parallel_dml*/ from pindex;
+# 虽然pindex中有unique index，但是update没有涉及到unique index column的assignment，所以仍然是pdml计划
+insert /*+parallel(8),enable_parallel_dml*/ into pindex select * from source;
+explain basic update /*+parallel(8),enable_parallel_dml*/ pindex set c3 = 20;
+update /*+parallel(8),enable_parallel_dml*/ pindex set c3 = 20;
+select * from pindex order by c1;
+# pindex存在unique index，但是update涉及到了unique index column的assignment，所以计划是非pdml计划
+explain basic update /*+parallel(8),enable_parallel_dml*/ pindex set c2 = c1;
+# 有可能会结果冲突
+# update /*+parallel(8),enable_parallel_dml*/ pindex set c2 = c1;
+select * from pindex order by c1;
+delete from pindex;
+
+## update row movement
+insert /*+parallel(8),enable_parallel_dml*/ into pindex select * from source;
+# update分区键，会产生row movement，禁止pdml，会产生multi part计划
+explain basic update /*+parallel(8),enable_parallel_dml*/ pindex set c1 = c2;
+update /*+parallel(8),enable_parallel_dml*/ pindex set c1 = c2;
+
+drop table if exists pindex;
+
+## trigger
+
+## foreign key
+--error 0,942
+drop table if exists foreign_table;
+--error 0,942
+drop table if exists table_ref;
+create table table_ref(c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 3;
+# 没有外键的计划
+explain basic insert /*+parallel(8),enable_parallel_dml*/ into table_ref select * from source;
+explain basic update /*+parallel(8),enable_parallel_dml*/ table_ref set c3 = 20;
+explain basic update /*+parallel(8),enable_parallel_dml*/ table_ref set c1 = c2;
+explain basic delete /*+parallel(8),enable_parallel_dml*/ from table_ref;
+
+create table foreign_table(c1 int, foreign key (c1) references table_ref(c1));
+# insert 计划
+explain basic insert /*+parallel(8),enable_parallel_dml*/ into table_ref select * from source;
+insert /*+parallel(8),enable_parallel_dml*/ into table_ref select * from source;
+select * from table_ref order by c1;
+
+# update 计划
+explain basic update /*+parallel(8),enable_parallel_dml*/ table_ref set c3 = 20;
+update /*+parallel(8),enable_parallel_dml*/ table_ref set c3 = 20;
+select * from table_ref order by c1;
+explain basic update /*+parallel(8),enable_parallel_dml*/ table_ref set c1 = c2;
+update /*+parallel(8),enable_parallel_dml*/ table_ref set c1 = c2;
+select * from table_ref order by c1;
+
+# delete 计划
+explain basic delete /*+parallel(8),enable_parallel_dml*/ from table_ref;
+delete /*+parallel(8),enable_parallel_dml*/ from table_ref;
+select * from table_ref order by c1;
+
+drop table if exists foreign_table;
+drop table if exists table_ref;
+
+drop table if exists source;

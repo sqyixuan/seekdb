@@ -1,0 +1,129 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  背景：liboblog输出的数据流保证DDL schema版本递增，但重启之后就不再保证了，这样会导致增量恢复过程中，数据的schema版本回退，一旦遇到删除列、重命名表等DDL操作，会导致恢复失败
+#  方案：为了解决这个问题，增量备份时每个租户数据流要记录DDL位点（schema version），重启后，收集所有租户的DDL位点，让liboblog采用最大的DDL版本开始解析数据，保证各个租户的数据流schema版本不会回退
+#
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+--disable_warnings
+drop database if exists oblog_db1;
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 启动liboblog
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $t1_dml_count = 0;
+
+# 创建database
+create database oblog_db1;
+ob1.oblog.next;
+
+# t1
+use oblog_db1;
+create table t1 (pk int primary key, c1 int, c2 int);
+ob1.oblog.next;
+
+insert into oblog_db1.t1 values(1, 2, 3);
+ob1.oblog.next;
+inc $t1_dml_count;
+
+alter table oblog_db1.t1 drop c2;
+ob1.oblog.next;
+#connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+#connection oblog_conn_sys;
+#use oceanbase;
+#let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="oblog_tt", tenant_id, 1);
+#alter system change tenant oblog_tt;
+#let $drop_column_ddl_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+
+connection oblog_conn_tt;
+use oblog_db1;
+update oblog_db1.t1 set pk=2 where pk=1;
+ob1.oblog.next;
+inc $t1_dml_count;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# reboot
+ob1.oblog.set_start_tstamp $start_tstamp;
+# 设置data ddl schema version
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+ob1.oblog.next_dml;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# reboot
+# Donot set data ddl schema version
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+let $cnt = $t1_dml_count;
+while ($cnt > 0)
+{
+  ob1.oblog.next_dml;
+  dec $cnt;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+let $start_tstamp2 = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+ob1.oblog.set_start_tstamp $start_tstamp2;
+ob1.oblog.restart;
+let $t2_dml_count = 0;
+
+# t2
+use oblog_db1;
+create table t2 (pk int primary key, c1 int, c2 int);
+ob1.oblog.next;
+
+insert into oblog_db1.t2 values(1, 2, 3);
+ob1.oblog.next;
+inc $t2_dml_count;
+
+alter table oblog_db1.t2 add column c3 int default 100;
+ob1.oblog.next;
+alter table oblog_db1.t2 modify column c3  int default 200;
+ob1.oblog.next;
+
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+connection oblog_conn_sys;
+use oceanbase;
+let $add_column_ddl_schema_version = query_get_value(select max(schema_version) as ver from __all_ddl_operation, ver, 1);
+
+# stop liboblog
+ob1.oblog.stop;
+
+# reboot
+ob1.oblog.set_start_tstamp $start_tstamp2;
+# 设置data ddl schema version
+ob1.oblog.gen_conf tb_white_list=oblog_tt.oblog*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+while ($t2_dml_count > 0)
+{
+  ob1.oblog.next_dml;
+  dec $t2_dml_count;
+}
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 清理数据
+--disable_warnings
+drop database if exists oblog_db1;

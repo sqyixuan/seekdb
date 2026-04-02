@@ -1,0 +1,83 @@
+# owner: rongxuan.lc
+# description: 本case是为了验证ObFilterLocalityUtility里面获取readonly@all的副本数的过程；
+# case设计1 ：
+# locality: f@z1,F@z2,R{all_server}@z3;
+# 场景：z3中少一个readonly. 开启复制。 会在rereplicate阶段补充副本；
+# case设计2：
+# locality: f@z1,F@z2,R{all_server}@z3;
+# 场景：z3中少一个readonly。关闭复制；将f@z2改成l; 检测类型转换过程不会将l转成f;
+
+ob1=OBI(cluster=3:3:3, init_unit_cpu=2, proxy_num=1, ct_num = 0, locality=hz:hz:sh);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '100s';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $case_index=2;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1','z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,R{ALL_SERVER}@z2,F@z3,R{ALL_SERVER}@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_2", tenant_id, 1); 
+
+ob1.create_client tenant=tenant_2,user=root,passwd=,database=test;
+create table test2(c1 int primary key, c2 int) primary_zone='z1' partition by hash(c1) partitions 5;
+sleep 5;
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test2" and tenant_id = "$tenant_id", table_id, 1);
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+
+# case 1:
+# 场景：z3中少一个readonly. 开启复制。 会在rereplicate阶段补充副本；
+# 操作：在z3中删除partition_id = 0的一个只读型副本；等待补充副本；
+let $delete_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 0 and zone='z3' limit 1, addr, 1);
+ob1.mysql alter system drop replica partition_id='0%5@$t2_id' server='$delete_addr';
+##等待删除做完；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 0 and zone='z3', 2, 60;
+##开始负载均衡
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+##等待复制做完
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 0 and zone='z3', 3, 60;
+
+# case 2:
+# 场景：z3中少一个readonly。关闭复制；将f@z2改成l; 检测类型转换过程不会将l转成f;
+# 操作：在z3中删除一个partition_id = 1的副本；同时将z2中partition_id = 1的副本改成R;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+let $delete_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z3' limit 1, addr, 1);
+ob1.mysql alter system drop replica partition_id='1%5@$t2_id' server='$delete_addr';
+##等待删除做完；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z3', 2, 60;
+##F->R
+let $change_addr = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z2' and replica_type=0, addr, 1);
+ob1.mysql alter system change replica partition_id='1%5@$t2_id' server='$change_addr' change replica_type='R';
+##等待转换做完；
+ob1.check_until_timeout select replica_type from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z2', 16, 60;
+##当前处于少副本阶段，不会做类型转换；
+sleep 60;
+let $f_count = deploy_get_value(ob1.select select count(*) c from gv\$partition where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z2' and replica_type = 0, c, 1);
+if ($f_count == 0)
+{
+  echo "do not do type transform success";
+}
+##开始负载均衡
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+##30秒内会转换完成
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where tenant_id = $tenant_id and table_id=$t2_id and partition_id = 1 and zone='z2' and replica_type = 0, 0, 50;

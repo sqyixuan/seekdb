@@ -1,0 +1,120 @@
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+CREATE RESOURCE UNIT large_unit MAX_CPU=4, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL pool UNIT large_unit, UNIT_NUM 1;
+CREATE RESOURCE POOL pool_1 UNIT large_unit, UNIT_NUM 1;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool'), primary_zone = "z1", locality = 'f@z1,f@z2' set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+create user mytest identified by "test";
+grant connect to mytest;
+GRANT SELECT on SYS.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on SYS.GV$OB_UNITS to mytest;
+GRANT SELECT on SYS.DBA_OB_TENANTS to mytest;
+GRANT SELECT on SYS.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on SYS.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on SYS.DBA_OB_LS to mytest;
+GRANT SELECT on SYS.DBA_OB_LS_HISTORY to mytest;
+ob1.mysql alter system set ls_gc_delay_time = '1h' tenant='oracle';
+ob1.mysql alter system set _transfer_task_retry_interval = '0' tenant='oracle';
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql set ob_global_debug_sync ='BEFORE_PROCESS_BALANCE_TASK_TRANSFER_END wait_for signal execute 100';
+ob1.mysql alter tenant oracle set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 30;
+ob1.check_until_timeout select count(*) >= 1 from oceanbase.__all_virtual_transfer_task_history where balance_task_id = $balance_task_id, 1, 30;
+ob1.mysql set ob_global_debug_sync ='STOP_RECOVERY_LS_THREAD0 wait_for signal2 execute 1';
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_oracle_tenant', 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where SYNC_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql_p select src_ls, dest_ls, task_type, status, comment from oceanbase.__all_virtual_balance_task where tenant_id = $oracle_id order by task_id;
+src_ls	dest_ls	task_type	status	comment
+1002	1001	LS_MERGE	TRANSFER	
+ob1.mysql alter system switchover to standby tenant 'oracle';
+ob1.mysql set ob_global_debug_sync = 'now signal signal2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 1, 100;
+ob1.mysql_p select operation_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_helper order  by operation_scn;
+operation_type	src_ls	dest_ls	ls_group_id
+TRANSFER_BEGIN	1002	1001	1001
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where READABLE_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+set ob_query_timeout = 5000000;
+ob1.check_until_timeout select count(*) from DBA_OB_TENANTS where readable_scn = sync_scn and tenant_id=1004, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 1, 3;
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_x';
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ERROR HY000: Some of the LS listed below have replicas failing to replay to the latest log: 1002, 1001. SWITCHOVER TO PRIMARY is not allowed
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_x';
+ob1.mysql_p select tenant_id, switchover_status from DBA_OB_TENANTS where tenant_id=1004;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 0, 100;
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_x';
+ob1.mysql alter system set_tp tp_name=ERRSIM_TENANT_NOT_REPLAY_TO_LATEST, error_code= 1234, frequency = 1;
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ERROR HY000: The tenant fails to replay to the latest log, SWITCHOVER TO PRIMARY is not allowed
+ob1.mysql alter system set_tp tp_name=ERRSIM_TENANT_NOT_REPLAY_TO_LATEST, error_code= 1234, frequency = 0;
+ob1.mysql_p select src_ls, dest_ls, task_type, status, comment from oceanbase.__all_virtual_balance_task where tenant_id = 1004 order by task_id;
+src_ls	dest_ls	task_type	status	comment
+1002	1001	LS_MERGE	TRANSFER	
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ERROR HY000: Some of the LS listed below have replicas failing to replay to the latest log: 1002, 1001. SWITCHOVER TO PRIMARY is not allowed
+ob1.mysql alter system set_tp tp_name=ERRSIM_GET_LS_READABLE_SCN_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_x';
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ob1.mysql alter system set log_restore_source = 'service=$server_ip_port_1 USER=mytest@standby_oracle_tenant PASSWORD=test' tenant = 'oracle';
+ob1.mysql alter system switchover to standby tenant 'standby_oracle_tenant';
+ob1.mysql alter system switchover to primary tenant 'oracle';
+ob1.mysql set ob_global_debug_sync ='STOP_RECOVERY_LS_THREAD0 wait_for signal3 execute 1';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal';
+ob1.mysql set ob_global_debug_sync ='BEFORE_PROCESS_BALANCE_TASK_TRANSFER_END clear';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $oracle_id, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where SYNC_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql_p select operation_type, src_ls, dest_ls, ls_group_id from oceanbase.__all_virtual_balance_task_helper order  by operation_scn;
+operation_type	src_ls	dest_ls	ls_group_id
+TRANSFER_END	1002	1001	1001
+ob1.mysql set ob_global_debug_sync = 'now signal signal3';
+ob1.mysql set ob_global_debug_sync = 'STOP_RECOVERY_LS_THREAD0 clear';
+ob1.mysql alter system switchover to standby tenant 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper, 0, 30;
+ob1.mysql alter system switchover to primary tenant 'standby_oracle_tenant';
+ob1.mysql set ob_global_debug_sync ='AFTER_ON_REDO_START_TRANSFER_IN wait_for signal1 execute 1000';
+ob1.mysql alter tenant standby_oracle_tenant set primary_zone = 'z1, z2, z3';
+ob1.check_until_timeout select count(*) > 1 from oceanbase.__all_virtual_transfer_task, 1, 100;
+ob1.mysql set ob_global_debug_sync ='AFTER_CHANGE_ACCESS_MODE wait_for signal';
+set ob_query_timeout=10000000000;
+alter system switchover to standby tenant 'standby_oracle_tenant';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal';
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_tenant_info where tenant_id = $tenant_id, NORMAL, 100;
+ob1.mysql set ob_global_debug_sync = 'AFTER_CHANGE_ACCESS_MODE clear';
+ob1.mysql set ob_global_debug_sync = 'AFTER_ON_REDO_START_TRANSFER_IN clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal1';
+ob1.mysql set ob_global_debug_sync = 'now broadcast signal';
+ob1.mysql alter system set ls_gc_delay_time = '0s' tenant=ALL;
+ob1.mysql alter system set debug_sync_timeout = '0s';
+ob1.mysql alter system switchover to primary tenant 'oracle';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $oracle_id, 2, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 100;
+ob1.mysql alter tenant standby_oracle_tenant set primary_zone = 'z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and role = 1 and zone != 'z2', 0, 100;
+ob1.mysql alter system set_tp tp_name=ERRSIM_UPDATE_TENANT_INFO_CACHE_ERROR, error_code= 1234, frequency = 1 server = '$server_ip_port_1';
+ob1.mysql alter tenant oracle set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $oracle_id, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where tenant_id = $oracle_id, 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_TENANTS where SYNC_SCN > $gts and tenant_name = 'standby_oracle_tenant', 1, 100;
+ob1.mysql alter system set max_stale_time_for_weak_consistency = '1h'  tenant = all;
+ob1.mysql alter system switchover to standby tenant 'oracle';
+ob1.check_until_timeout select readable_scn - sync_scn from oceanbase.__all_virtual_tenant_info where tenant_id = $tenant_id, 0, 100;
+set ob_query_timeout = 40000000;
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ERROR HY000: Some of the LS listed below have replicas failing to replay to the latest log: 1001, 1005. SWITCHOVER TO PRIMARY is not allowed
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system remove replica ls= $src_ls server = '$server_ip_port_1' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $src_ls, 2, 50;
+alter system switchover to primary tenant 'standby_oracle_tenant';
+ERROR HY000: Some of the LS listed below have replicas failing to replay to the latest log: 1001, 1005. SWITCHOVER TO PRIMARY is not allowed
+ob1.mysql alter system remove replica ls= $dest_ls server = '$server_ip_port_1' tenant = 'standby_oracle_tenant';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = $src_ls, 2, 50;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task_helper where tenant_id = $tenant_id, 0, 100;
+ob1.mysql alter system set_tp tp_name=ERRSIM_UPDATE_TENANT_INFO_CACHE_ERROR, error_code= 1234, frequency = 0 server = '$server_ip_port_1';
+alter system switchover to primary tenant 'standby_oracle_tenant';

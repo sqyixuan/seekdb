@@ -1,0 +1,104 @@
+# owner: rongxuan.lc
+# description: 本case是为了验证enable_balancer和enable_replicate
+##在少副本又需要均衡的情况下；看着两个开关的控制能力
+
+ob1=OBI(cluster=3:3:3,proxy_num=0,init_unit_cpu=0,node_cpu_count=24,memory_size_limit=81920);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set resource_soft_limit = 800;
+ob1.mysql alter system set resource_hard_limit = 800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+#ob1.mysql alter system set enable_rebalance = 'false';
+#ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set server_data_copy_out_concurrency = 40;
+ob1.mysql alter system set server_data_copy_in_concurrency = 40;
+
+sleep 2;
+ob1.mysql alter resource unit sys_unit_config max_cpu = 4, min_cpu = 4, max_memory = '10G', min_memory = '10G';
+ob1.mysql create resource unit half max_cpu=10,min_cpu=10,max_memory='5G',min_memory='5G',max_disk_size='5G',max_iops=1000,max_session_num=1000;
+ob1.mysql create resource pool half unit = 'half', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant half replica_num 3, resource_pool_list ('half') set ob_tcp_invited_nodes='%';
+
+ob1.mysql create resource pool half2 unit = 'half', unit_num = 1, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant half2 replica_num 3, resource_pool_list ('half2') set ob_tcp_invited_nodes='%';
+
+###手动把unit和系统表的分配在一起；
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "half", tenant_id, 1);
+let $count = 3;
+--disable_query_log
+while ($count > 0)
+{
+  let $dest_ip = deploy_get_value(ob1.z$count.obs0.ip);
+  let $dest_port = deploy_get_value(ob1.z$count.obs0.port);
+  let $same = deploy_get_value(ob1.select select count(*) c from __all_unit where resource_pool_id = $tenant_id and svr_ip = "$dest_ip" and svr_port = $dest_port and zone="z$count", c, 1);
+  if ($same == 0)
+  {
+    let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where  resource_pool_id = $tenant_id and zone='z$count', unit_id, 1);
+    ob1.mysql alter system migrate unit $unit_id destination = "$dest_ip:$dest_port"; 
+  }
+  dec $count;
+}
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "half2", tenant_id, 1);
+let $count = 3;
+while ($count > 0)
+{
+  let $dest_ip = deploy_get_value(ob1.z$count.obs0.ip);
+  let $dest_port = deploy_get_value(ob1.z$count.obs0.port);
+  let $same = deploy_get_value(ob1.select select count(*) c from __all_unit where resource_pool_id = $tenant_id and svr_ip = "$dest_ip" and svr_port = $dest_port and zone="z$count", c, 1);
+  if ($same == 0)
+  {
+    let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where  resource_pool_id = $tenant_id and zone='z$count', unit_id, 1);
+    ob1.mysql alter system migrate unit $unit_id destination = "$dest_ip:$dest_port"; 
+  }
+  dec $count;
+}
+--enable_query_log
+###等待迁移做完；
+let $case_index = 1;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1); 
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create tablegroup tg1 partition by hash partitions 20;
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+create table test3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+##期待进行unit均衡
+ob1.mysql alter system set resource_soft_limit = 30;
+ob1.mysql alter system set resource_hard_limit = 100;
+let $z2_ip = deploy_get_value(ob1.z2.obs2.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs2.port);
+
+let $total_count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where role = 1, c, 1);
+let $old_count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%$z2_ip:$z2_port%', c, 1);
+ob1.z2.obs2.stop;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_temporary_offline_time = '15s';
+sleep 30;
+
+##开启负载均衡；
+ob1.mysql alter system set enable_rebalance = 'true';
+##检查开始做 unit 迁移;
+ob1.check_until_timeout select count(*) > 0 c from __all_rootservice_event_history where event like 'finish_migrate_unit', 1, 120;
+##检查副本复制没做
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%$z2_ip:$z2_port%', 0, 60; 
+ob1.check_until_timeout select count(*) = $total_count - $old_count from __all_virtual_meta_table where role = 1 and member_list like '%,%,%', 1, 240;
+
+##开始复制
+ob1.mysql alter system set enable_rereplication = 'true';
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where role = 1, c, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%,%,%', $count, 240;
+

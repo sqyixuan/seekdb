@@ -1,0 +1,304 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description:
+# 测试点:
+# 1. drop normal column
+# 2. drop column with lob
+# 3. drop column with concurrent tx
+# 4. add column and drop column
+# 5. drop columns
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建oracle租户，并切换到oracle租户
+source include/liboblog/create_oracle_tenant.inc;
+
+# 启动liboblog，同步oracle租户数据
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $restart_ts_usec = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+alter session set current_schema = oblog_db;
+sleep 1;
+
+let $ddl_stmt_count = 0;
+let $dml_stmt_count = 0;
+
+ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all;
+
+CREATE OR REPLACE FUNCTION construct_clob(start_str IN VARCHAR2, padding_1 IN VARCHAR2, pad_length IN INTEGER, padding_2 IN VARCHAR2, end_str IN VARCHAR2) RETURN CLOB IS BEGIN  RETURN (to_clob(start_str) || RPAD(to_clob(padding_1), pad_length, padding_2) || end_str); END;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+set @A:=construct_clob('[', 'a', 65535, ',a', ']');
+set @B:=construct_clob('[', 'b', 65535, ',b', ']');
+
+# drop normal column
+
+create table t1(c1 int, c2 char);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t1 values(1, 'a');
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t1 drop column c2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t1 values(2);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# drop column with lob
+
+create table t2(c1 int primary key, c2 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t2 values(1, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t2 drop column c2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t2 values(2);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t3(c1 int primary key, c2 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t3 values(1, 'a');
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t3 drop column c2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t3 values(2);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t4(c1 int primary key, c2 int, c3 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t4 values(1, 1, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t4 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t4 values(2, 2);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t5(c1 int primary key, c2 int, c3 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t5 values(1, 1, 'a');
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t5 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t5 values(2, 2);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t6(c1 int primary key, c2 clob, c3 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t6 values(1, 'a', @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t6 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t6 values(2, 'b');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t7(c1 int primary key, c2 clob, c3 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t7 values(1, @A, 'a');
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t7 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t7 values(2, 'b');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+create table t8(c1 int primary key, c2 clob, c3 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t8 values(1, @A, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+alter table t8 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into t8 values(2, @B);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# drop column with concurrent tx
+
+create table t9(c1 int primary key,  c2 int);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# -----tx1 begin-----
+begin;
+
+insert into t9 values(1, 1);
+insert into t9 values(2, 2);
+insert into t9 values(3, 3);
+update t9 set c2 = 4 where c2 < 4;
+update t9 set c2 = c2 + 1 where c1 < 4;
+delete from t9 where c1 > 1 and c1 < 4;
+
+# -----tx2 begin-----
+ob_connect(conn_oracle_obtest_tmp,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+connection conn_oracle_obtest_tmp;
+alter session set current_schema = oblog_db;
+sleep 1;
+
+alter table t9 drop column c2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+# -----tx2 end-----
+
+connection conn_oracle_obtest;
+
+insert into t9 values(2);
+update t9 set c1 = 3 where c1 = 2;
+
+commit;
+# -----tx1 end-----
+
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# -----tx3 begin-----
+begin;
+insert into t9 values(4);
+update t9 set c1 = 5 where c1 = 3;
+delete from t9 where c1 > 3;
+commit;
+# -----tx3 end-----
+
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# add column and drop column
+create table t10(c1 int primary key, c2 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t10 values(1, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+alter table t10 add c3 clob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t10 values(2, 'a', @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+alter table t10 drop column c2;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t10 values(3, 'b');
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+alter table t10 drop column c3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t10 values(4);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+# drop columns
+create table t11(c1 int primary key, c2 int, c3 clob, c4 int, c5 clob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t11 values(1, 1, @A, 1, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+alter table t11 drop column c2, drop column c4;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t11 values(2, @A, @A);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+alter table t11 drop (c3, c5);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+insert into t11 values(3);
+ob1.oblog.next;
+inc $dml_stmt_count;
+
+ob1.oblog.stop;
+
+# 重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.set_extra_argument '-m';
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $ddl_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+let $idx = 0;
+while ($idx < $dml_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.stop;
+
+# 重新启动libobcdc
+ob1.oblog.gen_conf tb_white_list=oracle.*.* meta_data_refresh_mode=data_dict log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec;
+ob1.oblog.set_extra_argument '-m';
+ob1.oblog.restart;
+
+let $idx = 0;
+while ($idx < $ddl_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+let $idx = 0;
+while ($idx < $dml_stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+ob1.oblog.stop;

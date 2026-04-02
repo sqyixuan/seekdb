@@ -1,0 +1,69 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=0,version=4_3_5_0);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+============================================
+create mysql tenant
+============================================
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+====================================================
+upgrade zone1
+====================================================
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+ob1.upgrade_check_before;
+ob1.upgrade_commond_for_server pre;
+alter system begin upgrade;
+alter system begin rolling upgrade;
+alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader', 0, 20;
+ob1.z1.force_stop;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server a left join oceanbase.__all_virtual_server_schema_info b on a.svr_ip = b.svr_ip and a.svr_port = b.svr_port where b.svr_ip is null, 0, 120;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0, 0, 180;
+ob1.mysql alter system start zone 'z1';
+=========================================
+switch rs to new observer
+=========================================
+alter tenant sys primary_zone = "z1;z2;z3";
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_core_meta_table where tenant_id = 1 and role = 1 and svr_ip = "$z1_dst_ip0" and svr_port = $z1_dst_port0, 1, 100;
+=========================================
+try set sys parameters
+=========================================
+ob1.mysql alter system set enable_rereplication =  false;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_rereplication" and value = "False", 3, 20;
+ob1.mysql alter system set enable_rereplication =  true;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_rereplication" and value = "True", 3, 20;
+ob1.mysql alter system set enable_rereplication =  false;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "enable_rereplication" and value = "False", 3, 20;
+ob1.mysql alter system set server_permanent_offline_time = '60s';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "server_permanent_offline_time" and value = "60s", 3, 20;
+ob1.mysql alter system set server_permanent_offline_time = '80s';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "server_permanent_offline_time" and value = "80s", 3, 20;
+ob1.mysql alter system set server_permanent_offline_time = '3600s';
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_sys_parameter_stat where name = "server_permanent_offline_time" and value = "3600s", 3, 20;
+=========================================
+try set tenant parameters
+=========================================
+ob1.mysql alter system set enable_transfer = false tenant = mysql;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $sys_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.mysql alter system set enable_transfer = false tenant = sys;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $sys_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "True" and tenant_id = $meta_tenant_id, 3, 20;
+ob1.mysql alter system set enable_transfer = false tenant = all_meta;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $sys_tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $tenant_id, 3, 20;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_stat where name = "enable_transfer" and value = "False" and tenant_id = $meta_tenant_id, 3, 20;

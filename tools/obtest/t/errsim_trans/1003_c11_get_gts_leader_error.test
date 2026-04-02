@@ -1,0 +1,62 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：
+# 验证scheduler在start_stmt期间，获取gts，如果get leader失败，事务是否能正常推进
+##
+ob1=OBI(cluster=1:1,proxy_num=0);
+ob1.reboot;
+#sleep 10;
+
+#在zone1上建立连接
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z2', svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z2', svr_port, 1);
+let $host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $observer = deploy_get_value(ob1.get_obs_by_addr $host);
+
+connection conn1;
+alter system set enable_auto_leader_switch = false;
+alter system set cpu_quota_concurrency = 4 tenant = sys;
+alter system set cpu_quota_concurrency = 4 tenant = all_user;
+alter system set cpu_quota_concurrency = 4 tenant = all_meta;
+use oceanbase;
+create table t1(id1 int primary key, id2 int) partition by hash(id1 % 2) partitions 2;
+create table t2(id1 int primary key, id2 int) partition by hash(id1 % 2) partitions 2;
+#准备数据
+ob1.z1.obs0.switch_partition sys:oceanbase:t1:0;
+ob1.z1.obs0.switch_partition sys:oceanbase:t2:0;
+ob1.z2.obs0.switch_partition sys:oceanbase:t1:1;
+ob1.z2.obs0.switch_partition sys:oceanbase:t2:1;
+sleep 10;
+insert into t1 values(0, 0);
+insert into t1 values(1, 1);
+insert into t2 values(0, 0);
+insert into t2 values(1, 1);
+
+#############################
+#case1 : 有主，语句执行成功
+begin;
+insert into t1 values(2, 2);
+insert into t1 values(3, 3);
+insert into t2 values(2, 2);
+insert into t2 values(3, 3);
+commit;
+
+# 验证数据
+select * from t1;
+select * from t2;
+
+#############################
+#case2 : 1s无主，但语句执行期间最终能够选出leader 
+begin;
+alter system set_tp tp_no = 47, error_code = 4654, frequency = 1;
+select /*+log_level('*.*:debug')+*/* from t1;
+select /*+log_level('*.*:debug')+*/* from t2;
+alter system set_tp tp_no = 47, error_code = 4654, frequency = 0;
+commit;
+
+drop table if exists t1;

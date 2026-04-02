@@ -1,0 +1,111 @@
+# owner: binifei.bnf
+# owner group: cloud storage
+# Test Case: disable migrate prewarm
+ob1=OBI(cluster=1:1:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set default_compress_func = 'none';
+
+source include/get_user_config.inc;
+ob1.mysql CREATE RESOURCE POOL my_pool UNIT = "user_unit_config", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt resource_pool_list=('my_pool'), locality = "F@z1,F@z2,F@z3", primary_zone = "z1" set ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+ob1.mysql alter system set enable_rebalance = 'false' tenant tt;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant tt;
+ob1.mysql alter system set _enable_ss_replica_prewarm = 'false' tenant tt;
+ob1.mysql alter system set _enable_ss_migration_prewarm = 'false' tenant tt;
+
+# disable major_merge launched by major_freeze_duty_time
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+
+ob_connect(conn_mysql, ob1.z1.obs0, root@tt, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+
+# generage data
+# column max len is 262144
+create table t2(a int primary key, long_text longtext);
+source include/check_schema_sync.inc;
+let $cnt = 10;
+--disable_query_log
+while ($cnt > 0)
+{
+  eval insert into t2 values($cnt, repeat(10000, 800000));
+  dec $cnt;
+};
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant = 'tt';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check three servers' ss_micro_cache major_compaction prewarm count
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.port);
+let $z2_ip = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs0.port);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z3', unit_id, 1);
+let $z3_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $z3_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$z1_ip' and svr_port = $z1_port and value > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$z2_ip' and svr_port = $z2_port and value > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache major_compaction prewarm count' and tenant_id = $tenant_id and svr_ip = '$z3_ip' and svr_port = $z3_port and value > 0, 1, 60;
+
+# ls count
+let $ls_cnt = deploy_get_value(ob1.select select count(*) as cnt from oceanbase.__all_virtual_ls_info where tenant_id = $tenant_id and svr_ip = '$z3_ip' and svr_port = $z3_port , cnt, 1);
+
+# migrate z3 unit
+let $dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+
+let $dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+
+let $cur = $z3_ip:$z3_port;
+let $dst0 = $dst_ip0:$dst_port0;
+let $dst1 = $dst_ip1:$dst_port1;
+
+let $dest = '';
+let $dest_ip = '';
+let $dest_port = '';
+
+if ($cur != $dst0)
+{
+  ob1.mysql alter system migrate unit $unit_id destination "$dst0";
+  let $dest = $dst0;
+  let $dest_ip = $dst_ip0;
+  let $dest_port = $dst_port0;
+}
+
+if ($cur != $dst1)
+{
+  ob1.mysql alter system migrate unit $unit_id destination "$dst1";
+  let $dest = $dst1;
+  let $dest_ip = $dst_ip1;
+  let $dest_port = $dst_port1;
+}
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and svr_ip = '$dest_ip' and svr_port = '$dest_port' and replica_status != 'NORMAL', 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_event_history where event = 'finish_migrate_ls_replica' and value1 = $tenant_id, $ls_cnt, 600;
+let $migrate_prewarm_cnt = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sysstat where name = 'ss_micro_cache migrate prewarm count' and tenant_id = $tenant_id and svr_ip = '$dest_ip' and svr_port = '$dest_port', value, 1);
+if ($migrate_prewarm_cnt > 0)
+{
+  --echo fail to disable migrate prewarm
+}
+if ($migrate_prewarm_cnt == 0)
+{
+  --echo succ to disable migrate prewarm
+}

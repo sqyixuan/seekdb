@@ -1,0 +1,63 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test balance group build
+#####################
+
+ob1=OBI(cluster=1:1,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set _transfer_start_rpc_timeout = '10s';
+
+
+set @@session.ob_query_timeout = 1000000000;
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2'  set ob_tcp_invited_nodes='%';
+let $my_sql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+
+create tablegroup tg_pre sharding = 'PARTITION';
+create table t_pre (c1 int primary key, c2 int) tablegroup='tg_pre' partition by hash(c1) partitions 3;
+
+#tablegroup sharding none
+create tablegroup tg_none_1 sharding = 'NONE';
+create tablegroup tg_none_2 sharding = 'NONE';
+
+create table t1 (c1 int primary key, c2 int) tablegroup='tg_none_1' partition by hash(c1) partitions 3;
+create table t2 (c1 int primary key, c2 int) tablegroup='tg_none_2' partition by hash(c1) partitions 3;
+
+# t1 on LS_1001 and t2 on LS_1002
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't1', 1, 3;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't2', 1, 3;
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id;
+
+# put t1 and t2 into the same tablegroup
+create tablegroup tg_partition sharding = 'PARTITION';
+alter table t1 tablegroup = 'tg_partition';
+alter table t2 tablegroup = 'tg_partition';
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;
+
+# primary_zone 2->1
+alter tenant mysql primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $my_sql_tenant_id and JOB_TYPE = 'LS_BALANCE' and status = 'COMPLETED', 1, 100;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name in ('t1', 't2'), 1, 3;
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;
+
+# do partition balance
+alter system set partition_balance_schedule_interval = '10s';
+alter tenant mysql primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOB_HISTORY where tenant_id = $my_sql_tenant_id and job_type = 'PARTITION_BALANCE' and status = 'COMPLETED', 1, 100;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't1', 2, 3;
+ob1.check_until_timeout select count(distinct ls_id) from CDB_OB_TABLE_LOCATIONS where tenant_id = $my_sql_tenant_id and table_name = 't2', 2, 3;
+select task_type, src_ls, dest_ls, finished_part_list, status from oceanbase.DBA_OB_BALANCE_TASK_HISTORY;
+select table_name, table_id, ls_id, count(*), tablegroup_name, sharding from oceanbase.DBA_OB_TABLE_LOCATIONS where table_name in ('t_pre', 't1', 't2') and role='LEADER' group by ls_id, table_id order by table_id, ls_id;

@@ -1,0 +1,213 @@
+# CASE_OWNER:
+#    @cangming.zl
+# OWNER_GROUP:
+#    RS
+# CASE_DESC:
+#    shared-storage 模式下 data_disk_size 功能测试
+
+ob1=OBI(cluster=2:1:1,proxy_num=0,init_unit_cpu=0);
+let $extra_conf = "memory_limit='64G',log_disk_size='50G',datafile_size='100G'";
+ob1.z1.obs0.set extra_config = $extra_conf;
+ob1.z1.obs1.set extra_config = $extra_conf;
+ob1.z2.obs0.set extra_config = $extra_conf;
+ob1.z3.obs0.set extra_config = $extra_conf;
+ob1.reboot;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+--echo # =========================================================
+--echo #                        basic test
+--echo # =========================================================
+# create resource unit
+--error 1210
+CREATE RESOURCE UNIT test_unit1 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = -1;
+--error 4659
+CREATE RESOURCE UNIT test_unit1 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = 2147483647;
+
+CREATE RESOURCE UNIT test_unit1 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = '5G';
+CREATE RESOURCE UNIT test_unit2 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = 3221225472;
+CREATE RESOURCE UNIT test_unit3 MAX_CPU 1, MEMORY_SIZE '2G';
+CREATE RESOURCE UNIT test_unit6 MAX_CPU 1, MEMORY_SIZE '30G', DATA_DISK_SIZE = '40G';
+CREATE RESOURCE UNIT test_unit7 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = 0;
+SELECT unit_config_id, data_disk_size from __all_unit_config WHERE name LIKE "%test_unit%" ORDER BY unit_config_id;
+SELECT unit_config_id, data_disk_size from dba_ob_unit_configs WHERE name LIKE "%test_unit%" ORDER BY unit_config_id;
+
+# alter resource unit
+--error 1210
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = -1;
+--error 4659
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = 2147483647;
+
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = 0;
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = '3G';
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = 2147483648;
+SELECT unit_config_id, data_disk_size from __all_unit_config WHERE name LIKE "%test_unit%" ORDER BY unit_config_id;
+SELECT unit_config_id, data_disk_size from dba_ob_unit_configs WHERE name LIKE "%test_unit%" ORDER BY unit_config_id;
+
+--echo # =========================================================
+--echo #                   resource management
+--echo # =========================================================
+alter system set_tp tp_name = ERRSIM_USE_DUMMY_SERVER, error_code = 4000, frequency = 1;
+let $reserved_data_disk_size = deploy_get_value(ob1.select select (data_disk_capacity - data_disk_assigned) as data_disk_reserved from __all_virtual_server where zone = 'z2', data_disk_reserved, 1);
+let $over_reserved_data_disk_size = deploy_get_value(ob1.select select ($reserved_data_disk_size + 1) as over_reserved_data_disk_size, over_reserved_data_disk_size, 1);
+
+# server resource not enough
+--disable_query_log
+eval CREATE RESOURCE UNIT test_unit4 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = $over_reserved_data_disk_size; 
+eval CREATE RESOURCE UNIT test_unit5 MAX_CPU 1, MEMORY_SIZE '2G', DATA_DISK_SIZE = $reserved_data_disk_size; 
+--enable_query_log
+
+# create resource unit
+--error 4733
+CREATE RESOURCE POOL pool1 UNIT test_unit4, UNIT_NUM 1;
+CREATE RESOURCE POOL pool1 UNIT test_unit5, UNIT_NUM 1;
+--error 4733
+CREATE RESOURCE POOL pool2 UNIT test_unit1, UNIT_NUM 1;
+
+# expand pool unit_config
+--error 4624
+ALTER RESOURCE POOL pool1 UNIT test_unit4;
+--disable_query_log
+--error 4624
+eval ALTER RESOURCE UNIT test_unit5 DATA_DISK_SIZE = $over_reserved_data_disk_size;
+--enable_query_log
+ALTER RESOURCE POOL pool1 UNIT test_unit1;
+ALTER RESOURCE POOL pool1 UNIT test_unit5;
+DROP RESOURCE POOL pool1;
+
+# expand pool unit_num
+# create an empty resource pool to fully occupy data_disk_size of the less allocated server on z1, so that new unit is unable to migrate to another server
+let $reserved_data_disk_size = deploy_get_value(ob1.select select (data_disk_capacity - data_disk_assigned) as data_disk_reserved from __all_virtual_server where zone = 'z1' order by data_disk_reserved desc, data_disk_reserved, 1);
+--disable_query_log
+eval ALTER RESOURCE UNIT test_unit4 data_disk_size $reserved_data_disk_size;
+--enable_query_log
+CREATE RESOURCE POOL pool1 unit = test_unit4, unit_num = 1, zone_list = ('z1');
+--error 4733
+ALTER RESOURCE POOL pool1 unit_num 2;
+
+# migrate unit
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from __all_resource_pool where name = 'pool1', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from __all_unit where resource_pool_id = $pool_id, unit_id, 1);
+let $unit_svr_ip = deploy_get_value(ob1.select select svr_ip from __all_unit where unit_id = $unit_id, svr_ip, 1);
+let $unit_svr_port = deploy_get_value(ob1.select select svr_port from __all_unit where unit_id = $unit_id, svr_port, 1);
+let $dst_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z1' and !(svr_ip = "$unit_svr_ip" && svr_port = $unit_svr_port), svr_ip, 1);
+let $dst_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z1' and !(svr_ip = "$unit_svr_ip" && svr_port = $unit_svr_port), svr_port, 1);
+--disable_query_log
+--error 4624
+eval ALTER SYSTEM MIGRATE UNIT $unit_id DESTINATION "$dst_ip:$dst_port";
+--enable_query_log
+
+# verify that data_disk_assigned in __all_virtual_server does not include ungranted unit
+--disable_query_log
+eval SELECT ($reserved_data_disk_size = (t1.data_disk_assigned - t2.data_disk_assigned)) equal FROM (SELECT svr_ip, svr_port,  SUM(data_disk_size) data_disk_assigned FROM DBA_OB_UNITS GROUP BY svr_ip, svr_port) t1 JOIN __all_virtual_server t2 ON t1.svr_ip = t2.svr_ip AND t1.svr_port = t2.svr_port WHERE t1.svr_ip = '$unit_svr_ip' AND t1.svr_port = $unit_svr_port;
+--enable_query_log
+
+DROP RESOURCE POOL pool1;
+
+
+--echo # =========================================================
+--echo #                 used for creating tenant
+--echo # =========================================================
+# unit divided into meta tenant and user tenant, meta + user = unit
+ALTER RESOURCE UNIT test_unit1 DATA_DISK_SIZE = '2G';
+ALTER RESOURCE UNIT test_unit2 DATA_DISK_SIZE = '20G';
+ALTER RESOURCE UNIT test_unit3 DATA_DISK_SIZE = '50G';
+
+CREATE RESOURCE POOL pool1 unit = test_unit1, unit_num = 1;
+CREATE RESOURCE POOL pool2 unit = test_unit7, unit_num = 1;
+CREATE TENANT tt resource_pool_list = ('pool1');
+CREATE TENANT tt2 resource_pool_list = ('pool2');
+
+# check data_disk_size in __all_virtual_unit and oceanbase.GV\$OB_UNITS
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt', tenant_id, 1);
+eval SELECT DATA_DISK_SIZE FROM __all_virtual_unit WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+eval SELECT DATA_DISK_SIZE FROM oceanbase.GV\$OB_UNITS WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+
+let $tenant_id2 = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt2', tenant_id, 1);
+eval SELECT DATA_DISK_SIZE FROM __all_virtual_unit WHERE tenant_id IN ($tenant_id2, $tenant_id2 - 1) ORDER BY unit_id, tenant_id;
+eval SELECT DATA_DISK_SIZE FROM oceanbase.GV\$OB_UNITS WHERE tenant_id IN ($tenant_id2, $tenant_id2 - 1) ORDER BY unit_id, tenant_id;
+
+# test expanding data_disk_size
+ALTER RESOURCE POOL pool1 unit = test_unit2;
+sleep 12;
+eval SELECT DATA_DISK_SIZE FROM __all_virtual_unit WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+eval SELECT DATA_DISK_SIZE FROM oceanbase.GV\$OB_UNITS WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+
+ALTER RESOURCE POOL pool1 unit = test_unit3;
+sleep 12;
+eval SELECT DATA_DISK_SIZE FROM __all_virtual_unit WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+eval SELECT DATA_DISK_SIZE FROM oceanbase.GV\$OB_UNITS WHERE tenant_id IN ($tenant_id, $tenant_id - 1) ORDER BY unit_id, tenant_id;
+
+# shrink data_disk_size not supported
+--error 1235
+ALTER RESOURCE UNIT test_unit3 DATA_DISK_SIZE = '2G';
+--error 1235
+ALTER RESOURCE POOL pool1 unit = test_unit2;
+
+# alter data_disk_size from non-zero to 0 not supported
+--error 1235
+ALTER RESOURCE UNIT test_unit3 DATA_DISK_SIZE = 0;
+--error 1235
+ALTER RESOURCE POOL pool1 unit = test_unit7;
+
+# alter data_disk_size from 0 to non-zero not supported
+--error 1235
+ALTER RESOURCE UNIT test_unit7 DATA_DISK_SIZE = '2G';
+--error 1235
+ALTER RESOURCE POOL pool2 unit = test_unit1;
+
+--echo # =========================================================
+--echo #                   check views 
+--echo # =========================================================
+# GV$OB_UNITS
+eval SELECT COUNT(*) FROM __all_virtual_unit t1  INNER JOIN gv\$ob_units t2 ON t1.unit_id = t2.unit_id AND t1.tenant_id = t2.tenant_id WHERE t1.data_disk_size != t2.data_disk_size OR (t1.data_disk_size IS NULL) != (t2.data_disk_size IS NULL);
+
+# GV$OB_SERVERS
+eval SELECT COUNT(*) FROM __all_virtual_server t1  INNER JOIN gv\$ob_servers t2 ON t1.svr_ip = t2.svr_ip AND t1.svr_port = t2.svr_port WHERE t1.data_disk_assigned != t2.data_disk_assigned OR (t1.data_disk_assigned IS NULL) != (t2.data_disk_assigned IS NULL);
+
+--echo # =========================================================
+--echo #                 extreme unit used for creating tenant
+--echo # =========================================================
+CREATE RESOURCE POOL pool3 unit = test_unit6, unit_num = 1;
+CREATE TENANT tt3 resource_pool_list = ('pool3');
+
+# test actual data_disk_assigned has reached upper limit, and no more data_disk_assigned can be allocated
+select zone, data_disk_capacity/1024/1024/1024 data_disk_capacity_G, data_disk_assigned/1024/1024/1024 data_disk_assigned_G from GV$OB_SERVERS where zone in ('z2', 'z3') order by zone;
+select tenant_id, unit_id, data_disk_size/1024/1024/1024 data_disk_size_G from GV$OB_UNITS where zone in ('z2', 'z3') order by zone, tenant_id;
+--error 4624
+ALTER RESOURCE UNIT test_unit6 DATA_DISK_SIZE = '41G';
+
+alter system set_tp tp_name = ERRSIM_USE_DUMMY_SERVER, error_code = 4000, frequency = 0;
+
+let $tenant_id3 = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt3', tenant_id, 1);
+DROP TENANT tt3 force;
+DROP RESOURCE POOL pool3;
+ob1.check_until_timeout select count(*) cnt from oceanbase.__all_virtual_unit where tenant_id in ($tenant_id3, $tenant_id3 - 1), 0, 100;
+
+--echo # =========================================================
+--echo # data_disk of tenant units must be all zero or all non-zero
+--echo # =========================================================
+# sys tenant
+ALTER TENANT sys LOCALITY = 'F@z1, F@z2';
+ob1.check_until_timeout select count(*) cnt from __all_tenant where previous_locality <> '', 0, 100;
+ALTER RESOURCE POOL sys_pool ZONE_LIST ('z1', 'z2');
+CREATE RESOURCE POOL sys_pool2 unit = test_unit7, unit_num = 1, ZONE_LIST = ('z3');
+--error 4179
+ALTER TENANT sys RESOURCE_POOL_LIST ('sys_pool', 'sys_pool2');
+
+# user tenant
+CREATE RESOURCE POOL pool41 UNIT test_unit1, unit_num = 1, ZONE_LIST ('z1');
+CREATE RESOURCE POOL pool42 UNIT test_unit7, unit_num = 1, ZONE_LIST ('z2');
+CREATE TENANT tt41 resource_pool_list ('pool41');
+--error 4179
+ALTER TENANT tt41 resource_pool_list ('pool41', 'pool42');
+DROP TENANT tt41 force;
+CREATE TENANT tt42 resource_pool_list ('pool42');
+--error 4179
+ALTER TENANT tt42 resource_pool_list ('pool41', 'pool42');
+DROP TENANT tt42 force;
+--error 4179
+CREATE TENANT tt4 resource_pool_list ('pool41', 'pool42');

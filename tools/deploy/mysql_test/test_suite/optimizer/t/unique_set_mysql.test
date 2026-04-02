@@ -1,0 +1,219 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+#owner:link.zt
+#owner group: sql1
+# tags: optimizer
+#测试unique info的抽取
+
+--disable_warnings
+drop table if exists t1, t2, t3;
+--enable_warnings
+
+create table t1 (pk int primary key, c1 int, c2 int, c3 int, unique index u_c1_c2(c1, c2));
+create table t2 (pk int primary key, c1 int, c2 int, c3 int,
+                 unique index u_c1_c2(c1, c2),
+                 unique index u_c1 (c1),
+                 unique index u_c2 (c2));
+create table t3(a int, b int, c int, d int, unique key k1(b,c));
+
+--disable_query_log
+insert into t1 values (1, 1, null, 2),
+                      (2, 1,    1, 4),
+                      (3, null, 2, 6),
+                      (4, 2,    2, 8),
+                      (5, null, null, 10),
+                      (6, null, null, 12);
+
+insert into t2 values (1, 1, null, 2),
+                      (3, 2,    2, 6),
+                      (5, 3, null, 10),
+                      (7, 4,    4, 14),
+                      (9, null, null, 18),
+                      (11, null, null, 22);
+
+insert into t3 values (1,1,1,1),
+                      (1,2,2,1),
+                      (5,3,3,5),
+                      (6,4,4,5);
+--enable_query_log
+--source mysql_test/include/minor_merge_tenant.inc
+call dbms_stats.gather_table_stats('TEST', 't1');
+call dbms_stats.gather_table_stats('TEST', 't2');
+call dbms_stats.gather_table_stats('TEST', 't3');
+--source mysql_test/include/check_stat.inc
+#--sleep 10
+
+--explain_protocol 2
+--result_format 4
+
+## basic table + distinct
+--sorted_result
+select distinct * from t1;
+--sorted_result
+select distinct c1, c2 from t1 where c1 + c2 > 0;
+--sorted_result
+select distinct 1,  2 from dual;
+
+## inner join + distinct
+# t1 : t2 <=> 1 : 1
+--sorted_result
+select distinct * from t1, t2 where t1.pk = t2.pk;
+--sorted_result
+select distinct * from t1, t2 where t1.pk = t2.c1;
+# t1 : t2  <=> N : 1
+--sorted_result
+select /*+leading(t1 t2)*/ distinct t1.*, t2.c3 from t1, t2 where t1.c1 = t2.c1;
+--sorted_result
+select /*+leading(t1 t2)*/ distinct t1.c3, t2.* from t1, t2 where t1.c1 = t2.c1;
+# t1 : t2  <=> 1 : N
+--sorted_result
+select /*+leading(t1 t2)*/ distinct t1.c3, t2.* from t1, t2 where t1.pk = t2.c3;
+--sorted_result
+select /*+leading(t1 t2)*/ distinct t1.*, t2.c3 from t1, t2 where t1.pk = t2.c3;
+
+## semi/anti join + distinct
+--sorted_result
+select distinct c1, c2, c3 from t1 where t1.c1 > 0 and t1.c2 > 0 and t1.c3 > any (select c3 from t2);
+--sorted_result
+select distinct c1, c2, c3 from t1 where t1.c1 > 0 and t1.c2 > 0 and t1.c3 > all (select c3 from t2);
+--sorted_result
+select distinct c1, c2, c3 from t1 where t1.c1 > 0 and t1.c3 > any (select c3 from t2 where t1.c2 = t2.c2);
+--sorted_result
+select distinct c1, c2, c3 from t1 where t1.c1 > 0 and t1.c3 > all (select c3 from t2 where t1.c2 = t2.c2);
+
+## outer join + distinct
+select distinct t1.c1, t1.c2, t2.c3 from t1 left  join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0;
+--sorted_result
+select distinct t1.c1, t1.c2, t2.c3 from t1 right join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0;
+--sorted_result
+select distinct t1.c1, t1.c2, t2.c3 from t1 full  join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0;
+
+# Cartesian product
+--sorted_result
+select distinct * from t1, t2;
+
+## set op + distinct
+--sorted_result
+select distinct * from (select * from t1 union select * from t2);
+--sorted_result
+select distinct * from (select * from t1 union all select * from t2);
+--sorted_result
+select distinct * from (select * from t1 intersect select * from t2);
+--sorted_result
+select distinct * from (select * from t1 except select * from t2);
+--sorted_result
+select distinct subq.c1, subq.c2 from (select * from t1 intersect select * from t2 where t2.c2 > 10) subq;
+--sorted_result
+select distinct subq.c1, subq.c2, t1.c3 from (select * from t1 intersect select * from t2 where t2.c2 > 10) subq, t1 where subq.pk = t1.pk;
+
+## sub plan + distinct
+--sorted_result
+select distinct * from (select * from t1 order by t1.c3 limit 10);
+--sorted_result
+select distinct * from (select * from t1 order by t1.c3 limit 10) subq, t2 where subq.pk = t2.pk;
+--sorted_result
+select distinct * from (select * from t1 group by t1.c3);
+
+## subplan filter + distinct
+--sorted_result
+select distinct c1, c2, (select max(c1+c2) from t2 where t2.pk < t1.pk) as spf from t1 where c1 + c2 > 0;
+--sorted_result
+select distinct c1, c2 from t1 where pk > (select min(c1+c2) from t2 where t2.pk < t1.pk) and c1 + c2 > 10;
+
+## basic table + group by
+--sorted_result
+select * from t1 group by pk;
+--sorted_result
+select * from t1 group by pk having c1 >= 1;
+--sorted_result
+select * from t1 group by pk having c1 >= (select c1 from t2 where t2.pk = t1.pk);
+--sorted_result
+select * from t1 where c1 + c2 > 0 group by c2, c1;
+
+## inner join + group by
+# t1 : t2 <=> 1 : 1
+--sorted_result
+select * from t1, t2 where t1.pk = t2.pk group by t1.pk;
+--sorted_result
+select * from t1, t2 where t1.pk = t2.c1 group by t1.pk;
+# t1 : t2  <=> N : 1
+--sorted_result
+select /*+leading(t1 t2)*/ * from t1, t2 where t1.c1 = t2.c1 and t1.c2 > 0 group by t1.c1, t1.c2;
+--sorted_result
+select /*+leading(t1 t2)*/ * from t1, t2 where t1.c1 = t2.c1 and t1.c2 > 0 group by t2.c1, t2.c2;
+# t1 : t2  <=> 1 : N
+--sorted_result
+select /*+leading(t1 t2)*/ * from t1, t2 where t1.pk = t2.c3 and t2.c2 > 0 group by t2.c2;
+--sorted_result
+select /*+leading(t1 t2)*/ * from t1, t2 where t1.pk = t2.c3 and t2.c2 > 0 group by t1.pk;
+
+## semi/anti join + group by
+--sorted_result
+select * from t1 where t1.c1 > 0 and t1.c2 > 0 and t1.c3 > any (select c3 from t2)       group by c1, c2, c3;
+--sorted_result
+select * from t1 where t1.c1 > 0 and t1.c2 > 0 and t1.c3 > all (select c3 from t2)       group by c1, c2, c3;
+--sorted_result
+select * from t1 where t1.c1 > 0 and t1.c3 > any (select c3 from t2 where t1.c2 = t2.c2) group by c1, c2, c3;
+--sorted_result
+select * from t1 where t1.c1 > 0 and t1.c3 > all (select c3 from t2 where t1.c2 = t2.c2) group by c1, c2, c3;
+
+## outer join + group by
+--sorted_result
+select * from t1 left  join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0 group by t1.c1, t1.c2, t2.c3;
+--sorted_result
+select * from t1 right join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0 group by t1.c1, t1.c2, t2.c3;
+--sorted_result
+select * from t1 full  join t2 on t1.c3 = t2.c2 where t1.c1 + t1.c2 > 0 group by t1.c1, t1.c2, t2.c3;
+
+# Cartesian product
+--sorted_result
+select * from t1, t2 group by t1.pk, t2.pk;
+
+## set op + group by
+--sorted_result
+select * from (select * from t1 union select * from t2) subq group by subq.pk;
+--sorted_result
+select * from (select * from t1 union all select * from t2) subq group by subq.pk;
+--sorted_result
+select * from (select * from t1 intersect select * from t2) subq group by subq.pk;
+--sorted_result
+select * from (select * from t1 except select * from t2) subq group by subq.pk;
+--sorted_result
+select subq.c1, subq.c2 from (select * from t1 intersect select * from t2 where t2.c2 > 10) subq group by subq.c2;
+
+## sub plan + group by
+--sorted_result
+select * from (select * from t1 order by t1.c3 limit 10) group by pk;
+--sorted_result
+select * from (select * from t1 order by t1.c3 limit 10) subq, t2 where subq.pk = t2.pk group by subq.pk;
+--sorted_result
+select * from (select distinct c1, c2 from t1 order by t1.c3 limit 10) group by c1, c2;
+
+## subplan filter + group by
+--sorted_result
+select c1, c2, (select max(c1+c2) from t2 where t2.pk < t1.pk) as spf from t1 where c1 + c2 > 0 group by c1, c2;
+--sorted_result
+select c1, c2 from t1 where pk > (select min(c1+c2) from t2 where t2.pk < t1.pk) and c1 + c2 > 10 group by c1, c2;
+
+## bug 
+select /*+index(t3 k1)*/ b,c,sum(b) from t3 group by b,c order by b,c,a;
+select /*+index(t3 k1)*/ b,c from t3 order by b,c,a;
+select /*+index(t3 k1)*/ b,c from t3 where b + c > 0 order by b,c,a;
+
+## bug 
+--sorted_result
+select * from t3 where t3.a in (select t1.pk from t1 left join t2 on t1.c1 + t2.c1 = t2.pk);
+--sorted_result
+select distinct t1.pk from t1, t2 where t1.pk = t2.c1 and t2.c2 = 1;
+--sorted_result
+select distinct t1.pk from t1, t2 where t1.pk = t2.c3 and t2.c1 = t2.c3 and t2.c2 = 1;
+
+--disable_warnings
+drop table if exists t4;
+--enable_warnings
+create table t4 (id varchar(10) primary key);
+insert/**/ into t4 values ("1"), ("001"), ("2"), ("00002"), ("a");
+--sorted_result
+select distinct t1.* from t1, t4 where t1.pk = t4.id;

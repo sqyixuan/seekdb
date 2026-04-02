@@ -1,0 +1,103 @@
+# owner: wenduo.swd
+# owner group: rs
+# description: stop zone/server忽略掉schema不存在的partition
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql alter system set enable_auto_leader_switch = "false";
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+connection sys_conn;
+
+
+ob1.mysql CREATE RESOURCE POOL sys_pool_2 UNIT = "sys_unit_config", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt resource_pool_list=('sys_pool_2'), locality = "F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+
+alter tenant tt primary_zone = "z3";
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+#z1迁移
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z1', unit_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $dst_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $dst_port = deploy_get_value(ob1.z1.obs1.port);
+
+let $cur = "$ip:port";
+let $dst = "$dst_ip:$dst_port";
+if ($cur != $dst)
+{
+  ob1.mysql alter system migrate unit $unit_id destination "$dst";
+}
+#z2迁移
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z2', unit_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $dst_ip = deploy_get_value(ob1.z2.obs1.ip);
+let $dst_port = deploy_get_value(ob1.z2.obs1.port);
+
+let $cur = "$ip:port";
+let $dst = "$dst_ip:$dst_port";
+if ($cur != $dst)
+{
+  ob1.mysql alter system migrate unit $unit_id destination "$dst";
+}
+#z3迁移
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where resource_pool_id = $resource_pool_id and zone = 'z3', unit_id, 1);
+let $ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_unit where unit_id = $unit_id, svr_ip, 1);
+let $port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_unit where unit_id = $unit_id, svr_port, 1);
+let $dst_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $dst_port = deploy_get_value(ob1.z3.obs1.port);
+
+let $cur = "$ip:port";
+let $dst = "$dst_ip:$dst_port";
+if ($cur != $dst)
+{
+  ob1.mysql alter system migrate unit $unit_id destination "$dst";
+}
+
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_unit where migrate_from_svr_ip != "", 0, 360;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_auto_leader_switch = "true";
+
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs1.mysql_port);
+
+connect(tt_conn, $proxy_ip, root@tt,,oceanbase, $proxy_port);
+
+connection tt_conn;
+use test;
+create table wenduo(pk int primary key);
+connection sys_conn;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tt", tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = "wenduo", table_id, 1);
+ob1.check_until_timeout select zone from oceanbase.__all_virtual_meta_table where table_id = $table_id and role = 1, z3, 360;
+ob1.z3.obs1.block_net ob1.z2.obs1;
+sleep 10;
+ob1.check_until_timeout select (count(*) > 0) c from oceanbase.__all_virtual_clog_stat where is_in_sync = 0, 1, 360;
+
+connection sys_conn;
+let $dst_ip = deploy_get_value(ob1.z1.obs1.ip);
+let $dst_port = deploy_get_value(ob1.z1.obs1.port);
+--disable_query_log
+--error 4179
+eval alter system stop zone z1;
+--error 4179
+eval alter system stop server "$dst_ip:$dst_port";
+
+sleep 10;
+eval drop tenant tt force;
+sleep 10;
+eval alter system stop server "$dst_ip:$dst_port";
+eval alter system start server "$dst_ip:$dst_port";
+sleep 10;
+eval alter system stop zone z2;
+--enable_query_log

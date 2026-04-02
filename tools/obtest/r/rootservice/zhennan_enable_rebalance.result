@@ -1,0 +1,198 @@
+ob1=OBI(cluster=2:2:2,init_unit_cpu=0,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.z1.obs1.set extra_config=$extra_conf;
+ob1.z2.obs1.set extra_config=$extra_conf;
+ob1.z3.obs1.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+set @@session.ob_query_timeout = 1000000000;
+# create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2', locality="F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+################################################
+# 1. test balance related modify tenant commands
+alter system set enable_rebalance='false';
+ob1.check_until_timeout select count(*) = 3 from GV\$OB_PARAMETERS where tenant_id = $mysql_tenant_id and name = 'enable_rebalance' and value = 'false', 1, 5;
+##
+# 1.1 test modify primary_zone
+alter tenant mysql primary_zone = 'z1,z2';
+alter tenant mysql primary_zone = 'z2,z1';
+alter tenant mysql primary_zone = 'z1,z2;z3';
+alter tenant mysql primary_zone = 'z2,z1;z3';
+alter tenant mysql primary_zone = 'z1';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql primary_zone = 'z1,z3';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1,z3', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql primary_zone = 'z1,z2,z3';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1,z2,z3', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql primary_zone = RANDOM;
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1,z2,z3', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql primary_zone = 'z1,z1,z2';
+ERROR HY000: Incorrect arguments to primary zone
+##
+# 1.2 test modify unit_num
+alter resource tenant mysql unit_num = 1;
+alter resource tenant mysql unit_num = 2;
+ERROR HY000: Tenant (1002) 'enable_rebalance' is disabled, alter tenant unit num not allowed
+##
+# 1.3 test modify locality
+alter tenant mysql locality = 'F@z1,F@z2,F@z3';
+alter tenant mysql locality = 'F@z2,F@z3';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z2', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql locality = 'F@z1,F@z3';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql locality = 'F@z3';
+ERROR HY000: violate locality principal not allowed
+alter tenant mysql locality = 'F@z1,F@z2';
+ob1.check_until_timeout select count(*) = 2 from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = 1, 1, 120;
+alter system set enable_rebalance='true';
+ob1.z1.obs0.check_until_timeout select count(*) = 3 from oceanbase.GV\$OB_PARAMETERS where tenant_id = $mysql_tenant_id and name = 'enable_rebalance' and value = 'true', 1, 5;
+alter tenant mysql primary_zone = 'RANDOM';
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $mysql_tenant_id, 0, 300;
+alter system set enable_rebalance='false';
+ob1.check_until_timeout select count(*) = 3 from GV\$OB_PARAMETERS where tenant_id = $mysql_tenant_id and name = 'enable_rebalance' and value = 'false', 1, 5;
+alter tenant mysql locality = 'F@z1,F@z2,F@z3';
+ERROR HY000: Tenant (1002) Primary Zone with the first priority will be changed from 'z1,z2' to 'z1,z2,z3', but tenant 'enable_rebalance' is disabled, alter tenant not allowed
+alter tenant mysql locality = 'F@z1';
+ERROR HY000: violate locality principal not allowed
+##
+# 1.4 balancer_idle_time can't longer than partition_balance_schedule_interval
+alter system set balancer_idle_time = '3h' tenant = 'mysql';
+ERROR HY000: Incorrect arguments to balancer_idle_time of tenant 1002, it should not be longer than partition_balance_schedule_interval
+alter system set partition_balance_schedule_interval = '1s' tenant = 'mysql';
+ERROR HY000: Incorrect arguments to partition_balance_schedule_interval of tenant 1002, it should not be less than balancer_idle_time
+alter system set balancer_idle_time = '3h';
+ERROR HY000: Incorrect arguments to balancer_idle_time of tenant 1002, it should not be longer than partition_balance_schedule_interval
+alter system set partition_balance_schedule_interval = '1s';
+ERROR HY000: Incorrect arguments to partition_balance_schedule_interval of tenant 1002, it should not be less than balancer_idle_time
+alter system set balancer_idle_time = '10s';
+alter system set partition_balance_schedule_interval = '2h';
+##
+# 1.4 commands are normal when enable rebalance
+alter system set enable_rebalance='true';
+ob1.check_until_timeout select count(*) = 3 from GV\$OB_PARAMETERS where tenant_id = $mysql_tenant_id and name = 'enable_rebalance' and value = 'true', 1, 5;
+alter resource tenant mysql unit_num = 2;
+ob1.check_until_timeout select count(*) = 6 from gv\$ob_units where tenant_id = $mysql_tenant_id, 1, 300;
+alter resource tenant mysql unit_num = 1;
+ob1.check_until_timeout select count(*) = 3 from gv\$ob_units where tenant_id = $mysql_tenant_id, 1, 300;
+alter tenant mysql locality = 'F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) = 3 from __all_virtual_log_stat where tenant_id = $mysql_tenant_id and ls_id = 1, 1, 120;
+alter tenant mysql primary_zone = 'z1,z2,z3';
+alter tenant mysql primary_zone = 'z1,z2';
+alter tenant mysql primary_zone = RANDOM;
+#########################################
+# 2. test enable_rebalance for sys tenant
+CREATE RESOURCE POOL if not exists pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone=RANDOM, locality="F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter system set enable_rebalance = 'false' tenant oracle;
+# disable rebalance in sys tenant
+alter system set enable_rebalance='false';
+##
+# 2.1 delete server is not affected
+ob1.mysql alter system delete server '$z3_obs1_ip:$z3_obs1_port';
+ob1.check_until_timeout select count(*) = 0 from __all_server where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 1, 120;
+select zone, count(distinct svr_ip,svr_port) as server_num, count(distinct unit_id) as unit_num from gv$ob_units where status = 'NORMAL' group by zone;
+zone	server_num	unit_num
+z1	2	3
+z2	2	3
+z3	1	3
+##
+# 2.2 permanent offline is not affected
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_log_stat where paxos_member_list like "%$z2_obs1_ip:$z2_obs1_port%", 1, 60;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.z2.obs1.force_stop;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip = '$z2_obs1_ip' and svr_port = $z2_obs1_port and status = 'INACTIVE', 1, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_log_stat where paxos_member_list like "%$z2_obs1_ip:$z2_obs1_port%", 0, 60;
+ob1.check_until_timeout select  count(distinct unit_id) as unit_num from gv\$ob_units where zone = 'z3', 3, 60;
+ob1.check_until_timeout select  count(distinct unit_id) as unit_num from gv\$ob_units where zone = 'z2', 3, 60;
+ob1.mysql alter system set server_permanent_offline_time = '1h';
+# units on permanent_offline server will be migrated to other servers normally when enable_rebalance = false
+select zone, count(distinct svr_ip,svr_port) as server_num, count(distinct unit_id) as unit_num from gv$ob_units group by zone;
+zone	server_num	unit_num
+z1	2	3
+z2	1	3
+z3	1	3
+ob1.z3.obs1.force_stop;
+ob1.z2.obs1.rmdir;
+ob1.z3.obs1.rmdir;
+ob1.z2.obs1.mkdir;
+ob1.z3.obs1.mkdir;
+ob1.z2.obs1.rsync;
+ob1.z3.obs1.rsync;
+ob1.z2.obs1.start;
+ob1.z3.obs1.start;
+ob1.z3.obs1.add;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port and start_service_time > 0, 1, 200;
+ob1.check_until_timeout select count(*) from __all_server where svr_ip = '$z2_obs1_ip' and svr_port = $z2_obs1_port and start_service_time > 0, 1, 200;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where (a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0) and a.tenant_id <= $mysql_tenant_id, 0, 60;
+ob1.mysql alter system set balancer_idle_time = '10s' tenant sys;
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 200;
+ob1.check_until_timeout select count(distinct unit_id) from gv\$ob_units, 9, 100;
+# 2.3 server balancer does not work when rebalance is disabled
+select zone, count(distinct svr_ip,svr_port) as server_num, count(distinct unit_id) as unit_num from gv$ob_units group by zone;
+zone	server_num	unit_num
+z1	2	3
+z2	1	3
+z3	1	3
+##
+# 2.4 server balancer does work when rebalance is enabled
+alter system set enable_rebalance='true';
+ob1.check_until_timeout select count(*) from __all_unit where migrate_from_svr_port != 0, 0, 200;
+ob1.check_until_timeout select count(*) > 0 from gv\$ob_units where svr_ip = '$z2_obs1_ip' and svr_port = $z2_obs1_port, 1, 200;
+ob1.check_until_timeout select count(*) > 0 from gv\$ob_units where svr_ip = '$z3_obs1_ip' and svr_port = $z3_obs1_port, 1, 200;
+select zone, count(distinct svr_ip,svr_port) as server_num, count(distinct unit_id) as unit_num from gv$ob_units group by zone;
+zone	server_num	unit_num
+z1	2	3
+z2	2	3
+z3	2	3
+##########################################
+# 3. test enable_rebalance for user tenant
+ob1.mysql alter system set balancer_idle_time = '10s' tenant oracle;
+ob1.mysql alter system set enable_rebalance = 'true' tenant oracle;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $oracle_tenant_id, 0, 200;
+##
+# 3.1 tenant balance does work when rebalance is enabled
+ob1.mysql alter resource tenant oracle unit_num = 2;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $oracle_tenant_id, 1, 30;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $oracle_tenant_id, 0, 200;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job_history where tenant_id = $oracle_tenant_id and status = 'COMPLETED' order by finish_time desc limit 1, 1, 3;
+ob1.check_until_timeout select count(*) = 6 from gv\$ob_units where tenant_id = $oracle_tenant_id, 1, 300;
+##
+# 3.2 disable rebalance before generating balance job
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.check_until_timeout select value = '1000s' from __all_sys_parameter where name = 'debug_sync_timeout', 1, 3;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal_balance execute 10000';
+ob1.mysql alter resource tenant oracle unit_num = 1;
+ob1.mysql alter system set enable_rebalance = 'false' tenant oracle;
+ob1.check_until_timeout select count(*) = 6 from GV\$OB_PARAMETERS where tenant_id = $oracle_tenant_id and name = 'enable_rebalance' and value = 'false', 1, 5;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_balance';
+# no balance job generation
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $oracle_tenant_id, 0, 3;
+ob1.check_until_timeout select job_id = $last_balance_job_id from __all_virtual_balance_job_history where tenant_id = $oracle_tenant_id and status = 'COMPLETED' order by finish_time desc limit 1, 1, 3;
+##
+# 3.3 disable rebalance after balance job is generated
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT wait_for signal_cancel execute 10000';
+ob1.mysql alter system set enable_rebalance = 'true' tenant oracle;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where tenant_id = $oracle_tenant_id and status = 'INIT', 6, 60;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job where tenant_id = $oracle_tenant_id and status = 'DOING', 1, 60;
+ob1.mysql alter system set enable_rebalance = 'false' tenant oracle;
+ob1.check_until_timeout select count(*) = 6 from GV\$OB_PARAMETERS where tenant_id = $oracle_tenant_id and name = 'enable_rebalance' and value = 'false', 1, 5;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT clear';
+ob1.mysql set ob_global_debug_sync = 'now signal signal_cancel';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history where job_id = $need_cancel_job_id and status = 'CANCELED', 1, 100;
+# rollback shrink unit_num is not allowed when enable_rebalance is disabled
+ob1.check_until_timeout select count(*) = 6 from gv\$ob_units where tenant_id = $oracle_tenant_id, 1, 3;
+ob1.check_until_timeout select unit_num from DBA_OB_TENANTS where tenant_id = $oracle_tenant_id, 1, 3;
+alter resource tenant oracle unit_num = 2;
+ERROR HY000: Tenant (1004) 'enable_rebalance' is disabled, alter tenant unit num not allowed
+# rollback shrink unit_num when enable_transfer is disabled and enable_rebalance is opened
+ob1.mysql alter system set enable_transfer = 'false' tenant oracle;
+ob1.mysql alter system set enable_rebalance = 'true' tenant oracle;
+ob1.check_until_timeout select count(*) from __all_virtual_tenant_parameter_stat where tenant_id = $oracle_tenant_id and name = 'enable_rebalance' and value = 'false', 0, 3;
+alter resource tenant oracle unit_num = 2;
+ob1.check_until_timeout select unit_num from DBA_OB_TENANTS where tenant_id = $oracle_tenant_id, 2, 3;

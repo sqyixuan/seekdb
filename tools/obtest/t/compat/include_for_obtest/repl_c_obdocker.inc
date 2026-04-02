@@ -1,0 +1,17 @@
+#let $proxy1ip = deploy_get_value(obdocker.proxy1.ip);
+#ob_connect (proxy_conn1,$proxy1ip,root@sys,,oceanbase,9293);
+#alter proxyconfig set route_target_replica_type='ColumnStore';
+#alter proxyconfig set proxy_route_policy='TARGET_REPLICA_TYPE_FOLLOWER_ONLY';
+#alter proxyconfig set init_sql='set @@ob_route_policy = COLUMN_STORE_ONLY';
+#alter proxyconfig set obproxy_read_consistency=1;
+#alter proxyconfig set obproxy_read_only=0;
+connection proxy_conn;
+obdocker.check_until_timeout select job_status from (select * from __all_rootservice_job where job_type like "%ALTER_RESOURCE_TENANT_UNIT_NUM%" order by 1  desc limit 1),SUCCESS,300;
+alter tenant tent_oracle set primary_zone=z2;
+obdocker.check_until_timeout select count(*) from dba_ob_tenants where TENANT_NAME="tent_oracle" and PRIMARY_ZONE like "z2;%",1,60;
+alter tenant tent_oracle set locality = "F@z1,F@z2";
+obdocker.check_until_timeout select count(*) from dba_ob_tenants where TENANT_NAME="tent_oracle" and LOCALITY like "FULL{1}@z1, FULL{1}@z2",1,60;
+sleep 60;
+alter tenant tent_oracle set locality = "F@z1,F@z2,C@z3";
+obdocker.check_until_timeout select count(*) from dba_ob_tenants where TENANT_NAME="tent_oracle" and LOCALITY like "FULL{1}@z1, FULL{1}@z2, C%",1,60;
+#create tenant tenant1 resource_pool_list=('pool_not_minor'),  zone_list=('z1','z2',"z3"), locality = 'F@z1,F@z2,C@z3' set ob_tcp_invited_nodes='%';

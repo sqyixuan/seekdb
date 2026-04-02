@@ -1,0 +1,85 @@
+# owner: rongxuan.lc
+# description: 本case是为了……
+# description: 本case是为了测试每日合并检查roottable完整性的时候要不能过滤L副本；不能没有F副本；
+
+ob1=OBI(cluster=2:2:2:2:2,proxy_num=1,init_unit_cpu=0);
+ob1.reboot;
+
+let $case_index = 1;
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+####3f3l的场景，合并完成；
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE RESOURCE POOL pool_3 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3'),replica_type = 'L';
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_2', 'pool_3'), locality='F@z1,F@z2,F@z3,L@z1,L@z2,L@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table t(c1 int primary key) partition by hash(c1) partitions 5;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+
+##majority合并完成；
+###F的majority合并完成；3f2L其中两个F合并完成叫合并完成；
+ob1.mysql alter system set merger_completion_percentage = 80;
+ob1.mysql alter system set enable_rereplication = false;
+let $case_index = 0;
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_0 UNIT = 'unit_0', UNIT_NUM = 2, ZONE_LIST = ('z1', 'z2','z3','z4','z5');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_0'), locality='F@z1,F@z2,F@z3,R@z4,L@z4,R@z5,L@z5', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+ob1.create_client tenant=tenant_0,user=root,passwd=,database=test;
+create table t(c1 int primary key, c2 int) partition by hash(c1) partitions 4;
+##drop 掉两个副本；
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_0', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 't' and tenant_id = $tenant_id, table_id, 1);
+let $drop_replica_1 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z2' and partition_id = 0, addr, 1);
+let $drop_replica_2 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z3' and partition_id = 0, addr, 1);
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+--disable_query_log
+--disable_result_log
+ob1.mysql alter system drop replica partition_id='0%0@$table_id' server = '$drop_replica_1';
+ob1.mysql alter system drop replica partition_id='0%0@$table_id' server = '$drop_replica_2';
+ob1.mysql alter system major freeze;
+sleep 90;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name =  'last_merged_version', 2, 10;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name =  'last_merged_version', 3, 90;
+
+###drop掉一个副本，合并能成功；
+let $drop_replica_1 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z2' and partition_id = 1, addr, 1);
+ob1.mysql alter system set enable_rereplication = false;
+ob1.mysql alter system drop replica partition_id='1%0@$table_id' server = '$drop_replica_1';
+ob1.mysql alter system major freeze;
+ob1.check_version 4;
+
+##drop 掉一个F,2个R，合并不成功；
+let $drop_replica_1 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z2' and partition_id = 2, addr, 1);
+let $drop_replica_3 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z4' and replica_type=16 and partition_id = 2, addr, 1);
+let $drop_replica_4 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z5' and replica_type = 16 and partition_id = 2, addr, 1);
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+ob1.mysql alter system drop replica partition_id='2%0@$table_id' server = '$drop_replica_1';
+ob1.mysql alter system drop replica partition_id='2%0@$table_id' server = '$drop_replica_3';
+ob1.mysql alter system drop replica partition_id='2%0@$table_id' server = '$drop_replica_4';
+ob1.mysql alter system major freeze;
+sleep 90;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name =  'last_merged_version', 4, 10;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.check_until_timeout select value from __all_zone where zone = '' and name =  'last_merged_version', 5, 90;
+
+##drop 掉2个R，合并成功；
+let $drop_replica_3 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z4' and replica_type=16 and partition_id = 3, addr, 1);
+let $drop_replica_4 = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and zone = 'z5' and replica_type = 16 and partition_id = 3, addr, 1);
+ob1.create_client tenant=sys,user=root,passwd=,database=oceanbase;
+ob1.mysql alter system drop replica partition_id='3%0@$table_id' server = '$drop_replica_3';
+ob1.mysql alter system drop replica partition_id='3%0@$table_id' server = '$drop_replica_4';
+ob1.mysql alter system major freeze;
+ob1.check_version 6;
+
+
+

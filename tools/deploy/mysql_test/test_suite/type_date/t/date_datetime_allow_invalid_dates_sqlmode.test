@@ -1,0 +1,252 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: dachuan.sdc
+# owner group: SQL2
+# tags: datatype
+## test ALLOW_INVALID_DATES sql_mode. Do not perform full checking of dates. Check only that the month is in the range from 1 to 12 and the day is in the range from 1 to 31.
+--result_format 4
+
+--disable_warnings
+drop table if exists t1;
+--enable_warnings
+
+
+# （一）测试 sql_mode 包含 ALLOW_INVALID_DATES 时的行为
+set sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_IN_DATE,ALLOW_INVALID_DATES';
+
+
+## 测试出现非法日期字面量，date 类型不报错，timestamp 依然报错。
+select date '2021-2-31';
+--error 1525
+select timestamp'2021-2-31';
+
+
+## 测试 sql mode 包含 ALLOW_INVALID_DATES 时，date 和 datetime 列允许出现非法日期，timestamp 不允许出现非法日期。
+--error 1067
+create table t1(c1 date default '2021-2-31', c2 datetime default '2021-2-31 00:00:00', c3 timestamp default '2021-2-31 00:00:00');
+create table t1(c1 date default '2021-2-31', c2 datetime default '2021-2-31 00:00:00', c3 timestamp default '2021-2-28 00:00:00');
+desc t1;
+
+--error 1292
+insert into t1 values('2021-2-31', '2021-2-31 00:00:00', '2021-2-31 00:00:00');
+insert into t1 values('2021-2-31', '2021-2-31 00:00:00', '2021-2-28 00:00:00');
+--error 1292
+insert into t1 values(20210231, 20210231, 20210231);
+insert into t1 values(20210231, 20210231, 20210228);
+select * from t1;
+
+--error 1292
+update t1 set c1 = '2021-2-30', c2 = '2021-2-30 00:00:00', c3 = '2021-2-30 00:00:00';
+update t1 set c1 = '2021-2-30', c2 = '2021-2-30 00:00:00', c3 = '2021-2-27 00:00:00';
+--error 1292
+update t1 set c1 = 20210230, c2 = 20210230, c3 = 20210230;
+update t1 set c1 = 20210230, c2 = 20210230, c3 = 20210227;
+select * from t1;
+drop table t1;
+
+
+## 测试 bit to date
+create table t1(c1 bit(64));
+insert into t1 values('123-2-31');
+select cast(c1 as date) from t1;
+drop table t1;
+
+
+## 测试时发现 MySQL 两个比较特殊的地方：
+
+### 1. 数字类型转 date、datetime 时，显式 cast 不受 ALLOW_INVALID_DATES 的影响，隐式 cast 会受 ALLOW_INVALID_DATES 的影响，官方文档里没有找到详细说明。
+### OB 这里就直接去兼容 MySQL 的行为了。
+#### (1) 显式 cast
+select cast(20210228 as date);
+select cast(20210231 as date);
+select cast(20210228100000 as datetime);
+select cast(20210231100000 as datetime);
+#### (2)隐式 cast
+create table t1(c1 date, c2 datetime);
+insert into t1 values(20210231, 20210231100000);
+select * from t1;
+drop table t1;
+
+### 2. 在表达式中出现非法日期，且当表达式预期的输入参数类型是时间类型时:
+#### （1）当表达式的输入参数是不需要做隐式转换的时间类型时，不会报错 invalid date，但是计算的结果是 0 或者 null。
+#####  eg：
+#####  mysql> select date_add(date'2021-02-31', interval 1 second);
+#####  +-----------------------------------------------+
+#####  | date_add(date'2021-02-31', interval 1 second) |
+#####  +-----------------------------------------------+
+#####  | NULL                                          |
+#####  +-----------------------------------------------+
+#####  1 row in set (0.00 sec)
+#####
+#### （2）当表达式的输入参数是字符串类型时，隐式转换成时间类型，可以正常地计算出结果。
+#####  eg：
+#####  mysql> select date_add('2021-02-31', interval 1 second);
+#####  +-------------------------------------------+
+#####  | date_add('2021-02-31', interval 1 second) |
+#####  +-------------------------------------------+
+#####  | 2021-03-03 00:00:01                       |
+#####  +-------------------------------------------+
+#####  1 row in set (0.00 sec)
+#####
+#### （3）当表达式的输入参数是数字类型时，隐式转换成时间类型，不会报错 invalid date，但是计算的结果是 0 或者 null。
+#####  eg：
+#####  mysql> select date_add(20210231, interval 1 second);
+#####  +---------------------------------------+
+#####  | date_add(20210231, interval 1 second) |
+#####  +---------------------------------------+
+#####  | NULL                                  |
+#####  +---------------------------------------+
+#####  1 row in set, 1 warning (0.00 sec)
+#####
+### 理论上讲，如果支持输入非法日期，应该在任何场景下都支持使用这些非法日期去进行表达式计算的。MySQL 部分场景支持，部分场景不支持，没有官方文档说明，也没有明显的规律，完全是由实现决定的行为。
+### OB 这里在 sql mode 是 ALLOW_INVALID_DATES 时不区分各表达式的输入参数类型具体是什么，也不区分表达式是否需要对输入参数进行隐式类型转换，预期输入参数类型是时间类型的表达式中出现非法日期，均可以正常地计算出结果。
+### OB 是通过一个整型去存 date 类型的，用的时候再把一个整型解析出年、月、日信息，如果 OB 在第一次检查日期合法性时没报错的话，输入的 '2021-02-31' 和 '2021-03-03' 会用一个相同的整型数字去记录，在后面的计算里就完全等价且无法区分了。（MySQL 看起来应该是用了三个整型去分别存一个 date 类型的年、月、日信息的）
+#### （1）不需要隐式转换的情况
+select date_add(date'2021-02-31', interval 1 second);
+select date_format(date'2021-02-31', "%Y-%m-%d");
+select to_seconds(date'2021-02-31') from dual;
+select weekofyear(date'2021-02-31') from dual;
+select weekday(date'2021-02-31') from dual;
+select week(date'2021-02-31') from dual;
+select yearweek(date'2021-02-31') from dual;
+select extract(year from date'2021-02-31');
+select extract(month from date'2021-02-31');
+select extract(day from date'2021-02-31');
+select quarter(date'2021-02-31') from dual;
+#### （2）需要隐式转换的情况
+##### [2-1] implicit cast from string
+select date_add('2021-02-31', interval 1 second);
+select date_format('2021-02-31', "%Y-%m-%d");
+select to_seconds('2021-02-31') from dual;
+select weekofyear('2021-02-31') from dual;
+select weekday('2021-02-31') from dual;
+select week('2021-02-31') from dual;
+select yearweek('2021-02-31') from dual;
+select extract(year from '2021-02-31');
+select extract(month from '2021-02-31');
+select extract(day from '2021-02-31');
+select quarter('2021-02-31') from dual;
+##### [2-2] implicit cast from num
+select date_add(20210231, interval 1 second);
+select date_format(20210231, "%Y-%m-%d");
+select to_seconds(20210231) from dual;
+select weekofyear(20210231) from dual;
+select weekday(20210231) from dual;
+select week(20210231) from dual;
+select yearweek(20210231) from dual;
+select extract(year from 20210231);
+select extract(month from 20210231);
+select extract(day from 20210231);
+select quarter('2021-02-31') from dual;
+
+
+
+#（二）测试 sql_mode 中不包含 ALLOW_INVALID_DATES 时的行为
+set sql_mode = 'STRICT_ALL_TABLES,NO_ZERO_IN_DATE';
+
+## 测试出现非法日期字面量。
+--error 1525
+select date '2021-2-31';
+--error 1525
+select timestamp'2021-2-31';
+
+
+## 测试 date 和 datetime 列出现非法日期。
+--error 1067
+create table t1(c1 date default '2021-2-31', c2 datetime default '2021-2-31 00:00:00', c3 timestamp default '2021-2-31 00:00:00');
+--error 1067
+create table t1(c1 date default '2021-2-31', c2 datetime default '2021-2-31 00:00:00', c3 timestamp default '2021-2-28 00:00:00');
+create table t1(c1 date default '2021-2-28', c2 datetime default '2021-2-28 00:00:00', c3 timestamp default '2021-2-28 00:00:00');
+desc t1;
+
+--error 1292
+insert into t1 values('2021-2-31', '2021-2-31 00:00:00', '2021-2-31 00:00:00');
+--error 1292
+insert into t1 values('2021-2-31', '2021-2-31 00:00:00', '2021-2-28 00:00:00');
+--error 1292
+insert into t1 values(20210231, 20210231, 20210231);
+--error 1292
+insert into t1 values(20210231, 20210231, 20210228);
+select * from t1;
+
+update t1 set c1 = '2021-2-30', c2 = '2021-2-30 00:00:00', c3 = '2021-2-30 00:00:00';
+update t1 set c1 = '2021-2-30', c2 = '2021-2-30 00:00:00', c3 = '2021-2-27 00:00:00';
+update t1 set c1 = 20210230, c2 = 20210230, c3 = 20210230;
+update t1 set c1 = 20210230, c2 = 20210230, c3 = 20210227;
+select * from t1;
+drop table t1;
+
+
+## 测试 bit to date
+create table t1(c1 bit(64));
+insert into t1 values('123-2-31');
+select cast(c1 as date) from t1;
+drop table t1;
+
+
+## 测试时发现 MySQL 两个比较特殊的地方：
+
+### 1. 数字类型转 date、datetime
+#### (1) 显式 cast
+select cast(20210228 as date);
+select cast(20210231 as date);
+select cast(20210228100000 as datetime);
+select cast(20210231100000 as datetime);
+#### (2)隐式 cast
+create table t1(c1 date, c2 datetime);
+--error 1292
+insert into t1 values(20210231, 20210231100000);
+drop table t1;
+
+### 2. 在表达式中出现非法日期
+#### （1）不需要隐式转换的情况
+--error 1525
+select date_add(date'2021-02-31', interval 1 second);
+--error 1525
+select date_format(date'2021-02-31', "%Y-%m-%d");
+--error 1525
+select to_seconds(date'2021-02-31') from dual;
+--error 1525
+select round(date'2021-02-31');
+--error 1525
+select weekofyear(date'2021-02-31') from dual;
+--error 1525
+select weekday(date'2021-02-31') from dual;
+--error 1525
+select week(date'2021-02-31') from dual;
+--error 1525
+select yearweek(date'2021-02-31') from dual;
+--error 1525
+select extract(year from date'2021-02-31');
+--error 1525
+select extract(month from date'2021-02-31');
+--error 1525
+select extract(day from date'2021-02-31');
+--error 1525
+select quarter(date'2021-02-31') from dual;
+#### （2）需要隐式转换的情况
+##### [2-1] implicit cast from string
+select date_add('2021-02-31', interval 1 second);
+select date_format('2021-02-31', "%Y-%m-%d");
+select to_seconds('2021-02-31') from dual;
+select weekofyear('2021-02-31') from dual;
+select weekday('2021-02-31') from dual;
+select week('2021-02-31') from dual;
+select yearweek('2021-02-31') from dual;
+select extract(year from '2021-02-31');
+select extract(month from '2021-02-31');
+select extract(day from '2021-02-31');
+select quarter('2021-02-31') from dual;
+##### [2-2] implicit cast from num
+select date_add(20210231, interval 1 second);
+select date_format(20210231, "%Y-%m-%d");
+select to_seconds(20210231) from dual;
+select weekofyear(20210231) from dual;
+select weekday(20210231) from dual;
+select week(20210231) from dual;
+select yearweek(20210231) from dual;
+select extract(year from 20210231);
+select extract(month from 20210231);
+select extract(day from 20210231);
+select quarter('2021-02-31') from dual;

@@ -1,0 +1,181 @@
+##########################
+#owner :msy164651
+# 测试点：
+##########################
+
+ob1=OBI(cluster=2,proxy_num=0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+let $rs_job_count=deploy_get_value(ob1.select select count(*) c from oceanbase.__all_rootservice_job, c, 1);
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+
+set @@session.ob_query_timeout = 1000000000;
+
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ls_gc_delay_time = '0s' tenant='mysql';
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+let $count = 0;
+while ($count < 100) 
+{
+eval create table non_partition_$count(pk int primary key);
+inc $count;
+}
+
+let $count = 0;
+while ($count < 10) 
+{
+eval create table one_partition_$count(pk int primary key) partition by hash(pk) partitions 10;
+inc $count;
+}
+let $count = 0;
+while ($count < 20)
+{
+eval create table two_partition_$count (c1 int, c2 int, c3 int, c4 int) partition by range(c1) subpartition by range(c2) ( partition t1rp0 values less than (100) ( subpartition t1rp0sp0 values less than (100),  subpartition t1rp0sp1 values less than (200), subpartition t1rp0sp2 values less than (300), subpartition t1rp0sp3 values less than (400)), partition t1rp1 values less than (200) (subpartition t1rp1sp0 values less than (100),subpartition t1rp1sp1 values less than (200),subpartition t1rp1sp2 values less than (300),subpartition t1rp1sp3 values less than (400)));
+inc $count;
+}
+#扩容，ls_split rollback
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select (tenant_id -1) as tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = 'mysql', tenant_id, 1);
+#rollback in init
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_INIT wait_for signal';
+ob1.mysql alter system set_tp tp_name = EN_SET_TASK_EXECUTE_TIMEOUT, error_code = 4012, frequency = 1;
+sleep 2;
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task;
+#保证开始执行task，卡在init阶段
+ob1.mysql ALTER RESOURCE TENANT mysql UNIT_NUM = 1 DELETE UNIT_GROUP (1002);
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal1';
+sleep 20;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where status = 'CANCELING' , 1, 100;
+let $job_id =  deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 1, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status  from oceanbase.__all_virtual_balance_task_history where job_id = $job_id;
+ob1.mysql_p select ls_id, flag from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $meta_tenant_id, 1, 300;
+
+#rollback in transfer start
+connection conn_mysql;
+create table one_partition(pk int primary key) partition by hash(pk) partitions 10;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER wait_for signal3';
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 2;
+sleep 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where status = 'TRANSFER', 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task;
+#will has more ls than need
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 1 DELETE UNIT_GROUP (1003);
+sleep 30;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal4';
+ob1.mysql set ob_global_debug_sync = 'now signal signal3';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where status = 'CANCELING' , 1, 100;
+let $job_id =  deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal4';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 2, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task_history where job_id = $job_id;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $meta_tenant_id, 1, 300;
+
+#need merge ls
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 3, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id, 2, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status from oceanbase.__all_virtual_balance_job_history order by create_time;
+#rollback in transfer end
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_TRANSFER_END wait_for signal';
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where current_transfer_task_id != -1, 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task;
+#will has more ls than need
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 1 DELETE UNIT_GROUP (1004);
+sleep 30;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal1';
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where status = 'CANCELING' , 1, 100;
+let $job_id =  deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 4, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task_history where job_id = $job_id;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $meta_tenant_id, 1, 300;
+
+
+#need merge ls
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 5, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id, 2, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+
+##ls_alter rollback
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_ALTER_LS wait_for signal5';
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where status = 'ALTER_LS', 1, 100;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task;
+#will has more ls than need
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 1 DELETE UNIT_GROUP (1005);
+sleep 31;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal6';
+ob1.mysql set ob_global_debug_sync = 'now signal signal5';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where status = 'CANCELING' , 1, 100;
+let $job_id =  deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal6';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 6, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task_history where job_id = $job_id;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $tenant_id, 1, 200;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_unit where tenant_id = $meta_tenant_id, 1, 300;
+
+#need merge ls
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 7, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id, 2, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status from oceanbase.__all_virtual_balance_job_history order by create_time;
+
+#ls_merge rollback
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 8, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_status = 'INPROGRESS', 0, 100;
+
+#rollback in merge_ls
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_SET_MERGE wait_for signal';
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM =1 DELETE UNIT_GROUP (1006);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 1, 100;
+#防止缩容成功
+ob1.mysql alter system set enable_rereplication = false;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task where status = 'SET_LS_MERGING', 1, 100;
+ob1.mysql  ALTER RESOURCE TENANT mysql UNIT_NUM =2;
+sleep 25;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_EXECUTE_WORK wait_for signal1';
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job where status = 'CANCELING' , 1, 100;
+let $job_id =  deploy_get_value(ob1.select select job_id from oceanbase.__all_virtual_balance_job, job_id, 1);
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+ob1.mysql alter system set enable_rereplication = true;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 9, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+ob1.mysql_p select task_type, src_ls,dest_ls, ls_group_id, status from oceanbase.__all_virtual_balance_task_history where job_id = $job_id;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job_history, 10, 100;
+ob1.mysql_p select job_type, target_unit_num, target_primary_zone_num, status, balance_strategy_name from oceanbase.__all_virtual_balance_job_history order by create_time;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_rootservice_job where job_status = 'INPROGRESS', 0, 100;
+
+ob1.mysql_p select job_id, job_type, tenant_id, job_status, tenant_name, sql_text, extra_info from oceanbase.__all_rootservice_job where job_id > $rs_job_count;

@@ -1,0 +1,110 @@
+ob1=OBI(cluster=1,proxy_num=0,version=4_3_0_0);
+ob1.reboot;
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+ob_connect(sys_conn, $z1_ip, root@sys,,, $z1_port);
+connection sys_conn;
+
+create resource unit box max_cpu 1, memory_size='10G';
+create resource pool pool unit = 'box', unit_num = 1;
+create tenant mysql replica_num = 1, resource_pool_list=('pool');
+
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+
+set @@global.ob_query_timeout = 60000000;
+
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+
+# 升级前检查
+ob1.upgrade_check_before;
+
+# begin upgrade
+alter system begin upgrade;
+alter system begin rolling upgrade;
+
+# 替换二进制
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+ob1.force_stop;
+ob1.upgrade;
+ob1.nstart;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time <= 0 or status='INACTIVE',0,180;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+
+ob_connect(sys_conn, $z1_ip, root@sys,,oceanbase, $z1_port);
+connection sys_conn;
+
+alter system end rolling upgrade;
+
+# 暂停10min一次的后台检查，之后手动触发
+alter system set_tp tp_name = EN_STOP_ROOT_INSPECTION, error_code = 4029, frequency = 1;
+
+# 这里报错4018是因为第一个报错是check_name失败
+--disable_result_log
+--error 4018
+alter system run job 'root_inspection';
+--enable_result_log
+
+# 目前在升级，所以schema不一致不应该有任何dba_error
+ob1.z1.obs0.check_rs_log_until_success -c 'in upgrade mode, ignore root inspection error message';
+
+# end upgrade
+alter system end upgrade;
+
+--disable_result_log
+--error 4018
+alter system run job 'root_inspection';
+--enable_result_log
+
+# 目前都没有推租户版本号，所以schema不一致不应该有任何dba_error
+ob1.z1.obs0.check_rs_log_until_success -c 'compatible not change to DATA_CURRENT_VERSION, ignore root inspection error message.*tenant_id=1';
+ob1.z1.obs0.check_rs_log_until_success -c 'compatible not change to DATA_CURRENT_VERSION, ignore root inspection error message.*tenant_id=1001';
+ob1.z1.obs0.check_rs_log_until_success -c 'compatible not change to DATA_CURRENT_VERSION, ignore root inspection error message.*tenant_id=1002';
+
+# 升级系统租户
+alter system run upgrade job 'UPGRADE_ALL' tenant=sys;
+sleep 2;
+let $max_job_id = query_get_value(select job_id from oceanbase.__all_rootservice_job order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_id=$max_job_id, SUCCESS, 600;
+
+# 系统租户已经推版本号，不会报错
+alter system run upgrade job 'UPGRADE_INSPECTION' tenant=sys;
+sleep 2;
+let $max_job_id = query_get_value(select job_id from oceanbase.__all_rootservice_job order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_id=$max_job_id, SUCCESS, 600;
+
+ob1.z1.obs0.check_rs_log_until_success -c '\[UPGRADE\] finish run upgrade inspection job.*tmp_ret=0';
+
+let $trace_id = deploy_get_value(ob1.select select last_trace_id() as a, a, 1);
+
+# 用户租户未推版本号，会报错
+--disable_result_log
+--error 4018
+alter system run job 'root_inspection';
+--enable_result_log
+
+ob1.z1.obs0.check_rs_log_until_success -c 'compatible not change to DATA_CURRENT_VERSION, ignore root inspection error message';
+
+alter system run upgrade job 'UPGRADE_ALL';
+sleep 2;
+let $max_job_id = query_get_value(select job_id from oceanbase.__all_rootservice_job order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_id=$max_job_id, SUCCESS, 600;
+
+# 所有租户都推版本号，不会报错
+--disable_result_log
+alter system run job 'root_inspection';
+--enable_result_log
+
+# 删掉一张内部视图
+alter system set enable_sys_table_ddl = true;
+drop view DBA_OB_TENANT_JOBS;
+
+--disable_result_log
+--error 4029
+alter system run job 'root_inspection';
+--enable_result_log
+
+ob1.z1.obs0.check_rs_log_until_success -c 'EDIAG.*check sys table schema failed';
+ob1.z1.obs0.check_log_until_success -c 'ERROR.*inner tables are unmatched';

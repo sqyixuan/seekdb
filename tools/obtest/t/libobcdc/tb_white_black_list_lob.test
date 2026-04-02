@@ -1,0 +1,395 @@
+#
+# owner: fankun.fan
+# owner group: libobcdc
+# description: lob, offline ddl
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 创建mysql租户oblog_tt，并且切换到mysql租户下
+source include/liboblog/create_tenant_with_gts.inc;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG skip_ob_version_compat_check=1 enable_output_by_table_def=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+let $ddl_stmt_count = 0;
+let $white_dml_stmt_count = 0;
+let $black_dml_stmt_count = 0;
+
+# ob1.mysql alter system set dump_data_dictionary_to_log_interval = '6s' tenant all;
+
+connection oblog_conn_sys;
+alter tenant oblog_tt set variables max_allowed_packet=1073741824;
+ob1.oblog.next;
+
+sleep 2;
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+connection oblog_conn_tt;
+# 设置最大包大小 1G
+set global max_allowed_packet=1073741824;
+
+connection oblog_conn_tt;
+
+set @tiny_text:=repeat('a', 255);
+set @text:=repeat('b', 63210);
+set @medium_text:=repeat('c', 63210);
+set @long_text:=repeat('d', 63210);
+set @tiny_blob:=repeat('e', 255);
+set @blob:=repeat('f', 63210);
+set @medium_blob:=repeat('g', 63210);
+set @long_blob:=repeat('h', 63210);
+
+let $restart_ts_usec1 = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+use oblog_db1;
+
+# 创建黑白名单测试表
+create table white0(pk int primary key);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 创建无lob列的表
+create table white1(pk int primary key);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into white1 values(1);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 增加lob列
+alter table white1 add column blob_type blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into white1 values(2, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+insert into white1 values(3, @blob);
+select md5(blob_type) from white1 where pk = 3;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 删除lob列
+alter table white1 drop column blob_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into white1 values(4);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 创建单列lob的表
+create table white2(pk int primary key, blob_type blob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into white2 values(1, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 达到单列和单行限制
+insert into white2 values(2, @blob);
+select md5(blob_type) from white2 where pk = 2;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 删除lob列
+alter table white2 drop column blob_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white2 values(3);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 增加lob列
+alter table white2 add column blob_type blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white2 values(4, @blob);
+select md5(blob_type) from white2 where pk = 4;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 修改lob列
+alter table white2 modify blob_type longblob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white2 values(5, @long_blob);
+select md5(blob_type) from white2 where pk = 5;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 创建多列lob表
+create table white3(pk int primary key, tiny_text tinytext, long_text longtext);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into white3 values(1, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 达到单列限制
+insert into white3 values(2, @tiny_text, @long_text);
+select md5(tiny_text), md5(long_text) from white3 where pk = 2;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 增加lob列
+alter table white3 add column tiny_blob tinyblob after tiny_text;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values(3, @tiny_text, @tiny_blob, @long_text);
+select md5(tiny_text), md5(long_text), md5(tiny_blob) from white3 where pk = 3;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 增加多个lob列
+alter table white3 add (text_type text, blob_type blob, medium_text mediumtext, medium_blob mediumblob after tiny_blob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (4, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+insert into white3 values (5, @tiny_text, @tiny_blob, @text, @blob, @medium_text, @medium_blob, @long_text);
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text) from white3 where pk = 5;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 修改lob列
+alter table white3 modify blob_type longblob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (6, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+alter table white3 modify blob_type blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (7, @tiny_text, @tiny_blob, @text, @blob, @medium_text, @medium_blob, @long_text);
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text) from white3 where pk = 7;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 重命名lob列
+alter table white3 rename column blob_type to blob_type1;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (8, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+alter table white3 rename column blob_type1 to blob_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (9, @tiny_text, @tiny_blob, @text, @blob, @medium_text, @medium_blob, @long_text);
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text) from white3 where pk = 9;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 删除1个lob列
+alter table white3 drop column long_text;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (10, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+insert into white3 values(11, @tiny_text, @tiny_blob, @text, @blob, @medium_text, @medium_blob);
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob) from white3 where pk = 11;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 增加1个lob列
+alter table white3 add column long_text longtext;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values (12, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+insert into white3 values(13, @tiny_text, @tiny_blob, @text, @blob, @medium_text, @medium_blob, @long_text);
+select md5(tiny_text), md5(tiny_blob), md5(text_type), md5(blob_type), md5(medium_text), md5(medium_blob), md5(long_text) from white3 where pk = 13;
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 删除全部lob列
+alter table white3 drop column tiny_text;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column tiny_blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column text_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column blob_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column medium_text;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column medium_blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+alter table white3 drop column long_text;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+insert into white3 values(14);
+ob1.oblog.next;
+inc $white_dml_stmt_count;
+
+# 重命名为黑名单
+rename table oblog_db1.white3 to oblog_db1.black3;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# 测试黑名单
+insert into black3 values(15);
+insert into white0 values(1);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+# 创建带有lob列的黑名单表
+create table black1(pk int primary key, blob_type blob);
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into black1 values(1, NULL);
+insert into white0 values(2);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+insert into black1 values(2, @blob);
+select md5(blob_type) from black1 where pk = 2;
+insert into white0 values(3);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+# 删除lob列
+alter table black1 drop column blob_type;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into black1 values(3);
+insert into white0 values(4);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+# 增加lob列
+alter table black1 add column blob_type blob;
+ob1.oblog.next;
+inc $ddl_stmt_count;
+
+# NULL
+insert into black1 values(4, NULL);
+insert into white0 values(5);
+ob1.oblog.next;
+inc $black_dml_stmt_count;
+inc $white_dml_stmt_count;
+
+sleep 10;
+ob1.oblog.stop;
+
+# 回拉，启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1 enable_output_by_table_def=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+
+let $stmt_count = $ddl_stmt_count + $white_dml_stmt_count;
+
+echo $ddl_stmt_count;
+echo $white_dml_stmt_count;
+
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+sleep 1;
+ob1.oblog.stop;
+
+# 回拉，启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.black* tb_black_list=oblog_tt.*.white* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1 enable_output_by_table_def=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.set_start_tstamp_usec $restart_ts_usec1;
+ob1.oblog.restart;
+
+let $stmt_count = $ddl_stmt_count + $black_dml_stmt_count;
+let $idx = 0;
+while ($idx < $stmt_count)
+{
+    ob1.oblog.next;
+    inc $idx;
+}
+
+sleep 1;
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1 enable_output_by_table_def=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+insert into white0 values(6);
+ob1.oblog.next;
+
+insert into white1 values(5);
+ob1.oblog.next;
+
+insert into white2 values(6, NULL);
+ob1.oblog.next;
+
+insert into black1 values(5, NULL);
+
+insert into white0 values(7);
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+# 启动liboblog，同步oblog_tt租户数据
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.black* tb_black_list=oblog_tt.*.white* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1 enable_output_by_table_def=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+
+insert into black1 values(6, NULL);
+ob1.oblog.next;
+
+insert into black3 values(16);
+ob1.oblog.next;
+
+insert into white0 values(8);
+
+insert into black1 values(7, NULL);
+ob1.oblog.next;
+
+ob1.oblog.stop;
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.white* tb_black_list=oblog_tt.*.black* log_level=DEBUG meta_data_refresh_mode=data_dict skip_ob_version_compat_check=1;
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.restart;
+ob1.oblog.stop;

@@ -1,0 +1,143 @@
+# owner: lixia.yq
+# owner group: storage 
+# description: this case test truncate trans abort & migrate with truncate info
+#
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection sys_conn;
+CREATE RESOURCE UNIT large_unit_1 MAX_CPU=5, MEMORY_SIZE='5G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit_1, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+
+--disable_all_result_log
+CREATE TENANT test_tenant RESOURCE_POOL_LIST = ('large_pool_1'), locality='F@z1', primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+--enable_all_result_log
+alter system set _enable_adaptive_compaction = false tenant test_tenant;
+alter system set _ob_enable_truncate_partition_preserve_global_index=true tenant test_tenant;
+sleep 10;
+
+let $__tenant_id__=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='test_tenant', tenant_id, 1);
+
+ob_connect(conn1, ob1.z1.obs0, root@test_tenant, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(conn2, ob1.z1.obs0, root@test_tenant, , test, , USE_MYSQL_CONNECTOR);
+connection conn1;
+create table test_range_range1(c1 int, c2 int, c3 int, c4 int)
+partition by range(c1)
+subpartition by range(c2)
+(
+  partition p0 values less than (10)
+  (
+    subpartition p0sp0 values less than (100),
+    subpartition p0sp1 values less than (200),
+    subpartition p0sp2 values less than (300)
+  ),
+  partition p1 values less than (20)
+  (
+    subpartition p1sp0 values less than (100),
+    subpartition p1sp1 values less than (200),
+    subpartition p1sp2 values less than (300)
+  ),
+  partition p2 values less than (30)
+  (
+    subpartition p2sp0 values less than (100),
+    subpartition p2sp1 values less than (200),
+    subpartition p2sp2 values less than (MAXVALUE)
+  )
+);
+create unique index i1 on test_range_range1(c3) global;
+
+insert into test_range_range1 values (1, 1, 1, 1), (1, 100, 101, 2), (1, 200, 201, 3);
+insert into test_range_range1 values (10, 1, 2, 1), (10, 100, 102, 2), (10, 200, 202, 3);
+insert into test_range_range1 values (20, 1, 3, 1), (20, 100, 103, 2), (20, 200, 203, 3);
+
+let $data_table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id=$__tenant_id__ and table_name='test_range_range1', table_id, 1);
+let $index_table_id=deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where tenant_id=$__tenant_id__ and data_table_id=$data_table_id, table_id, 1);
+
+#########################################################################
+# TEST_1: migrate to z2 with truncate info
+#########################################################################
+connection conn1;
+alter table test_range_range1 truncate partition p1, p0;
+
+ob1.mysql alter tenant test_tenant locality='F@z1,F@z2';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $__tenant_id__ and previous_locality != '', 0, 300;
+
+let $index_tablet_id=deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$__tenant_id__ and table_id=$index_table_id limit 1, tablet_id, 1);
+let $index_ls_id=deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_tablet_to_ls where tenant_id=$__tenant_id__ and tablet_id=$index_tablet_id, ls_id, 1);
+#
+# check exist truncate info in virtual table
+#
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_mds_node_stat where tenant_id = $__tenant_id__ and ls_id=$index_ls_id and tablet_id=$index_tablet_id and unit_id=5, 1, 100;
+
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_RECORD_TRUNCATE_CACHE', error_code = 4023, frequency = 1;
+
+connection sys_conn;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, GLOBAL_BROADCAST_SCN, 1);
+connection conn1;
+alter system major freeze;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__ , 1, 1200;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__ and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__ and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 1200;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$__tenant_id__ and compaction_scn=$major_scn and type="MAJOR_MERGE" and mds_filter_info!='' and is_full_merge=1, 1, 100;
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='record_truncate_flag' and name2='has_truncate_info' and value2=1, 1, 60;
+
+#########################################################################
+# TEST_2: truncate trans abort
+#########################################################################
+ob1.mysql alter system set_tp tp_name = 'EN_TRUNCATE_TABLET_TRANS', error_code = 4016, frequency = 1;
+
+connection conn1;
+--error 4016
+alter table test_range_range1 truncate partition p2;
+
+ob1.mysql alter system set_tp tp_name = 'EN_TRUNCATE_TABLET_TRANS', error_code = 4016, frequency = 0;
+
+connection sys_conn;
+let $last_broadcast_scn = query_get_value(select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, GLOBAL_BROADCAST_SCN, 1);
+connection conn1;
+alter system major freeze;
+ob1.check_until_timeout select GLOBAL_BROADCAST_SCN > $last_broadcast_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__ , 1, 1200;
+
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__ and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$__tenant_id__ and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 1200;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_virtual_tablet_compaction_history where tenant_id=$__tenant_id__ and compaction_scn=$major_scn and type="MAJOR_MERGE" and mds_filter_info!='', 0, 100;
+
+#########################################################################
+# TEST_3: truncate trans running
+#########################################################################
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'TRUNCATE_PARTITION_TRANS wait_for signal1';
+ob1.mysql alter system set_tp tp_name = 'EN_COMPACTION_RECORD_TRUNCATE_CACHE', error_code = 4023, frequency = 1;
+
+connection conn1;
+send alter table test_range_range1 truncate partition p2;
+
+connection conn2;
+send select /*+INDEX(test_range_range1 i1)*/* from test_range_range1 order by c1,c2,c3 asc;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='record_truncate_cache' and name3='exist_uncommitted_node' and value3=1, 1, 100;
+
+ob1.mysql set ob_global_debug_sync = 'reset';
+ob1.mysql set ob_global_debug_sync = 'now signal signal1';
+
+#########################################################################
+# TEST_4: migrate to z3, check has_truncate_info flag on tablet_meta
+#########################################################################
+let $z3_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_port0 = deploy_get_value(ob1.z3.obs0.port);
+
+ob1.mysql alter tenant test_tenant locality='F@z1,F@z2,F@z3';
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = $__tenant_id__ and previous_locality != '', 0, 300;
+
+ob1.check_until_timeout select count(*) > 0 from oceanbase.__all_server_event_history where module='merge_errsim' and event='record_truncate_flag' and name2='has_truncate_info' and value2=1 and svr_ip='$z3_ip0' and svr_port='$z3_port0', 1, 60;
+ob1.check_until_timeout SELECT COUNT(*) > 0 FROM oceanbase.__all_server_event_history WHERE module = 'storage_ha' and event = 'update_major_tablet_table_store' and svr_ip='$z3_ip0' and svr_port='$z3_port0' and name6='has_truncate_info' and value6=1, 1, 600;
+

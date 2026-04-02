@@ -1,0 +1,76 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证一次DDL刷新包含drop table以及tablegroup分区管理操作时，不影响schema刷新
+
+ob1=OBI(cluster=1:1:1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2', 'z3');
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1;z2;z3', locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 10;
+
+let $obs_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $obs_port = deploy_get_value(ob1.z1.obs0.port);
+let $mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_tenant_z1,$obs_ip,root@tenant_1,,test,$mysql_port);
+
+ob1.mysql alter tenant tenant_1 set locality = "F@z1,F@z2";
+ob1.check_until_timeout select count(*) from oceanbase.__all_tenant where tenant_name = "tenant_1" and previous_locality != "", 0, 180;
+
+connection conn_tenant_z1;
+set @@recyclebin = off;
+# create table & tablegroup
+create tablegroup tgtest;
+create table t1 (c1 int primary key, c2 int) tablegroup = tgtest;
+create table t2 (c1 int primary key, c2 int) tablegroup = tgtest;
+
+alter table t1 partition by list columns(c1) (partition p0 values in (default));
+alter table t2 partition by list columns(c1) (partition p0 values in (default));
+
+# 双向阻塞网络, 保证心跳不触发ob1.z3.obs0的schema刷新
+$rs.block_net ob1.z3.obs0;
+ob1.z3.obs0.block_net $rs;
+
+# drop table & alter tablegroup
+drop table t1;
+alter tablegroup tgtest partition by list columns 1 (partition p0 values in (1,2,3,4), partition p1 values in(default));
+
+# 恢复网络
+$rs.clean_net ob1.z3.obs0;
+ob1.z3.obs0.clean_net $rs;
+
+let $obs_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $obs_port = deploy_get_value(ob1.z3.obs0.port);
+let $mysql_port = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect (conn_tenant_z3,$obs_ip,root@tenant_1,,test,$mysql_port);
+
+# 预期ob1.z3.obs0能看到tablegroup发生变更，以及table not exist
+connection conn_tenant_z3;
+show create tablegroup tgtest;
+--error 1146
+select * from t1;

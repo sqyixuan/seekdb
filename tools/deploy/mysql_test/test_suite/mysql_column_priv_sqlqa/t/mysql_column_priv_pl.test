@@ -1,0 +1,831 @@
+# owner group:SQL-优化器
+# owner: sean.yyj
+# description:MySQL Column_priv
+# tags: PL
+# author:wb-ykk01675116
+
+--enable_sorted_result
+--echo # 环境清理
+--disable_warnings
+--error 0,1396
+drop user ykkpl@'%';
+--enable_warnings
+create user ykkpl IDENTIFIED BY 'ykkpl';
+grant all on *.* to ykkpl WITH GRANT OPTION;
+connect (conn1,$OBMYSQL_MS0,ykkpl,ykkpl,,$OBMYSQL_PORT);
+connection conn1;
+
+
+
+
+############################################# 语法验证 #############################################
+
+
+# 创建数据库
+--error 0,1008
+DROP DATABASE ykk_db1;
+CREATE DATABASE ykk_db1;
+
+--error 0,1008
+DROP DATABASE ykk;
+CREATE DATABASE ykk;
+
+USE ykk_db1;
+
+--error 0,1051
+DROP TABLE t1;
+CREATE TABLE t1(
+    c1 int,
+    c2 int,
+    c3 int
+);
+
+--error 0,1051
+DROP TABLE t2;
+CREATE TABLE t2(
+    c1 int
+);
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk.* TO ykk1;
+
+--error 0,1396
+DROP USER ykk2;
+CREATE USER 'ykk2'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk.* TO ykk2;
+
+--error 0,1396
+DROP USER ykk3;
+CREATE USER 'ykk3'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk.* TO ykk3;
+
+### 创建用户时将列权限授权给用户
+--error 0,1396
+DROP USER ykk4;
+CREATE USER 'ykk4'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk_db1.t1 TO ykk4 WITH GRANT OPTION;
+GRANT CREATE ROUTINE, ALTER ROUTINE, EXECUTE ON *.* TO ykk4;
+
+
+
+--error 0,1396
+DROP USER ykk5;
+CREATE USER 'ykk5'@'%' IDENTIFIED BY 'ykk123';
+
+
+
+### 授权：
+### 将列权限授权给没有列权限的用户
+
+# 给ykk1授权SELECT（不带 WITH GRANT OPTION）
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+# 给ykk3授权SELECT（带 WITH GRANT OPTION）
+
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk3 WITH GRANT OPTION';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+
+###
+# 登录ykk1
+connect (conn2,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn2;
+###
+--echo # ykk1授权给ykk2，预期失败
+--error 1142
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+# 验证ykk1用户是否只拥有ykk_db1.t1表的SELECT权限
+SELECT * FROM t1;
+--error 1142
+SELECT * FROM t2;
+
+
+###
+# 登录ykk3
+connect (conn3,$OBMYSQL_MS0,ykk3,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn3;
+###
+--echo # ykk3授权给ykk2
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+
+###
+# 登录ykk1
+connect (conn4,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn4;
+###
+--echo #  查询t1，验证SELECT权限
+USE ykk_db1;
+
+# 验证ykk2用户是否拥有ykk_db1.t1表的SELECT权限
+SELECT * FROM t1;
+--error 1142
+SELECT * FROM t2;
+
+
+
+
+### 撤销授权：
+
+###
+# 登录root
+#connect (conn5,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection default;
+###
+
+
+# 撤销ykk1的SELECT权限（不带 WITH GRANT OPTION）
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+
+
+###
+# 登录ykk1
+connect (conn6,$OBMYSQL_MS0,ykk1,ykk123,ykk,$OBMYSQL_PORT);
+connection conn6;
+###
+--echo #  查询t1，验证SELECT权限
+--error 1044
+USE ykk_db1;
+--error 1142
+SELECT * FROM ykk_db1.t1;
+
+
+###
+# 登录ykk2
+connect (conn7,$OBMYSQL_MS0,ykk2,ykk123,ykk,$OBMYSQL_PORT);
+connection conn7;
+###
+--echo #  查询t1，验证SELECT权限
+USE ykk_db1;
+SELECT * FROM t1;
+
+###
+# 登录root
+#connect (conn8,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection default;
+###
+
+
+# 撤销ykk3的SELECT权限（带 WITH GRANT OPTION）—————预期报语法错误
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT ON ykk_db1.t1 FROM ykk3 WITH GRANT OPTION';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+--error 1064
+CALL RevokeSelectPriv();
+
+
+
+
+### 将列权限授权给已有列权限的用户
+--echo # 再次执行用户ykk4的SELECT授权语句
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk4';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+
+# 再次执行授权语句时，携带 WITH GRANT OPTION
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk4 WITH GRANT OPTION';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+
+### 已有列权限的用户授权给没有列权限的用户
+# 使用ykk4用户给其他用户授权
+###
+# 登录ykk4
+connect (conn9,$OBMYSQL_MS0,ykk4,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn9;
+###
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk2';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+
+### 已有列权限的用户授权给已有列权限的用户
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk2';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+
+
+
+###
+# 登录root
+#connect (conn10,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection default;
+###
+
+
+### 用户没有列权限时撤销用户的列权限
+# 表列没有 SELECT、INSERT、UPDATE 权限时，撤销 SELECT/INSERT/UPDATE
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+--error 1147,5362
+CALL RevokeSelectPriv();
+
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE INSERT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+--error 1147,5362
+CALL RevokeSelectPriv();
+
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE UPDATE ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+--error 1147,5362
+CALL RevokeSelectPriv();
+
+
+
+
+# 表列拥有SELECT权限时，撤销INSERT、UPDATE权限
+--echo # 给用户ykk1授权SELECT
+GRANT SELECT ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的UPDATE/INSERT权限
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE INSERT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE UPDATE ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+
+
+# 表列拥有INSERT权限时，撤销SELECT、UPDATE权限
+--echo # 给用户ykk1授权INSERT
+GRANT INSERT ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的UPDATE/SELECT权限
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE UPDATE ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+
+
+# 表列拥有UPDATE权限时，撤销SELECT、INSERT权限
+--echo # 给用户ykk1授权UPDATE
+GRANT UPDATE ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的INSERT/SELECT权限
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE INSERT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT ON ykk_db1.t1 FROM ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+
+
+
+############################################# 列级权限场景 #############################################
+### 授权权限 
+# 登录root
+#connect (conn11,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection default;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk2;
+CREATE USER 'ykk2'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk3;
+CREATE USER 'ykk3'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk4;
+CREATE USER 'ykk4'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk5;
+CREATE USER 'ykk5'@'%' IDENTIFIED BY 'ykk123';
+
+
+# 使用ykk_db1数据库
+use ykk_db1;
+
+--error 0,1051
+DROP TABLE t_com1;
+CREATE TABLE t_com1(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_com2;
+CREATE TABLE t_com2(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_com3;
+CREATE TABLE t_com3(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+
+--echo # 分别给不同的列授不同的权限
+# 单列
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT(c1), INSERT(c2), UPDATE(c3) ON ykk_db1.t_com1 TO ykk4';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+# 查询授权语法
+SHOW GRANTS FOR ykk4;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME;
+
+
+# 多列
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT(c1,c2), INSERT(c2,c3), UPDATE(c3,c4) ON ykk_db1.t_com2 TO ykk4';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL GrantSelectPriv();
+
+# 查询授权语法
+SHOW GRANTS FOR ykk4;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME;
+
+
+
+
+--echo # 撤销分别给不同的不同的权限
+# 单列
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT(c1), INSERT(c2), UPDATE(c3) ON ykk_db1.t_com1 FROM ykk4';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME;
+
+
+# 多列
+--error 0,1305
+DROP PROCEDURE RevokeSelectPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSelectPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE SELECT(c1,c2), INSERT(c2,c3), UPDATE(c3,c4) ON ykk_db1.t_com2 FROM ykk4';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSelectPriv();
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME;
+
+
+
+
+#################### REVOKEALL权限时，表列的权限也会被撤销 ####################
+
+# 授权表列
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON ykk_db1.t_com3 TO ykk5;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY GRANTEE,TABLE_NAME;
+
+# 撤销表所有权限
+--error 0,1305
+DROP PROCEDURE RevokeSAllPriv;
+DELIMITER //;
+CREATE PROCEDURE RevokeSAllPriv()
+BEGIN
+    SET @grantQuery = 'REVOKE ALL ON ykk_db1.t_com3 FROM ykk5';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+CALL RevokeSAllPriv();
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY TABLE_NAME;
+
+
+
+
+
+
+##################################DEFINER拥有不同的权限##################################
+
+--disable_warnings
+--error 0,1396
+DROP USER ykk6;
+CREATE USER 'ykk6'@'%' IDENTIFIED BY 'ykk123';
+GRANT CREATE ROUTINE, ALTER ROUTINE, EXECUTE ON *.* TO ykk6;
+--enable_warnings
+# 创建存储过程，指定definer为ykk6
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE DEFINER = 'ykk6'@'%' PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT ON ykk_db1.t1 TO ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+# ykk6没有任何权限时调用
+#--error 1142
+CALL GrantSelectPriv();
+
+
+# 为ykk6授权SELECT权限（不带 WITH GRANT OPTION）
+GRANT SELECT ON ykk_db1.t1 TO ykk6;
+#--error 1142
+CALL GrantSelectPriv();
+
+
+# 为ykk6授权SELECT权限（带 WITH GRANT OPTION）
+GRANT SELECT ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+CALL GrantSelectPriv();
+
+
+# 撤销ykk6的SELECT权限
+REVOKE SELECT ON ykk_db1.t1 FROM ykk6;
+#--error 1142
+CALL GrantSelectPriv();
+
+
+# 为ykk6授权INSERT权限
+GRANT INSERT,UPDATE ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+#--error 1142
+CALL GrantSelectPriv();
+
+
+# 撤销ykk6的INSERT权限
+REVOKE INSERT,UPDATE ON ykk_db1.t1 FROM ykk6;
+#--error 1142
+CALL GrantSelectPriv();
+
+
+# 为ykk6授权某个列SELECT权限
+GRANT SELECT(c1) ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+#--error 1142
+CALL GrantSelectPriv();
+
+GRANT SELECT(c1,c2,c3) ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+#--error 1142
+CALL GrantSelectPriv();
+
+
+REVOKE ALL ON ykk_db1.t1 FROM ykk6;
+
+
+# 创建存储过程，指定definer为ykk6
+--error 0,1305
+DROP PROCEDURE GrantSelectPriv;
+DELIMITER //;
+CREATE DEFINER = 'ykk6'@'%' PROCEDURE GrantSelectPriv()
+BEGIN
+    SET @grantQuery = 'GRANT SELECT(c1,c2) ON ykk_db1.t1 TO ykk1';
+    PREPARE stmt FROM @grantQuery;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+END;
+
+//
+DELIMITER ;//
+
+
+# 为ykk6授权单个列SELECT权限
+GRANT SELECT(c1) ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+#--error 1143
+CALL GrantSelectPriv();
+
+REVOKE ALL ON ykk_db1.t1 FROM ykk6;
+
+
+# 为ykk6授权多个列SELECT权限
+GRANT SELECT(c2,c3) ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+#--error 1143
+CALL GrantSelectPriv();
+
+REVOKE ALL ON ykk_db1.t1 FROM ykk6;
+
+
+# 为ykk6授权所有列SELECT权限
+GRANT SELECT(c1,c2,c3) ON ykk_db1.t1 TO ykk6 WITH GRANT OPTION;
+CALL GrantSelectPriv();
+
+
+
+
+
+# 登录root
+#connect (conn61,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection default;
+
+USE ykk_db1;
+
+DROP TABLE t1;
+DROP DATABASE ykk_db1;
+DROP USER ykk1;
+DROP USER ykk2;
+DROP USER ykk3;
+DROP USER ykk4;
+DROP USER ykk5;
+DROP USER ykk6;

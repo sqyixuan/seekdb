@@ -1,0 +1,146 @@
+# owner: zhaoziqian.zzq
+# owner group: rs
+# tags: ddl
+# description: test call dbms_partition.manage_dynamic_partition() in invalid tenant
+
+connect (sys,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connection sys;
+let $zone = query_get_value(select zone from oceanbase.dba_ob_zones, zone, 1);
+alter system set debug_sync_timeout = '1000s';
+sleep 3;
+
+# case 1: manage dynamic partition in tenant in recyclebin
+set recyclebin = on;
+
+--disable_warnings
+#drop tenant if exists ziqian_dynamic_part_tenant1 force;
+#create resource unit if not exists 2c2g max_cpu=2, memory_size='2g';
+#drop resource pool if exists ziqian_dynamic_part_pool1;
+--enable_warnings
+--disable_query_log
+#eval create resource pool ziqian_dynamic_part_pool1 unit = '2c2g', unit_num = 1, zone_list = ('$zone');
+--enable_query_log
+#create tenant ziqian_dynamic_part_tenant1 replica_num = 1, resource_pool_list = ('ziqian_dynamic_part_pool1') set ob_tcp_invited_nodes='%';
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION wait_for signal1';
+sleep 3;
+
+connect (tenant1,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connection tenant1;
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+send call dbms_partition.manage_dynamic_partition();
+
+connection sys;
+drop tenant ziqian_dynamic_part_tenant1;
+sleep 3;
+set ob_global_debug_sync = 'now signal signal1';
+sleep 3;
+
+connection tenant1;
+--error 4179
+reap;
+
+connection sys;
+flashback tenant ziqian_dynamic_part_tenant1 to before drop;
+let tenant1_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+#drop tenant ziqian_dynamic_part_tenant1 force;
+#drop resource pool ziqian_dynamic_part_pool1;
+let $i=600;
+while ($i>0)
+{
+  sleep 1;
+  let $result = query_get_value(select count(*) as droped_tenant_cnt from oceanbase.__all_virtual_unit where tenant_id = $tenant1_id, droped_tenant_cnt, 1);
+  if($result == 0)
+  {
+    let $i = 0;
+  }
+  dec $i;
+}
+sleep 10;
+
+
+# case 2: manage dynamic partition in tenant in dropping status
+set recyclebin = off;
+
+--disable_warnings
+#drop tenant if exists ziqian_dynamic_part_tenant2 force;
+#drop resource pool if exists ziqian_dynamic_part_pool2;
+--enable_warnings
+--disable_query_log
+#eval create resource pool ziqian_dynamic_part_pool2 unit = '2c2g', unit_num = 1, zone_list = ('$zone');
+--enable_query_log
+#create tenant ziqian_dynamic_part_tenant2 replica_num = 1, resource_pool_list = ('ziqian_dynamic_part_pool2') set ob_tcp_invited_nodes='%';
+let tenant2_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+
+set ob_global_debug_sync = 'reset';
+set ob_global_debug_sync = 'BEFORE_MANAGE_DYNAMIC_PARTITION wait_for signal2';
+sleep 3;
+
+connect (tenant2,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connection tenant2;
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_DAILY');
+CALL DBMS_SCHEDULER.DISABLE('SCHEDULED_MANAGE_DYNAMIC_PARTITION_HOURLY');
+send call dbms_partition.manage_dynamic_partition();
+
+connection sys;
+#drop tenant ziqian_dynamic_part_tenant2;
+sleep 3;
+set ob_global_debug_sync = 'now signal signal2';
+sleep 3;
+
+connection tenant2;
+--error 4179
+reap;
+
+connection sys;
+#drop resource pool ziqian_dynamic_part_pool2;
+let $i=600;
+while ($i>0)
+{
+  sleep 1;
+  let $result = query_get_value(select count(*) as droped_tenant_cnt from oceanbase.__all_virtual_unit where tenant_id = $tenant2_id, droped_tenant_cnt, 1);
+  if($result == 0)
+  {
+    let $i = 0;
+  }
+  dec $i;
+}
+sleep 10;
+
+
+# case 3: manage dynamic partition in standby tenant
+connect (mysql,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connection mysql;
+
+--disable_warnings
+drop user if exists ziqian_dynamic_part_user;
+--enable_warnings
+create user ziqian_dynamic_part_user identified by '123456';
+grant select on oceanbase.* to ziqian_dynamic_part_user@'%';
+
+connection sys;
+let $svr_ip_port=`select concat(svr_ip,":",inner_port) as addr from oceanbase.__all_server where zone = 'zone1' limit 1`;
+
+--disable_warnings
+#drop tenant if exists ziqian_dynamic_part_tenant3 force;
+#drop resource pool if exists ziqian_dynamic_part_pool3;
+--enable_warnings
+--disable_query_log
+#eval create resource pool ziqian_dynamic_part_pool3 unit = '2c2g', unit_num = 1, zone_list = ('$zone');
+#eval create standby tenant ziqian_dynamic_part_tenant3 log_restore_source = 'service=$svr_ip_port user=ziqian_dynamic_part_user password=123456' resource_pool_list = ('ziqian_dynamic_part_pool3');
+--enable_query_log
+
+connect (tenant3,$OBMYSQL_MS0,root,,oceanbase,$OBMYSQL_PORT);
+connection tenant3;
+
+--error 4179
+call dbms_partition.manage_dynamic_partition();
+
+connection sys;
+#drop tenant ziqian_dynamic_part_tenant3 force;
+#drop resource pool ziqian_dynamic_part_pool3;
+
+connection mysql;
+drop user ziqian_dynamic_part_user;

@@ -1,0 +1,147 @@
+# owner: luofan.zp
+# owner group: SQL2
+# description: ps 不带有参数模版的, 或者部分参数模板能够命中 plan_cache
+
+--result_format 4
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+--disable_info
+--disable_metadata
+--disable_abort_on_error
+
+connection default;
+let $def_plan_cache_percentage = query_get_value(show variables like 'ob_plan_cache_percentage', Value, 1);
+set global ob_plan_cache_percentage = 10;
+set ob_trx_timeout = 1000000000;
+select  effective_tenant();
+
+# --echo
+--disable_warnings
+drop database if exists luofan_db;
+--enable_warnings
+create database luofan_db;
+use luofan_db;
+
+
+connection conn_admin;
+alter system flush plan cache global;
+--sleep 3
+connection default;
+
+create table t1 (c1 int, c2 int, c3 int, c4 int, c5 int);
+create table t2 (c1 int, c2 varchar(64), c3 varchar(64));
+create table t3 (c1 int, c2 int, c3 int);
+--echo
+--echo ******************fully parameterized template******
+set @i1 = 1;
+set @i2 = 2;
+set @i3 = 3;
+set @i4 = 4;
+set @i5 = 5;
+prepare stmt from 'insert into t1 values(?, ?, ?, ?, ?)';
+execute stmt using @i1, @i2, @i3, @i4, @i5;
+--echo //expect hit_count = 0;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+execute stmt using @i1, @i2, @i3, @i4, @i5;
+--echo //expect hit_count = 1;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+select * from t1;
+
+--echo
+--echo ******************without parameterized template******
+prepare stmt from 'insert into t1 values(10, 20, 30, 40, 50)';
+execute stmt;
+--echo //expect hit_count = 2;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+execute stmt;
+--echo //expect hit_count = 3;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+select * from t1;
+
+--echo
+--echo ******************partially parameterized template******
+set @i1 = 200;
+set @i2 = 400;
+set @i3 = 500;
+prepare stmt from 'insert into t1 values(100, ?, 300, ?, ?)';
+execute stmt using @i1, @i2, @i3;
+--echo //expect hit_count = 4;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+execute stmt using @i1, @i2, @i3;
+--echo //expect hit_count = 5;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+select * from t1;
+
+
+--echo
+--echo ******************partially parameterized template******
+set @i1 = 100;
+set @i2 = 400;
+prepare stmt from 'insert into t1 values(?, 200, 300, ?, 500)';
+execute stmt using @i1, @i2;
+--echo //expect hit_count = 6;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+execute stmt using @i1, @i2;
+--echo //expect hit_count = 7;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "insert into t1 values(?, ?, ?, ?, ?)";
+select * from t1;
+
+--echo
+--echo ******************is null cannot be parameterized*******
+set @i1 = 100;
+set @i2 = 400;
+prepare stmt from 'select c1 from t1 where c2=? and c3=? and c4 is null';
+execute stmt using @i1, @i2;
+--echo //expect hit_count = 0;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "select c1 from t1 where c2=? and c3=? and c4 is null";
+prepare stmt from 'select c1 from t1 where c2=? and c3=400 and c4 is null';
+execute stmt using @i1;
+--echo //expect hit_count = 0;
+select  hit_count, sql_id, query_sql from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql = "select c1 from t1 where c2=? and c3=400 and c4 is null";
+
+
+--echo
+--echo ******************test charset**************************
+set names utf8mb4;
+prepare st1 from "insert into t2 values(1,'测试', '测试test')";
+execute st1;
+set names gbk;
+prepare st1 from "insert into t2 values(1,'测试', '测试test')";
+execute st1;
+set names binary;
+prepare st1 from "insert into t2 values(1,'测试', '测试test')";
+execute st1;
+select c1, hex(c2), hex(c3) from t2;
+set names utf8mb4;
+
+
+--echo
+--echo ************test for negative numbers *******************
+insert into t3 values (-1, -1, -1);
+insert into t3 values (1, 1, 1);
+insert into t3 values (2, 2, 2);
+insert into t3 values (3, 3, 3);
+prepare stmt from "select 2 -   1, -1, (2 - 1) - 2 from dual";
+execute stmt;
+set @i1 = -1;
+prepare stmt from "select * from t3 where c1 = ?";
+execute stmt using @i1;
+set @i1 = 2;
+prepare stmt from "select * from t3 where c1 = ? - 1";
+execute stmt using @i1;
+set @i1 = 2;
+set @i2 = 1;
+prepare stmt from "select * from t3 where c1 = ? - ?";
+execute stmt using @i1, @i2;
+
+--disable_query_log
+eval set global ob_plan_cache_percentage = $def_plan_cache_percentage;
+--enable_query_log
+--disable_warnings
+drop database if exists luofan_db;
+--enable_warnings
+
+# login using admin acount
+connection conn_admin;

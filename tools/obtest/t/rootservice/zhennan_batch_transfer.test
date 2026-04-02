@@ -1,0 +1,174 @@
+#####################
+# owner : wangzhennan.wzn
+# owner group : rs
+# description : test batch transfer
+#####################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num=0);
+let $extra_conf = "cpu_count=16,memory_limit='25G',system_memory='5G',__min_full_resource_pool_memory='1073741824',stack_size='1536K',cache_wash_threshold='1G',enable_async_syslog=false,_private_buffer_size='16K',_fast_commit_callback_count='1',log_disk_size='20G'";
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+
+let $sys_tenant_id = 1;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+
+--echo #############################
+--echo # create mysql tenant
+set @@session.ob_query_timeout = 1000000000;
+eval CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='3G';
+eval CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+source include/check_schema_sync.inc;
+
+let $mysql_tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob_connect(conn_mysql, ob1.z1.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+
+ob1.mysql alter system set _transfer_task_tablet_count_threshold = 100 tenant mysql;
+
+--echo ############################
+--echo # create table with lob and idx
+connection conn_mysql;
+--disable_query_log
+# table with 99 tablets for a part (2 lob + 96 local index)
+create table t_with_99_tablets_for_a_part (c1 int primary key, c2 longtext) partition by hash(c1) partitions 2;
+let $i = 1;
+while ($i <= 96)
+{
+  eval create index idx_t_with_99_tablets_for_a_part_$i on t_with_99_tablets_for_a_part(c1);
+  inc $i;
+}
+# table with 128 index
+create table t_with_max_index (c1 int primary key, c2 longtext) partition by hash(c1) partitions 2;
+let $i = 1;
+while ($i <= 128)
+{
+  eval create index idx_t_with_max_index_$i on t_with_max_index(c1);
+  inc $i;
+}
+let $t_with_max_index_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't_with_max_index', table_id, 1);
+let $t_with_max_index_part_id = deploy_get_value(ob1.select select object_id from oceanbase.CDB_OBJECTS where con_id = $mysql_tenant_id and object_name = 't_with_max_index' and subobject_name='p1', object_id, 1);
+
+# table with 50 index
+create table t_with_50_index_1 (c1 int primary key, c2 longtext) partition by hash(c1) partitions 2;
+create table t_with_50_index_2 (c1 int primary key, c2 longtext) partition by hash(c1) partitions 2;
+let $i = 1;
+while ($i <= 50)
+{
+  eval create index idx_t_with_50_index_1_$i on t_with_50_index_1(c1);
+  eval create index idx_t_with_50_index_2_$i on t_with_50_index_2(c1);
+  inc $i;
+}
+let $t_with_50_index_1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't_with_50_index_1', table_id, 1);
+let $t_with_50_index_2_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 't_with_50_index_2', table_id, 1);
+let $t_with_50_index_1_part_id = deploy_get_value(ob1.select select object_id from oceanbase.CDB_OBJECTS where con_id = $mysql_tenant_id and object_name = 't_with_50_index_1' and subobject_name='p1', object_id, 1);
+let $t_with_50_index_2_part_id = deploy_get_value(ob1.select select object_id from oceanbase.CDB_OBJECTS where con_id = $mysql_tenant_id and object_name = 't_with_50_index_2' and subobject_name='p1', object_id, 1);
+
+# part level 0
+let $i = 1;
+while ($i <= 20)
+{
+  eval create table t_nopart_$i(c1 int);
+  inc $i;
+}
+# part level 1
+let $i = 1;
+while ($i <= 50)
+{
+  eval create table t_part_$i(c1 int primary key, c2 longtext) partition by hash(c1) partitions 2;
+  eval create index idx_t_$i on t_part_$i(c1);
+  eval insert into t_part_$i values (1, 1);
+  eval insert into t_part_$i values (2, 2);
+  inc $i;
+}
+# part level 2
+let $i = 1;
+while ($i <= 50)
+{
+  eval create table t_subpart_$i(c0 int, c1 int, c2 longtext, primary key (c0, c1)) partition by hash(c0) subpartition by hash(c1) subpartitions 2 partitions 2;
+  eval create index idx_t_subpart_$i on t_subpart_$i(c0, c1);
+  eval insert into t_subpart_$i (c0, c1, c2) values (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4);
+  inc $i;
+}
+--enable_query_log
+
+--echo ############################
+--echo # primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1,z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 180;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED', 10, 10;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 10;
+
+--echo ############################
+--echo # batch transfer result
+ob1.mysql select part_count, tablet_count, status, result from oceanbase.__all_virtual_transfer_task_history order by task_id;
+--echo # part with 128 index transfer alone
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where part_list = '$t_with_max_index_id:$t_with_max_index_part_id' and status = 'COMPLETED' order by create_time limit 1, 1, 5;
+let $first_task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED' order by create_time limit 1, task_id, 1);
+--echo # no lock remains
+ob1.check_until_timeout select count(*) = 0 from oceanbase.__all_virtual_obj_lock as a join oceanbase.__all_virtual_transfer_task_history as b on a.tenant_id = b.tenant_id and a.owner_id = b.table_lock_owner_id and a.lock_mode = 'RS' and (a.ls_id = b.dest_ls or a.ls_id = b.src_ls), 1, 5;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time;
+
+--echo ###########################
+--echo # test location after transfer
+connection conn_mysql;
+
+select * from t_part_1 order by c1;
+select * from t_subpart_1 order by c1;
+ob_connect(conn_mysql_z2, ob1.z2.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql_z2;
+select * from t_part_2 order by c1;
+select * from t_subpart_2 order by c1;
+ob_connect(conn_mysql_z3, ob1.z3.obs0, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql_z3;
+select * from t_part_3 order by c1;
+select * from t_subpart_3 order by c1;
+select * from t_part_4 as a join t_part_5 as b where a.c1 = b.c1 order by a.c1;
+select * from t_subpart_4 as a join t_subpart_5 as b where a.c1 = b.c1 order by a.c1;
+
+--echo #############################
+--echo # test _transfer_process_lock_tx_timeout
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 100;
+
+ob1.mysql alter system set internal_sql_execute_timeout = '100s';
+ob1.mysql alter system set _transfer_process_lock_tx_timeout = '30s' tenant 'mysql';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART wait_for signal_lock execute 1000';
+
+--echo # primary zone 2->1
+ob1.mysql alter tenant mysql set primary_zone = 'z1';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'INIT' and comment = '', 1, 60;
+sleep 31;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock';
+
+--echo # process init task transaction timeout
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and status = 'INIT' and comment = 'Unable to process task due to transaction timeout', 1, 10;
+
+ob1.mysql set ob_global_debug_sync = 'now signal signal_lock';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_LOCK_TABLE_AND_PART clear';
+
+--echo # process init task normally
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $mysql_tenant_id and comment = 'Unable to process task due to transaction timeout', 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_job, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_balance_task, 0, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task, 0, 60;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time;
+
+--echo ###############################
+--echo # test _transfer_task_tablet_count_threshold
+connection conn_sys;
+--error 1210
+alter system set _transfer_task_tablet_count_threshold = 645 tenant mysql;
+
+alter system set _transfer_task_tablet_count_threshold = 32 tenant mysql;
+let $last_transfer_task_id = deploy_get_value(ob1.select select task_id from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED' order by create_time desc limit 1, task_id, 1);
+--echo # primary zone 1->2
+ob1.mysql alter tenant mysql set primary_zone = 'z1, z2';
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where status = 'COMPLETED' and task_id > $last_transfer_task_id, 24, 120;
+connection conn_mysql;
+select part_count, not_exist_part_list, lock_conflict_part_list, table_lock_tablet_list, tablet_count from oceanbase.__all_transfer_task_history where status = 'COMPLETED' order by finish_time desc limit 22;

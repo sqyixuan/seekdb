@@ -1,0 +1,862 @@
+alter system flush plan cache;
+alter system set large_query_threshold = '1s';
+alter system set enable_auto_leader_switch=false;
+select effective_tenant();
+effective_tenant()
+xy_tenant_1
+**************************************** Case 1 Insert Dist Plans ****************************************
+
+insert into case1_t_1 values (1, 1), (2, 2), (3, 3);
+insert into case1_t_1 values (4, 4), (5, 5), (6, 6);
+
+explain insert into case1_t_1 values (4, 4), (5, 5), (6, 6);
+Query Plan
+============================================
+|ID|OPERATOR           |NAME|EST. ROWS|COST|
+--------------------------------------------
+|0 |EXCHANGE IN DISTR  |    |0        |0   |
+|1 | EXCHANGE OUT DISTR|    |0        |0   |
+|2 |  INSERT           |    |0        |0   |
+|3 |   EXPRESSION      |    |0        |0   |
+============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output([__values.pk1], [__values.a1]), filter(nil), 
+      columns([case1_t_1.pk1], [case1_t_1.a1]), partitions(p[0-1])
+  3 - output([__values.pk1], [__values.a1]), filter(nil)
+      values({4, 4}, {5, 5}, {6, 6})
+
+
+// expect plan to be distributed
+select type = 3 from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'insert into case1_t_1 values (?, ?), (?, ?), (?, ?)';
+type = 3
+1
+
+// hit_count == 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'insert into case1_t_1 values (?, ?), (?, ?), (?, ?)';
+hit_count
+1
+
+// switch replica leader, part0 in backup, part1 in main
+
+insert into case1_t_1 values (7, 7), (8, 8), (9, 9);
+
+explain insert into case1_t_1 values (7, 7), (8, 8), (9, 9);
+Query Plan
+============================================
+|ID|OPERATOR           |NAME|EST. ROWS|COST|
+--------------------------------------------
+|0 |EXCHANGE IN DISTR  |    |0        |0   |
+|1 | EXCHANGE OUT DISTR|    |0        |0   |
+|2 |  INSERT           |    |0        |0   |
+|3 |   EXPRESSION      |    |0        |0   |
+============================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output([__values.pk1], [__values.a1]), filter(nil), 
+      columns([case1_t_1.pk1], [case1_t_1.a1]), partitions(p[0-1])
+  3 - output([__values.pk1], [__values.a1]), filter(nil)
+      values({7, 7}, {8, 8}, {9, 9})
+
+
+// hit the same plan
+// hit_count == 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'insert into case1_t_1 values (?, ?), (?, ?), (?, ?)';
+hit_count
+2
+
+**************************************** Case 2 Delete Dist Plans ****************************************
+
+=============================== single table delete ===============================
+
+delete from case2_t_1 where pk1 in (1, 2);
+delete from case2_t_1 where pk1 in (2, 3);
+
+explain delete from case2_t_1 where pk1 in (2, 3);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |4        |61  |
+|1 | EXCHANGE OUT DISTR|         |4        |61  |
+|2 |  DELETE           |         |4        |61  |
+|3 |   TABLE GET       |case2_t_1|4        |57  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case2_t_1: (case2_t_1.pk1, case2_t_1.a1)}])
+  3 - output([case2_t_1.pk1], [case2_t_1.a1]), filter(nil), 
+      access([case2_t_1.pk1], [case2_t_1.a1]), partitions(p[0-1])
+
+
+// expect to be 1 plan in plan stat
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_1 where pk1 in (?, ?)';
+hit_count
+1
+
+// switch replica leader, part0 in backup, part1 in main
+
+delete from case2_t_1 where pk1 in (3, 4);
+
+explain delete from case2_t_1 where pk1 in (3, 4);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |4        |61  |
+|1 | EXCHANGE OUT DISTR|         |4        |61  |
+|2 |  DELETE           |         |4        |61  |
+|3 |   TABLE GET       |case2_t_1|4        |57  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case2_t_1: (case2_t_1.pk1, case2_t_1.a1)}])
+  3 - output([case2_t_1.pk1], [case2_t_1.a1]), filter(nil), 
+      access([case2_t_1.pk1], [case2_t_1.a1]), partitions(p[0-1])
+
+
+// hit the same plan, hit_count == 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_1 where pk1 in (?, ?)';
+hit_count
+2
+
+============================ delete with subquery  ============================
+
+
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+
+explain delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  DELETE           |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case2_t_2|2        |36  |
+|5 |    TABLE SCAN     |case2_t_3|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}])
+  3 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      equal_conds([case2_t_2.pk2 = case2_t_3.pk3]), other_conds(nil)
+  4 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      access([case2_t_2.pk2], [case2_t_2.a2]), partitions(p[0-1])
+  5 - output([case2_t_3.pk3]), filter(nil), 
+      access([case2_t_3.pk3]), partitions(p[0-1])
+
+
+// expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_2 where pk2 in (select pk3 from case2_t_3)';
+hit_count
+1
+
+// switch replica leader for case2_t_2, part0 in backup, part1 in main
+
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+
+explain delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+Query Plan
+==============================================================
+|ID|OPERATOR                        |NAME     |EST. ROWS|COST|
+--------------------------------------------------------------
+|0 |MULTI PARTITION DELETE          |         |1        |73  |
+|1 | EXCHANGE IN DISTR              |         |1        |73  |
+|2 |  EXCHANGE OUT DISTR            |         |1        |73  |
+|3 |   MERGE JOIN                   |         |1        |73  |
+|4 |    EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|5 |     EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|6 |      TABLE SCAN                |case2_t_2|2        |36  |
+|7 |    TABLE SCAN                  |case2_t_3|2        |36  |
+==============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil), params([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}]), index_info([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}])
+  1 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  2 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  3 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      equal_conds([case2_t_2.pk2 = case2_t_3.pk3]), other_conds(nil)
+  4 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), sort_keys([case2_t_2.pk2, ASC])
+  5 - (#keys=1, [case2_t_2.pk2]), output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  6 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      access([case2_t_2.pk2], [case2_t_2.a2]), partitions(p[0-1])
+  7 - output([case2_t_3.pk3]), filter(nil), 
+      access([case2_t_3.pk3]), partitions(p[0-1])
+
+
+// expect 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_2 where pk2 in (select pk3 from case2_t_3)';
+hit_count
+1
+1
+
+// switch replica leader for case2_t_3, part0 in backup, part1 in main
+// now t3_part0 and t2_part0 in backup, t3_part1 and t2_part1 are in main
+
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+
+explain delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  DELETE           |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case2_t_2|2        |36  |
+|5 |    TABLE SCAN     |case2_t_3|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}])
+  3 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      equal_conds([case2_t_2.pk2 = case2_t_3.pk3]), other_conds(nil)
+  4 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      access([case2_t_2.pk2], [case2_t_2.a2]), partitions(p[0-1])
+  5 - output([case2_t_3.pk3]), filter(nil), 
+      access([case2_t_3.pk3]), partitions(p[0-1])
+
+
+// hit the old plan, epect 2, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_2 where pk2 in (select pk3 from case2_t_3)';
+hit_count
+2
+1
+
+// switch replica leader for case2_t_2, part0 in backup, part1 in backup
+// now t2's partitions are all in backup
+
+delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+
+explain delete from case2_t_2 where pk2 in (select pk3 from case2_t_3);
+Query Plan
+==============================================================
+|ID|OPERATOR                        |NAME     |EST. ROWS|COST|
+--------------------------------------------------------------
+|0 |MULTI PARTITION DELETE          |         |1        |73  |
+|1 | EXCHANGE IN DISTR              |         |1        |73  |
+|2 |  EXCHANGE OUT DISTR            |         |1        |73  |
+|3 |   MERGE JOIN                   |         |1        |73  |
+|4 |    EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|5 |     EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|6 |      TABLE SCAN                |case2_t_2|2        |36  |
+|7 |    TABLE SCAN                  |case2_t_3|2        |36  |
+==============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil), params([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}]), index_info([{case2_t_2: (case2_t_2.pk2, case2_t_2.a2)}])
+  1 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  2 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  3 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      equal_conds([case2_t_2.pk2 = case2_t_3.pk3]), other_conds(nil)
+  4 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), sort_keys([case2_t_2.pk2, ASC])
+  5 - (#keys=1, [case2_t_2.pk2]), output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil)
+  6 - output([case2_t_2.pk2], [case2_t_2.a2]), filter(nil), 
+      access([case2_t_2.pk2], [case2_t_2.a2]), partitions(p[0-1])
+  7 - output([case2_t_3.pk3]), filter(nil), 
+      access([case2_t_3.pk3]), partitions(p[0-1])
+
+
+// expect 2, 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'delete from case2_t_2 where pk2 in (select pk3 from case2_t_3)';
+hit_count
+2
+2
+
+**************************************** Case 3 Update Dist Plans ****************************************
+
+======================= single table update ===========================
+
+update case3_t_1 set a1 = 2;
+update case3_t_1 set a1 = 3;
+
+explain update case3_t_1 set a1 = 3;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |2        |38  |
+|1 | EXCHANGE OUT DISTR|         |2        |38  |
+|2 |  UPDATE           |         |2        |38  |
+|3 |   TABLE SCAN      |case3_t_1|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case3_t_1: (case3_t_1.pk1, case3_t_1.a1)}]), update([case3_t_1.a1=?])
+  3 - output([case3_t_1.pk1], [case3_t_1.a1], [?]), filter(nil), 
+      access([case3_t_1.pk1], [case3_t_1.a1]), partitions(p[0-1])
+
+
+// expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'update case3_t_1 set a1 = ?';
+hit_count
+1
+
+// switch replica leader for case3_tbl_1, part0 in backup, part1 in main
+
+update case3_t_1 set a1 = 4;
+
+explain update case3_t_1 set a1 = 4;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |2        |38  |
+|1 | EXCHANGE OUT DISTR|         |2        |38  |
+|2 |  UPDATE           |         |2        |38  |
+|3 |   TABLE SCAN      |case3_t_1|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case3_t_1: (case3_t_1.pk1, case3_t_1.a1)}]), update([case3_t_1.a1=?])
+  3 - output([case3_t_1.pk1], [case3_t_1.a1], [?]), filter(nil), 
+      access([case3_t_1.pk1], [case3_t_1.a1]), partitions(p[0-1])
+
+
+// expect 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'update case3_t_1 set a1 = ?';
+hit_count
+2
+======================= update with subquery ==================================
+
+// all the partitition of case3_t_2 should stay in the same server
+update case3_t_2 set a2 = 2 where pk2 in (select pk3 from case3_t_3);
+update case3_t_2 set a2 = 2 where pk2 in (select pk3 from case3_t_3);
+
+explain update case3_t_2 set a2 = 2 where pk2 in (select pk3 from case3_t_3);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  UPDATE           |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case3_t_2|2        |36  |
+|5 |    TABLE SCAN     |case3_t_3|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case3_t_2: (case3_t_2.pk2, case3_t_2.a2)}]), update([case3_t_2.a2=?])
+  3 - output([case3_t_2.pk2], [case3_t_2.a2], [?]), filter(nil), 
+      equal_conds([case3_t_2.pk2 = case3_t_3.pk3]), other_conds(nil)
+  4 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil), 
+      access([case3_t_2.pk2], [case3_t_2.a2]), partitions(p[0-1])
+  5 - output([case3_t_3.pk3]), filter(nil), 
+      access([case3_t_3.pk3]), partitions(p[0-1])
+
+
+// expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'update case3_t_2 set a2 = ? where pk2 in (select pk3 from case3_t_3)';
+hit_count
+1
+
+// switch replica leader for case3_t_3, part0 in backup, part1 in main
+
+update case3_t_2 set a2 = 3 where pk2 in (select pk3 from case3_t_3);
+update case3_t_2 set a2 = 3 where pk2 in (select pk3 from case3_t_3);
+
+explain update case3_t_2 set a2 = 3 where pk2 in (select pk3 from case3_t_3);
+Query Plan
+==============================================================
+|ID|OPERATOR                        |NAME     |EST. ROWS|COST|
+--------------------------------------------------------------
+|0 |MULTI PARTITION UPDATE          |         |1        |73  |
+|1 | EXCHANGE IN DISTR              |         |1        |73  |
+|2 |  EXCHANGE OUT DISTR            |         |1        |73  |
+|3 |   MERGE JOIN                   |         |1        |73  |
+|4 |    EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|5 |     EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|6 |      TABLE SCAN                |case3_t_2|2        |36  |
+|7 |    TABLE SCAN                  |case3_t_3|2        |36  |
+==============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil), params([{case3_t_2: (case3_t_2.pk2, case3_t_2.a2)}]), index_info([{case3_t_2: (case3_t_2.pk2, case3_t_2.a2)}]), update([case3_t_2.a2=?])
+  1 - output([case3_t_2.pk2], [case3_t_2.a2], [?]), filter(nil)
+  2 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil)
+  3 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil), 
+      equal_conds([case3_t_2.pk2 = case3_t_3.pk3]), other_conds(nil)
+  4 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil), sort_keys([case3_t_2.pk2, ASC])
+  5 - (#keys=1, [case3_t_2.pk2]), output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil)
+  6 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil), 
+      access([case3_t_2.pk2], [case3_t_2.a2]), partitions(p[0-1])
+  7 - output([case3_t_3.pk3]), filter(nil), 
+      access([case3_t_3.pk3]), partitions(p[0-1])
+
+// expect 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'update case3_t_2 set a2 = ? where pk2 in (select pk3 from case3_t_3)';
+hit_count
+1
+1
+
+// switch replica leader for case3_t_3, part0 in main, part1 in main
+
+update case3_t_2 set a2 = 5 where pk2 in (select pk3 from case3_t_3);
+
+explain update case3_t_2 set a2 = 5 where pk2 in (select pk3 from case3_t_3);
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  UPDATE           |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case3_t_2|2        |36  |
+|5 |    TABLE SCAN     |case3_t_3|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output(nil), filter(nil)
+  1 - output(nil), filter(nil)
+  2 - output(nil), filter(nil), params([{case3_t_2: (case3_t_2.pk2, case3_t_2.a2)}]), update([case3_t_2.a2=?])
+  3 - output([case3_t_2.pk2], [case3_t_2.a2], [?]), filter(nil), 
+      equal_conds([case3_t_2.pk2 = case3_t_3.pk3]), other_conds(nil)
+  4 - output([case3_t_2.pk2], [case3_t_2.a2]), filter(nil), 
+      access([case3_t_2.pk2], [case3_t_2.a2]), partitions(p[0-1])
+  5 - output([case3_t_3.pk3]), filter(nil), 
+      access([case3_t_3.pk3]), partitions(p[0-1])
+
+
+// expect 2, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'update case3_t_2 set a2 = ? where pk2 in (select pk3 from case3_t_3)';
+hit_count
+2
+1
+**************************************** Case 4 Select Dist Plans ****************************************
+
+======================================= select with 2 tables ===========================================
+
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+
+explain select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  MERGE JOIN       |         |1        |73  |
+|3 |   TABLE SCAN      |case4_t_1|2        |36  |
+|4 |   TABLE SCAN      |case4_t_2|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  1 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  2 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      equal_conds([case4_t_1.pk1 = case4_t_2.pk2]), other_conds(nil)
+  3 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), 
+      access([case4_t_1.pk1], [case4_t_1.a1]), partitions(p[0-1])
+  4 - output([case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      access([case4_t_2.pk2], [case4_t_2.a2]), partitions(p[0-1])
+
+
+// expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2';
+hit_count
+1
+
+// switch replica leader for case4_t_1, part0 in backup, part1 in main
+
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+
+explain select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+Query Plan
+=============================================================
+|ID|OPERATOR                       |NAME     |EST. ROWS|COST|
+-------------------------------------------------------------
+|0 |EXCHANGE IN DISTR              |         |1        |73  |
+|1 | EXCHANGE OUT DISTR            |         |1        |73  |
+|2 |  MERGE JOIN                   |         |1        |73  |
+|3 |   EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|4 |    EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|5 |     TABLE SCAN                |case4_t_1|2        |36  |
+|6 |   TABLE SCAN                  |case4_t_2|2        |36  |
+=============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  1 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  2 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      equal_conds([case4_t_1.pk1 = case4_t_2.pk2]), other_conds(nil)
+  3 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), sort_keys([case4_t_1.pk1, ASC])
+  4 - (#keys=1, [case4_t_1.pk1]), output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil)
+  5 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), 
+      access([case4_t_1.pk1], [case4_t_1.a1]), partitions(p[0-1])
+  6 - output([case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      access([case4_t_2.pk2], [case4_t_2.a2]), partitions(p[0-1])
+
+
+// new plan was generated, count(hit_count) == 2, expect 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2';
+hit_count
+1
+1
+
+// switch replica for case4_t_1, part0 in main, part1 in main
+
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+
+explain select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  MERGE JOIN       |         |1        |73  |
+|3 |   TABLE SCAN      |case4_t_1|2        |36  |
+|4 |   TABLE SCAN      |case4_t_2|2        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  1 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  2 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      equal_conds([case4_t_1.pk1 = case4_t_2.pk2]), other_conds(nil)
+  3 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), 
+      access([case4_t_1.pk1], [case4_t_1.a1]), partitions(p[0-1])
+  4 - output([case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      access([case4_t_2.pk2], [case4_t_2.a2]), partitions(p[0-1])
+
+
+// hit old plan, expect 2, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2';
+hit_count
+2
+1
+
+// switch replica leader for case4_t_2, part0 in backup, part1 in main
+
+select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+
+explain select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2;
+Query Plan
+=============================================================
+|ID|OPERATOR                       |NAME     |EST. ROWS|COST|
+-------------------------------------------------------------
+|0 |EXCHANGE IN DISTR              |         |1        |73  |
+|1 | EXCHANGE OUT DISTR            |         |1        |73  |
+|2 |  MERGE JOIN                   |         |1        |73  |
+|3 |   EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|4 |    EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|5 |     TABLE SCAN                |case4_t_1|2        |36  |
+|6 |   TABLE SCAN                  |case4_t_2|2        |36  |
+=============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  1 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil)
+  2 - output([case4_t_1.pk1], [case4_t_1.a1], [case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      equal_conds([case4_t_1.pk1 = case4_t_2.pk2]), other_conds(nil)
+  3 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), sort_keys([case4_t_1.pk1, ASC])
+  4 - (#keys=1, [case4_t_1.pk1]), output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil)
+  5 - output([case4_t_1.pk1], [case4_t_1.a1]), filter(nil), 
+      access([case4_t_1.pk1], [case4_t_1.a1]), partitions(p[0-1])
+  6 - output([case4_t_2.pk2], [case4_t_2.a2]), filter(nil), 
+      access([case4_t_2.pk2], [case4_t_2.a2]), partitions(p[0-1])
+
+
+// hit old plan, expect 2, 2
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_1 join case4_t_2 on case4_t_1.pk1 = case4_t_2.pk2';
+hit_count
+2
+2
+
+=========================== select xxx from t join select 1, etc ================================
+
+select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3;
+
+explain select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3;
+Query Plan
+===========================================================
+|ID|OPERATOR                     |NAME     |EST. ROWS|COST|
+-----------------------------------------------------------
+|0 |EXCHANGE IN DISTR            |         |2        |37  |
+|1 | EXCHANGE OUT DISTR          |         |2        |37  |
+|2 |  MERGE OUTER JOIN           |         |2        |37  |
+|3 |   TABLE SCAN                |case4_t_3|2        |36  |
+|4 |   EXCHANGE IN DISTR         |         |1        |1   |
+|5 |    EXCHANGE OUT DISTR (PKEY)|         |1        |1   |
+|6 |     SUBPLAN SCAN            |tmp_t    |1        |1   |
+|7 |      EXPRESSION             |         |1        |1   |
+===========================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_3.pk3]), filter(nil)
+  1 - output([case4_t_3.pk3]), filter(nil)
+  2 - output([case4_t_3.pk3]), filter(nil), 
+      equal_conds([tmp_t.v1 = case4_t_3.pk3]), other_conds(nil)
+  3 - output([case4_t_3.pk3]), filter(nil), 
+      access([case4_t_3.pk3]), partitions(p[0-1])
+  4 - output([tmp_t.v1]), filter(nil)
+  5 - (#keys=1, [tmp_t.v1]), output([tmp_t.v1]), filter(nil), is_local, dop=1
+  6 - output([tmp_t.v1]), filter(nil), 
+      access([tmp_t.v1])
+  7 - output([1]), filter(nil)
+      values({1})
+
+
+// hit_count == 0
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3';
+hit_count
+0
+
+// switch replica leader for case4_t_3, part0 in backup, part1 in main
+
+select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3;
+
+explain select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3;
+Query Plan
+===========================================================
+|ID|OPERATOR                     |NAME     |EST. ROWS|COST|
+-----------------------------------------------------------
+|0 |EXCHANGE IN DISTR            |         |2        |37  |
+|1 | EXCHANGE OUT DISTR          |         |2        |37  |
+|2 |  MERGE OUTER JOIN           |         |2        |37  |
+|3 |   TABLE SCAN                |case4_t_3|2        |36  |
+|4 |   EXCHANGE IN DISTR         |         |1        |1   |
+|5 |    EXCHANGE OUT DISTR (PKEY)|         |1        |1   |
+|6 |     SUBPLAN SCAN            |tmp_t    |1        |1   |
+|7 |      EXPRESSION             |         |1        |1   |
+===========================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_3.pk3]), filter(nil)
+  1 - output([case4_t_3.pk3]), filter(nil)
+  2 - output([case4_t_3.pk3]), filter(nil), 
+      equal_conds([tmp_t.v1 = case4_t_3.pk3]), other_conds(nil)
+  3 - output([case4_t_3.pk3]), filter(nil), 
+      access([case4_t_3.pk3]), partitions(p[0-1])
+  4 - output([tmp_t.v1]), filter(nil)
+  5 - (#keys=1, [tmp_t.v1]), output([tmp_t.v1]), filter(nil), is_local, dop=1
+  6 - output([tmp_t.v1]), filter(nil), 
+      access([tmp_t.v1])
+  7 - output([1]), filter(nil)
+      values({1})
+
+
+// hit the same plan, expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select pk3 from case4_t_3 left join (select 1 v1 from dual) tmp_t on tmp_t.v1 = case4_t_3.pk3';
+hit_count
+1
+
+==================================== select with 3 tables ====================================
+
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+
+explain select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  NESTED-LOOP JOIN |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case4_t_4|2        |36  |
+|5 |    TABLE SCAN     |case4_t_5|2        |36  |
+|6 |   TABLE GET       |case4_t_6|1        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  1 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  2 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      conds(nil), nl_params_([case4_t_5.pk5])
+  3 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      equal_conds([case4_t_4.pk4 = case4_t_5.pk5]), other_conds(nil)
+  4 - output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil), 
+      access([case4_t_4.pk4], [case4_t_4.a4]), partitions(p[0-1])
+  5 - output([case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      access([case4_t_5.pk5], [case4_t_5.a5]), partitions(p[0-1])
+  6 - output([case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      access([case4_t_6.pk6], [case4_t_6.a6]), partitions(p[0-1])
+
+
+// new plan was genenered, expect 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6';
+hit_count
+1
+
+// switch replica leader for case4_t_4, part0 in backup, part1 in main
+
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+
+explain select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+Query Plan
+==============================================================
+|ID|OPERATOR                        |NAME     |EST. ROWS|COST|
+--------------------------------------------------------------
+|0 |EXCHANGE IN DISTR               |         |1        |73  |
+|1 | EXCHANGE OUT DISTR             |         |1        |73  |
+|2 |  NESTED-LOOP JOIN              |         |1        |73  |
+|3 |   MERGE JOIN                   |         |1        |73  |
+|4 |    EXCHANGE IN MERGE SORT DISTR|         |2        |37  |
+|5 |     EXCHANGE OUT DISTR (PKEY)  |         |2        |36  |
+|6 |      TABLE SCAN                |case4_t_4|2        |36  |
+|7 |    TABLE SCAN                  |case4_t_5|2        |36  |
+|8 |   TABLE GET                    |case4_t_6|1        |36  |
+==============================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  1 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  2 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      conds(nil), nl_params_([case4_t_5.pk5])
+  3 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      equal_conds([case4_t_4.pk4 = case4_t_5.pk5]), other_conds(nil)
+  4 - output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil), sort_keys([case4_t_4.pk4, ASC])
+  5 - (#keys=1, [case4_t_4.pk4]), output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil)
+  6 - output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil), 
+      access([case4_t_4.pk4], [case4_t_4.a4]), partitions(p[0-1])
+  7 - output([case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      access([case4_t_5.pk5], [case4_t_5.a5]), partitions(p[0-1])
+  8 - output([case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      access([case4_t_6.pk6], [case4_t_6.a6]), partitions(p[0-1])
+
+
+// new plan, expect 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6';
+hit_count
+1
+1
+
+// switch replica leader for case4_t_5, part0 in backup, part1 in main
+
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+
+
+explain select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+Query Plan
+===========================================================
+|ID|OPERATOR                     |NAME     |EST. ROWS|COST|
+-----------------------------------------------------------
+|0 |EXCHANGE IN DISTR            |         |1        |73  |
+|1 | EXCHANGE OUT DISTR          |         |1        |73  |
+|2 |  NESTED-LOOP JOIN           |         |1        |73  |
+|3 |   EXCHANGE IN DISTR         |         |1        |73  |
+|4 |    EXCHANGE OUT DISTR (PKEY)|         |1        |73  |
+|5 |     MERGE JOIN              |         |1        |73  |
+|6 |      TABLE SCAN             |case4_t_4|2        |36  |
+|7 |      TABLE SCAN             |case4_t_5|2        |36  |
+|8 |   TABLE GET                 |case4_t_6|1        |36  |
+===========================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  1 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  2 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      conds(nil), nl_params_([case4_t_5.pk5])
+  3 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil)
+  4 - (#keys=1, [case4_t_5.pk5]), output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil)
+  5 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      equal_conds([case4_t_4.pk4 = case4_t_5.pk5]), other_conds(nil)
+  6 - output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil), 
+      access([case4_t_4.pk4], [case4_t_4.a4]), partitions(p[0-1])
+  7 - output([case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      access([case4_t_5.pk5], [case4_t_5.a5]), partitions(p[0-1])
+  8 - output([case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      access([case4_t_6.pk6], [case4_t_6.a6]), partitions(p[0-1])
+
+
+// new plan expect 1, 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6';
+hit_count
+1
+1
+1
+
+// switch replica leader for case4_t_6, part0 in backup, part1 in main
+
+select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+
+explain select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6;
+Query Plan
+=================================================
+|ID|OPERATOR           |NAME     |EST. ROWS|COST|
+-------------------------------------------------
+|0 |EXCHANGE IN DISTR  |         |1        |73  |
+|1 | EXCHANGE OUT DISTR|         |1        |73  |
+|2 |  NESTED-LOOP JOIN |         |1        |73  |
+|3 |   MERGE JOIN      |         |1        |73  |
+|4 |    TABLE SCAN     |case4_t_4|2        |36  |
+|5 |    TABLE SCAN     |case4_t_5|2        |36  |
+|6 |   TABLE GET       |case4_t_6|1        |36  |
+=================================================
+
+Outputs & filters: 
+-------------------------------------
+  0 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  1 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil)
+  2 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5], [case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      conds(nil), nl_params_([case4_t_5.pk5])
+  3 - output([case4_t_4.pk4], [case4_t_4.a4], [case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      equal_conds([case4_t_4.pk4 = case4_t_5.pk5]), other_conds(nil)
+  4 - output([case4_t_4.pk4], [case4_t_4.a4]), filter(nil), 
+      access([case4_t_4.pk4], [case4_t_4.a4]), partitions(p[0-1])
+  5 - output([case4_t_5.pk5], [case4_t_5.a5]), filter(nil), 
+      access([case4_t_5.pk5], [case4_t_5.a5]), partitions(p[0-1])
+  6 - output([case4_t_6.pk6], [case4_t_6.a6]), filter(nil), 
+      access([case4_t_6.pk6], [case4_t_6.a6]), partitions(p[0-1])
+
+
+// the very first plan was hit, expect 2, 1, 1
+select hit_count from oceanbase.V$OB_PLAN_CACHE_PLAN_STAT where statement = 'select * from case4_t_4, case4_t_5, case4_t_6 where pk4 = pk5 and pk5 = pk6';
+hit_count
+2
+1
+1
+****************************** cleanup ******************************

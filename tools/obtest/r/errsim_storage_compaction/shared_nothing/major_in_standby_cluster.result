@@ -1,0 +1,100 @@
+ob1=OBI(cluster=1:1, proxy_num=0);
+ob2=OBI(cluster=1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.reboot;
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1', 'z2');
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+drop table if exists test01;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression= 'none';
+create index idx1 on test01(c2);
+ob1.mysql alter system set compaction_low_thread_score = 20 tenant backup_mysql_tenant;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant backup_mysql_tenant;
+ob1.mysql alter system set merger_check_interval = '10s' tenant backup_mysql_tenant;
+ob1.mysql alter system major freeze tenant backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob2.reboot;
+ob2.mysql alter resource unit sys_unit_config memory_size='2G';
+use oceanbase;
+alter system set resource_hard_limit = 1000;
+alter system set _restore_idle_time = '10s';
+ob2.mysql alter system set _backup_idle_time = '10s';
+ob2.mysql alter system set enable_async_syslog=false;
+CREATE RESOURCE UNIT large_unit_1 MAX_CPU=5, MEMORY_SIZE='10G';
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit_1, UNIT_NUM 1, ZONE_LIST ('z1');
+ob2.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+ob2.mysql alter system set merger_check_interval = '10s' tenant standby_mysql_tenant;
+ob2.mysql alter system set ob_compaction_schedule_interval = '10s' tenant standby_mysql_tenant;
+ob2.mysql alter system set compaction_low_thread_score = 20 tenant standby_mysql_tenant;
+ob0.check_until_timeout select floor(readable_scn / 1000) > '$current' from __all_virtual_tenant_info where tenant_id = $standby_tenant_id, 1, 600;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_server_schema_info where tenant_id = $standby_tenant_id and refreshed_schema_version < $schema_version, 0, 30;
+select c1,c2 from test.test01;
+c1	c2
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != $major_scn, 0, 300;
+ob1.mysql alter system set_tp tp_no = 711, error_code = 4016, frequency = 1;
+ob1.mysql alter system major freeze tenant backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.mysql alter system set_tp tp_no = 711, error_code = 4016, frequency = 0;
+ob1.mysql alter system set_tp tp_no = 709, error_code = 5489, frequency = 1;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $backup_tenant_id and tablet_id=$tablet_id and compaction_scn > $major_scn, 0, 300;
+ob1.mysql alter system set_tp tp_no = 709, error_code = 5489, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.__all_tablet_checksum where tenant_id = $backup_tenant_id and tablet_id=$tablet_id and compaction_scn > $major_scn, 0, 300;
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != $major_scn, 0, 300;
+ob1.mysql ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from __all_virtual_ls_info where tenant_id=$backup_tenant_id and ls_state != "FOLLOWER", 0, 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob2.mysql ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+ob2.check_until_timeout select count(*) from __all_virtual_ls_info where tenant_id=$standby_tenant_id and ls_state != "LEADER", 0, 100;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $standby_tenant_id and switchover_epoch = $standby_switchover_epoch, 0, 10;
+ob2.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $standby_tenant_id and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+ob1.mysql alter system set LOG_RESTORE_SOURCE = 'service=$server_ip_port_standby USER=mytest@standby_mysql_tenant PASSWORD=test' tenant = 'backup_mysql_tenant';
+ob2.mysql alter system set_tp tp_no = 732, error_code = 4023, frequency = 1;
+ob2.mysql alter system major freeze tenant standby_mysql_tenant;
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+ob2.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $standby_tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob2.mysql alter system set_tp tp_no = 732, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $backup_tenant_id and LAST_SCN != $major_scn , 0, 300;
+select c1,c2 from test.test01;
+c1	c2
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+10	10
+11	11
+12	12
+13	13
+14	14
+15	15
+16	16
+17	17
+18	18
+19	19

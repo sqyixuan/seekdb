@@ -1,0 +1,112 @@
+#owner: lly378788
+#tags: format_outline
+##
+## Test Name: format outline with comment
+## 
+## Date: 2024-02-20
+##
+
+--disable_info
+--disable_metadata
+
+#let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+
+set ob_trx_timeout=1000000000;
+select effective_tenant();
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--sleep 5
+connection default;
+
+# --echo
+#let $default_tenant_id = query_get_value(select effective_tenant_id(), effective_tenant_id(), 1);
+--disable_warnings
+drop database if exists format_comment_db;
+--enable_warnings
+create database format_comment_db;
+use format_comment_db;
+
+set ob_enable_plan_cache = 'ON';
+
+create table t1(c1 int primary key, c2 int, c3 int);
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+create index idx_t1 on t1(c2);
+
+set autocommit = 0;
+sleep 1;
+alter system flush plan cache global;
+
+
+## 1. sql with random comments in different positions
+## ahead, middle, tail
+CREATE OUTLINE FCOL_1 ON 'EF4AA51F0311641C160D48EFEED9E960' using hint /*+index(t1 idx_t1)*/;
+/*abcde*/select c1 from t1 where c2 in (3);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1 from t1 where c2 in (?)" and b.name = "FCOL_1" order by hit_count;
+connection default;
+DROP OUTLINE FCOL_1;
+alter system flush plan cache global;
+
+
+CREATE FORMAT OUTLINE FCOL_1 ON '3A6DA2FA3A13B5517A38069394F92D0E' using hint /*+index(t1 idx_t1)*/;
+#format sql id => select c1 from t1 where c2 in (3,4)
+#
+/*abcde*/select c1 from t1 where c2 in (3,4);
+/*abcde*/select c1 from t1 where c2 in (2,3);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select c1 from t1 where c2 in (?,?)" and b.name = "FCOL_1" order by hit_count;
+connection default;
+# 不会命中outline
+select /*+parallel(5) edcba */c1 from t1 where c2 in (3,4,5);
+connection obsys;
+eval select hit_count,a.outline_id,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.statement = "select c1 from t1 where c2 in (?,?,?)" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FCOL_1;
+alter system flush plan cache global;
+
+
+#select /*+parallel(2)*/c1 from (select /*+index(t1 idx_t1)*/ * from t1 where c2 in (2,3)) as t1 where c3 in (4);
+#format sql id => select c1 from (select * from t1 where c2 in (2,3)) as t1 where c3 in (4);
+CREATE FORMAT OUTLINE FCOL_2 ON 'F65622DAA542DC5FC17815A781EF0CBA' using hint /*+no_rewrite*/;
+select /*+parallel(2)*/c1 from (select /*+index(t1 idx_t1)*/ * from t1 where c2 in (2,3)) as t1 where c3 in (4);
+select /*+parallel(2)*/c1 from (select /*+index(t1 idx_t1)*/ * from t1 where c2 in (2,3)) as t1 where c3 in (4);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select /*+parallel(2)*/c1 from (select /*+index(t1 c2)*/ * from t1 where c2 in (?,?)) as t1 where c3 in (?)" and b.name = "FCOL_2" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FCOL_2;
+alter system flush plan cache global;
+
+
+## 2. format outline on stmt to target_stmt
+--error 0
+#
+CREATE FORMAT OUTLINE FCOL_3 ON select /*+parallel(2)*/c1 from t1 where c2 in (2) TO select /*+index(t1 c2)*/c1 from t1 where c2 in (2);
+#can use outline
+select /*+index(t1 c2)*/c1 from t1 where c2 in (2,3);
+select /*+index(t1 c2)*/c1 from t1 where c2 in (2,3);
+connection obsys;
+eval select hit_count,a.outline_id != -1,outline_data from oceanbase.__all_virtual_plan_stat as a, oceanbase.__all_virtual_outline as b where a.outline_id = b.outline_id and  a.statement = "select /*+index(t1 c2)*/c1 from t1 where c2 in (?,?)" and b.name = "FCOL_3" order by hit_count;
+connection default;
+#can not use outline
+select c1 from t1 where c2 in (2,3);
+connection obsys;
+eval select hit_count,a.outline_id,outline_data from oceanbase.__all_virtual_plan_stat as a where a.statement = "select c1 from t1 where c2 in (?,?)" order by hit_count;
+connection default;
+DROP FORMAT OUTLINE FCOL_3;
+alter system flush plan cache global;
+
+
+CREATE FORMAT OUTLINE FCOL_4 ON select /*+no_rewrite*/c1 from (select /*+index(t1 idx_t1)*/ * from t1 where c2 in (2,3)) as t1 where c3 in (4)
+TO select /*comment*/c1 from (select /*+index(t1 idx_t1)*/ * from t1 where c2 in (2,3)) as t1 where c3 in (4);
+#can use outline
+SELECT /*comment*/C1 FROM (select /*+index(t1 idx_t1)*/* from t1 where c2 in (2,3)) AS T1 WHERE C3 IN (4,6);
+SELECT /*comment*/C1 FROM (select /*+index(t1 idx_t1)*/* from t1 where c2 in (2,3)) AS T1 WHERE C3 IN (4,6);
+select hit_count,outline_id != -1,outline_data from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT where statement = 'SELECT C1 FROM (select /*+index(t1 idx_t1)*/* from t1 where c2 in (?,?)) AS T1 WHERE C3 IN (?,?)';
+#can not use outline
+SELECT /*abcd*/C1 FROM (select /*+index(t1 idx_t1)*/* from t1 where c2 in (2,3)) AS T1 WHERE C3 IN (4,6);
+SELECT /*abcd*/C1 FROM (select /*+index(t1 idx_t1)*/* from t1 where c2 in (2,3)) AS T1 WHERE C3 IN (4,6);
+select hit_count,outline_id != -1,outline_data from oceanbase.gv$OB_PLAN_CACHE_PLAN_STAT where statement = 'SELECT C1 FROM (select  /*+index(t1 idx_t1)*/* from t1 where c2 in (?,?)) AS T1 WHERE C3 IN (?,?)';
+
+DROP FORMAT OUTLINE  FCOL_4;
+DROP DATABASE format_comment_db;

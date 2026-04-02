@@ -1,0 +1,158 @@
+# owner:weixue.cx
+# owner group:storage
+# test rebuild with dirty buffer minor sstable
+ob1=OBI(cluster=1:1:1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_auto_leader_switch=false;
+ob1.mysql alter system set _ob_minor_merge_schedule_interval = '3s';
+
+let $leader_host = deploy_get_value(ob1.select select concat(svr_ip,':', svr_port) host from __all_server where zone='z1', host, 1);
+let $leader = deploy_get_value(ob1.get_obs_by_addr $leader_host);
+let $follow_host = deploy_get_value(ob1.select select concat(svr_ip,':', svr_port) host from __all_server where zone='z2', host, 1);
+let $follower_1 = deploy_get_value(ob1.get_obs_by_addr $follow_host);
+
+let $ip = deploy_get_value($leader.ip);
+let $mysql_port = deploy_get_value($leader.mysql_port);
+let $port = deploy_get_value($leader.port);
+let $follower_ip = deploy_get_value($follower_1.ip);
+let $follower_port = deploy_get_value($follower_1.port);
+
+connect(conn1, $ip,root@obtest,, test, $mysql_port);
+connect(conn2, $ip,root@obtest,, test, $mysql_port);
+connection conn1;
+# 新建一张表
+create table t1(c1 int, c2 int) primary_zone='z1' table_mode = 'queuing';
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t1', table_id, 1);
+sleep 5;
+
+connection conn1;
+# 插入数据
+set global ob_query_timeout = 100000000000;
+set global ob_trx_timeout = 100000000000;
+set global ob_trx_idle_timeout = 10000000000;
+insert into t1 values (1,1);
+insert into t1 values (2,2);
+insert into t1 values (3,3);
+
+begin;
+insert into t1 values (4,4);
+update t1 set c2 = 30 where c1 = 3;
+delete from t1 where c1 = 1;
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_type=0 and is_active=0 and table_id = $table_id, 0, 300;
+
+connection conn1;
+delete from t1 where c1 = 4;
+insert into t1 values (5,5);
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_type=0 and is_active=0 and table_id = $table_id, 0, 300;
+
+connection conn1;
+commit;
+
+connection conn1;
+create index i2 on t1(c2);
+
+insert into t1 values (6,6);
+insert into t1 values (7,7);
+
+ob1.mysql alter system minor freeze server = ('$leader_host');
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table_mgr where table_type=0 and is_active=0 and table_id = $table_id, 0, 300;
+ob1.check_until_timeout select table_type from oceanbase.__all_virtual_table_mgr where table_type!=0 and svr_ip='$ip' and svr_port=$port and index_id = $table_id order by snapshot_version desc, table_type desc limit 1, 14, 300;
+
+let $buffer_log_ts = deploy_get_value(ob1.select select end_log_id from oceanbase.__all_virtual_table_mgr where table_type=14 and svr_ip='$ip' and svr_port=$port and index_id = $table_id, end_log_id, 1);
+
+# 禁止更新last_replay_log_ts，再做一次buffer minor，预期这个buffer_minor也要迁过去
+ob1.mysql alter system set skip_update_storage_info = true;
+
+insert into t1 values (8,8);
+insert into t1 values (9,9);
+delete from t1 where c1 <= 6;
+
+ob1.mysql alter system minor freeze server = ('$leader_host');
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type=14 and svr_ip='$ip' and svr_port=$port and index_id = $table_id and end_log_id > $buffer_log_ts, 1, 300;
+let $buffer_log_ts = deploy_get_value(ob1.select select end_log_id from oceanbase.__all_virtual_table_mgr where table_type=14 and svr_ip='$ip' and svr_port=$port and index_id = $table_id, end_log_id, 1);
+let $minor_log_ts = deploy_get_value(ob1.select select max_log_id from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$ip' and svr_port=$port and index_id = $table_id order by max_log_id desc limit 1, max_log_id, 1);
+
+# 禁止buffer minor调度，后面的转储也会迁过去
+ob1.mysql alter system set skip_buffer_minor_merge = true;
+# 阻塞leader和一个副本之间的网络
+$leader.block_net $follower_1;
+
+# 插入一行数据，leader和follower2形成majority，follower1未收到此日志
+
+connection conn1;
+set global ob_query_timeout = 100000000000;
+set global ob_trx_timeout = 100000000000;
+set global ob_trx_idle_timeout = 10000000000;
+begin;
+insert into t1 values(10, 10);
+
+ob1.mysql alter system minor freeze server = ('$leader_host');
+
+# 等待日志在leader和follower2形成多数派
+sleep 5;
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$ip' and svr_port=$port and index_id = $table_id and max_log_id > $minor_log_ts, 1, 300;
+let $minor_log_ts = deploy_get_value(ob1.select select max_log_id from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$ip' and svr_port=$port and index_id = $table_id order by max_log_id desc limit 1, max_log_id, 1);
+
+connection conn1;
+insert into t1 values (11, 11);
+
+sleep 5;
+ob1.mysql alter system minor freeze server = ('$leader_host');
+
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$ip' and svr_port=$port and index_id = $table_id and max_log_id > $minor_log_ts, 1, 300;
+let $minor_log_ts = deploy_get_value(ob1.select select max_log_id from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$ip' and svr_port=$port and index_id = $table_id order by max_log_id desc limit 1, max_log_id, 1);
+
+connection conn1;
+commit;
+
+connection conn2;
+select * from t1;
+
+# 打开配置项开关，只要落后日志，就会触发rebuild
+ob1.mysql alter system set _ob_enable_rebuild_on_purpose=true;
+sleep 3;
+
+# 恢复网络，follower1会向leader获取日志，leader通知follower1需要执行rebuild；需要sleep 5
+$leader.clean_net $follower_1;
+
+# 等待follower1向leader拉取日志，触发rebuild，并汇报到__all_meta_table
+sleep 5;
+
+# 预期这张个replica需要执行rebuild
+
+ob1.check_until_timeout select count(*) from __all_virtual_partition_migration_status  where migrate_type = 'REBUILD_REPLICA_OP' and result = 0 and action='END' and table_id=$table_id, 1, 180;
+ob1.mysql alter system set _ob_enable_rebuild_on_purpose=false;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_meta_table where rebuild=1, 0, 180;
+sleep 2;
+
+ob1.mysql alter system switch replica leader partition_id='0%0@$table_id' server='$follower_ip:$follower_port';
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_meta_table where svr_ip = '$follower_ip' and svr_port = $follower_port and role = 1 and member_list like "%$follow_host%", 1, 30;
+
+ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where table_type=10 and svr_ip='$follower_ip' and svr_port=$follower_port and index_id = $table_id and max_log_id = $minor_log_ts, 1, 30;
+
+
+connection conn1;
+select * from t1;
+
+insert into t1 values(20, 20);
+
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+select * from t1;

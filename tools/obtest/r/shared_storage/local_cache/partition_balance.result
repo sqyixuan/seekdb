@@ -1,0 +1,384 @@
+ob1=OBI(cluster=1:1:1,proxy_num=0);
+ob1.z1.obs0.set extra_config=$extra_conf;
+ob1.z2.obs0.set extra_config=$extra_conf;
+ob1.z3.obs0.set extra_config=$extra_conf;
+ob1.reboot;
+ob1.mysql alter system set enable_rebalance='false';
+ob1.mysql alter system set _transfer_start_trans_timeout = '10s';
+set @@session.ob_query_timeout = 1000000000;
+alter system set debug_sync_timeout = '1000s';
+===============================================================
+============== test create tablet distribution ================
+===============================================================
+set @@session.ob_query_timeout = 1000000000;
+alter system set debug_sync_timeout = '1000s';
+# create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2,z3', locality="F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+################################################
+# 1. create tablet without tablegroup
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal_balance';
+# nonpart table
+create table t_nonpart_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+create table t_nonpart_2(c1 int, c2 int, c3 longtext);
+create index local_index_t_nonpart_2_c1 on t_nonpart_2(c1);
+create index global_index_t_nonpart_2_c2 on t_nonpart_2(c2) global;
+create table t_nonpart_3(c1 int, c2 int, c3 longtext);
+create index local_index_t_nonpart_3_c1 on t_nonpart_3(c1);
+create unique index unique_global_index_t_nonpart_3_c2 on t_nonpart_3(c2) global partition by hash(c2) partitions 2;
+# part table
+create table t_part_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 3;
+create table t_part_2 (c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200));
+create table t_part_3(c1 int, c2 int, c3 longtext) partition by hash(c1) partitions 3;
+create index local_index_t_part_3_c1 on t_part_3(c1);
+create unique index unique_global_index_t_part_3_c2 on t_part_3(c2) global partition by hash(c2) partitions 2;
+create table t_part_4 like t_part_1;
+# subpart table
+set session _ENABLE_PARALLEL_DDL = 0;
+create table t_subpart_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by range(c1) subpartition by hash(c1) subpartitions 3 (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than MAXVALUE);
+create table t_subpart_2(c1 int, c2 int, c3 longtext) partition by range(c1) subpartition by hash(c1) subpartitions 3 (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than (300));
+create index local_index_t_subpart_2_c1 on t_subpart_2(c1);
+create index global_index_t_subpart_2_c2 on t_subpart_2(c2) global partition by hash(c2) partitions 2;
+set session _ENABLE_PARALLEL_DDL = 1;
+alter table t_part_2 add partition (partition p2 values less than (400));
+truncate table t_part_1;
+# test basic read and write
+insert into t_nonpart_2 values (1, 2, 3);
+select * from t_nonpart_2;
+c1	c2	c3
+1	2	3
+insert into t_part_2 values (1, 2, 3);
+select * from t_part_2;
+c1	c2	c3
+1	2	3
+insert into t_part_3 values (1, 2, 3);
+select * from t_part_3;
+c1	c2	c3
+1	2	3
+insert into t_part_4 values (1, 2, 3);
+select * from t_part_4;
+c1	c2	c3
+1	2	3
+insert into t_subpart_2 values (1, 2, 3);
+select * from t_subpart_2;
+c1	c2	c3
+1	2	3
+################################################
+# 2. create tablet with tablegroup
+# create tablegroup
+create tablegroup tg_none sharding = 'NONE';
+create tablegroup tg_part_one sharding = 'PARTITION';
+create tablegroup tg_part_two sharding = 'PARTITION';
+create tablegroup tg_adapt_one sharding = 'ADAPTIVE';
+create tablegroup tg_adapt_two sharding = 'ADAPTIVE';
+##
+# 2.1. tablegroup sharding = 'NONE'
+create table t_nonpart_in_tg_none_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_none;
+create table t_nonpart_in_tg_none_2(c1 int, c2 int, c3 longtext) tablegroup tg_none;
+create index local_index_t_nonpart_in_tg_none_2_c1 on t_nonpart_in_tg_none_2(c1);
+create index global_index_t_nonpart_in_tg_none_2_c2 on t_nonpart_in_tg_none_2(c2) global;
+create table t_part_in_tg_none_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_none partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200));
+create table t_subpart_in_tg_none_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_none partition by range(c1) subpartition by hash(c1) subpartitions 3 (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than MAXVALUE);
+create table t_part_like_in_tg_none_1 like t_part_in_tg_none_1;
+alter table t_part_in_tg_none_1 add partition (partition p2 values less than (400));
+truncate table t_subpart_in_tg_none_1;
+##
+# 2.2. tablegroup sharding = 'PARTITION'
+create table t_part_in_tg_part_one_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_part_one partition by hash(c1) partitions 3;
+create table t_subpart_in_tg_part_two_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_part_two partition by range(c1) subpartition by hash(c1) subpartitions 3 (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than MAXVALUE);
+##
+# 2.3. tablegroup sharding = 'ADAPTIVE'
+create table t_part_in_tg_adapt_one_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_adapt_one partition by hash(c1) partitions 3;
+create table t_subpart_in_tg_adapt_two_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) tablegroup tg_adapt_two partition by range(c1) subpartition by hash(c1) subpartitions 3 (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than MAXVALUE);
+################################################
+# 3. tablet distribution of tables without tablegroup (include global index)
+select distinct ls_id, table_id, data_table_id, table_name, partition_name, subpartition_name, tablegroup_id, tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and (table_id in (select distinct table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and table_name in ('t_nonpart_1', 't_nonpart_2', 't_nonpart_3', 't_part_1', 't_part_2', 't_part_3', 't_part_4', 't_subpart_1', 't_subpart_2')) or (data_table_id in (select distinct table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and table_name in ('t_nonpart_1', 't_nonpart_2', 't_nonpart_3', 't_part_1', 't_part_2', 't_part_3', 't_part_4', 't_subpart_1', 't_subpart_2')) and table_id in (select table_id from __all_virtual_table where tenant_id = 1002 and index_type in (3,4,11) and table_id > 500000))) order by table_id, tablet_id;
+ls_id	table_id	data_table_id	table_name	partition_name	subpartition_name	tablegroup_id	tablet_id
+1001	500002	NULL	t_nonpart_1	NULL	NULL	NULL	200001
+1002	500007	NULL	t_nonpart_2	NULL	NULL	NULL	200002
+1003	500012	NULL	t_nonpart_3	NULL	NULL	NULL	200003
+1001	500018	500012	__idx_500012_unique_global_index_t_nonpart_3_c2	p0	NULL	NULL	1152921504606846988
+1002	500018	500012	__idx_500012_unique_global_index_t_nonpart_3_c2	p1	NULL	NULL	1152921504606846989
+1002	500019	NULL	t_part_1	p0	NULL	NULL	200034
+1003	500019	NULL	t_part_1	p1	NULL	NULL	200035
+1001	500019	NULL	t_part_1	p2	NULL	NULL	200036
+1001	500021	500019	__idx_500019_c2	NULL	NULL	NULL	1152921504606847094
+1003	500036	NULL	t_part_2	p0	NULL	NULL	200007
+1001	500036	NULL	t_part_2	p1	NULL	NULL	200008
+1002	500036	NULL	t_part_2	p2	NULL	NULL	200033
+1002	500038	500036	__idx_500036_c2	NULL	NULL	NULL	1152921504606847002
+1001	500049	NULL	t_part_3	p0	NULL	NULL	200009
+1002	500049	NULL	t_part_3	p1	NULL	NULL	200010
+1003	500049	NULL	t_part_3	p2	NULL	NULL	200011
+1002	500067	500049	__idx_500049_unique_global_index_t_part_3_c2	p0	NULL	NULL	1152921504606847016
+1003	500067	500049	__idx_500049_unique_global_index_t_part_3_c2	p1	NULL	NULL	1152921504606847017
+1003	500068	NULL	t_part_4	p0	NULL	NULL	200012
+1001	500068	NULL	t_part_4	p1	NULL	NULL	200013
+1002	500068	NULL	t_part_4	p2	NULL	NULL	200014
+1003	500070	500068	__idx_500068_c2	NULL	NULL	NULL	1152921504606847021
+1001	500085	NULL	t_subpart_1	p1	p1sp0	NULL	200015
+1002	500085	NULL	t_subpart_1	p1	p1sp1	NULL	200016
+1003	500085	NULL	t_subpart_1	p1	p1sp2	NULL	200017
+1002	500085	NULL	t_subpart_1	p2	p2sp0	NULL	200018
+1003	500085	NULL	t_subpart_1	p2	p2sp1	NULL	200019
+1001	500085	NULL	t_subpart_1	p2	p2sp2	NULL	200020
+1003	500085	NULL	t_subpart_1	p3	p3sp0	NULL	200021
+1001	500085	NULL	t_subpart_1	p3	p3sp1	NULL	200022
+1002	500085	NULL	t_subpart_1	p3	p3sp2	NULL	200023
+1001	500087	500085	__idx_500085_c2	NULL	NULL	NULL	1152921504606847037
+1001	500138	NULL	t_subpart_2	p1	p1sp0	NULL	200024
+1002	500138	NULL	t_subpart_2	p1	p1sp1	NULL	200025
+1003	500138	NULL	t_subpart_2	p1	p1sp2	NULL	200026
+1002	500138	NULL	t_subpart_2	p2	p2sp0	NULL	200027
+1003	500138	NULL	t_subpart_2	p2	p2sp1	NULL	200028
+1001	500138	NULL	t_subpart_2	p2	p2sp2	NULL	200029
+1003	500138	NULL	t_subpart_2	p3	p3sp0	NULL	200030
+1001	500138	NULL	t_subpart_2	p3	p3sp1	NULL	200031
+1002	500138	NULL	t_subpart_2	p3	p3sp2	NULL	200032
+1001	500192	500138	__idx_500138_global_index_t_subpart_2_c2	p0	NULL	NULL	1152921504606847083
+1002	500192	500138	__idx_500138_global_index_t_subpart_2_c2	p1	NULL	NULL	1152921504606847084
+################################################
+# 4. tablet distribution of tables with tablegroup (include global index)
+select distinct ls_id, table_id, data_table_id, table_name, partition_name, subpartition_name, tablegroup_id, tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and (table_id in (select distinct table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and table_name in ('t_nonpart_in_tg_none_1', 't_nonpart_in_tg_none_2', 't_part_in_tg_none_1', 't_part_like_in_tg_none_1', 't_subpart_in_tg_none_1', 't_part_in_tg_part_one_1', 't_subpart_in_tg_part_two_1', 't_part_in_tg_adapt_one_1', 't_subpart_in_tg_adapt_two_1')) or (data_table_id in (select distinct table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and table_name in ('t_nonpart_in_tg_none_1', 't_nonpart_in_tg_none_2', 't_part_in_tg_none_1', 't_part_like_in_tg_none_1', 't_subpart_in_tg_none_1', 't_part_in_tg_part_one_1', 't_subpart_in_tg_part_two_1', 't_part_in_tg_adapt_one_1', 't_subpart_in_tg_adapt_two_1')) and table_id in (select table_id from __all_virtual_table where tenant_id = 1002 and index_type in (3,4,11) and table_id > 500000))) order by table_id, tablet_id;
+ls_id	table_id	data_table_id	table_name	partition_name	subpartition_name	tablegroup_id	tablet_id
+1002	500214	NULL	t_nonpart_in_tg_none_1	NULL	NULL	500209	200037
+1002	500219	NULL	t_nonpart_in_tg_none_2	NULL	NULL	500209	200038
+1002	500224	NULL	t_part_in_tg_none_1	p0	NULL	500209	200039
+1002	500224	NULL	t_part_in_tg_none_1	p1	NULL	500209	200040
+1002	500224	NULL	t_part_in_tg_none_1	p2	NULL	500209	200052
+1002	500226	500224	__idx_500224_c2	NULL	NULL	NULL	1152921504606847108
+1002	500237	NULL	t_subpart_in_tg_none_1	p1	p1sp0	500209	200053
+1002	500237	NULL	t_subpart_in_tg_none_1	p1	p1sp1	500209	200054
+1002	500237	NULL	t_subpart_in_tg_none_1	p1	p1sp2	500209	200055
+1002	500237	NULL	t_subpart_in_tg_none_1	p2	p2sp0	500209	200056
+1002	500237	NULL	t_subpart_in_tg_none_1	p2	p2sp1	500209	200057
+1002	500237	NULL	t_subpart_in_tg_none_1	p2	p2sp2	500209	200058
+1002	500237	NULL	t_subpart_in_tg_none_1	p3	p3sp0	500209	200059
+1002	500237	NULL	t_subpart_in_tg_none_1	p3	p3sp1	500209	200060
+1002	500237	NULL	t_subpart_in_tg_none_1	p3	p3sp2	500209	200061
+1002	500239	500237	__idx_500237_c2	NULL	NULL	NULL	1152921504606847169
+1002	500290	NULL	t_part_like_in_tg_none_1	p0	NULL	500209	200050
+1002	500290	NULL	t_part_like_in_tg_none_1	p1	NULL	500209	200051
+1002	500292	500290	__idx_500290_c2	NULL	NULL	NULL	1152921504606847143
+1003	500355	NULL	t_part_in_tg_part_one_1	p0	NULL	500210	200062
+1001	500355	NULL	t_part_in_tg_part_one_1	p1	NULL	500210	200063
+1002	500355	NULL	t_part_in_tg_part_one_1	p2	NULL	500210	200064
+1002	500357	500355	__idx_500355_c2	NULL	NULL	NULL	1152921504606847182
+1001	500372	NULL	t_subpart_in_tg_part_two_1	p1	p1sp0	500211	200065
+1001	500372	NULL	t_subpart_in_tg_part_two_1	p1	p1sp1	500211	200066
+1001	500372	NULL	t_subpart_in_tg_part_two_1	p1	p1sp2	500211	200067
+1002	500372	NULL	t_subpart_in_tg_part_two_1	p2	p2sp0	500211	200068
+1002	500372	NULL	t_subpart_in_tg_part_two_1	p2	p2sp1	500211	200069
+1002	500372	NULL	t_subpart_in_tg_part_two_1	p2	p2sp2	500211	200070
+1003	500372	NULL	t_subpart_in_tg_part_two_1	p3	p3sp0	500211	200071
+1003	500372	NULL	t_subpart_in_tg_part_two_1	p3	p3sp1	500211	200072
+1003	500372	NULL	t_subpart_in_tg_part_two_1	p3	p3sp2	500211	200073
+1003	500374	500372	__idx_500372_c2	NULL	NULL	NULL	1152921504606847198
+1002	500425	NULL	t_part_in_tg_adapt_one_1	p0	NULL	500212	200074
+1003	500425	NULL	t_part_in_tg_adapt_one_1	p1	NULL	500212	200075
+1001	500425	NULL	t_part_in_tg_adapt_one_1	p2	NULL	500212	200076
+1001	500427	500425	__idx_500425_c2	NULL	NULL	NULL	1152921504606847220
+1003	500442	NULL	t_subpart_in_tg_adapt_two_1	p1	p1sp0	500213	200077
+1001	500442	NULL	t_subpart_in_tg_adapt_two_1	p1	p1sp1	500213	200078
+1002	500442	NULL	t_subpart_in_tg_adapt_two_1	p1	p1sp2	500213	200079
+1001	500442	NULL	t_subpart_in_tg_adapt_two_1	p2	p2sp0	500213	200080
+1002	500442	NULL	t_subpart_in_tg_adapt_two_1	p2	p2sp1	500213	200081
+1003	500442	NULL	t_subpart_in_tg_adapt_two_1	p2	p2sp2	500213	200082
+1002	500442	NULL	t_subpart_in_tg_adapt_two_1	p3	p3sp0	500213	200083
+1003	500442	NULL	t_subpart_in_tg_adapt_two_1	p3	p3sp1	500213	200084
+1001	500442	NULL	t_subpart_in_tg_adapt_two_1	p3	p3sp2	500213	200085
+1002	500444	500442	__idx_500442_c2	NULL	NULL	NULL	1152921504606847236
+################################################
+# 5. related tablet distribution
+##
+# 5.1. global index tablet distribution (with primary table)
+select distinct ls_id, table_id, data_table_id, table_name, partition_name, subpartition_name, tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1002 and table_id in (select table_id from __all_virtual_table where tenant_id = 1002 and index_type in (3,4,11) and table_id > 500000) order by table_id, tablet_id;
+ls_id	table_id	data_table_id	table_name	partition_name	subpartition_name	tablet_id
+1001	500018	500012	__idx_500012_unique_global_index_t_nonpart_3_c2	p0	NULL	1152921504606846988
+1002	500018	500012	__idx_500012_unique_global_index_t_nonpart_3_c2	p1	NULL	1152921504606846989
+1001	500021	500019	__idx_500019_c2	NULL	NULL	1152921504606847094
+1002	500038	500036	__idx_500036_c2	NULL	NULL	1152921504606847002
+1002	500067	500049	__idx_500049_unique_global_index_t_part_3_c2	p0	NULL	1152921504606847016
+1003	500067	500049	__idx_500049_unique_global_index_t_part_3_c2	p1	NULL	1152921504606847017
+1003	500070	500068	__idx_500068_c2	NULL	NULL	1152921504606847021
+1001	500087	500085	__idx_500085_c2	NULL	NULL	1152921504606847037
+1001	500192	500138	__idx_500138_global_index_t_subpart_2_c2	p0	NULL	1152921504606847083
+1002	500192	500138	__idx_500138_global_index_t_subpart_2_c2	p1	NULL	1152921504606847084
+1002	500226	500224	__idx_500224_c2	NULL	NULL	1152921504606847108
+1002	500239	500237	__idx_500237_c2	NULL	NULL	1152921504606847169
+1002	500292	500290	__idx_500290_c2	NULL	NULL	1152921504606847143
+1002	500357	500355	__idx_500355_c2	NULL	NULL	1152921504606847182
+1003	500374	500372	__idx_500372_c2	NULL	NULL	1152921504606847198
+1001	500427	500425	__idx_500425_c2	NULL	NULL	1152921504606847220
+1002	500444	500442	__idx_500442_c2	NULL	NULL	1152921504606847236
+##
+# 5.2. all local index and aux lob tables are bound to primary table
+ob1.check_until_timeout select count(*) > 0 from ($all_user_tablets) as A join ($all_binding_tablets) as B on A.table_id = B.data_table_id and A.partition_name = B.partition_name and A.subpartition_name = B.subpartition_name and A.ls_id = B.ls_id, 1, 1;
+ob1.check_until_timeout select count(*) from ($all_user_tablets) as A join ($all_binding_tablets) as B on A.table_id = B.data_table_id and A.partition_name = B.partition_name and A.subpartition_name = B.subpartition_name and A.ls_id != B.ls_id, 0, 1;
+##
+# 5.3. specially, the global index of a non-partitioned table is actually a local index
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_name = 't_nonpart_2' or index_name = 'global_index_t_nonpart_2_c2'), 1, 1;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and (table_name = 't_nonpart_in_tg_none_2' or index_name = 'global_index_t_nonpart_in_tg_none_2_c2'), 1, 1;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_balance';
+drop tenants
+set recyclebin = off;
+drop tenant mysql force;
+ob1.check_until_timeout select count(*) from GV\$OB_UNITS where tenant_id != 1, 0, 120;
+===============================================================
+================= test partition rebalance ====================
+===============================================================
+# wait unit gc for dropped tenant
+ob1.check_until_timeout select count(*) from GV\$OB_UNITS where tenant_id != 1, 0, 120;
+# create mysql tenant
+CREATE RESOURCE UNIT if not exists unit_1 MAX_CPU 2, MEMORY_SIZE='4G';
+Warnings:
+Note	4649	resource unit 'unit_1' already exist
+CREATE RESOURCE POOL if not exists pool_1 UNIT = 'unit_1', UNIT_NUM = 1;
+Warnings:
+Note	4651	resource pool 'pool_1' exist
+CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1,z2,z3', locality="F@z1,F@z2,F@z3" set ob_tcp_invited_nodes='%';
+################################################
+# 1. prepare data
+# create tablegroup
+create tablegroup tg_none sharding = 'NONE';
+create tablegroup tg_part sharding = 'PARTITION';
+create tablegroup tg_adapt_one sharding = 'ADAPTIVE';
+create tablegroup tg_adapt_two sharding = 'ADAPTIVE';
+# create table
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TENANT_BALANCE_SERVICE wait_for signal_balance';
+create table t_nonpart_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global);
+create table t_part_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 3;
+create table t_subpart_1(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 3 subpartition by hash(c2) subpartitions 3;
+create table t_subpart_2(c1 int, c2 int, c3 longtext, index(c1) local, index(c2) global) partition by hash(c1) partitions 3 subpartition by hash(c2) subpartitions 3;
+ob1.mysql set ob_global_debug_sync = 'now signal signal_balance';
+select distinct table_id, table_name, partition_name, subpartition_name, tablet_id, ls_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1004 and table_type = 'USER TABLE' order by table_id, tablet_id;
+table_id	table_name	partition_name	subpartition_name	tablet_id	ls_id
+500006	t_nonpart_1	NULL	NULL	200001	1001
+500011	t_part_1	p0	NULL	200002	1003
+500011	t_part_1	p1	NULL	200003	1001
+500011	t_part_1	p2	NULL	200004	1002
+500028	t_subpart_1	p0	p0sp0	200005	1001
+500028	t_subpart_1	p0	p0sp1	200006	1002
+500028	t_subpart_1	p0	p0sp2	200007	1003
+500028	t_subpart_1	p1	p1sp0	200008	1002
+500028	t_subpart_1	p1	p1sp1	200009	1003
+500028	t_subpart_1	p1	p1sp2	200010	1001
+500028	t_subpart_1	p2	p2sp0	200011	1003
+500028	t_subpart_1	p2	p2sp1	200012	1001
+500028	t_subpart_1	p2	p2sp2	200013	1002
+500081	t_subpart_2	p0	p0sp0	200014	1001
+500081	t_subpart_2	p0	p0sp1	200015	1002
+500081	t_subpart_2	p0	p0sp2	200016	1003
+500081	t_subpart_2	p1	p1sp0	200017	1002
+500081	t_subpart_2	p1	p1sp1	200018	1003
+500081	t_subpart_2	p1	p1sp2	200019	1001
+500081	t_subpart_2	p2	p2sp0	200020	1003
+500081	t_subpart_2	p2	p2sp1	200021	1001
+500081	t_subpart_2	p2	p2sp2	200022	1002
+###################
+# 2. test tablegroup
+alter table t_nonpart_1 tablegroup tg_none;
+alter table t_part_1 tablegroup tg_none;
+alter table t_subpart_1 tablegroup tg_none;
+alter table t_subpart_2 tablegroup tg_none;
+ob1.mysql alter system set partition_balance_schedule_interval = '10s' tenant mysql;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_type = 'USER TABLE', 1, 120;
+# 2.2. test tablegroup sharding = 'PARTITION'
+alter table t_part_1 tablegroup tg_part;
+alter table t_subpart_1 tablegroup tg_part;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_part_1', 3, 60;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_subpart_1', 3, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+select distinct ls_id, table_id, table_name, partition_name, subpartition_name, tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1004 and table_id in (select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1004 and table_name in ('t_part_1', 't_subpart_1', 't_multivalue_part_1', 't_fts_part_1')) order by table_id, tablet_id;
+ls_id	table_id	table_name	partition_name	subpartition_name	tablet_id
+1001	500011	t_part_1	p0	NULL	200002
+1002	500011	t_part_1	p1	NULL	200003
+1003	500011	t_part_1	p2	NULL	200004
+1001	500028	t_subpart_1	p0	p0sp0	200005
+1001	500028	t_subpart_1	p0	p0sp1	200006
+1001	500028	t_subpart_1	p0	p0sp2	200007
+1002	500028	t_subpart_1	p1	p1sp0	200008
+1002	500028	t_subpart_1	p1	p1sp1	200009
+1002	500028	t_subpart_1	p1	p1sp2	200010
+1003	500028	t_subpart_1	p2	p2sp0	200011
+1003	500028	t_subpart_1	p2	p2sp1	200012
+1003	500028	t_subpart_1	p2	p2sp2	200013
+##
+# 2.2. test tablegroup sharding = 'ADAPTIVE'
+alter table t_part_1 tablegroup tg_adapt_one;
+alter table t_subpart_1 tablegroup tg_adapt_two;
+ob1.check_until_timeout select count(*) > 0 from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 1, 120;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_subpart_1' and partition_name = 'p0', 3, 60;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_subpart_1' and partition_name = 'p1', 3, 60;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_subpart_1' and partition_name = 'p2', 3, 60;
+ob1.check_until_timeout select count(distinct(ls_id)) from CDB_OB_TABLE_LOCATIONS where tenant_id = $mysql_tenant_id and table_name = 't_part_1', 3, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+select distinct ls_id, table_id, table_name, partition_name, subpartition_name, tablet_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1004 and table_id in (select table_id from CDB_OB_TABLE_LOCATIONS where tenant_id = 1004 and table_name in ('t_part_1', 't_subpart_1')) order by table_id, tablet_id;
+ls_id	table_id	table_name	partition_name	subpartition_name	tablet_id
+1001	500011	t_part_1	p0	NULL	200002
+1002	500011	t_part_1	p1	NULL	200003
+1003	500011	t_part_1	p2	NULL	200004
+1001	500028	t_subpart_1	p0	p0sp0	200005
+1002	500028	t_subpart_1	p0	p0sp1	200006
+1003	500028	t_subpart_1	p0	p0sp2	200007
+1002	500028	t_subpart_1	p1	p1sp0	200008
+1001	500028	t_subpart_1	p1	p1sp1	200009
+1003	500028	t_subpart_1	p1	p1sp2	200010
+1003	500028	t_subpart_1	p2	p2sp0	200011
+1001	500028	t_subpart_1	p2	p2sp1	200012
+1002	500028	t_subpart_1	p2	p2sp2	200013
+##
+# 2.3. all local index and aux lob tables are bound to primary table
+ob1.check_until_timeout select count(*) from ($all_user_tablets) as A join ($all_binding_tablets) as B on A.table_id = B.data_table_id and A.partition_name = B.partition_name and A.subpartition_name = B.subpartition_name and A.ls_id != B.ls_id, 0, 1;
+################################################
+# 3. partition balance of all user tables and global indexes
+alter table t_nonpart_1 tablegroup '';
+alter table t_part_1 tablegroup '';
+alter table t_subpart_1 tablegroup '';
+alter table t_subpart_2 tablegroup '';
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_BALANCE_JOBS where tenant_id = $mysql_tenant_id, 0, 120;
+ob1.check_until_timeout select count(*) from (select * from __all_virtual_balance_group_ls_stat where tenant_id = $mysql_tenant_id group by balance_group_name having (max(tablet_group_count) - min(tablet_group_count) > 1)), 0, 60;
+ob1.check_until_timeout select max(cnt) - min(cnt) <= 1 from (select sum(tablet_group_count) as cnt, ls_id from __all_virtual_balance_group_ls_stat where tenant_id = $mysql_tenant_id group by ls_id), 1, 60;
+##
+# 3.1. all balance groups
+select ls_id, balance_group_id_high, balance_group_id_low, tablet_group_count, balance_group_name from __all_virtual_balance_group_ls_stat where tenant_id = 1004 order by balance_group_id_high, balance_group_id_low, ls_id;
+ls_id	balance_group_id_high	balance_group_id_low	tablet_group_count	balance_group_name
+1001	0	0	2	NON_PART_TABLE
+1002	0	0	1	NON_PART_TABLE
+1003	0	0	1	NON_PART_TABLE
+1001	500011	0	1	TABLE_t_part_1_500011
+1002	500011	0	1	TABLE_t_part_1_500011
+1003	500011	0	1	TABLE_t_part_1_500011
+1001	500028	500033	1	TABLE_t_subpart_1_500028_PART_p0
+1002	500028	500033	1	TABLE_t_subpart_1_500028_PART_p0
+1003	500028	500033	1	TABLE_t_subpart_1_500028_PART_p0
+1001	500028	500034	1	TABLE_t_subpart_1_500028_PART_p1
+1002	500028	500034	1	TABLE_t_subpart_1_500028_PART_p1
+1003	500028	500034	1	TABLE_t_subpart_1_500028_PART_p1
+1001	500028	500035	1	TABLE_t_subpart_1_500028_PART_p2
+1002	500028	500035	1	TABLE_t_subpart_1_500028_PART_p2
+1003	500028	500035	1	TABLE_t_subpart_1_500028_PART_p2
+1001	500081	500086	1	TABLE_t_subpart_2_500081_PART_p0
+1002	500081	500086	1	TABLE_t_subpart_2_500081_PART_p0
+1003	500081	500086	1	TABLE_t_subpart_2_500081_PART_p0
+1001	500081	500087	1	TABLE_t_subpart_2_500081_PART_p1
+1002	500081	500087	1	TABLE_t_subpart_2_500081_PART_p1
+1003	500081	500087	1	TABLE_t_subpart_2_500081_PART_p1
+1001	500081	500088	1	TABLE_t_subpart_2_500081_PART_p2
+1002	500081	500088	1	TABLE_t_subpart_2_500081_PART_p2
+1003	500081	500088	1	TABLE_t_subpart_2_500081_PART_p2
+##
+# 3.2. distribution of all user tables and global indexes
+select A.ls_id, count(*) as cnt from CDB_OB_TABLE_LOCATIONS A left join __all_virtual_table B on A.tenant_id = B.tenant_id and A.table_id = B.table_id where A.tenant_id = 1004 and (A.table_type = 'USER TABLE' or B.index_type in (3,4,11,17,18,19)) and A.role = 'LEADER' and A.table_id > 500000 group by A.ls_id order by A.ls_id;
+ls_id	cnt
+1001	9
+1002	8
+1003	8
+##
+# 3.3. all local index and aux lob tables are bound to primary table
+ob1.check_until_timeout select count(*) from ($all_user_tablets) as A join ($all_binding_tablets) as B on A.table_id = B.data_table_id and A.partition_name = B.partition_name and A.subpartition_name = B.subpartition_name and A.ls_id != B.ls_id, 0, 1;
+drop tenants
+set recyclebin = off;
+drop tenant mysql force;

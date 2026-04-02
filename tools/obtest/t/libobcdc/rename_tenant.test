@@ -1,0 +1,103 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+#  alter tenant name
+#
+##
+
+ob1=OBI(cluster=1,init_unit_cpu=5);
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant.inc;
+
+# 在oblog_tt租户下操作
+connect (oblog_conn_tt,$ip,root@oblog_tt,,oceanbase,$port);
+connection oblog_conn_tt;
+
+let $start_tstamp = query_get_value(select round(time_to_usec(now(6))) as now, now, 1);
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 创建database 1
+create database oblog_db1;
+ob1.oblog.next;
+
+use oblog_db1;
+create table t1 (pk int primary key);
+ob1.oblog.next;
+
+let $t1_dml_count = 0;
+begin;
+insert into t1 values(1);
+update t1 set pk=10 where pk=1;
+commit;
+inc $t1_dml_count;
+ob1.oblog.next;
+
+begin;
+insert into t1 values(2);
+update t1 set pk=11 where pk=10;
+commit;
+inc $t1_dml_count;
+ob1.oblog.next;
+
+begin;
+insert into t1 values(3);
+update t1 set pk=12 where pk=11;
+commit;
+inc $t1_dml_count;
+ob1.oblog.next;
+
+connection oblog_conn_sys;
+ALTER TENANT oblog_tt RENAME GLOBAL_NAME TO drc_tenant;
+let $tenant_id = query_get_value(select tenant_id from __all_tenant where tenant_name="drc_tenant", tenant_id, 1);
+#alter system change tenant drc_tenant;
+let $ddl_schema_version = query_get_value(select max(schema_version) as ver from __all_virtual_ddl_operation where tenant_id = $tenant_id, ver, 1);
+
+sleep 3;
+ob1.oblog.check_log "[RENAME_TENANT] is not supported";
+
+# force stop liboblog
+# 不检查心跳进度
+ob1.oblog.force_stop;
+
+# 启动liboblog
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.*|drc_tenant.*.* skip_rename_tenant_ddl=1 log_level=DEBUG data_start_schema_version=$tenant_id:$ddl_schema_version skip_ob_version_compat_check=1;
+ob1.oblog.set_start_tstamp_usec $start_tstamp;
+ob1.oblog.restart;
+
+let $idx = $t1_dml_count;
+echo $t1_dml_count;
+while ($idx > 0)
+{
+  ob1.oblog.next_dml;
+  dec $idx;
+}
+
+ob1.oblog.stop;
+
+# rename非白名单租户不影响
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection oblog_conn_sys;
+ALTER TENANT drc_tenant RENAME GLOBAL_NAME TO drc_light_tenant;
+
+# 心跳需要检测到实时,不会退出
+ob1.oblog.stop;
+
+# 如果同步整个集群, 不关心rename tenant
+ob1.oblog.gen_conf tb_white_list=*.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+connection oblog_conn_sys;
+ALTER TENANT drc_light_tenant RENAME GLOBAL_NAME TO drc_store_tenant;
+
+# 心跳需要检测到实时,不会退出
+ob1.oblog.stop;

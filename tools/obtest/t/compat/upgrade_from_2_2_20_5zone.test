@@ -1,0 +1,336 @@
+# owner      : wenduo.swd
+# owner group: rs
+# description: 测试从2_2_20 升级到2_2_x分支, 5zone
+##
+ob1=OBI(cluster=1:1:1:1:1,init_unit_cpu=5,init_unit_num=1,init_unit_mem=5368709120,version=2_2_20,oblog_version=current,locality=HZ:HZ:SH:SH:SZ);
+ob1.proxy0.set extra_config=syslog_level=debug;
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter RESOURCE UNIT proxyunit max_memory=5368709120,min_memory=5368709120;
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z2.obs0.workdir);
+ob1.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z3.obs0.workdir);
+ob1.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z4.obs0.workdir);
+ob1.z4.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z5.obs0.workdir);
+ob1.z5.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+# 2. 修改配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob1.mysql alter system set resource_soft_limit=200;
+ob1.mysql alter system set resource_hard_limit=200;
+
+# 3. proxy同步集群状态的时间间隔
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+connect (conn_proxy,$ip,root@obproxy,,test,$port);
+connect (conn_obtest,$ip,root@obtest,,*NO-ONE*,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 准备liboblog
+source include/liboblog/compat/oblog_before_upgrade.inc;
+
+alter proxyconfig set server_state_refresh_interval='1s';
+
+# 4.数据准备
+# 4.1 基础数据准备,设置obtest租户的primary zone
+connection conn_obtest;
+create database db1;
+create tablegroup tg;
+create table db1.tb_normal (pk int primary key,c1 varchar(1024) default '0', c2 timestamp(6) default now(6), c3 timestamp default now(), index i1(c2), index i2(c1)) tablegroup tg;
+create table db1.tb_increment (pk int primary key auto_increment,c1 int, c2 datetime(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), index i1(c2)) tablegroup tg;
+create table db1.tb_bigtable (c1 varchar(65536),c2 varchar(65536),c3 varchar(65536),c4 varchar(65536), pk bigint primary key auto_increment) COMPRESSION = 'none' tablegroup tg;
+
+create table test.tb_table_gencol(pk1 bigint, pk2 varchar(2048),c1 varchar(65536), c2 varchar(65536),ac1 bigint auto_increment,
+ts timestamp(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),  gmt_create timestamp(6) default now(6), gmt_modified timestamp(6) default now(6),
+gen_c1 varchar(10) GENERATED ALWAYS AS (substr(c1,1,10)) virtual,
+gen_c2 varchar(10) GENERATED ALWAYS AS (substr(c2,1,10)) stored,
+primary key(pk1, pk2),index i1(ts));
+
+create table test.tablegencol(c1 bigint primary key,user_id varchar(32) NOT NULL default '' comment 'Alipay User ID', address varchar(256) NOT NULL default '' comment 'address', index(user_id,address(255)));
+
+create table test.table_hash(c1 int primary key, c2 int) partition by hash(c1) partitions 2;
+create table test.table_range(c1 int primary key, c2 int) partition by range(c1) (partition p0 values less than (100), partition p1 values less than (200), partition p2 values less than MAXVALUE);
+create table test.table_hash_range (c1 int primary key, c2 int) partition by hash(c1) subpartition by range(c1) subpartition template(SUBPARTITION c0 VALUES LESS THAN(1990), SUBPARTITION c1 VALUES LESS THAN (2000), SUBPARTITION c2 VALUES LESS THAN MAXVALUE) partitions 2;
+create table test.table_range_hash (c1 int primary key, c2 int) partition by range(c1) subpartition by hash(c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1980), PARTITION c1 VALUES LESS THAN (1990), PARTITION c2 VALUES LESS THAN (1995), PARTITION c3 VALUES LESS THAN (2000), PARTITION c4 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg_old partition by hash partitions 2;
+create table test.table_with_tg(c1 int primary key, c2 int) tablegroup tg_old partition by hash(c1) partitions 2;
+
+create table test.tb_table_fulltext (id int, body varchar(10), fulltext (body));
+show index from test.tb_table_fulltext;
+show create table test.tb_table_fulltext;
+
+--disable_query_log
+--disable_result_log
+let $cnt=1;
+while($cnt <= 100)
+{
+  eval insert into db1.tb_normal (pk) values($cnt);
+  eval insert into db1.tb_increment (c1) values($cnt);
+  eval insert into db1.tb_bigtable (c1,c2,c3,c4) values(repeat('A',65536),repeat('B',65536),repeat('C',65536),repeat('D',65536));
+  eval insert into test.tb_table_gencol(pk1,pk2,c1,c2) values($cnt,'$cnt',repeat('A',65536),repeat('B',65536));
+  eval insert into test.tablegencol(c1,USER_ID,ADDRESS) values($cnt, repeat('A',32),repeat('B',256));
+  eval insert into test.table_hash(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_hash_range(c1, c2) values($cnt, $cnt);
+  eval insert into test.table_range_hash(c1, c2) values($cnt, $cnt);
+  inc $cnt;
+}
+
+--enable_query_log
+--enable_result_log
+
+###create oracle tenant
+ob1.mysql create resource unit box1 max_cpu 2, max_memory 5368709120, max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY=5368709120, MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+sleep 2;
+ob_connect(conn_oracle, ob1, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+ob_connect(conn_oracle_obtest,ob1,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 number, c2 date default Date '2012-01-02', c3 timestamp default Timestamp '2012-12-01 01:02:03.123456789', c4 timestamp with time zone default Timestamp '2012-12-01 01:02:03.123456789 +02:00');
+insert into t1 (pk, c1) values(1,1),(2,2);
+delete from t1 where pk=1;
+select pk, c1, to_char(c2), to_char(c3), to_char(c4) from t1;
+
+
+# 5.2 设置租户的主
+ob1.mysql alter tenant sys set primary_zone='z1';
+ob1.mysql alter tenant obtest set primary_zone='z2';
+ob1.mysql alter tenant obproxy set primary_zone='z3';
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+sleep 5;
+
+# 5.3.1 第1次合并
+ob1.mysql alter system major freeze;
+sleep 30;
+ob1.check_version 2;
+ob1.check_until_timeout select info from __all_zone where zone='' and name='merge_status',IDLE,30;
+
+# 5.4 执行alter tenant all语句
+connection conn_sys;
+set ob_query_timeout = 60000000;
+set ob_trx_timeout = 60000000;
+optimize tenant all;
+
+# 6 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+# 6.1 liboblog 创建租户相关
+# 放到升级检查之后，采用小内存
+source include/liboblog/compat/oblog_create_tenant.inc;
+
+ob1.mysql alter system begin upgrade;
+sleep 2;
+# 7.执行升级SQL
+# 7.2 执行升级脚本
+ob1.upgrade_commond_for_server pre;
+sleep 5;
+
+# 8. 先升级z2 rs在老server上
+# 8.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @saved_ob_query_timeout = @@session.ob_query_timeout;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z2';
+set @@session.ob_query_timeout = @saved_ob_query_timeout;
+ob1.check_until_timeout select info from __all_zone where zone='z2' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z2',0,20;
+sleep 2;
+ob1.z2.check_state_in_congest upgrade;
+# 8.2 check sql no in z2
+--disable_query_log
+--disable_result_log
+let $cnt=10;
+while($cnt>0)
+{
+  connection conn_obtest;
+  select * from db1.tb_normal;
+  source include/get_last_query_addr.inc;
+  if($zone == z2)
+  {
+    --echo flow in z2. bug!
+    --exit
+  }
+  connection conn_obtest;
+  eval select * from db1.tb_normal where pk=$cnt;
+  source include/get_last_query_addr.inc;
+  if($zone == z2)
+  {
+    --echo flow in z2. bug!
+    --exit
+  }
+  dec $cnt;
+}
+--enable_query_log
+--enable_result_log
+# 8.3 升级版本
+ob1.z2.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time<=0 and status='INACTIVE'),1,60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z2';
+sleep 10;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.z2.check_state_in_congest active;
+
+# 8.4 验证
+# 等obtest租户切主到z2上
+sleep 10;
+let $ipz1=deploy_get_value(ob1.z1.obs0.ip);
+let $portz1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_obtest_z1,$ipz1,root@obtest,,db1,$portz1);
+
+let $ipz2=deploy_get_value(ob1.z2.obs0.ip);
+let $portz2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn_obtest_z2,$ipz2,root@obtest,,db1,$portz2);
+
+# 9. 再升级z1 rs在新server上
+# 9.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z1';
+ob1.check_until_timeout select info from __all_zone where zone='z1' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z1',0,20;
+sleep 5;
+ob1.z1.check_state_in_congest upgrade;
+
+# 9.2 升级版本
+ob1.z1.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time<=0 and status='INACTIVE'),1,60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z1';
+sleep 10;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.z1.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 30;
+
+# 9.4 验证liboblog
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 10. 升级z3
+# 10.1 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z3';
+ob1.check_until_timeout select info from __all_zone where zone='z3' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z3',0,20;
+sleep 2;
+ob1.z3.check_state_in_congest upgrade;
+
+# 10.2 升级版本
+ob1.z3.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time<=0 and status='INACTIVE'),1,60;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z3';
+sleep 10;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.z3.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 30;
+
+# 10.3 验证liboblog
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 升级z4
+# 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z4';
+ob1.check_until_timeout select info from __all_zone where zone='z4' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z4',0,20;
+sleep 2;
+ob1.z4.check_state_in_congest upgrade;
+
+# 升级版本
+ob1.z4.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z4' and (start_service_time<=0 and status='INACTIVE'),1,60;
+ob1.z4.upgrade;
+ob1.z4.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z4' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z4';
+sleep 10;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.z4.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 30;
+
+# 验证liboblog
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 升级z5
+# 首先检查日志是同步状态
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z5';
+ob1.check_until_timeout select info from __all_zone where zone='z5' and name='status',INACTIVE,20;
+ob1.check_until_timeout select leader_count from __all_virtual_server_stat where zone = 'z5',0,20;
+sleep 2;
+ob1.z5.check_state_in_congest upgrade;
+
+# 升级版本
+ob1.z5.stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z5' and (start_service_time<=0 and status='INACTIVE'),1,60;
+ob1.z5.upgrade;
+ob1.z5.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z5' and (start_service_time<=0 or status='INACTIVE'),0,60;
+ob1.check_until_timeout SELECT CAST(COUNT(*) AS SIGNED) as cnt FROM __all_virtual_clog_stat WHERE is_in_sync = 0 and is_offline=0,0,600;
+ob1.mysql alter system start zone 'z5';
+sleep 10;
+ob1.check_until_timeout select count(1) from __all_virtual_server_stat,5,120;
+ob1.z5.check_state_in_congest active;
+ob1.check_until_timeout select count(1) from __all_virtual_core_meta_table where role=1 and zone='z1',1,120;
+sleep 30;
+
+# 验证liboblog
+source include/liboblog/compat/oblog_in_upgrade.inc;
+
+# 11. 执行升级后SQL
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system upgrade virtual schema;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 50;
+select count(*) > 0 from oceanbase.__all_virtual_tenant_partition_meta_table;
+sleep 10;
+ob1.upgrade_commond_for_server post;
+ob1.mysql alter system end upgrade;
+sleep 10;
+ob1.mysql alter system run job 'root_inspection';
+sleep 10;
+ob1.upgrade_check_after;
+select count(*) > 0 from oceanbase.__all_virtual_tenant_partition_meta_table;
+
+# 14.case最后验证liboblog
+source include/liboblog/compat/oblog_after_upgrade.inc;

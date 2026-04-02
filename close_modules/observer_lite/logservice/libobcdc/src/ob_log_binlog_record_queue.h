@@ -1,0 +1,74 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef OCEANBASE_LIBOBCDC_OB_LOG_BINLOG_RECORD_QUEUE_
+#define OCEANBASE_LIBOBCDC_OB_LOG_BINLOG_RECORD_QUEUE_
+
+#include "lib/queue/ob_fixed_queue.h"     // ObFixedQueue
+#include "common/ob_queue_thread.h"       // ObCond
+
+#include "ob_log_binlog_record.h"         // ObLogBR
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+class BRQueue
+{
+public:
+  BRQueue() :
+      inited_(false),
+      queue_(),
+      cond_(),
+      dml_br_count_(0),
+      ddl_br_count_(0),
+      part_trans_task_count_(0)
+  {}
+
+  virtual ~BRQueue() { destroy(); }
+
+public:
+  int init(const int64_t queue_size);
+  void destroy();
+
+  // To support large transactions - implement a streaming commit model where each push and pop is a separate ObLogBR
+  int push(ObLogBR *data, const int64_t timeout);
+  int pop(IBinlogRecord *&record, const int64_t timeout);
+  int pop(IBinlogRecord *&record, int32_t &major_version, uint64_t &tenant_id, const int64_t timeout);
+
+  int64_t get_dml_br_count() const;
+  int64_t get_ddl_br_count() const;
+  int64_t get_part_trans_task_count() const;
+
+private:
+  int pop_next_br_(ObLogBR *&data, const int64_t timeout);
+  int do_stat_for_part_trans_task_count_(ObLogBR &data,
+      bool need_accumulate_stat);
+
+private:
+  bool                                    inited_;
+  common::ObFixedQueue<ObLogBR>           queue_;
+  common::ObCond                          cond_;
+
+  int64_t dml_br_count_ CACHE_ALIGNED;
+  int64_t ddl_br_count_ CACHE_ALIGNED;
+
+  // Statistics on the number of partitioned transaction tasks
+  int64_t part_trans_task_count_ CACHE_ALIGNED;
+};
+} // namespace libobcdc
+} // namespace oceanbase
+#endif /* OCEANBASE_LIBOBCDC_OB_LOG_BINLOG_RECORD_QUEUE_ */

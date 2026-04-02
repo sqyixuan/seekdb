@@ -1,0 +1,434 @@
+# owner: xiongliyao.xly
+# owner group: shenzhen
+# description: test create vector index
+
+connect(sys_conn, $OBMYSQL_MS0, root@sys,,oceanbase, $OBMYSQL_PORT);
+connection sys_conn;
+
+--disable_warnings
+DROP TABLE IF EXISTS pq_vec_table;
+--enable_warnings
+
+alter system set ob_vector_memory_limit_percentage = 40;
+
+--echo ====================== basic test #1 =======================
+--echo create ivf pq vec index on existing table
+CREATE TABLE pq_vec_table (
+  c1 int,
+  c2 vector(10));
+
+sleep 2;
+--error 1235
+create vector index vec_idx1 on pq_vec_table(c2) with (distance=l2, type=ivf_pq, lib=OB);
+--error 1235
+create vector index vec_idx1 on pq_vec_table(c2) with (distance=l2, type=ivf_pq, lib=OB, m=128);
+create vector index vec_idx1 on pq_vec_table(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+
+let $data_table_id = query_get_value(SELECT table_id
+                                     FROM __all_virtual_table
+                                     WHERE table_name = 'pq_vec_table', table_id, 1);
+
+# check vec generate columns on pq_vec_table table
+--echo ===== ivf pq pq_vec_table columns =============
+--disable_query_log
+eval SELECT column_id, REGEXP_REPLACE(column_name, '[0-9]+', '*') as column_name
+     FROM __all_virtual_column
+     WHERE table_id = $data_table_id;
+
+# expect 4 vec aux index tables
+--echo ===== ivf pq index aux tables =====
+--replace_regex /__idx_[0-9]*/__idx_DATA_TABLE_ID/g
+eval SELECT table_name
+     FROM __all_virtual_table
+     WHERE data_table_id = $data_table_id
+       AND table_name LIKE '__idx%';
+--enable_query_log
+
+# get table c1 of 4 corresponding vec aux index table exists
+let $centroid_table_id = query_get_value(
+  SELECT table_id
+  FROM __all_virtual_table
+  WHERE table_name LIKE '%vec_idx1'
+    AND data_table_id = $data_table_id, table_id, 1);
+let $pq_centroid_table_id = query_get_value(
+  SELECT table_id
+  FROM __all_virtual_table
+  WHERE table_name LIKE '%vec_idx1_ivf_pq_centroid'
+    AND data_table_id = $data_table_id, table_id, 1);
+let $pq_code_table_id = query_get_value(
+  SELECT table_id
+  FROM __all_virtual_table
+  WHERE table_name LIKE '%vec_idx1_ivf_pq_code'
+    AND data_table_id = $data_table_id, table_id, 1);
+let $pq_rowkey_cid_table_id = query_get_value(
+  SELECT table_id
+  FROM __all_virtual_table
+  WHERE table_name LIKE '%vec_idx1_ivf_pq_rowkey_cid'
+    AND data_table_id = $data_table_id, table_id, 1);
+
+--disable_query_log
+
+--echo ===== pq_vec_table centroid_table cols ===
+eval SELECT column_id, REGEXP_REPLACE(column_name, '[0-9]+', '*') as column_name
+     FROM __all_virtual_column
+     WHERE table_id = $centroid_table_id;
+
+--echo ===== pq_vec_table pq_centroid_table cols ===
+eval SELECT column_id, REGEXP_REPLACE(column_name, '[0-9]+', '*') as column_name
+     FROM __all_virtual_column
+     WHERE table_id = $pq_centroid_table_id;
+
+--echo ===== pq_vec_table pq_code_table cols ======
+eval SELECT column_id, REGEXP_REPLACE(column_name, '[0-9]+', '*') as column_name
+     FROM __all_virtual_column
+     WHERE table_id = $pq_code_table_id;
+
+--echo ===== pq_vec_table pq_rowkey_cid_table cols ===
+eval SELECT column_id, REGEXP_REPLACE(column_name, '[0-9]+', '*') as column_name
+     FROM __all_virtual_column
+     WHERE table_id = $pq_rowkey_cid_table_id;
+
+--disable_warnings
+DROP TABLE IF EXISTS pq_vec_table;
+--enable_warnings
+
+--enable_query_log
+--echo clear
+
+--disable_warnings
+drop database if exists post_create_vec;
+--enable_warnings
+create database post_create_vec;
+use post_create_vec;
+
+# __all_ddl_operation
+--echo
+--echo
+--echo "=========================================== __all_ddl_operation ==========================================="
+--disable_warnings
+drop table if exists vec_table;
+--enable_warnings
+CREATE TABLE vec_table (
+  c1 int,
+  c2 vector(10));
+
+sleep 3;
+CREATE VECTOR INDEX VEC_IDX1 ON vec_table(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+
+select operation_type, ddl_stmt_str from oceanbase.__all_ddl_operation 
+   where database_id = (select database_id from oceanbase.__all_database where database_name='post_create_vec') 
+          and ddl_stmt_str != '' order by schema_version;
+
+drop table vec_table;
+
+# 索引名有转义字符
+--echo
+--echo
+--echo "=========================================== 索引名有转义字符 ================================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 vector(10), primary key(c1));
+
+create vector index `idx\n1` ON t_vec(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table t_vec;
+
+# 索引名有大小写
+--echo
+--echo
+--echo "=========================================== 索引名有大小写 ==================================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 vector(5), primary key(c1));
+
+create vector index iDx1 ON t_vec(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table t_vec;
+
+# 索引名有特殊字符
+# case 1
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 001 ==============================================="
+
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 vector(5), primary key(c1));
+
+create vector index iDx$1 ON t_vec(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table t_vec;
+
+# case 2
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 002 ==============================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 vector(5), primary key(c1));
+create vector index café ON t_vec(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table t_vec;
+
+# case 特殊字符café与cafe，认为创建同名索引失败
+--echo
+--echo
+--echo "========================================== 索引名有特殊字符 003 ==============================================="
+--disable_warnings
+drop table if exists t_vec;
+--enable_warnings
+create table t_vec(c1 int, c2 vector(5), c3 vector(5), primary key(c1));
+create vector index café ON t_vec(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+--error 1061
+create vector index cafe ON t_vec(c3) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table t_vec;
+
+
+--disable_warnings
+drop table if exists vec_tmp;
+--enable_warnings
+create table vec_tmp(c1 int, c2 vector(10));
+insert into vec_tmp values(1, '[0.748479,0.276979,0.555195,0.145492,0.045639,0.924278,0.696082,0.841479,0.742934,0.953073]');
+--error 1235
+create unique index idx1 on vec_tmp(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+--error 1072
+create vector index idx1 on vec_tmp(c5) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+--error 7601
+create vector index idx1 on vec_tmp(c1) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+--error 1235
+create vector index idx1 on vec_tmp(c2);
+--error 1235
+create vector index idx1 on vec_tmp(c2) with (distance=l2);
+--error 1235
+create vector index idx1 on vec_tmp(c2) with (distance=l2, lib=OB);
+--error 1235
+create vector index idx1 on vec_tmp(c2) with (distance=l2, lib=vs);
+CREATE VECTOR INDEX IDX1 ON vec_tmp(c2) with (distance=l2, type=ivf_pq, lib=OB, m=5);
+drop table vec_tmp;
+
+
+
+--echo ====================== basic test #3 =================================
+--echo ============= create vec index on existing table with data ===========
+
+--disable_warnings
+DROP TABLE IF EXISTS vec_t1;
+DROP VIEW IF EXISTS view_liyao;
+--enable_warnings
+
+create table vec_t1 (c1 int AUTO_INCREMENT, c2 vector(10), c3 vector(10), c4 varchar(10), c5 int UNIQUE, c6 int,
+  PRIMARY KEY(c1, c4),
+  INDEX (c5, c6));
+--source mysql_test/test_suite/vector_index/include/ivf_vec_dataset.inc
+
+alter system set ob_vector_memory_limit_percentage = 20;
+--echo # 指定nlist和samples_per_nlist
+create vector index idx1 on vec_t1(c2) WITH (distance=l2, type=ivf_pq, lib=OB, nlist=5, sample_per_nlist=15, m=5);
+create view view_liyao as select * from vec_t1;
+
+let $database_id = `select database_id from oceanbase.__all_database where database_name='post_create_vec';`;
+let $table_id = `select table_id from oceanbase.__all_table where table_name = 'vec_t1' and database_id=$database_id;`;
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx1');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_rowkey_cid');`;
+
+set ob_enable_index_direct_select = 1;
+
+--echo # 查询索引表
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+--echo # 默认参数
+create /*+ parallel(2) */ vector index idx2 on vec_t1(c3) WITH (distance=l2, type=ivf_pq, lib=OB, m=5);
+--echo # 查询索引表
+
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx2');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_rowkey_cid');`;
+
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+--echo # 分区表
+--disable_warnings
+DROP TABLE IF EXISTS vec_t1;
+DROP VIEW IF EXISTS view_liyao;
+--enable_warnings
+
+create table vec_t1 (c1 int AUTO_INCREMENT, c2 vector(10), c3 vector(10), c4 varchar(10), c5 int, c6 int,
+  PRIMARY KEY(c1, c4),
+  INDEX (c5, c6))
+PARTITION BY RANGE(c1) (
+    PARTITION p0 VALUES less than(30),
+    PARTITION p1 VALUES less than(60),
+    PARTITION p2 VALUES less than(MAXVALUE)
+);
+
+--source mysql_test/test_suite/vector_index/include/ivf_vec_dataset.inc
+
+--echo # 指定nlist和samples_per_nlist
+create /*+ parallel(2) */ vector index idx1 on vec_t1(c2) WITH (distance=l2, type=ivf_pq, lib=OB, nlist=5, sample_per_nlist=15, m=5);
+create view view_liyao as select * from vec_t1;
+
+let $database_id = `select database_id from oceanbase.__all_database where database_name='post_create_vec';`;
+let $table_id = `select table_id from oceanbase.__all_table where table_name = 'vec_t1' and database_id=$database_id;`;
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx1');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_rowkey_cid');`;
+
+set ob_enable_index_direct_select = 1;
+
+--echo # 查询索引表
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+--echo # 默认参数
+create vector index idx2 on vec_t1(c3) WITH (distance=l2, type=ivf_pq, lib=OB, m=5);
+
+--echo # 查询索引表
+
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx2');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx2_ivf_pq_rowkey_cid');`;
+
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+drop table vec_t1;
+drop view view_liyao;
+
+--echo ====================== test #3 =================================
+--echo ============= use dataset with dml ===========
+--disable_warnings
+DROP TABLE IF EXISTS vec_t1;
+--enable_warnings
+
+create table vec_t1 (c1 int AUTO_INCREMENT, c2 vector(10), c3 vector(10), c4 varchar(10) default 'df', c5 int, c6 int, data vector(3),
+  PRIMARY KEY(c1, c4),
+  INDEX (c5, c6))
+PARTITION BY RANGE(c1) (
+    PARTITION p0 VALUES less than(30),
+    PARTITION p1 VALUES less than(60),
+    PARTITION p2 VALUES less than(MAXVALUE)
+);
+
+--source mysql_test/test_suite/vector_index/include/ivf_vec_dataset.inc
+
+--let $insert_sql_prefix = insert into vec_t1 (c1, data) values
+--let $value = (500,'[0,0,0]')
+--let $loop = 501
+--let $data = 1
+while ($loop < 800)
+{
+  --let $value = $value, ($loop , '[$data, $data, $data]')
+  inc $loop;
+  inc $data;
+}
+--let $insert_sql = $insert_sql_prefix$value
+
+--disable_query_log
+eval $insert_sql;
+--enable_query_log
+
+# 存在null向量
+create vector index idx1 on vec_t1 (c2) with (distance=l2, type=ivf_pq, nlist=3, sample_per_nlist=50, m=5);
+create vector index idx2 on vec_t1 (data) with (distance=l2, type=hnsw, lib=vsag, m=10, ef_construction=11, ef_search=40);
+
+--replace_regex /REPLICA_NUM = [0-9]*/REPLICA_NUM = replica_num/g
+show create table vec_t1;
+
+select count(*) from vec_t1;
+
+let $table_id = `select table_id from oceanbase.__all_table where table_name = 'vec_t1' and database_id=$database_id;`;
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx1');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_rowkey_cid');`;
+
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+# origin c1 = 1
+update vec_t1 set c2 = '[0.692623,0.816816,0.418483,0.393929,0.061058,0.402308,0.564665,0.406696,0.628286,0.250843]' where c1 = 201;
+# origin c1 = 98
+update vec_t1 set c2 = '[0.891186,0.749080,0.512433,0.478760,0.262407,0.650191,0.799592,0.988865,0.694612,0.490610]' where c1 = 202;
+# origin c1 = 2
+insert into vec_t1(c1, c2) values(203, '[0.125866,0.428902,0.214633,0.208882,0.435422,0.045606,0.915596,0.065899,0.523299,0.352734]') 
+  ON DUPLICATE KEY UPDATE c2 = '[0.125866,0.428902,0.214633,0.208882,0.435422,0.045606,0.915596,0.065899,0.523299,0.352734]';
+# origin c1 = 55
+insert into vec_t1(c1, c2) values(179, '[0.695020,0.562402,0.698578,0.755540,0.966508,0.261325,0.595835,0.878607,0.251536,0.499435]') 
+  ON DUPLICATE KEY UPDATE c2 = '[0.695020,0.562402,0.698578,0.755540,0.966508,0.261325,0.595835,0.878607,0.251536,0.499435]';
+delete from vec_t1 where c1 = 55;
+replace into vec_t1(c1, c2) values(180, '[0.618807,0.717714,0.382073,0.627175,0.185351,0.599275,0.075940,0.351805,0.081602,0.322221]');
+
+select count(*) from vec_t1;
+
+let $center_id_table = `select CONCAT('__idx_', $table_id , '_idx1');`;
+let $pq_center_id_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_centroid');`;
+let $pq_code_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_code');`;
+let $pq_rowkey_cid_table = `select CONCAT('__idx_', $table_id , '_idx1_ivf_pq_rowkey_cid');`;
+
+--disable_query_log
+eval select count(*) from $center_id_table;
+eval select count(*) from $pq_center_id_table;
+eval select count(*) from $pq_code_table;
+eval select count(*) from $pq_rowkey_cid_table;
+--enable_query_log
+
+drop table vec_t1;
+
+--echo bugfix: 2025011700107043379
+SET @geo_py = 'POLYGON((0 0, 5 0, 0 5, 5 5, 0 0))';
+--disable_warnings
+DROP TABLE IF EXISTS vec_t1;
+--enable_warnings
+create table vec_t1(c1 int, c2 int, g GEOMETRY NOT NULL SRID 0, v vector(3), 
+                primary key(c1), SPATIAL INDEX idxg (g),
+                vector index idxv(v) with (distance=l2, type=hnsw, lib=vsag));
+
+insert into vec_t1 values(1, 1, ST_GeomFromText('POINT(0 0)'), '[0.203846,0.205289,0.880265]');
+insert into vec_t1 values(2, 2, ST_GeomFromText('POINT(0 1)'), '[0.226980,0.579658,0.933939]');
+insert into vec_t1 values(3, 3, ST_GeomFromText('POINT(1 0)'), null);
+insert into vec_t1 values(4, 4, ST_GeomFromText('POINT(1 1)'), '[0.442633,0.637534,0.633993]');
+insert into vec_t1 values(5, 5, ST_GeomFromText('POINT(0 3)'), '[0.190118,0.959676,0.796483]');
+insert into vec_t1 values(6, 6, ST_GeomFromText('POINT(3 0)'), '[0.710370,0.007130,0.710913]');
+insert into vec_t1 values(7, 7, ST_GeomFromText('POINT(3 3)'), '[0.238120,0.289662,0.970101]');
+insert into vec_t1 values(8, 8, ST_GeomFromText('POINT(0 6)'), '[0.168794,0.567442,0.062338]');
+insert into vec_t1 values(9, 9, ST_GeomFromText('POINT(6 0)'), '[0.901419,0.676738,0.122339]');
+insert into vec_t1 values(10, 10, ST_GeomFromText('POINT(6 6)'), '[0.563644,0.811224,0.175574]');
+drop index idxv on vec_t1;
+# expect same results
+create vector index idxv on vec_t1(v) with (distance=l2, type=ivf_pq, lib=ob,m=1);
+SELECT /*+index(vec_t1 idxg) */c1, ST_AsText(g) FROM vec_t1 WHERE ST_Intersects(g, ST_GeomFromText(@geo_py)) or v is not null
+    ORDER BY l2_distance(v, [0.712338,0.603321,0.133444]) APPROXIMATE limit 5;
+SELECT c1, ST_AsText(g) FROM vec_t1 WHERE ST_Intersects(g, ST_GeomFromText(@geo_py)) or v is not null
+    ORDER BY l2_distance(v, [0.712338,0.603321,0.133444]) APPROXIMATE limit 5;
+
+
+--echo =================== clear ===================
+drop database post_create_vec;
+alter system set ob_vector_memory_limit_percentage = 0;

@@ -1,0 +1,62 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试stop zone/server的时候，检查clog是不是同步要忽略zone、server 自身；
+ob1=OBI(cluster=1:1:1,  proxy_num=0, ct_num = 0, locality=HZ:SH:HZ);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3', primary_zone='z3;z2;z1' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+
+ob_connect(tt1_conn, ob1.z1.obs0, root@tenant_1, , test, , USE_MYSQL_CONNECTOR);
+connection tt1_conn;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+sleep 5;
+ob1.mysql alter system stop zone 'z2';
+ob1.mysql alter system start zone 'z2';
+
+##把用户表leader和follower之间的网络断开； 这样z2 follower就会处于断网之间，但是又和RS联系正常；
+##将z3.obs0和z2.obs0的网络断开，然后stop z2;
+
+ob1.z3.obs0.block_net ob1.z2.obs0;
+###等待有人不同步；
+ob1.check_until_timeout select count(*) > 1 from __all_virtual_clog_stat where is_in_sync = 0, 1, 30;
+###尝试stop z1失败；
+
+let $obs_ip  = deploy_get_value(ob1.z1.obs0.ip);
+let $obs_mysql_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+let $obs_port = deploy_get_value(ob1.z1.obs0.port);
+connect (conn_z2_sys,$obs_ip,admin@sys,admin,oceanbase,$obs_mysql_port);
+connection conn_z2_sys;
+
+--error 4179
+alter system stop zone 'z1';
+
+--disable_query_log
+--error 4179
+eval alter system stop server '$obs_ip:$obs_port';
+
+##stop z2.obs0;
+let $ip = deploy_get_value(ob1.z2.obs0.ip);
+let $port = deploy_get_value(ob1.z2.obs0.port);
+eval alter system stop server '$ip:$port';
+--enable_query_log
+###stop z2
+alter system stop zone 'z2';

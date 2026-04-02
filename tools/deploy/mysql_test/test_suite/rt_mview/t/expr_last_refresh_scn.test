@@ -1,0 +1,108 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: zhanyue.zzy
+#owner group: SQL1
+#description: test for last_refresh_scn expr
+#tags: mv_optimizer,mview
+
+--result_format 4
+
+--disable_warnings
+--error 0, 1146
+drop materialized view log on t1;
+drop table if exists t1;
+drop table if exists scn_his;
+drop table if exists test_res;
+--error 0, 9757
+drop materialized view t1_mv1;
+--error 0, 9757
+drop materialized view t1_mv2;
+--enable_warnings
+
+alter system flush plan cache global;
+
+create table scn_his(mview_id int, scn bigint);
+create table test_res(mview_id int, is_valid int);
+create table t1(c1 int primary key, c2 int, c3 int, c4 int);
+create materialized view log on t1 with primary key, rowid, sequence (c2, c3) including new values;
+
+create materialized view t1_mv1 refresh fast on demand as 
+select c2 as c2, count(*) cnt from t1 group by c2;
+
+create materialized view t1_mv2 refresh fast on demand as 
+select c2 as c2, count(*) cnt from t1 group by c2;
+
+let $mview_id1=`select mview_id from oceanbase.__all_mview order by gmt_create desc limit 1 offset 0`;
+let $mview_id2=`select mview_id from oceanbase.__all_mview order by gmt_create desc limit 1 offset 1`;
+
+--disable_query_log
+--disable_result_log
+eval
+insert into scn_his
+select $mview_id1, (select last_refresh_scn($mview_id1))
+union all
+select $mview_id2, (select last_refresh_scn($mview_id2));
+
+set ob_enable_plan_cache=0;
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id1 = mview_id) scn_valid from dual;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id2 = mview_id) scn_valid from dual;
+set ob_enable_plan_cache=1;
+
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id1 = mview_id) scn_valid from dual;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id2 = mview_id) scn_valid from dual;
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id1 = mview_id) scn_valid from dual;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id2 = mview_id) scn_valid from dual;
+
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = last_refresh_scn($mview_id1) scn_valid;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = last_refresh_scn($mview_id2) scn_valid;
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = last_refresh_scn($mview_id2) scn_valid;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = last_refresh_scn($mview_id1) scn_valid;
+
+insert into t1 values(1,1,1,1);
+call DBMS_MVIEW.REFRESH('t1_mv1', 'f');
+call DBMS_MVIEW.REFRESH('t1_mv2', 'f');
+
+eval insert into test_res select $mview_id1, last_refresh_scn($mview_id1) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id1 = mview_id) scn_valid from dual;
+eval insert into test_res select $mview_id2, last_refresh_scn($mview_id2) = (select last_refresh_scn from oceanbase.__all_mview where $mview_id2 = mview_id) scn_valid from dual;
+
+eval
+insert into scn_his
+select $mview_id1, (select last_refresh_scn($mview_id1))
+union all
+select $mview_id2, (select last_refresh_scn($mview_id2));
+--enable_query_log
+--enable_result_log
+
+## expected count result is 5 for one mview
+select sum(is_valid) from test_res group by mview_id;
+## expected count result is 2 for one mview
+select count(distinct scn) from scn_his group by mview_id;
+
+let $cnt= 2;
+let $last_refresh_scns = last_refresh_scn(1);
+while($cnt <= 100)
+{
+  let $last_refresh_scns=$last_refresh_scns, last_refresh_scn($cnt);
+  inc $cnt;
+}
+## no more than 100 last_refresh_scn with different mview id
+## here the mview id is fake id, so generate Incorrect arguments error
+let $sql= select $last_refresh_scns;
+--error 1210
+eval $sql;
+let $sql= select $last_refresh_scns, last_refresh_scn(100);
+--error 1210
+eval $sql;
+
+## more than 100 last_refresh_scn with different mview id
+let $sql= select $last_refresh_scns, last_refresh_scn(101);
+--error 1235
+eval $sql;
+
+drop materialized view log on t1;
+drop table if exists t1;
+drop table if exists scn_his;
+drop table if exists test_res;
+drop materialized view t1_mv1;
+drop materialized view t1_mv2;

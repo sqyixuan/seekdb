@@ -1,0 +1,2 @@
+eval CREATE FUNCTION my_func1 (c1 CHAR(20)) RETURNS CHAR(50) DETERMINISTIC RETURN CONCAT('Thank ',c1,'!');
+SELECT my_func1('You');

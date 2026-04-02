@@ -1,0 +1,380 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 测试create tablegroup partition管理语法
+ob1=OBI(cluster=1:1:1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:hz);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set enable_auto_leader_switch = 'false';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+
+let $rs = deploy_get_value(ob1.get_leader sys:oceanbase:__all_core_table:0);
+let $rs_ip = deploy_get_value($rs.ip);
+let $rs_port = deploy_get_value($rs.port);
+let $rs_mysql_port = deploy_get_value($rs.mysql_port);
+connect (conn_sys,$rs_ip,admin@sys,admin,oceanbase,$rs_mysql_port);
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 1, ZONE_LIST = ('z1','z2','z3');
+
+ob1.mysql CREATE TENANT tenant_1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1;z2;z3', locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 10;
+
+connect (conn_tenant,$rs_ip,root@tenant_1,,test,$rs_mysql_port);
+
+connection conn_tenant;
+
+# case 1: 一级分区
+# case 1.1: 一级hash
+--error 1064
+create tablegroup tg1 partition by hash(c1) partitions 2;
+--error 1064
+create tablegroup tg1 partition by hash 1 partitions 2;
+
+create tablegroup tg1 partition by hash partitions 2;
+let $tg_name = "tg1";
+source include/check_tablegroup_schema.inc;
+
+# case 1.2: 一级key
+--error 1064
+create tablegroup tg2 partition by key partitions 2;
+--error 1064
+create tablegroup tg2 partition by key(c1) parititions 2;
+
+create tablegroup tg2 partition by key 2 partitions 2;
+let $tg_name = "tg2";
+source include/check_tablegroup_schema.inc;
+
+# case 1.3: 一级range
+--error 1064
+create tablegroup tg3 partition by range (c1) (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg3 partition by range 1 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+# 向量数不匹配，range只能为单表达式
+--error 1653
+create tablegroup tg3 partition by range (PARTITION c0 VALUES LESS THAN (1990,1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg3 partition by range (PARTITION c0 VALUES LESS THAN (1990,1990),PARTITION c1 VALUES LESS THAN (2000,2000),PARTITION c2 VALUES LESS THAN (MAXVALUE,MAXVALUE));
+# 列类型不匹配，只能为int
+--error 1697
+create tablegroup tg3 partition by range  (PARTITION c0 VALUES LESS THAN ('1990'),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1697
+create tablegroup tg3 partition by range  (PARTITION c0 VALUES LESS THAN ('1990'),PARTITION c1 VALUES LESS THAN ('2000'),PARTITION c2 VALUES LESS THAN MAXVALUE);
+# 列名重复
+--error 1517
+create tablegroup tg3 partition by range (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c1 VALUES LESS THAN MAXVALUE);
+
+create tablegroup tg3 partition by range (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg3";
+source include/check_tablegroup_schema.inc;
+
+# case 1.4: 一级range column
+--error 1064
+create tablegroup tg4 partition by range columns (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+# 向量数不匹配
+--error 1653
+create tablegroup tg4 partition by range columns 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg4 partition by range columns 1 (PARTITION c0 VALUES LESS THAN (1990,1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg4 partition by range columns 1 (PARTITION c0 VALUES LESS THAN (1990,1990),PARTITION c1 VALUES LESS THAN (2000,2000),PARTITION c2 VALUES LESS THAN (MAXVALUE,MAXVALUE));
+# 列类型不匹配
+--error 1654
+create tablegroup tg4 partition by range columns 1 (PARTITION c0 VALUES LESS THAN ('1990'),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1654
+create tablegroup tg4 partition by range columns 2 (PARTITION c0 VALUES LESS THAN ('1990', 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE,MAXVALUE));
+
+create tablegroup tg4 partition by range columns 1 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg4";
+source include/check_tablegroup_schema.inc;
+
+create tablegroup tg5 partition by range columns 2 (PARTITION c0 VALUES LESS THAN ('1990', 1990),PARTITION c1 VALUES LESS THAN ('2000', 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+let $tg_name = "tg5";
+source include/check_tablegroup_schema.inc;
+
+# case 1.5: 非分区
+create tablegroup tg6;
+let $tg_name = "tg6";
+source include/check_tablegroup_schema.inc;
+
+# case 2: 二级分区
+# case 2.1: 一级range, 二级key
+--error 1064
+create tablegroup tg7 partition by range 1 subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg7 partition by range (c1) subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg7 partition by range subpartition by key subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg7 partition by range subpartition by key (c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg7 partition by range subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg7 partition by range subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+
+create tablegroup tg7 partition by range subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg7";
+source include/check_tablegroup_schema.inc;
+
+# case 2.2: 一级range, 二级hash
+--error 1064
+create tablegroup tg8 partition by range 1 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg8 partition by range (c1) subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg8 partition by range subpartition by hash 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg8 partition by range subpartition by hash (c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg8 partition by range subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg8 partition by range subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+
+create tablegroup tg8 partition by range subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg8";
+source include/check_tablegroup_schema.inc;
+
+# case 2.3: 一级range columns, 二级key
+--error 1064
+create tablegroup tg9 partition by range columns subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg9 partition by range columns (c1) subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg9 partition by range columns 1 subpartition by key subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg9 partition by range columns 1 subpartition by key (c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg9 partition by range columns 2 subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg9 partition by range columns 1 subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE,MAXVALUE));
+
+create tablegroup tg9 partition by range columns 1 subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg9";
+source include/check_tablegroup_schema.inc;
+
+create tablegroup tg10 partition by range columns 2 subpartition by key 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+let $tg_name = "tg10";
+source include/check_tablegroup_schema.inc;
+
+# case 2.4: 一级range columns, 二级hash
+--error 1064
+create tablegroup tg11 partition by range columns subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg11 partition by range columns (c1) subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg11 partition by range columns 1 subpartition by hash 1 subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1064
+create tablegroup tg11 partition by range columns 1 subpartition by hash (c1) subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg11 partition by range columns 2 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+--error 1653
+create tablegroup tg11 partition by range columns 1 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+
+create tablegroup tg11 partition by range columns 1 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN MAXVALUE);
+let $tg_name = "tg11";
+source include/check_tablegroup_schema.inc;
+
+create tablegroup tg12 partition by range columns 2 subpartition by hash subpartitions 2 (PARTITION c0 VALUES LESS THAN (1990, 1990),PARTITION c1 VALUES LESS THAN (2000, 2000),PARTITION c2 VALUES LESS THAN (MAXVALUE, MAXVALUE));
+let $tg_name = "tg12";
+source include/check_tablegroup_schema.inc;
+
+# case 2.5: 一级key, 二级range
+--error 1064
+create tablegroup tg13 partition by key subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg13 partition by key (c1) subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg13 partition by key 1 subpartition by range 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg13 partition by key 1 subpartition by range (c1) subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg13 partition by key 1 subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg13 partition by key 1 subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+
+create tablegroup tg13 partition by key 1 subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+let $tg_name = "tg13";
+source include/check_tablegroup_schema.inc;
+
+# case 2.6: 一级key, 二级range column
+--error 1064
+create tablegroup tg14 partition by key subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg14 partition by key (c1) subpartition by range colums 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg14 partition by key 1 subpartition by range columns subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg14 partition by key 1 subpartition by range columns (c1) subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg14 partition by key 1 subpartition by range columns 2 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg14 partition by key 1 subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+
+create tablegroup tg14 partition by key 1 subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+let $tg_name = "tg14";
+source include/check_tablegroup_schema.inc;
+
+create tablegroup tg15 partition by key 1 subpartition by range columns 2 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+let $tg_name = "tg15";
+source include/check_tablegroup_schema.inc;
+
+# case 2.7: 一级hash, 二级range
+--error 1064
+create tablegroup tg16 partition by hash 1 subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg16 partition by hash (c1) subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg16 partition by hash subpartition by range 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg16 partition by hash subpartition by range (c1) subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg16 partition by hash subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg16 partition by hash subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+
+create tablegroup tg16 partition by hash subpartition by range subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+let $tg_name = "tg16";
+source include/check_tablegroup_schema.inc;
+
+# case 2.8: 一级hash, 二级range column
+--error 1064
+create tablegroup tg17 partition by hash 1 subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg17 partition by hash (c1) subpartition by range colums 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg17 partition by hash subpartition by range columns subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1064
+create tablegroup tg17 partition by hash subpartition by range columns (c1) subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg17 partition by hash subpartition by range columns 2 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+--error 1653
+create tablegroup tg17 partition by hash subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+
+create tablegroup tg17 partition by hash subpartition by range columns 1 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990),  SUBPARTITION p1 VALUES LESS THAN (2000),  SUBPARTITION p2 VALUES LESS THAN MAXVALUE) partitions 2;
+let $tg_name = "tg17";
+source include/check_tablegroup_schema.inc;
+
+create tablegroup tg18 partition by hash subpartition by range columns 2 subpartition template (SUBPARTITION p0 VALUES LESS THAN (1990, 1990),  SUBPARTITION p1 VALUES LESS THAN (2000, 2000),  SUBPARTITION p2 VALUES LESS THAN (MAXVALUE, MAXVALUE)) partitions 2;
+let $tg_name = "tg18";
+source include/check_tablegroup_schema.inc;
+
+# case 3: list分区情况
+# case 3.1: list
+# 重复值
+--error 1495
+create tablegroup tg19 partition by list (partition p0 values in (1,2,3), partition p1 values in (2,9));
+--error 1495
+create tablegroup tg19 partition by list (partition p0 values in (1,2,3), partition p1 values in (9,9));
+--error 1517
+create tablegroup tg19 partition by list (partition p0 values in (2,1,10), partition p0 values in (7,9));
+
+# 含default，default要加括号
+--error 1064
+create tablegroup tg19 partition by list (partition p0 values in (2,1,10), partition p1 values in (7,9), partition p2 values in default);
+--error 1495
+create tablegroup tg19 partition by list (partition p0 values in (2,1,10), partition p1 values in (7,9), partition p2 values in (default), partition p3 values in (default));
+
+# list 只支持为int的情况
+--error 1697
+create tablegroup tg19 partition by list (partition p0 values in ('1'), partition p1 values in (7));
+--error 1697
+create tablegroup tg19 partition by list (partition p0 values in (2,'1',10), partition p1 values in (7,9));
+
+create tablegroup tg19 partition by list (partition p0 values in (2,1,10), partition p1 values in (7,9));
+create tablegroup tg20 partition by list (partition p0 values in (2,1,10), partition p1 values in (7,9), partition p2 values in (default));
+
+# case 3.2: list columns
+# 重复值
+--error 1495
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1)), partition p1 values in ((10,1)));
+--error 1495
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1), (10,1)), partition p1 values in ((3,9)));
+--error 1495
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1), (3,9)), partition p1 values in ((3,9)));
+
+# 含default的情况
+--error 1064
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1), (3,8)), partition p1 values in ((3,9)), partition p2 values in default);
+--error 1064
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1), (3,8)), partition p1 values in ((3,9)), partition p2 values in (default), partition p3 values in (default, default));
+--error 1064
+create tablegroup tg22 partition by list columns 2 (partition p0 values in ((10,1), (3,8)), partition p1 values in ((3,9)), partition p2 values in ((default)));
+--error 1495
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1), (3,8)), partition p1 values in ((3,9)), partition p2 values in (default), partition p3 values in (default));
+
+# 向量格式不对
+--error 1653
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((1,2,3)));
+--error 1653
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((1,2),3));
+--error 1653
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((1,2),(3)));
+--error 1653
+create tablegroup tg21 partition by list columns 2 (partition p0 values in ((10,1,7), (3,8)), partition p1 values in ((3,9)));
+
+# 列向量类型不匹配
+--error 1654
+create tablegroup tg21 partition by list columns 2 (partition p0 values in (('10',1), (3,8)));
+--error 1654
+create tablegroup tg21 partition by list columns 2 (partition p0 values in (('10',1), ('3',8)), partition p1 values in ((2,7)));
+
+create tablegroup tg21 partition by list columns 2 (partition p0 values in (('10',1), ('3',8), ('7',9)), partition p1 values in (('3',9)));
+create tablegroup tg22 partition by list columns 2 (partition p0 values in (('10',1), ('3',8), ('7',9)), partition p1 values in (('2', 1), ('3',9)));
+
+# case 3.3: 二级分区的情况
+# 目前实现不支持range-range, list-list的情况
+--error 4077
+create tablegroup tg23 partition by list subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values in (1,2,3), partition p1 values in (default));
+--error 4077
+create tablegroup tg23 partition by list subpartition by list columns 1 subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values in (1,2,3), partition p1 values in (default));
+--error 4077
+create tablegroup tg23 partition by list columns 1 subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values in (1,2,3), partition p1 values in (default));
+--error 4077
+create tablegroup tg23 partition by list columns 1 subpartition by list columns 1 subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values in (1,2,3), partition p1 values in (default));
+
+# 一级分区为list
+create tablegroup tg23 partition by list subpartition by hash subpartitions 2 (partition p0 values in (1,2,3), partition p1 values in (default));
+create tablegroup tg24 partition by list subpartition by key 2 subpartitions 2 (partition p0 values in (1,2,3), partition p1 values in (default));
+create tablegroup tg25 partition by list subpartition by range subpartition template (subpartition p0 values less than (1000), subpartition p1 values less than MAXVALUE) (partition p0 values in (1,2,3), partition p1 values in (default));
+create tablegroup tg26 partition by list subpartition by range columns 2 subpartition template (subpartition p0 values less than (1000, 1000), subpartition p1 values less than (MAXVALUE, MAXVALUE)) (partition p0 values in (1,2,3), partition p1 values in (default));
+# 一级分区为list columns
+create tablegroup tg27 partition by list columns 3 subpartition by hash subpartitions 2 (partition p0 values in ((1,2,3)), partition p1 values in (default));
+create tablegroup tg28 partition by list columns 3 subpartition by key 2 subpartitions 2 (partition p0 values in ((1,2,3)), partition p1 values in (default));
+create tablegroup tg29 partition by list columns 3 subpartition by range subpartition template (subpartition p0 values less than (1000), subpartition p1 values less than MAXVALUE) (partition p0 values in ((1,2,3)), partition p1 values in (default));
+create tablegroup tg30 partition by list columns 3 subpartition by range columns 2 subpartition template (subpartition p0 values less than (1000, 1000), subpartition p1 values less than (MAXVALUE, MAXVALUE)) (partition p0 values in ((1,2,3)), partition p1 values in (default));
+# 二级分区为list
+create tablegroup tg31 partition by hash subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) partitions 2;
+create tablegroup tg32 partition by key 2 subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) partitions 2;
+create tablegroup tg33 partition by range subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values less than (1000), partition p1 values less than MAXVALUE);
+create tablegroup tg34 partition by range columns 2 subpartition by list subpartition template (subpartition p0 values in (1,2,3), subpartition p1 values in (default)) (partition p0 values less than (1000, 1000), partition p1 values less than (MAXVALUE, MAXVALUE)) ;
+# 二级分区为list columns
+create tablegroup tg35 partition by hash subpartition by list columns 3 subpartition template (subpartition p0 values in ((1,2,3)), subpartition p1 values in (default)) partitions 2;
+create tablegroup tg36 partition by key 2 subpartition by list columns 3 subpartition template (subpartition p0 values in ((1,2,3)), subpartition p1 values in (default)) partitions 2;
+create tablegroup tg37 partition by range subpartition by list columns 3 subpartition template (subpartition p0 values in ((1,2,3)), subpartition p1 values in (default)) (partition p0 values less than (1000), partition p1 values less than MAXVALUE);
+create tablegroup tg38 partition by range columns 2 subpartition by list columns 3 subpartition template (subpartition p0 values in ((1,2,3)), subpartition p1 values in (default)) (partition p0 values less than (1000, 1000), partition p1 values less than (MAXVALUE, MAXVALUE)) ;
+
+# case 3.3: 补充
+create tablegroup tg39 partition by list columns 2 (partition p0 values in ((10,1), (3,8)), partition p1 values in ((3,9)), partition p2 values in (default));
+create tablegroup tg40 partition by range (PARTITION c0 VALUES LESS THAN (1990),PARTITION c1 VALUES LESS THAN (2000),PARTITION c2 VALUES LESS THAN (MAXVALUE));
+
+# case 4: drop tablegroup
+let $idx = 1;
+let $max_idx = 40;
+while($idx <= $max_idx)
+{
+  eval drop tablegroup tg$idx;
+  inc $idx;
+}

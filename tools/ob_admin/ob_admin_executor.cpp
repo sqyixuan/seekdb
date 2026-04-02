@@ -120,7 +120,7 @@ int ObAdminExecutor::prepare_io()
     LOG_WARN("fail to start io manager", K(ret));
   } else if (OB_FAIL(OB_FILE_SYSTEM_ROUTER.get_instance().init(data_dir_, clog_dir_))) {
     LOG_WARN("fail to init file system router", K(ret));
-  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init(false/*is_shared_storage*/))) {
+  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.init())) {
     LOG_WARN("fail to init storage meta service", K(ret));
   } else if (OB_FAIL(OB_STORAGE_OBJECT_MGR.init(false/*is_shared_storage*/, storage_env_.default_block_size_))) {
     LOG_WARN("fail to init block manager, ", K(ret));
@@ -140,10 +140,7 @@ int ObAdminExecutor::prepare_decoder()
 int ObAdminExecutor::load_config()
 {
   int ret = OB_SUCCESS;
-  // set dump path
-  const char *dump_path = "etc/observer.config.bin";
-  config_mgr_.set_dump_path(dump_path);
-  if (OB_FAIL(config_mgr_.load_config())) {
+  if (OB_FAIL(config_mgr_.update_local())) {
     STORAGE_LOG(WARN, "fail to load config", K(ret));
   } else {
     ObServerConfig &config = config_mgr_.get_config();

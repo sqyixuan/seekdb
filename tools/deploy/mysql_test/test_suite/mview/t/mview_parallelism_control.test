@@ -1,0 +1,116 @@
+#owner: zg410411
+
+set @@recyclebin = OFF;
+
+--disable_warnings
+drop database if exists test_mv_parallel;
+--enable_warnings
+create database test_mv_parallel;
+use test_mv_parallel;
+set ob_query_timeout = 10000000000;
+set mview_refresh_dop = 0;
+
+create table t1(c1 int, c2 int primary key);
+create materialized view log on t1 with primary key (c1) including new values;
+insert into t1 values(1,1);
+insert into t1 values(2,2);
+
+# 1.测试创建物化视图时的全量刷新
+# 1.1 指定parallel时，以parallel为准
+create materialized view mv1 parallel 2 refresh complete on demand as select * from t1;
+--echo # expect parallel = 2
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 1.2 未指定parallel时，以session的mview_refresh_dop为准
+set mview_refresh_dop = 3;
+create materialized view mv2 refresh complete on demand as select * from t1;
+--echo # expect parallel = 3
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 1.3 未指定parallel时，如果session的mview_refresh_dop为0(缺省值为0)，则并行度为1，但由于要走全量旁路导入，并行度会被修正为2
+set mview_refresh_dop = 0;
+create materialized view mv3 refresh complete on demand as select * from t1;
+--echo # expect parallel = 2
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 2.测试全量刷新物化视图的手动刷新
+# 2.1 指定refresh_parallel时，以refresh_parallel为准
+call dbms_mview.refresh('mv1', 'c', refresh_parallel => 4);
+--echo # expect parallel = 4
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv1' order by gmt_create desc limit 1;
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 2.2 未指定refresh_parallel，以session的mview_refresh_dop为准
+set mview_refresh_dop = 5;
+call dbms_mview.refresh('mv2', 'c');
+--echo # expect parallel = 5
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv2' order by gmt_create desc limit 1;
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 2.3 未指定refresh_parallel，若session的mview_refresh_dop为0，则并行度为1，但由于要走全量旁路导入，并行度会被修正为2
+set mview_refresh_dop = 0;
+call dbms_mview.refresh('mv2', 'c');
+--echo # expect parallel = 1
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv2' order by gmt_create desc limit 1;
+--echo # expect parallel = 2
+select regexp_substr(query_sql, 'parallel\\((\\d+)\\)', 1, 1, 'i', 1) as p from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where query_sql like 'INSERT /*+ append%' and hints_info like '%ENABLE_PARALLEL_DML%' order by LAST_ACTIVE_TIME desc limit 1;
+
+# 3.测试全量刷新物化视图的后台刷新
+set global mview_refresh_dop = 6;
+create materialized view mv4 parallel 7 refresh complete on demand start with sysdate() next sysdate() + interval 5 second as select * from t1;
+sleep 30;
+--echo # expect parallel = 7
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'test_mv_parallel.mv4' order by gmt_create desc limit 1;
+
+create materialized view mv5 refresh complete on demand start with sysdate() next sysdate() + interval 5 second as select * from t1;
+sleep 30;
+--echo # expect parallel = 6
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'test_mv_parallel.mv5' order by gmt_create desc limit 1;
+
+# 4. 测试增量刷新物化视图的手动刷新
+create materialized view mv6 refresh fast on demand as select count(*) cnt, c1 from t1 group by c1;
+# 4.1 指定refresh_parallel时，以refresh_parallel为准
+call dbms_mview.refresh('mv6', 'f', refresh_parallel => 8);
+--echo # expect parallel = 8
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv6' order by gmt_create desc limit 1;
+
+# 4.2 未指定refresh_parallel，以session的mview_refresh_dop为准
+set mview_refresh_dop = 9;
+call dbms_mview.refresh('mv6', 'f');
+--echo # expect parallel = 9
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv6' order by gmt_create desc limit 1;
+
+# 4.3 未指定refresh_parallel，若session的mview_refresh_dop为0，则并行度为1
+set mview_refresh_dop = 0;
+call dbms_mview.refresh('mv6', 'f');
+--echo # expect parallel = 1
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'mv6' order by gmt_create desc limit 1;
+
+# 5. 测试增量刷新物化视图的后台刷新
+set global mview_refresh_dop = 10;
+create materialized view mv7 parallel 11 refresh fast on demand start with sysdate() next sysdate() + interval 5 second as select count(*) cnt, c1 from t1 group by c1;
+sleep 30;
+--echo # expect parallel = 11
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'test_mv_parallel.mv7' order by gmt_create desc limit 1;
+
+create materialized view mv8 refresh fast on demand start with sysdate() next sysdate() + interval 5 second as select count(*) cnt, c1 from t1 group by c1;
+sleep 30;
+--echo # expect parallel = 10
+select parallelism from oceanbase.__all_mview_refresh_run_stats where mviews = 'test_mv_parallel.mv8' order by gmt_create desc limit 1;
+
+# 6. supplement
+# mview_refresh_dop is uint
+--error 1231
+set mview_refresh_dop = -1;
+
+drop materialized view mv1;
+drop materialized view mv2;
+drop materialized view mv3;
+drop materialized view mv4;
+drop materialized view mv5;
+drop materialized view mv6;
+drop materialized view mv7;
+drop materialized view mv8;
+drop materialized view log on t1;
+drop table t1;
+drop database test_mv_parallel;

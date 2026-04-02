@@ -1,0 +1,98 @@
+ob1=OBI(cluster=1, proxy_num=0);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql create resource unit primary_unit max_cpu 4, memory_size='8G', log_disk_size='24G';
+ob1.mysql create resource pool primary_pool unit='primary_unit', unit_num=1, zone_list=('z1');
+ob1.mysql create tenant primary_tenant resource_pool_list=('primary_pool'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+
+let $primary_tenant_id=deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='primary_tenant', tenant_id, 1);
+
+sleep 10;
+
+ob_connect(primary_conn, ob1.z1.obs0, root@primary_tenant, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+create user standby_user identified by "standby_user";
+grant select on *.* to standby_user;
+
+create database primary_test;
+use primary_test;
+create table t_heap(c1 varchar(1024), c2 varchar(1024), c3 varchar(1024), c4 varchar(1024), c5 varchar(1024), c6 varchar(1024), c7 varchar(1024), c8 varchar(1024), c9 varchar(1024), c10 varchar(1024));
+
+set ob_query_timeout=1000000000000;
+set ob_trx_timeout=1000000000000;
+insert /*+ enable_parallel_dml parallel(8) */ into t_heap select randstr(1024, 1234) c1,randstr(1024, 1234) c2, randstr(1024, 1234) c3, randstr(1024, 1234) c4, randstr(1024, 1234) c5, randstr(1024, 1234) c6, randstr(1024, 1234) c7, randstr(1024, 1234) c8, randstr(1024, 1234) c9, randstr(1024, 1234) c10 from table(generator(200000));
+
+ob1.mysql alter system set standby_fetch_log_bandwidth_limit='10MB';
+
+ob1.mysql create resource unit standby_unit1 max_cpu 4, memory_size='8G', log_disk_size='24G';
+ob1.mysql create resource pool standby_pool1 unit='standby_unit1', unit_num=1, zone_list=('z1');
+
+let $access_point = deploy_get_value(ob1.select select concat(svr_ip, ':', sql_port) as svr_ip_port from cdb_ob_access_point where tenant_id=$primary_tenant_id order by svr_ip, sql_port limit 1 offset 0, svr_ip_port, 1);
+ob1.mysql create standby tenant standby_tenant1 log_restore_source='service=$access_point user=standby_user@primary_tenant password=standby_user' primary_zone='z1' , resource_pool_list=('standby_pool1');
+
+let $standby_tenant1_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='standby_tenant1', tenant_id, 1);
+
+sleep 10;
+
+let $primary_standby_sync=deploy_get_value(ob1.select select case when a.sync_scn > b.sync_scn then a.sync_scn - b.sync_scn < 3000000000 else b.sync_scn - a.sync_scn < 3000000000 end as sync from (select * from __all_virtual_tenant_info where tenant_id=$primary_tenant_id) as a, (select * from __all_virtual_tenant_info where tenant_id=$standby_tenant1_id) as b, sync, 1);
+
+let $round = 0;
+let $enable_parallel_transport=0;
+
+--disable_all_result_log
+while ($primary_standby_sync!=1)
+{
+  inc $round;
+  sleep 10;
+  let $origin_parallel_transport=$enable_parallel_transport;
+  if ($origin_parallel_transport == 0)
+  {
+    let $enable_parallel_transport=1;
+    let $parallel_transport=True;
+  }
+  if ($origin_parallel_transport == 1)
+  {
+    let $enable_parallel_transport=0;
+    let $parallel_transport=False;
+  }
+  ob1.mysql alter system set _ob_enable_standby_db_parallel_log_transport=$parallel_transport tenant='standby_tenant1';
+  if ($enable_parallel_transport == 0)
+  {
+    ob1.mysql alter system set_tp tp_name = ERRSIM_SEND_FETCH_LOG_REQ_FAIL, error_code = 4121, frequency = 1;
+  }
+  if ($enable_parallel_transport == 1)
+  {
+    ob1.mysql alter system set_tp tp_name = ERRSIM_SEND_FETCH_RAW_LOG_REQ_FAIL, error_code = 4121, frequency = 1;
+  }
+
+  ob1.check_until_timeout select count(*) >= 1 from __all_virtual_ls_log_restore_status where tenant_id=$standby_tenant1_id and sync_status != 'NORMAL', 1, 200;
+
+  if ($enable_parallel_transport == 0)
+  {
+    ob1.mysql alter system set_tp tp_name = ERRSIM_SEND_FETCH_LOG_REQ_FAIL, error_code = 4121, frequency = 0;
+  }
+  if ($enable_parallel_transport == 1)
+  {
+    ob1.mysql alter system set_tp tp_name = ERRSIM_SEND_FETCH_RAW_LOG_REQ_FAIL, error_code = 4121, frequency = 0;
+  }
+  ob1.check_until_timeout select count(*) < 1 from __all_virtual_ls_log_restore_status where tenant_id=$standby_tenant1_id and sync_status != 'NORMAL', 1, 200;
+
+  sleep 10;
+
+  let $primary_standby_sync=deploy_get_value(ob1.select select case when a.sync_scn > b.sync_scn then a.sync_scn - b.sync_scn < 3000000000 else b.sync_scn - a.sync_scn < 3000000000 end as sync from (select * from __all_virtual_tenant_info where tenant_id=$primary_tenant_id) as a, (select * from __all_virtual_tenant_info where tenant_id=$standby_tenant1_id) as b, sync, 1);
+}
+--enable_all_result_log
+
+ob1.mysql alter system set standby_fetch_log_bandwidth_limit='0MB';
+
+sleep 10;
+ob1.mysql alter system set _ob_enable_standby_db_parallel_log_transport='False' tenant='standby_tenant1';
+insert /*+ enable_parallel_dml parallel(8) */ into t_heap select randstr(1024, 1234) c1,randstr(1024, 1234) c2, randstr(1024, 1234) c3, randstr(1024, 1234) c4, randstr(1024, 1234) c5, randstr(1024, 1234) c6, randstr(1024, 1234) c7, randstr(1024, 1234) c8, randstr(1024, 1234) c9, randstr(1024, 1234) c10 from table(generator(200000));
+ob1.check_until_timeout select case when a.sync_scn > b.sync_scn then a.sync_scn - b.sync_scn < 3000000000 else b.sync_scn - a.sync_scn < 3000000000 end from (select * from __all_virtual_tenant_info where tenant_id=$primary_tenant_id) as a, (select * from __all_virtual_tenant_info where tenant_id=$standby_tenant1_id) as b, 1, 600;
+
+sleep 10;
+ob1.mysql alter system set _ob_enable_standby_db_parallel_log_transport='True' tenant='standby_tenant1';
+insert /*+ enable_parallel_dml parallel(8) */ into t_heap select randstr(1024, 1234) c1,randstr(1024, 1234) c2, randstr(1024, 1234) c3, randstr(1024, 1234) c4, randstr(1024, 1234) c5, randstr(1024, 1234) c6, randstr(1024, 1234) c7, randstr(1024, 1234) c8, randstr(1024, 1234) c9, randstr(1024, 1234) c10 from table(generator(200000));
+ob1.check_until_timeout select case when a.sync_scn > b.sync_scn then a.sync_scn - b.sync_scn < 3000000000 else b.sync_scn - a.sync_scn < 3000000000 end from (select * from __all_virtual_tenant_info where tenant_id=$primary_tenant_id) as a, (select * from __all_virtual_tenant_info where tenant_id=$standby_tenant1_id) as b, 1, 600;

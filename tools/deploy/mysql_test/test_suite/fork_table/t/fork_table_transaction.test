@@ -1,0 +1,999 @@
+##owner: chenminsi.cms
+##owner group: 底层引擎部-轻量版
+##description: Fork Table与事务正交测试（短事务/大事务/频繁事务）
+##tags: fork_table transaction commit rollback
+##author: chenminsi.cms
+
+--disable_warnings
+drop database if exists db_fork_transaction;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+create database db_fork_transaction;
+use db_fork_transaction;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo # 启用debug sync
+connection obsys;
+alter system set debug_sync_timeout = '120s';
+sleep 1;
+set ob_global_debug_sync = 'reset';
+connection default;
+
+--echo ============================================
+--echo 1. 短事务未提交、提交、回滚与fork操作正交
+--echo ============================================
+
+--echo # 1.1 Fork中：短事务操作（未提交、提交、回滚）
+drop table if exists t_short_trx_mid;
+drop table if exists t_short_trx_mid_fork;
+
+create table t_short_trx_mid (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入初始数据
+insert into t_short_trx_mid values (1, 'Init1', 100);
+insert into t_short_trx_mid values (101, 'Init2', 200);
+
+--echo # 验证初始数据
+select count(*) as cnt from t_short_trx_mid;
+select * from t_short_trx_mid order by id;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for short_trx_mid_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_short_trx_mid to t_short_trx_mid_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：对源表进行短事务操作（未提交）
+start transaction;
+insert into t_short_trx_mid values (2, 'MidSrcUncommitted', 201);
+update t_short_trx_mid set value = 101 where id = 1;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_mid;
+select * from t_short_trx_mid where id in (1, 2) order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_mid,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_mid;
+--echo # 其他会话查询：应该看不到未提交的数据（只有初始的2条数据）
+select count(*) as cnt from t_short_trx_mid;
+select * from t_short_trx_mid order by id;
+--echo # 验证：其他会话看不到id=2的数据，说明数据确实未提交
+select * from t_short_trx_mid where id = 2;
+disconnect conn_check_mid;
+connection default;
+rollback;
+
+--echo # 验证回滚后源表数据
+select count(*) as cnt from t_short_trx_mid;
+select * from t_short_trx_mid order by id;
+
+--echo # Fork中：对源表进行短事务操作（提交）
+start transaction;
+insert into t_short_trx_mid values (3, 'MidSrcCommitted', 301);
+update t_short_trx_mid set value = 102 where id = 1;
+commit;
+
+--echo # 验证提交后源表数据
+select count(*) as cnt from t_short_trx_mid;
+select * from t_short_trx_mid order by id;
+
+--echo # Fork中：对目标表进行短事务操作（未提交）
+start transaction;
+insert into t_short_trx_mid_fork values (4, 'MidForkUncommitted', 401);
+update t_short_trx_mid_fork set value = 103 where id = 1;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_mid_fork;
+select * from t_short_trx_mid_fork where id in (1, 4) order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_mid_fork,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_mid_fork;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_short_trx_mid_fork;
+select * from t_short_trx_mid_fork order by id;
+--echo # 验证：其他会话看不到id=4的数据，说明数据确实未提交
+select * from t_short_trx_mid_fork where id = 4;
+disconnect conn_check_mid_fork;
+connection default;
+rollback;
+
+--echo # 验证回滚后目标表数据
+select count(*) as cnt from t_short_trx_mid_fork;
+select * from t_short_trx_mid_fork order by id;
+
+--echo # Fork中：对目标表进行短事务操作（提交）
+start transaction;
+insert into t_short_trx_mid_fork values (5, 'MidForkCommitted', 501);
+update t_short_trx_mid_fork set value = 104 where id = 1;
+commit;
+
+--echo # 验证提交后目标表数据
+select count(*) as cnt from t_short_trx_mid_fork;
+select * from t_short_trx_mid_fork order by id;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal short_trx_mid_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+--echo # 源表应包含提交的数据，不包含回滚的数据
+select count(*) as src_cnt from t_short_trx_mid;
+select * from t_short_trx_mid order by id;
+--echo # 目标表应包含fork时的数据以及提交的事务数据，不包含回滚的数据
+select count(*) as fork_cnt from t_short_trx_mid_fork;
+select * from t_short_trx_mid_fork order by id;
+
+drop table t_short_trx_mid;
+drop table t_short_trx_mid_fork;
+
+--echo # 1.3 Fork后：短事务操作（未提交、提交、回滚）
+drop table if exists t_short_trx_post;
+drop table if exists t_short_trx_post_fork;
+
+create table t_short_trx_post (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入初始数据
+insert into t_short_trx_post values (1, 'Init1', 100);
+insert into t_short_trx_post values (101, 'Init2', 200);
+
+--echo # Fork表
+fork table t_short_trx_post to t_short_trx_post_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后初始数据
+select count(*) as src_cnt from t_short_trx_post;
+select count(*) as fork_cnt from t_short_trx_post_fork;
+select * from t_short_trx_post order by id;
+select * from t_short_trx_post_fork order by id;
+
+--echo # Fork后：对源表进行短事务操作（未提交）
+start transaction;
+insert into t_short_trx_post values (2, 'PostSrcUncommitted', 201);
+update t_short_trx_post set value = 101 where id = 1;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_post;
+select * from t_short_trx_post where id in (1, 2) order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_post,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_post;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_short_trx_post;
+select * from t_short_trx_post order by id;
+--echo # 验证：其他会话看不到id=2的数据，说明数据确实未提交
+select * from t_short_trx_post where id = 2;
+disconnect conn_check_post;
+connection default;
+rollback;
+
+--echo # 验证回滚后源表数据
+select count(*) as cnt from t_short_trx_post;
+select * from t_short_trx_post order by id;
+
+--echo # Fork后：对源表进行短事务操作（提交）
+start transaction;
+insert into t_short_trx_post values (3, 'PostSrcCommitted', 301);
+update t_short_trx_post set value = 102 where id = 1;
+commit;
+
+--echo # 验证提交后源表数据
+select count(*) as cnt from t_short_trx_post;
+select * from t_short_trx_post order by id;
+
+--echo # Fork后：对目标表进行短事务操作（未提交）
+start transaction;
+insert into t_short_trx_post_fork values (4, 'PostForkUncommitted', 401);
+update t_short_trx_post_fork set value = 103 where id = 1;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_post_fork;
+select * from t_short_trx_post_fork where id in (1, 4) order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_post_fork,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_post_fork;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_short_trx_post_fork;
+select * from t_short_trx_post_fork order by id;
+--echo # 验证：其他会话看不到id=4的数据，说明数据确实未提交
+select * from t_short_trx_post_fork where id = 4;
+disconnect conn_check_post_fork;
+connection default;
+rollback;
+
+--echo # 验证回滚后目标表数据
+select count(*) as cnt from t_short_trx_post_fork;
+select * from t_short_trx_post_fork order by id;
+
+--echo # Fork后：对目标表进行短事务操作（提交）
+start transaction;
+insert into t_short_trx_post_fork values (5, 'PostForkCommitted', 501);
+update t_short_trx_post_fork set value = 104 where id = 1;
+commit;
+
+--echo # 验证提交后目标表数据
+select count(*) as cnt from t_short_trx_post_fork;
+select * from t_short_trx_post_fork order by id;
+
+--echo # 最终验证：源表和目标表数据隔离
+select count(*) as src_cnt from t_short_trx_post;
+select count(*) as fork_cnt from t_short_trx_post_fork;
+select * from t_short_trx_post order by id;
+select * from t_short_trx_post_fork order by id;
+
+drop table t_short_trx_post;
+drop table t_short_trx_post_fork;
+
+--echo # 1.4 源表fork前事务未提交，fork中事务提交bug
+drop table if exists t_short_trx_pre_mid;
+drop table if exists t_short_trx_pre_mid_fork;
+
+create table t_short_trx_pre_mid (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入初始数据
+insert into t_short_trx_pre_mid values (1, 'Init1', 100);
+insert into t_short_trx_pre_mid values (101, 'Init2', 200);
+
+--echo # 验证初始数据
+select count(*) as cnt from t_short_trx_pre_mid;
+select * from t_short_trx_pre_mid order by id;
+
+--echo # Fork前：开始事务但未提交
+start transaction;
+insert into t_short_trx_pre_mid values (2, 'PreUncommitted', 201);
+update t_short_trx_pre_mid set value = 101 where id = 1;
+
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_pre_mid;
+select * from t_short_trx_pre_mid where id in (1, 2) order by id;
+
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check;
+--echo # 其他会话查询：应该看不到未提交的数据（只有初始的2条数据）
+select count(*) as cnt from t_short_trx_pre_mid;
+select * from t_short_trx_pre_mid order by id;
+--echo # 验证：其他会话看不到id=2的数据，说明数据确实未提交
+select * from t_short_trx_pre_mid where id = 2;
+disconnect conn_check;
+connection default;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for pre_mid_trx_signal execute 10000';
+sleep 1;
+
+--echo # 在另一个session中执行Fork命令（避免DDL自动提交当前session的事务）
+connect (conn_fork_pre_mid,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_fork_pre_mid;
+fork table t_short_trx_pre_mid to t_short_trx_pre_mid_fork;
+disconnect conn_fork_pre_mid;
+connection default;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+sleep 5;
+--echo # Fork中：提交之前未提交的事务
+commit;
+
+--echo # 验证提交后源表数据
+select count(*) as cnt from t_short_trx_pre_mid;
+select * from t_short_trx_pre_mid order by id;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal pre_mid_trx_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+--echo # 源表应包含fork中提交的事务数据
+select count(*) as src_cnt from t_short_trx_pre_mid;
+select * from t_short_trx_pre_mid order by id;
+--echo # 目标表应包含fork时的数据（fork前未提交的数据不会包含，因为fork在事务提交前开始）
+--echo # 注意：如果fork在事务提交前开始，目标表可能不包含未提交的数据
+--echo # 如果fork在事务提交后完成，需要验证目标表是否包含提交的数据
+select count(*) as fork_cnt from t_short_trx_pre_mid_fork;
+select * from t_short_trx_pre_mid_fork order by id;
+
+--echo # 验证数据一致性：检查源表和目标表的数据
+select (select count(*) from t_short_trx_pre_mid) as src_cnt, (select count(*) from t_short_trx_pre_mid_fork) as fork_cnt;
+
+drop table t_short_trx_pre_mid;
+drop table t_short_trx_pre_mid_fork;
+
+--echo # 1.5 目标表fork中事务未提交，fork后事务提交
+drop table if exists t_short_trx_mid_post;
+drop table if exists t_short_trx_mid_post_fork;
+
+create table t_short_trx_mid_post (
+    id int primary key,
+    name varchar(50),
+    value int
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200)
+);
+
+--echo # 插入初始数据
+insert into t_short_trx_mid_post values (1, 'Init1', 100);
+insert into t_short_trx_mid_post values (101, 'Init2', 200);
+
+--echo # 验证初始数据
+select count(*) as cnt from t_short_trx_mid_post;
+select * from t_short_trx_mid_post order by id;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for mid_post_trx_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_short_trx_mid_post to t_short_trx_mid_post_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：对目标表开始事务但未提交
+--echo # 注意：主键约束在INSERT时立即检查，如果fork已经复制了数据，插入主键冲突的数据会立即报错
+start transaction;
+--error 1062
+insert into t_short_trx_mid_post_fork values (1, 'Init1', 100);
+--echo # 主键冲突会立即报错，事务失败，需要rollback
+rollback;
+
+--echo # 重新开始事务，插入不冲突的数据
+start transaction;
+insert into t_short_trx_mid_post_fork values (2, 'MidForkUncommitted', 201);
+update t_short_trx_mid_post_fork set value = 101 where id = 1;
+
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_short_trx_mid_post_fork;
+select * from t_short_trx_mid_post_fork where id in (1, 2) order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_mid_post_fork,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_mid_post_fork;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_short_trx_mid_post_fork;
+select * from t_short_trx_mid_post_fork order by id;
+--echo # 验证：其他会话看不到id=2的数据，说明数据确实未提交
+select * from t_short_trx_mid_post_fork where id = 2;
+disconnect conn_check_mid_post_fork;
+connection default;
+
+--echo # 继续Fork执行（事务仍未提交）
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal mid_post_trx_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork后：提交之前未提交的事务
+commit;
+
+--echo # 验证提交后目标表数据
+select count(*) as cnt from t_short_trx_mid_post_fork;
+select * from t_short_trx_mid_post_fork order by id;
+
+--echo # 验证源表数据未受影响
+select count(*) as src_cnt from t_short_trx_mid_post;
+select * from t_short_trx_mid_post order by id;
+
+--echo # 最终验证：源表和目标表数据
+--echo # 源表应保持初始数据
+select count(*) as src_cnt from t_short_trx_mid_post;
+select * from t_short_trx_mid_post order by id;
+--echo # 目标表应包含fork时的数据以及fork后提交的事务数据
+select count(*) as fork_cnt from t_short_trx_mid_post_fork;
+select * from t_short_trx_mid_post_fork order by id;
+
+--echo # 验证数据隔离：源表和目标表数据独立
+select (select count(*) from t_short_trx_mid_post) as src_cnt, (select count(*) from t_short_trx_mid_post_fork) as fork_cnt;
+
+drop table t_short_trx_mid_post;
+drop table t_short_trx_mid_post_fork;
+
+--echo ============================================
+--echo 2. 大事务未提交、提交、回滚与fork操作正交
+--echo ============================================
+
+--echo # 2.1 Fork前：大事务操作（未提交、提交、回滚）
+drop table if exists t_large_trx_pre;
+drop table if exists t_large_trx_pre_fork;
+
+create table t_large_trx_pre (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # 插入初始数据
+insert into t_large_trx_pre values (1, 'Init1', 100, repeat('A', 100));
+insert into t_large_trx_pre values (101, 'Init2', 200, repeat('B', 100));
+insert into t_large_trx_pre values (201, 'Init3', 300, repeat('C', 100));
+
+--echo # 验证初始数据
+select count(*) as cnt from t_large_trx_pre;
+select id, name, value from t_large_trx_pre order by id;
+
+--echo # Fork前：大事务未提交（插入多条数据）
+start transaction;
+insert into t_large_trx_pre values (2, 'LargeUncommitted1', 201, repeat('D', 100));
+insert into t_large_trx_pre values (3, 'LargeUncommitted2', 202, repeat('E', 100));
+insert into t_large_trx_pre values (4, 'LargeUncommitted3', 203, repeat('F', 100));
+insert into t_large_trx_pre values (50, 'LargeUncommitted4', 204, repeat('G', 100));
+insert into t_large_trx_pre values (51, 'LargeUncommitted5', 205, repeat('H', 100));
+update t_large_trx_pre set value = 101 where id = 1;
+update t_large_trx_pre set value = 201 where id = 101;
+update t_large_trx_pre set value = 301 where id = 201;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_large_trx_pre;
+select id, name, value from t_large_trx_pre where id <= 51 order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_large_pre,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_large_pre;
+--echo # 其他会话查询：应该看不到未提交的数据（只有初始的3条数据）
+select count(*) as cnt from t_large_trx_pre;
+select id, name, value from t_large_trx_pre order by id;
+--echo # 验证：其他会话看不到id=2-51的数据，说明数据确实未提交
+select * from t_large_trx_pre where id = 2;
+disconnect conn_check_large_pre;
+connection default;
+rollback;
+
+--echo # 验证回滚后数据（未提交的数据应消失）
+select count(*) as cnt from t_large_trx_pre;
+select id, name, value from t_large_trx_pre order by id;
+
+--echo # Fork前：大事务提交
+start transaction;
+insert into t_large_trx_pre values (5, 'LargeCommitted1', 301, repeat('I', 100));
+insert into t_large_trx_pre values (6, 'LargeCommitted2', 302, repeat('J', 100));
+insert into t_large_trx_pre values (7, 'LargeCommitted3', 303, repeat('K', 100));
+insert into t_large_trx_pre values (52, 'LargeCommitted4', 304, repeat('L', 100));
+insert into t_large_trx_pre values (53, 'LargeCommitted5', 305, repeat('M', 100));
+update t_large_trx_pre set value = 102 where id = 1;
+update t_large_trx_pre set value = 202 where id = 101;
+update t_large_trx_pre set value = 302 where id = 201;
+commit;
+
+--echo # 验证提交后数据
+select count(*) as cnt from t_large_trx_pre;
+select id, name, value from t_large_trx_pre order by id;
+
+--echo # Fork表
+fork table t_large_trx_pre to t_large_trx_pre_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据（应包含提交的数据，不包含回滚的数据）
+select count(*) as src_cnt from t_large_trx_pre;
+select count(*) as fork_cnt from t_large_trx_pre_fork;
+select id, name, value from t_large_trx_pre order by id;
+select id, name, value from t_large_trx_pre_fork order by id;
+
+drop table t_large_trx_pre;
+drop table t_large_trx_pre_fork;
+
+--echo # 2.2 Fork中：大事务操作（未提交、提交、回滚）
+drop table if exists t_large_trx_mid;
+drop table if exists t_large_trx_mid_fork;
+
+create table t_large_trx_mid (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # 插入初始数据
+insert into t_large_trx_mid values (1, 'Init1', 100, repeat('A', 100));
+insert into t_large_trx_mid values (101, 'Init2', 200, repeat('B', 100));
+insert into t_large_trx_mid values (201, 'Init3', 300, repeat('C', 100));
+
+--echo # 验证初始数据
+select count(*) as cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid order by id;
+
+--echo # 设置debug sync point在FORK_TABLE_BUILD_DATA阶段暂停
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for large_trx_mid_signal execute 10000';
+sleep 1;
+connection default;
+
+--echo # 执行Fork命令（会在BUILD_DATA阶段暂停）
+fork table t_large_trx_mid to t_large_trx_mid_fork;
+
+--echo # 等待fork进入BUILD_DATA阶段
+let $wait_status= BUILD_DATA;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # Fork中：对源表进行大事务操作（未提交）
+start transaction;
+insert into t_large_trx_mid values (2, 'MidSrcLargeUncommitted1', 201, repeat('D', 100));
+insert into t_large_trx_mid values (3, 'MidSrcLargeUncommitted2', 202, repeat('E', 100));
+insert into t_large_trx_mid values (4, 'MidSrcLargeUncommitted3', 203, repeat('F', 100));
+update t_large_trx_mid set value = 101 where id = 1;
+update t_large_trx_mid set value = 201 where id = 101;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid where id <= 4 order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_large_mid,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_large_mid;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid order by id;
+--echo # 验证：其他会话看不到id=2-4的数据，说明数据确实未提交
+select * from t_large_trx_mid where id = 2;
+disconnect conn_check_large_mid;
+connection default;
+rollback;
+
+--echo # 验证回滚后源表数据
+select count(*) as cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid order by id;
+
+--echo # Fork中：对源表进行大事务操作（提交）
+start transaction;
+insert into t_large_trx_mid values (5, 'MidSrcLargeCommitted1', 301, repeat('G', 100));
+insert into t_large_trx_mid values (6, 'MidSrcLargeCommitted2', 302, repeat('H', 100));
+insert into t_large_trx_mid values (7, 'MidSrcLargeCommitted3', 303, repeat('I', 100));
+update t_large_trx_mid set value = 102 where id = 1;
+update t_large_trx_mid set value = 202 where id = 101;
+commit;
+
+--echo # 验证提交后源表数据
+select count(*) as cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid order by id;
+
+--echo # Fork中：对目标表进行大事务操作（未提交）
+start transaction;
+insert into t_large_trx_mid_fork values (8, 'MidForkLargeUncommitted1', 401, repeat('J', 100));
+insert into t_large_trx_mid_fork values (9, 'MidForkLargeUncommitted2', 402, repeat('K', 100));
+insert into t_large_trx_mid_fork values (10, 'MidForkLargeUncommitted3', 403, repeat('L', 100));
+update t_large_trx_mid_fork set value = 103 where id = 1;
+update t_large_trx_mid_fork set value = 203 where id = 101;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_large_trx_mid_fork;
+select id, name, value from t_large_trx_mid_fork where id <= 10 order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_large_mid_fork,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_large_mid_fork;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_large_trx_mid_fork;
+select id, name, value from t_large_trx_mid_fork order by id;
+--echo # 验证：其他会话看不到id=8-10的数据，说明数据确实未提交
+select * from t_large_trx_mid_fork where id = 8;
+disconnect conn_check_large_mid_fork;
+connection default;
+rollback;
+
+--echo # 验证回滚后目标表数据
+select count(*) as cnt from t_large_trx_mid_fork;
+select id, name, value from t_large_trx_mid_fork order by id;
+
+--echo # Fork中：对目标表进行大事务操作（提交）
+start transaction;
+insert into t_large_trx_mid_fork values (11, 'MidForkLargeCommitted1', 501, repeat('M', 100));
+insert into t_large_trx_mid_fork values (12, 'MidForkLargeCommitted2', 502, repeat('N', 100));
+insert into t_large_trx_mid_fork values (13, 'MidForkLargeCommitted3', 503, repeat('O', 100));
+update t_large_trx_mid_fork set value = 104 where id = 1;
+update t_large_trx_mid_fork set value = 204 where id = 101;
+commit;
+
+--echo # 验证提交后目标表数据
+select count(*) as cnt from t_large_trx_mid_fork;
+select id, name, value from t_large_trx_mid_fork order by id;
+
+--echo # 继续Fork执行
+connection obsys;
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal large_trx_mid_signal';
+connection default;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork完成后源表和目标表数据
+--echo # 源表应包含提交的数据，不包含回滚的数据
+select count(*) as src_cnt from t_large_trx_mid;
+select id, name, value from t_large_trx_mid order by id;
+--echo # 目标表应包含fork时的数据以及提交的事务数据，不包含回滚的数据
+select count(*) as fork_cnt from t_large_trx_mid_fork;
+select id, name, value from t_large_trx_mid_fork order by id;
+
+drop table t_large_trx_mid;
+drop table t_large_trx_mid_fork;
+
+--echo # 2.3 Fork后：大事务操作（未提交、提交、回滚）
+drop table if exists t_large_trx_post;
+drop table if exists t_large_trx_post_fork;
+
+create table t_large_trx_post (
+    id int primary key,
+    name varchar(50),
+    value int,
+    data varchar(200)
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # 插入初始数据
+insert into t_large_trx_post values (1, 'Init1', 100, repeat('A', 100));
+insert into t_large_trx_post values (101, 'Init2', 200, repeat('B', 100));
+insert into t_large_trx_post values (201, 'Init3', 300, repeat('C', 100));
+
+--echo # Fork表
+fork table t_large_trx_post to t_large_trx_post_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后初始数据
+select count(*) as src_cnt from t_large_trx_post;
+select count(*) as fork_cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post order by id;
+select id, name, value from t_large_trx_post_fork order by id;
+
+--echo # Fork后：对源表进行大事务操作（未提交）
+start transaction;
+insert into t_large_trx_post values (2, 'PostSrcLargeUncommitted1', 201, repeat('D', 100));
+insert into t_large_trx_post values (3, 'PostSrcLargeUncommitted2', 202, repeat('E', 100));
+insert into t_large_trx_post values (4, 'PostSrcLargeUncommitted3', 203, repeat('F', 100));
+update t_large_trx_post set value = 101 where id = 1;
+update t_large_trx_post set value = 201 where id = 101;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_large_trx_post;
+select id, name, value from t_large_trx_post where id <= 4 order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_large_post,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_large_post;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_large_trx_post;
+select id, name, value from t_large_trx_post order by id;
+--echo # 验证：其他会话看不到id=2-4的数据，说明数据确实未提交
+select * from t_large_trx_post where id = 2;
+disconnect conn_check_large_post;
+connection default;
+rollback;
+
+--echo # 验证回滚后源表数据
+select count(*) as cnt from t_large_trx_post;
+select id, name, value from t_large_trx_post order by id;
+
+--echo # Fork后：对源表进行大事务操作（提交）
+start transaction;
+insert into t_large_trx_post values (5, 'PostSrcLargeCommitted1', 301, repeat('G', 100));
+insert into t_large_trx_post values (6, 'PostSrcLargeCommitted2', 302, repeat('H', 100));
+insert into t_large_trx_post values (7, 'PostSrcLargeCommitted3', 303, repeat('I', 100));
+update t_large_trx_post set value = 102 where id = 1;
+update t_large_trx_post set value = 202 where id = 101;
+commit;
+
+--echo # 验证提交后源表数据
+select count(*) as cnt from t_large_trx_post;
+select id, name, value from t_large_trx_post order by id;
+
+--echo # Fork后：对目标表进行大事务操作（未提交）
+start transaction;
+insert into t_large_trx_post_fork values (8, 'PostForkLargeUncommitted1', 401, repeat('J', 100));
+insert into t_large_trx_post_fork values (9, 'PostForkLargeUncommitted2', 402, repeat('K', 100));
+insert into t_large_trx_post_fork values (10, 'PostForkLargeUncommitted3', 403, repeat('L', 100));
+update t_large_trx_post_fork set value = 103 where id = 1;
+update t_large_trx_post_fork set value = 203 where id = 101;
+--echo # 验证未提交事务中的数据（当前会话可见）
+select count(*) as cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post_fork where id <= 10 order by id;
+--echo # 在另一个会话中验证数据未提交（其他会话看不到未提交的数据）
+connect (conn_check_large_post_fork,$OBMYSQL_MS0,root@sys,,db_fork_transaction,$OBMYSQL_PORT);
+connection conn_check_large_post_fork;
+--echo # 其他会话查询：应该看不到未提交的数据
+select count(*) as cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post_fork order by id;
+--echo # 验证：其他会话看不到id=8-10的数据，说明数据确实未提交
+select * from t_large_trx_post_fork where id = 8;
+disconnect conn_check_large_post_fork;
+connection default;
+rollback;
+
+--echo # 验证回滚后目标表数据
+select count(*) as cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post_fork order by id;
+
+--echo # Fork后：对目标表进行大事务操作（提交）
+start transaction;
+insert into t_large_trx_post_fork values (11, 'PostForkLargeCommitted1', 501, repeat('M', 100));
+insert into t_large_trx_post_fork values (12, 'PostForkLargeCommitted2', 502, repeat('N', 100));
+insert into t_large_trx_post_fork values (13, 'PostForkLargeCommitted3', 503, repeat('O', 100));
+update t_large_trx_post_fork set value = 104 where id = 1;
+update t_large_trx_post_fork set value = 204 where id = 101;
+commit;
+
+--echo # 验证提交后目标表数据
+select count(*) as cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post_fork order by id;
+
+--echo # 最终验证：源表和目标表数据隔离
+select count(*) as src_cnt from t_large_trx_post;
+select count(*) as fork_cnt from t_large_trx_post_fork;
+select id, name, value from t_large_trx_post order by id;
+select id, name, value from t_large_trx_post_fork order by id;
+
+drop table t_large_trx_post;
+drop table t_large_trx_post_fork;
+
+--echo ============================================
+--echo 3. 对源表进行频繁的事务操作后进行fork
+--echo ============================================
+
+drop table if exists t_frequent_trx;
+drop table if exists t_frequent_trx_fork;
+
+create table t_frequent_trx (
+    id int primary key,
+    name varchar(50),
+    value int,
+    counter int default 0
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # 插入初始数据
+insert into t_frequent_trx values (1, 'Init1', 100, 0);
+insert into t_frequent_trx values (101, 'Init2', 200, 0);
+insert into t_frequent_trx values (201, 'Init3', 300, 0);
+
+--echo # 验证初始数据
+select count(*) as cnt from t_frequent_trx;
+select * from t_frequent_trx order by id;
+
+--echo # 对源表进行频繁的事务操作（提交）
+--echo # 执行多次事务提交操作
+start transaction;
+insert into t_frequent_trx values (2, 'Freq1', 201, 1);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_frequent_trx values (3, 'Freq2', 202, 2);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_frequent_trx values (4, 'Freq3', 203, 3);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_frequent_trx values (5, 'Freq4', 204, 4);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_frequent_trx values (6, 'Freq5', 205, 5);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+--echo # 验证频繁事务操作后的源表数据
+select count(*) as cnt from t_frequent_trx;
+select * from t_frequent_trx order by id;
+
+--echo # 对源表进行频繁的事务操作（部分回滚）
+start transaction;
+insert into t_frequent_trx values (7, 'Freq6', 206, 6);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+rollback;
+
+start transaction;
+insert into t_frequent_trx values (8, 'Freq7', 207, 7);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_frequent_trx values (9, 'Freq8', 208, 8);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+rollback;
+
+start transaction;
+insert into t_frequent_trx values (10, 'Freq9', 209, 9);
+update t_frequent_trx set counter = counter + 1 where id = 1;
+commit;
+
+--echo # 验证频繁事务操作后的源表数据（应包含提交的数据，不包含回滚的数据）
+select count(*) as cnt from t_frequent_trx;
+select * from t_frequent_trx order by id;
+
+--echo # Fork表
+fork table t_frequent_trx to t_frequent_trx_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后源表和目标表数据
+--echo # 源表应包含所有提交的事务数据
+select count(*) as src_cnt from t_frequent_trx;
+select * from t_frequent_trx order by id;
+--echo # 目标表应包含fork时的数据（所有提交的事务数据）
+select count(*) as fork_cnt from t_frequent_trx_fork;
+select * from t_frequent_trx_fork order by id;
+
+--echo # 验证数据一致性（fork时的数据应该一致）
+select (select count(*) from t_frequent_trx) as src_cnt, (select count(*) from t_frequent_trx_fork) as fork_cnt;
+select (select sum(counter) from t_frequent_trx) as src_sum, (select sum(counter) from t_frequent_trx_fork) as fork_sum;
+
+drop table t_frequent_trx;
+drop table t_frequent_trx_fork;
+
+--echo ============================================
+--echo 4. 对目标表进行频繁的事务操作，无预期外报错
+--echo ============================================
+
+drop table if exists t_fork_frequent_trx;
+drop table if exists t_fork_frequent_trx_fork;
+
+create table t_fork_frequent_trx (
+    id int primary key,
+    name varchar(50),
+    value int,
+    counter int default 0
+) partition by range(id) (
+    partition p0 values less than (100),
+    partition p1 values less than (200),
+    partition p2 values less than (300)
+);
+
+--echo # 插入初始数据
+insert into t_fork_frequent_trx values (1, 'Init1', 100, 0);
+insert into t_fork_frequent_trx values (101, 'Init2', 200, 0);
+insert into t_fork_frequent_trx values (201, 'Init3', 300, 0);
+
+--echo # Fork表
+fork table t_fork_frequent_trx to t_fork_frequent_trx_fork;
+--source mysql_test/test_suite/fork_table/include/wait_fork_table.inc
+
+--echo # 验证Fork后初始数据
+select count(*) as src_cnt from t_fork_frequent_trx;
+select count(*) as fork_cnt from t_fork_frequent_trx_fork;
+select * from t_fork_frequent_trx order by id;
+select * from t_fork_frequent_trx_fork order by id;
+
+--echo # 对目标表进行频繁的事务操作（提交）
+--echo # 执行多次事务提交操作，验证无预期外报错
+start transaction;
+insert into t_fork_frequent_trx_fork values (2, 'ForkFreq1', 201, 1);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (3, 'ForkFreq2', 202, 2);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (4, 'ForkFreq3', 203, 3);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (5, 'ForkFreq4', 204, 4);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (6, 'ForkFreq5', 205, 5);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+--echo # 对目标表进行频繁的事务操作（部分回滚）
+start transaction;
+insert into t_fork_frequent_trx_fork values (7, 'ForkFreq6', 206, 6);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+rollback;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (8, 'ForkFreq7', 207, 7);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (9, 'ForkFreq8', 208, 8);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+rollback;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (10, 'ForkFreq9', 209, 9);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+--echo # 验证频繁事务操作后的目标表数据（应包含提交的数据，不包含回滚的数据）
+select count(*) as cnt from t_fork_frequent_trx_fork;
+select * from t_fork_frequent_trx_fork order by id;
+
+--echo # 验证源表数据未受影响
+select count(*) as src_cnt from t_fork_frequent_trx;
+select * from t_fork_frequent_trx order by id;
+
+--echo # 验证数据隔离：源表和目标表数据独立
+select (select count(*) from t_fork_frequent_trx) as src_cnt, (select count(*) from t_fork_frequent_trx_fork) as fork_cnt;
+select (select sum(counter) from t_fork_frequent_trx) as src_sum, (select sum(counter) from t_fork_frequent_trx_fork) as fork_sum;
+
+--echo # 继续对目标表进行更多频繁操作，验证无预期外报错
+--echo # 执行更多事务操作
+start transaction;
+insert into t_fork_frequent_trx_fork values (11, 'ForkFreq10', 210, 10);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (12, 'ForkFreq11', 211, 11);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (13, 'ForkFreq12', 212, 12);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+rollback;
+
+start transaction;
+insert into t_fork_frequent_trx_fork values (14, 'ForkFreq13', 213, 13);
+update t_fork_frequent_trx_fork set counter = counter + 1 where id = 1;
+commit;
+
+--echo # 最终验证：目标表频繁事务操作后数据正确
+select count(*) as cnt from t_fork_frequent_trx_fork;
+select * from t_fork_frequent_trx_fork order by id;
+
+--echo # 最终验证：源表数据未受影响
+select count(*) as src_cnt from t_fork_frequent_trx;
+select * from t_fork_frequent_trx order by id;
+
+drop table t_fork_frequent_trx;
+drop table t_fork_frequent_trx_fork;
+
+--echo ============================================
+--echo 5. 清理
+--echo ============================================
+
+drop database if exists db_fork_transaction;

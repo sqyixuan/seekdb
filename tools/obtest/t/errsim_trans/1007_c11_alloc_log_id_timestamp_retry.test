@@ -1,0 +1,209 @@
+# owner:shanyan.g
+# owner group:transaction
+# description:
+# 测试点：
+# 1. big row的事务，申请logid和timestamp过程中，需要重试，验证事务执行流程
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 10;
+ob1.mysql set global max_allowed_packet=50000000;
+
+#在zone1上建立连接
+let $l_ip1=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port1=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip1,root@sys,,oceanbase,$l_port1);
+
+#在zone1上建立连接
+let $l_ip2=deploy_get_value(ob1.z2.obs0.ip);
+let $l_port2=deploy_get_value(ob1.z2.obs0.mysql_port);
+connect (conn2,$l_ip2,root@obtest,,test,$l_port2);
+
+let $svr_ip = deploy_get_value(ob1.select select svr_ip from __all_server where zone = 'z2', svr_ip, 1);
+let $svr_port = deploy_get_value(ob1.select select svr_port from __all_server where zone = 'z2', svr_port, 1);
+let $host = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) host from oceanbase.__all_server where zone='z2', host, 1);
+let $observer = deploy_get_value(ob1.get_obs_by_addr $host);
+
+connection conn1;
+alter system set enable_auto_leader_switch = false;
+connection conn2;
+use test;
+drop table if exists obschema_t_4nN;
+create table obschema_t_4nN(
+    obschema_c_0_XZ5uh varchar(20) NOT NULL default 'aEFGHI01',
+    obschema_c_1_B4yad6d float NOT NULL default 0.123470,
+    obschema_c_2_5Kg datetime NOT NULL default now(),
+    obschema_c_3_7rxG varchar(20) NOT NULL default 'aEFGHI01',
+    obschema_c_4_u6OhG mediumblob NULL default NULL,
+    obschema_c_5_qiM text NOT NULL,
+    obschema_c_6_INlU7 tinytext NOT NULL,
+    obschema_c_7_3 varchar(40) NULL default 'aEFGHI01',
+    obschema_c_8_MtWHJ varchar(200) NULL default 'aEFGHI01',
+    primary key(obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,obschema_c_3_7rxG),
+    index obschema_i_0_Ejc(obschema_c_0_XZ5uh,obschema_c_3_7rxG,obschema_c_6_INlU7(169)),
+    unique index obschema_i_1_uni_bkN(obschema_c_1_B4yad6d,obschema_c_7_3),
+    index obschema_i_2_ob2cp(obschema_c_6_INlU7(225),obschema_c_7_3,obschema_c_8_MtWHJ));
+set ob_query_timeout=100000000;
+sleep 5;
+
+#############################
+#case1：写普通日志，发生重试
+connection conn2;
+begin;
+--disable_query_log
+let $i=0;
+while($i < 10)
+{
+  replace into obschema_t_4nN(obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ) values('gaoshanyan', 100.001, now(6),'zehuan', repeat('a', 700000), '11111141', '2222222', '433333', '55544444');
+  inc $i;
+}
+--enable_query_log
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 1;
+connection conn2;
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 0;
+sleep 5;
+
+#数据校验
+connection conn2;
+set ob_enable_index_direct_select='on';
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from obschema_t_4nN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3 from __idx_1099511677777_obschema_i_1_uni_bkN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from __idx_1099511677777_obschema_i_0_Ejc;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3, obschema_c_8_MtWHJ from __idx_1099511677777_obschema_i_2_ob2cp;
+
+select /*+read_consistency(weak)+*/ count(*) from obschema_t_4nN;
+select /*+read_consistency(weak)+*/ obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_2_5Kg,
+    obschema_c_3_7rxG, obschema_c_5_qiM, obschema_c_6_INlU7, obschema_c_7_3, obschema_c_8_MtWHJ from obschema_t_4nN;
+connection conn1;
+alter system major freeze;
+ob1.check_version 2;
+
+#############################
+#case2：写一条big row日志，发生重试
+connection conn2;
+begin;
+--disable_query_log
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('shanyan.g', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+--enable_query_log
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 1;
+connection conn2;
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 0;
+sleep 5;
+
+#数据校验
+connection conn2;
+set ob_enable_index_direct_select='on';
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from obschema_t_4nN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3 from __idx_1099511677777_obschema_i_1_uni_bkN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from __idx_1099511677777_obschema_i_0_Ejc;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3, obschema_c_8_MtWHJ from __idx_1099511677777_obschema_i_2_ob2cp;
+
+select /*+read_consistency(weak)+*/ count(*) from obschema_t_4nN;
+select /*+read_consistency(weak)+*/ obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_2_5Kg,
+    obschema_c_3_7rxG, obschema_c_5_qiM, obschema_c_6_INlU7, obschema_c_7_3, obschema_c_8_MtWHJ from obschema_t_4nN;
+connection conn1;
+alter system major freeze;
+ob1.check_version 3;
+
+#############################
+#case3：写多条big row日志，发生重试
+connection conn2;
+begin;
+--disable_query_log
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('liubei', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('zhangfei', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('guanyu', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+--enable_query_log
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 1;
+connection conn2;
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 0;
+sleep 5;
+
+#数据校验
+connection conn2;
+set ob_enable_index_direct_select='on';
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from obschema_t_4nN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3 from __idx_1099511677777_obschema_i_1_uni_bkN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from __idx_1099511677777_obschema_i_0_Ejc;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3, obschema_c_8_MtWHJ from __idx_1099511677777_obschema_i_2_ob2cp;
+
+select /*+read_consistency(weak)+*/ count(*) from obschema_t_4nN;
+select /*+read_consistency(weak)+*/ obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_2_5Kg,
+    obschema_c_3_7rxG, obschema_c_5_qiM, obschema_c_6_INlU7, obschema_c_7_3, obschema_c_8_MtWHJ from obschema_t_4nN;
+connection conn1;
+alter system major freeze;
+ob1.check_version 4;
+
+#############################
+#case4：混合写普通日志和big row日志，发生重试
+connection conn2;
+begin;
+--disable_query_log
+while($i < 15)
+{
+  eval replace into obschema_t_4nN(obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ) values('gaoshanyan', 100.001, now(6),'zehuan', repeat('a', 700000), '11111141', '2222222', '433333', '55544444');
+  inc $i;
+}
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('liubei001', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+while($i < 20)
+{
+  eval replace into obschema_t_4nN(obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ) values('gaoshanyan', 100.001, now(6),'zehuan', repeat('a', 700000), '11111141', '2222222', '433333', '55544444');
+  inc $i;
+}
+replace into obschema_t_4nN(
+    obschema_c_0_XZ5uh,obschema_c_1_B4yad6d,obschema_c_2_5Kg,
+    obschema_c_3_7rxG,obschema_c_4_u6OhG,obschema_c_5_qiM,
+    obschema_c_6_INlU7,obschema_c_7_3,obschema_c_8_MtWHJ)
+values('zhangfei001', 100.001, now(6),'zehuan', repeat('a', 16000001), '11111141', '2222222', '433333', '55544444');
+--enable_query_log
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 1;
+connection conn2;
+commit;
+connection conn1;
+alter system set_tp tp_no = 48, error_code = 4023, frequency = 0;
+sleep 5;
+
+#数据校验
+connection conn2;
+set ob_enable_index_direct_select='on';
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from obschema_t_4nN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3 from __idx_1099511677777_obschema_i_1_uni_bkN;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG from __idx_1099511677777_obschema_i_0_Ejc;
+select obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_3_7rxG, obschema_c_7_3, obschema_c_8_MtWHJ from __idx_1099511677777_obschema_i_2_ob2cp;
+
+select /*+read_consistency(weak)+*/ count(*) from obschema_t_4nN;
+select /*+read_consistency(weak)+*/ obschema_c_0_XZ5uh, obschema_c_1_B4yad6d, obschema_c_2_5Kg,
+    obschema_c_3_7rxG, obschema_c_5_qiM, obschema_c_6_INlU7, obschema_c_7_3, obschema_c_8_MtWHJ from obschema_t_4nN;
+connection conn1;
+alter system major freeze;
+ob1.check_version 5;

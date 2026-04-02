@@ -1,0 +1,237 @@
+# owner: yangyifei.yyf
+# owner group: transaction
+# description: this case is used to test foreign key
+# constraint check during update / delete cascade
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+set GLOBAL ob_query_timeout = 1000000000000;
+--enable_query_log
+
+connect (conn0, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, oceanbase, $OBMYSQL_PORT);
+connect (conn1, $OBMYSQL_MS0, $OBMYSQL_USR, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connect (conn2, $OBMYSQL_MS0, $OBMYSQL_USR, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists child;
+drop table if exists parent;
+drop table if exists t1;
+--enable_warnings
+
+# create parent table and child table, which is on update / delete cascade
+create table parent(c1 int primary key);
+create table child(c1 int primary key, foreign key(c1) references parent(c1) on update cascade on delete cascade);
+insert into parent values (1);
+
+# enable defensive check for defending 4377
+connection conn0;
+alter system set _enable_defensive_check = 1;
+
+### 1. check foreign key constratint when delete cascade
+## 1.1 check row in child table has lock (in memtable)
+# start transaction in the child table
+# and insert with the existed foreign key
+connection conn2;
+begin;
+# it will insert successfully, because it can see
+# the foreign key exists in the parent table
+insert into child values (1);
+
+# start transaction in parent table
+# and delete the referenced row
+connection conn1;
+begin;
+send delete from parent where c1 = 1;
+
+sleep 1;  # to avoid that conn1 commit/rollback faster than conn2
+
+# commit the transaction in the child table
+connection conn2;
+commit;
+
+# the record in child table should be deleted cascade
+connection conn1;
+reap;
+commit;
+
+# check result
+# there's no record in both child and parent table
+select * from parent;
+select * from child;
+
+## 1.2 check row in child table has lock (in sstable)
+# insert record into parent table and commit
+connection conn1;
+insert into parent values (1);
+
+# delete the record in child table
+# and insert a new one
+connection conn2;
+delete from child;
+begin;
+insert into child values (1);
+
+# dump uncommitted transaction to sstable
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+# start transaction in parent table
+# and delete the referenced row
+connection conn1;
+begin;
+send delete from parent where c1 = 1;
+
+sleep 1;  # to avoid that conn1 commit/rollback faster than conn2
+
+# commit the transaction in the child table
+connection conn2;
+commit;
+
+# the record in child table should be deleted cascade
+connection conn1;
+reap;
+commit;
+
+# check result
+# there's no record in both child and parent table
+select * from parent;
+select * from child;
+
+### 2. check foreign key constratint when update cascade
+# insert into parent table and commit
+## 2.1 check row in child table has lock (in memtable)
+# insert record into parent table and commit
+connection conn1;
+insert into parent values (1);
+
+# delete the record in child table
+# and insert a new one
+connection conn2;
+delete from child;
+begin;
+insert into child values (1);
+
+# start transaction in parent table
+# and update the referenced row
+connection conn1;
+begin;
+send update parent set c1 = 2 where c1 = 1;
+
+sleep 1;  # to avoid that conn1 commit/rollback faster than conn2
+
+# commit the transaction in the child table
+connection conn2;
+commit;
+
+# the record in child table should be updated cascade
+connection conn1;
+reap;
+commit;
+
+# check result
+# there's record that c1 = 2 in
+# both child and parent table
+select * from parent;
+select * from child;
+
+## 2.2 check row in child table has lock (in sstable)
+# delete the record in child table
+# and insert a new one
+connection conn2;
+delete from child;
+begin;
+insert into child values (2);
+
+# start transaction in parent table
+# and update the referenced row
+connection conn1;
+begin;
+send update parent set c1 = 1 where c1 = 2;
+
+sleep 1;  # to avoid that conn1 commit/rollback faster than conn2
+
+# dump uncommitted transaction to sstable
+connection conn0;
+alter system minor freeze tenant = sys;
+alter system minor freeze tenant = all_user;
+alter system minor freeze tenant = all_meta;
+--source mysql_test/include/wait_minor_merge.inc
+
+# commit the transaction in the child table,
+connection conn2;
+commit;
+
+# the record in child table should be updated cascade
+connection conn1;
+reap;
+commit;
+
+# check result
+# there's record that c1 = 1 in
+# both child and parent table
+select * from parent;
+select * from child;
+
+### 3. check foreign key constratint that is self-reference
+connection conn1;
+create table t1(a int primary key, b int, key t1_b(b), constraint foreign key (b) references t1 (a) on update CASCADE on delete CASCADE);
+insert into t1 values (1, 1);
+insert into t1 values (2, 1);
+insert into t1 values (3, 1);
+## 3.1 self-reference and on update cascade
+--error ER_ROW_IS_REFERENCED_2
+update t1 set a = 9 where a = 1;
+# all record in t1 should remain unchanged.
+select * from t1;
+
+## 3.2 self-reference and on delete cascade
+delete from t1 where a = 1;
+# all record in t1 should be deleted
+select * from t1;
+
+### 4. (SPECIAL CASE) delete record in the child table and
+### then delete record in the parent table in the same transaction
+## 4.1 the child table is on delete cascade
+# delete the record in child table
+# and insert a new one
+connection conn2;
+delete from child;
+insert into child values (1);
+
+connection conn1;
+begin;
+delete from child where c1 = 1;
+delete from parent where c1 = 1;
+commit;
+
+# check result
+# there's no record in both child and parent table
+select * from parent;
+select * from child;
+
+## 4.2 the child table is no delete cascade
+connection conn2;
+insert into parent values (1);
+drop table child;
+create table child(c1 int primary key, foreign key(c1) references parent(c1));
+insert into child values (1);
+
+connection conn1;
+begin;
+delete from child where c1 = 1;
+delete from parent where c1 = 1;
+commit;
+
+# check result
+# there's no record in both child and parent table
+select * from parent;
+select * from child;
+
+# test done, drop tables
+drop table child;
+drop table parent;
+drop table t1;

@@ -1,0 +1,117 @@
+#owner: zhuhuashi.zhs
+#owner group: IMF
+# tags: das, optimizer
+# test _enable_das_batch_rescan_flag
+
+# BATCH_RESCAN_BIT_GLOBAL_INDEX_FILTER = 0
+# BATCH_RESCAN_BIT_SPF_SEMI_ANTI_LEFT_CHILD = 1
+# BATCH_RESCAN_BIT_SPF_SEMI_ANTI_CHILD = 2
+# BATCH_RESCAN_BIT_SEMI_ANTI_JOIN = 3
+# BATCH_RESCAN_BIT_LIMIT_PUSHDOWN = 4
+# BATCH_RESCAN_BIT_STARTUP_FILTER = 5
+
+--disable_abort_on_error
+--disable_query_log
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+alter system set _rowsets_max_rows = 2 tenant=sys;
+alter system set _rowsets_max_rows = 2 tenant=all_user;
+alter system set _rowsets_max_rows = 2 tenant=all_meta;
+alter system set_tp tp_no=554, error_code=1, frequency=1;
+alter system set_tp tp_no=311, error_code=2, frequency=1;
+alter system set_tp tp_no=400, error_code=4, frequency=1;
+connection default;
+--result_format 4
+--enable_query_log
+
+--disable_warnings
+drop table if exists t1,t2;
+--enable_warnings
+create table t1(c1 int primary key, c2 int, c3 int);
+create table t2(c1 int primary key, c2 int, c3 int, c4 int, c5 int) partition by hash(c1) partitions 2;
+create index i2 on t2(c2,c3,c4) global partition by hash(c2) partitions 2;
+
+## global index filter
+explain select /*+no_rewrite*/ * from t1 where exists (select /*+index(t2 i2) use_das(t2)*/ * from t2 where t2.c2 > t1.c2 and t2.c4 > 1);
+alter system set _enable_das_batch_rescan_flag = 1;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where exists (select /*+index(t2 i2) use_das(t2)*/ * from t2 where t2.c2 > t1.c2 and t2.c4 > 1);
+
+## spf semi/anti join left child, enabled after 4.2.5
+
+## spf semi/anti join child
+--disable_warnings
+drop table if exists t1,t2,t3;
+--enable_warnings
+create table t1(c1 int primary key, c2 int, c3 int);
+create table t2(c1 int primary key, c2 int, c3 int);
+create table t3(c1 int primary key, c2 int, c3 int);
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where exists (select * from t3 where t3.c1 > t2.c1) and t2.c1 > t1.c1);
+alter system set _enable_das_batch_rescan_flag = 4;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where exists (select * from t3 where t3.c1 > t2.c1) and t2.c1 > t1.c1);
+
+## semi/anti join
+explain select /*+use_nl(t1,t2)*/ * from t1 where not exists (select * from t2 where t2.c1=t1.c1);
+alter system set _enable_das_batch_rescan_flag = 8;
+sleep 2;
+explain select /*+use_nl(t1,t2)*/ * from t1 where not exists (select * from t2 where t2.c1=t1.c1);
+
+## limit pushdown
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where t2.c1 > t1.c1 limit 1);
+alter system set _enable_das_batch_rescan_flag = 16;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where t2.c1 > t1.c1 limit 1);
+
+## no prefix exec param
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where t2.c2 > t1.c1);
+alter system set _enable_das_batch_rescan_flag = 32;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where exists (select * from t2 where t2.c2 > t1.c1);
+
+## spf right child normal table scan
+explain select /*+no_rewrite*/ * from t1 where exists (select /*+no_use_das(t2)*/ * from t2 where t2.c1 > t1.c1);
+alter system set _enable_das_batch_rescan_flag = 64;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where exists (select /*+no_use_das(t2)*/ * from t2 where t2.c1 > t1.c1);
+
+## spf exec param contains onetime expr, init plan
+explain select /*+no_rewrite*/ * from t1 where t1.c1 in (select /*+use_das(t2)*/ c1 from t2 where t2.c1 > 1) and exists (select /*+use_das(t3)*/ * from t3 where t3.c1 > t1.c1);
+explain select /*+no_rewrite*/ * from t1 where t1.c1 in (select /*+use_das(t2)*/ c1 from t2 where t2.c1 > t1.c1) and exists (select /*+use_das(t3)*/ * from t3 where t3.c1 > 1);
+alter system set _enable_das_batch_rescan_flag = 128;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where t1.c1 in (select /*+use_das(t2)*/ c1 from t2 where t2.c1 > 1) and exists (select /*+use_das(t3)*/ * from t3 where t3.c1 > t1.c1);
+explain select /*+no_rewrite*/ * from t1 where t1.c1 in (select /*+use_das(t2)*/ c1 from t2 where t2.c1 > t1.c1) and exists (select /*+use_das(t3)*/ * from t3 where t3.c1 > 1);
+
+## spf exec param contains subquery
+explain select (select /*+no_rewrite use_das(t2)*/ c1 from t2 where t2.c1 > t1.c1) a, (select /*+no_rewrite use_das(t3)*/ c1 from t3 where t3.c1 > a) b from t1;
+alter system set _enable_das_batch_rescan_flag = 256;
+sleep 2;
+explain select (select /*+no_rewrite use_das(t2)*/ c1 from t2 where t2.c1 > t1.c1) a, (select /*+no_rewrite use_das(t3)*/ c1 from t3 where t3.c1 > a) b from t1;
+
+## spf right child not table scan/subplan scan
+explain select /*+no_rewrite*/ * from t1 where t1.c1 > (select /*+use_das(t2)*/ count(1) from t2 where t2.c1=t1.c1);
+alter system set _enable_das_batch_rescan_flag = 512;
+sleep 2;
+explain select /*+no_rewrite*/ * from t1 where t1.c1 > (select /*+use_das(t2)*/ count(1) from t2 where t2.c1=t1.c1);
+
+## startup filter contains exec param
+explain select /*+no_rewrite*/ (select c1 from t2 where t2.c1 > t1.c1 and t1.c2 = 1) from t1;
+alter system set _enable_das_batch_rescan_flag = 1024;
+sleep 2;
+explain select /*+no_rewrite*/ (select c1 from t2 where t2.c1 > t1.c1 and t1.c2 = 1) from t1;
+
+--disable_warnings
+drop table if exists t1,t2,t3;
+--enable_warnings
+
+connection conn_admin;
+alter system set _rowsets_max_rows = 256 tenant=sys;
+alter system set _rowsets_max_rows = 256 tenant=all_user;
+alter system set _rowsets_max_rows = 256 tenant=all_meta;
+alter system set_tp tp_no=554, error_code=1, frequency=0;
+alter system set_tp tp_no=311, error_code=2, frequency=0;
+alter system set_tp tp_no=400, error_code=4, frequency=0;
+alter system set _enable_das_batch_rescan_flag = 0;
+connection default;
+

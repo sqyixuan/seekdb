@@ -1,0 +1,148 @@
+drop table if exists t_part;
+drop table if exists t_subpart;
+drop table if exists TEST1;
+create table t_part (c1 int primary key, c2 int, c3 int) partition by hash(c1) partitions 4;
+create table t_subpart (c1 int, c2 int, c3 int) partition by hash(c1)
+subpartition by range(c2)
+subpartition template
+(
+subpartition p0 values less than (3000),
+subpartition p1 values less than (6000),
+subpartition p2 values less than (MAXVALUE)
+)
+partitions 4;
+CREATE TABLE `TEST1` (
+`c1` int(11) NOT NULL,
+`c2` int(11) DEFAULT NULL,
+`c3` int(11) DEFAULT NULL,
+PRIMARY KEY (`c1`),
+KEY `i1` (`c2`) BLOCK_SIZE 16384 LOCAL,
+KEY `i2` (`c2`, `c3`) BLOCK_SIZE 16384 GLOBAL
+partition by hash(c2)
+(partition `p0`,
+partition `p1`,
+partition `p2`,
+partition `p3`)
+) DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 1 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+partition by key(c1)
+(partition `p0`,
+partition `p1`,
+partition `p2`,
+partition `p3`);
+set @num = 1;
+insert into TEST1 select @num := @num + 1, @num, @num from table(generator(100));
+explain select /*+ DBMS_STATS */ * from t_part where calc_partition_id(T_PART, PART) = xxx;
+Query Plan
+=================================================
+|ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------
+|0 |TABLE FULL SCAN|t_part|1       |3           |
+=================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_part.c1], [t_part.c2], [t_part.c3]), filter(nil), rowset=16
+      access([t_part.c1], [t_part.c2], [t_part.c3]), partitions(p2)
+      is_index_back=false, is_global_index=false, 
+      range_key([t_part.c1]), range(MIN ; MAX)always true
+explain select /*+ DBMS_STATS */ * from t_subpart where calc_partition_id(t_subpart, PART) = xxx;
+Query Plan
+==============================================================
+|ID|OPERATOR                 |NAME     |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |PX COORDINATOR           |         |1       |8           |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000 |1       |8           |
+|2 |  └─PX PARTITION ITERATOR|         |1       |7           |
+|3 |    └─TABLE FULL SCAN    |t_subpart|1       |7           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(t_subpart.c1, t_subpart.c2, t_subpart.c3)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(t_subpart.c1, t_subpart.c2, t_subpart.c3)]), filter(nil), rowset=16
+      dop=1
+  2 - output([t_subpart.c1], [t_subpart.c2], [t_subpart.c3]), filter(nil), rowset=16
+      force partition granule
+  3 - output([t_subpart.c1], [t_subpart.c2], [t_subpart.c3]), filter(nil), rowset=16
+      access([t_subpart.c1], [t_subpart.c2], [t_subpart.c3]), partitions(p1sp[0-2])
+      is_index_back=false, is_global_index=false, 
+      range_key([t_subpart.__pk_increment]), range(MIN ; MAX)always true
+explain select /*+ DBMS_STATS */ * from t_subpart where calc_partition_id(t_subpart, PART) = xxx and calc_partition_id(t_subpart, SUBPART) = xxx;
+Query Plan
+====================================================
+|ID|OPERATOR       |NAME     |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------
+|0 |TABLE FULL SCAN|t_subpart|1       |3           |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t_subpart.c1], [t_subpart.c2], [t_subpart.c3]), filter(nil), rowset=16
+      access([t_subpart.c1], [t_subpart.c2], [t_subpart.c3]), partitions(p2sp1)
+      is_index_back=false, is_global_index=false, 
+      range_key([t_subpart.__pk_increment]), range(MIN ; MAX)always true
+explain select /*+ DBMS_STATS FULL(TEST1) */ c1 from TEST1 where calc_partition_id(TEST1, PART) = xxx;
+Query Plan
+================================================
+|ID|OPERATOR       |NAME |EST.ROWS|EST.TIME(us)|
+------------------------------------------------
+|0 |TABLE FULL SCAN|test1|1       |3           |
+================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([test1.c1]), filter(nil), rowset=16
+      access([test1.c1]), partitions(p1)
+      is_index_back=false, is_global_index=false, 
+      range_key([test1.c1]), range(MIN ; MAX)always true
+select /*+ DBMS_STATS FULL(TEST1) */ count(1) from TEST1 where calc_partition_id(TEST1, PART) = xxx;
+count(1)
+26
+select /*+ FULL(TEST1) */ count(1) from TEST1 where calc_partition_id(TEST1, PART) = xxx;
+count(1)
+26
+explain select /*+ DBMS_STATS INDEX(TEST1 i1) */ c2 from TEST1 where calc_partition_id(TEST1, i1, PART) = xxx;
+Query Plan
+==============================================================
+|ID|OPERATOR                 |NAME     |EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------
+|0 |PX COORDINATOR           |         |1       |10          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000 |1       |10          |
+|2 |  └─PX PARTITION ITERATOR|         |1       |9           |
+|3 |    └─TABLE FULL SCAN    |test1(i1)|1       |9           |
+==============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(test1.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(test1.c2)]), filter(nil), rowset=16
+      dop=1
+  2 - output([test1.c2]), filter(nil), rowset=16
+      force partition granule
+  3 - output([test1.c2]), filter([calc_partition_id(partition_key(test1.c1)) = xxx]), rowset=16
+      access([test1.c1], [test1.c2]), partitions(p[0-3])
+      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      range_key([test1.c2], [test1.c1]), range(MIN,MIN ; MAX,MAX)always true
+select /*+ DBMS_STATS INDEX(TEST1 i1) */ count(1) from TEST1 where calc_partition_id(TEST1, i1, PART) = xxx;
+count(1)
+23
+select /*+ INDEX(TEST1 i1) */ count(1) from TEST1 where calc_partition_id(TEST1, i1, PART) = xxx;
+count(1)
+23
+explain select /*+ DBMS_STATS INDEX(TEST1 i2) */ c2 from TEST1 where calc_partition_id(TEST1, i2, PART) = xxx;
+Query Plan
+====================================================
+|ID|OPERATOR       |NAME     |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------
+|0 |TABLE FULL SCAN|test1(i2)|1       |3           |
+====================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([test1.c2]), filter(nil), rowset=16
+      access([test1.c2]), partitions(p3)
+      is_index_back=false, is_global_index=true, 
+      range_key([test1.c2], [test1.c3], [test1.c1]), range(MIN,MIN,MIN ; MAX,MAX,MAX)always true
+select /*+ DBMS_STATS INDEX(TEST1 i2) */ count(1) from TEST1 where calc_partition_id(TEST1, i2, PART) = xxx;
+count(1)
+25
+select /*+ INDEX(TEST1 i2) */ count(1) from TEST1 where calc_partition_id(TEST1, i2, PART) = xxx;
+count(1)
+25
+drop table if exists t_part;
+drop table if exists t_subpart;
+drop table if exists TEST1;

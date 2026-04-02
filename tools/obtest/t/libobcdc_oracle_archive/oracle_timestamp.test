@@ -1,0 +1,83 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+
+# 1. 测试sequencer对象
+# 2. oracle三种时区类型 TIMESTAMP/TIMESTAMP WITH TIME ZONE/
+#   TIMESTAMP WITH LOCAL TIME ZONE
+# 3. date
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.force_stop;
+ob1.clean_backup_dest;
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+###create oracle tenant
+ob1.mysql create resource unit box1 max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables nls_date_format='YYYY-MM-DD HH24:MI:SS';
+ob1.mysql alter tenant oracle set variables nls_timestamp_format='YYYY-MM-DD HH24:MI:SS.FF';
+ob1.mysql alter tenant oracle set variables nls_timestamp_tz_format='YYYY-MM-DD HH24:MI:SS.FF TZR TZD';
+sleep 2;
+
+# 倒入时区信息
+# TODO  remove ob支持自动加载
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, ,USE_OB_CONNECTOR);
+--disable_query_log
+source include/liboblog/import_time_zone.inc;
+--enable_query_log
+sleep 10;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create user oblog_db IDENTIFIED BY "oblog_db";
+grant all on *.* to oblog_db WITH GRANT OPTION;
+grant dba to oblog_db;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, ,USE_OB_CONNECTOR);
+let $backup_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+
+ob_connect(conn_oracle_oblog_db,ob1.z1.obs0,OBLOG_DB@oracle,oblog_db,oblog_db,,USE_OB_CONNECTOR);
+let $log_backup_dest = deploy_get_value(ob1.get_log_backup_dest oracle);
+--disable_all_result_log
+eval alter system set log_archive_dest='location=$log_backup_dest';
+--enable_all_result_log
+ob1.check_until_timeout select count(*) as num from oceanbase.__all_virtual_archive_stat, 0, 60;
+ob1.mysql alter system archivelog;
+######## if log_archive_dest is S3, please set archive_lag_target >= '60s'
+source include/liboblog/archive_lag_target.inc;
+ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_tenant_id, DOING, 600;
+
+connection conn_oracle_oblog_db;
+
+let $oracle_tenant_name=oracle;
+let $original_conn=conn_oracle_oblog_db;
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+#ob1.oblog.gen_conf tb_white_list=oracle.*.* test_mode_force_fetch_archive=1 skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+alter session set current_schema = oblog_db;
+create sequence oblog_db_seq start with 1 cache 2 minvalue 0 maxvalue 100000;
+ob1.oblog.next;
+
+source include/liboblog/timestamp/otimestamp_dml_init.inc;
+source include/liboblog/timestamp/otimestamp_dml_insert_oracle.test;
+
+drop sequence oblog_db_seq;
+ob1.oblog.next;
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

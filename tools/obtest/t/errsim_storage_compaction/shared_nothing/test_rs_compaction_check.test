@@ -1,0 +1,178 @@
+# owner:lixia.yq
+# owner group:storage
+# test RS compaction check
+# 1) switch major check RS
+# 2) rs can't get all tablets' checksum items
+
+ob1=OBI(cluster=1:1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+sleep 5;
+
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set resource_hard_limit=500;
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set minor_compact_trigger = 3 tenant obtest;
+ob1.mysql alter system set syslog_io_bandwidth_limit = '100G';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+let $ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.port);
+let $port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect (conn1,$ip,root@obtest,,test,$port);
+connection conn1;
+create table test01(c1 int, c2 int, c3 varchar(40960)) compression = 'none' partition by hash(c1) partitions 10;
+create index idx1 on test01(c2) global partition by hash(c2) partitions 10;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $data_table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='test01', table_id, 1);
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $data_table_id limit 1, tablet_id, 1);
+let $index_tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = (select table_id from oceanbase.__all_virtual_table where data_table_id=$data_table_id) limit 1, tablet_id, 1);
+--disable_query_log
+let $cnt=1;
+while($cnt < 10)
+{
+  eval insert into test01 values($cnt, $cnt, repeat('oceanbase', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+
+#########################################################################
+# TEST_1: can't get all tablets' checksum items
+#########################################################################
+# EN_RS_CANT_GET_ALL_TABLET_CHECKSUM = 4023
+ob1.mysql alter system set_tp tp_no = 717, error_code = 4023, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+sleep 100;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and (tablet_id = $tablet_id or tablet_id=$index_tablet_id) and report_scn >= $major_scn, 0, 300;
+
+ob1.mysql alter system set_tp tp_no = 717, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+let $replica_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from __all_virtual_tablet_replica_checksum where tenant_id=$tenant_id and compaction_scn=$major_scn and (tablet_id < 50000 or tablet_id > 100000), c, 1);
+let $tablet_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from __all_tablet_checksum where compaction_scn=$major_scn, c, 1);
+let $user_tablet_cnt = deploy_get_value(ob1.select select count(*) as c from __all_virtual_tablet_to_ls where tenant_id=$tenant_id, c, 1);
+if ($replica_checksum_cnt != $tablet_checksum_cnt + $user_tablet_cnt) {
+  --echo checksum item mismatch, $replica_checksum_cnt, $tablet_checksum_cnt, $user_tablet_cnt
+}
+
+#########################################################################
+# TEST_2: drop index when rs check
+#########################################################################
+# EN_RS_CHECK_MERGE_PROGRESS = 4016
+connection conn1;
+create index idx2 on test01(c2, c1) local;
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4016, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+ob1.check_until_timeout select /*+LOG_LEVEL(DEBUG)*/count(1) > 0 as c from oceanbase.__all_virtual_compaction_diagnose_info where diagnose_info like "%rs check%" , 1, 300;
+
+connection conn1;
+alter table test01 drop index idx2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_table where data_table_id=$data_table_id, 1, 300;
+
+# remove EN_RS_CHECK_MERGE_PROGRESS
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4016, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_compaction_diagnose_info, 0, 100;
+
+#########################################################################
+# TEST_3: switch major merge check RS
+#########################################################################
+# EN_RS_CHECK_SPECIAL_TABLE = 4023
+ob1.mysql alter system set_tp tp_no = 726, error_code = 4023, frequency = 1;
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+# all tablet except tablet_1 have finished major check
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and compaction_scn < $major_scn, 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and report_scn < $major_scn and tablet_id = 1 and svr_ip = '$ip' and svr_port = '$svr_port', 1, 300;
+
+#test switch major check RS
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_compaction_info where tenant_id = $tenant_id and tablet_id=$tablet_id and wait_check_scn=0, 1, 100;
+let $switch_dst_ip = deploy_get_value(ob1.select select svr_ip from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = 1 and role != 1 limit 1, svr_ip, 1);
+let $switch_dst_port = deploy_get_value(ob1.select select svr_port from oceanbase.__all_virtual_ls_meta_table where tenant_id = $tenant_id and ls_id = 1 and svr_ip='$switch_dst_ip' and role!=1 limit 1, svr_port, 1);
+ob1.mysql alter system switch replica leader ls=1 server='$switch_dst_ip:$switch_dst_port' tenant='obtest';
+
+sleep 20;
+ob1.mysql alter system set_tp tp_no = 726, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+let $replica_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from __all_virtual_tablet_replica_checksum where tenant_id=$tenant_id and compaction_scn=$major_scn and (tablet_id < 50000 or tablet_id > 100000), c, 1);
+let $tablet_checksum_cnt = deploy_get_value(ob1.select select count(*) as c from __all_tablet_checksum where compaction_scn=$major_scn, c, 1);
+if ($replica_checksum_cnt != $tablet_checksum_cnt) {
+  --echo checksum item mismatch, $replica_checksum_cnt, $tablet_checksum_cnt
+}
+
+#########################################################################
+# TEST_4: failed to get tablet_ls_pair when tenant rs check, will use cached ckm_sum_array, for bug/55663424
+#########################################################################
+# EN_RS_CHECK_MERGE_PROGRESS = 4023
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4023, frequency = 1;
+
+connection conn1;
+create table test02(c1 int, c2 int, c3 varchar(40960), c4 int, c5 int) compression = 'none' partition by hash(c1) partitions 10;
+create index idx1 on test02(c2, c1) global;
+create index idx2 on test02(c4, c2) global;
+create index idx3 on test02(c5, c2) global;
+--disable_query_log
+let $cnt=1;
+while($cnt < 30)
+{
+  eval insert into test02 values($cnt, $cnt, repeat('oceanbase', 4096), $cnt, $cnt);
+  inc $cnt;
+}
+--enable_query_log
+
+source include/compaction/alter_tenant_obtest_major_freeze_and_sleep.inc;
+let $major_scn = deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id, GLOBAL_BROADCAST_SCN, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_meta_table where tenant_id=$tenant_id and compaction_scn < $major_scn, 0, 300;
+
+# EN_GET_TABLET_LS_PAIR_IN_RS = 4023
+ob1.mysql alter system set_tp tp_no = 742, error_code = 4187, frequency = 1;
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_COLUMN_CHECKSUM_ERROR_INFO, 0, 10;
+
+#########################################################################
+# TEST_5: drop tablet or table when major
+#########################################################################
+# EN_RS_CHECK_MERGE_PROGRESS = 4023
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4023, frequency = 1;
+
+connection conn1;
+create table test03(c0 varchar(4096), c1 int, c2 int, c3 int, c4 varchar(40960), c5 varchar(40960), c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, primary key(c0, c1)) with column group (each column);
+create table test04(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none' partition by range(c2) (partition p1 values less than (100), partition p2 values less than (200), partition p3 values less than MAXVALUE);
+
+connection conn1;
+--disable_query_log
+let $cnt=0;
+while($cnt < 10)
+{
+  eval insert into test03 values(repeat('k', 4096), $cnt, 2, 3, repeat('oceanbase', 4096), repeat('wakakakaka', 4096), 6, 7, 8, 9, 10, 11, 12);
+  eval insert into test04 values($cnt, $cnt, repeat('oceanbase', 4096), repeat('wakakakaka', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+ob1.mysql alter system major freeze tenant = 'obtest';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 1, 100;
+let $major_scn=deploy_get_value(ob1.select select GLOBAL_BROADCAST_SCN from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$tenant_id, GLOBAL_BROADCAST_SCN, 1);
+
+ob1.check_until_timeout select count(*) > 10 as c from oceanbase.__all_virtual_tablet_meta_table where compaction_scn = $major_scn, 1, 100;
+
+connection conn1;
+# drop index
+alter table test01 drop index idx1;
+
+# drop partition
+alter table test04 drop partition p1;
+
+#clear EN_RS_CHECK_MERGE_PROGRESS
+ob1.mysql alter system set_tp tp_no = 729, error_code = 4023, frequency = 0;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 300;

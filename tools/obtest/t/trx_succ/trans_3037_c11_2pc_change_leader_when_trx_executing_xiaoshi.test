@@ -1,0 +1,157 @@
+#owner: xiaoshi.xjl
+#owner group: transaction
+# 测试点：改选过程中的事务迁移
+##
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=5);
+ob1.reboot;
+sleep 5;
+
+let $l_ip=deploy_get_value(ob1.z1.obs0.ip);
+let $l_port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn1,$l_ip,root@obtest,,test,$l_port);
+connect (conn2,$l_ip,root@sys,,oceanbase,$l_port);
+
+connection conn1;
+set ob_query_timeout=90000000;
+set ob_trx_timeout=1200000000;
+
+create database obtest;
+use obtest;
+## case:检查表结构
+create table t1(id1 int, id2 int);
+create table t2(id1 int, id2 int);
+
+sleep 5;
+desc t1;
+desc t2;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='obtest', tenant_id, 1);
+let $ls_id0=deploy_get_value(ob1.select select ls_id  from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', ls_id, 1);
+let $svr_ip0=deploy_get_value(ob1.select select svr_ip from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', svr_ip, 1);
+let $svr_port0=deploy_get_value(ob1.select select svr_port from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', svr_port, 1);
+let $leader_host0=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t1', host, 1);
+
+let $ls_id1=deploy_get_value(ob1.select select ls_id  from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t2', ls_id, 1);
+let $svr_ip1=deploy_get_value(ob1.select select svr_ip from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t2', svr_ip, 1);
+let $svr_port1=deploy_get_value(ob1.select select svr_port from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t2', svr_port, 1);
+let $leader_host1=deploy_get_value(ob1.select select concat(svr_ip,':',svr_port) as host from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id and ROLE='LEADER' and table_name='t2', host, 1);
+
+#case:测试事务执行过程中切主
+start transaction;
+insert into t1 values(1, 10);
+insert into t2 values(2, 20);
+
+update t1 set id2=11 where id1 = 1;
+update t2 set id2=21 where id1 = 2;
+
+sleep 5;
+connection conn2;
+eval alter system switch replica leader ls=$ls_id0 server='$leader_host1' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t1' and svr_ip='$svr_ip1' and svr_port='$svr_port1', 1, 100;
+eval alter system switch replica leader ls=$ls_id1 server='$leader_host0' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t2' and svr_ip='$svr_ip0' and svr_port='$svr_port0', 1, 100;
+sleep 5;
+
+connection conn1;
+select * from t1;
+select * from t2;
+update t1 set id2=12 where id1 = 1;
+update t2 set id2=22 where id1 = 2;
+select * from t1;
+select * from t2;
+
+connection conn2;
+sleep 5;
+eval alter system switch replica leader ls=$ls_id0 server='$leader_host0' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t1' and svr_ip='$svr_ip0' and svr_port='$svr_port0', 1, 100;
+eval alter system switch replica leader ls=$ls_id1 server='$leader_host1' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t2' and svr_ip='$svr_ip1' and svr_port='$svr_port1', 1, 100;
+sleep 5;
+
+connection conn1;
+select * from t1;
+select * from t2;
+update t1 set id2=13 where id1 = 1;
+update t2 set id2=23 where id1 = 2;
+select * from t1;
+select * from t2;
+
+commit;
+
+select * from t1;
+select * from t2;
+
+#case:测试事务在commit之前切主
+start transaction;
+update t1 set id2=14 where id1 = 1;
+update t2 set id2=24 where id1 = 2;
+select * from t1;
+select * from t2;
+
+connection conn2;
+sleep 5;
+eval alter system switch replica leader ls=$ls_id0 server='$leader_host1' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t1' and svr_ip='$svr_ip1' and svr_port='$svr_port1', 1, 100;
+eval alter system switch replica leader ls=$ls_id1 server='$leader_host0' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t2' and svr_ip='$svr_ip0' and svr_port='$svr_port0', 1, 100;
+sleep 5;
+connection conn1;
+commit;
+
+select * from t1;
+select * from t2;
+
+#case:测试事务在切主之后rollback
+start transaction;
+update t1 set id2=15 where id1 = 1;
+update t2 set id2=25 where id1 = 2;
+select * from t1;
+select * from t2;
+
+connection conn2;
+sleep 5;
+eval alter system switch replica leader ls=$ls_id0 server='$leader_host0' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t1' and svr_ip='$svr_ip0' and svr_port='$svr_port0', 1, 100;
+eval alter system switch replica leader ls=$ls_id1 server='$leader_host1' tenant='obtest';
+ob1.check_until_timeout select count(1) from CDB_OB_table_LOCATIONS where tenant_id=$tenant_id  and ROLE='LEADER' and table_name='t2' and svr_ip='$svr_ip1' and svr_port='$svr_port1', 1, 100;
+sleep 5;
+connection conn1;
+rollback;
+
+connection conn2;
+ob1.mysql alter system major freeze tenant=sys;
+ob1.mysql alter system major freeze tenant=all_user;
+ob1.mysql alter system major freeze tenant=all_meta;
+
+connection conn2;
+let $__i__= 600;
+while($__i__ > 0)
+{
+    sleep 1;
+    dec $__i__;
+    let $__frozen_scn__ = query_get_value(select sum(frozen_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    let $__merged_version__ = query_get_value(select sum(last_scn/1000) as sum_value from oceanbase.CDB_OB_MAJOR_COMPACTION, sum_value, 1);
+    # all tenant should major merge complete
+    if($__frozen_scn__ == $__merged_version__)
+    {
+        let $__i__ = -5;
+    }
+}
+if($__i__ != -5)
+{
+    --echo major freeze failed
+    select * from oceanbase.CDB_OB_MAJOR_COMPACTION;
+    let $__tenant_id__ = query_get_value(select tenant_id from oceanbase.CDB_OB_MAJOR_COMPACTION where last_scn != frozen_scn, tenant_id, 1);
+    let $__frozen_scn__ = query_get_value(select frozen_scn from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $__tenant_id__, frozen_scn, 1);
+    eval select * from oceanbase.__all_virtual_server_compaction_event_history where tenant_id = $__tenant_id__ and compaction_scn = $__frozen_scn__;
+    select * from oceanbase.__all_virtual_compaction_diagnose_info;
+    --exit
+}
+
+
+connection conn1;
+select * from t1;
+select * from t2;
+
+drop table t1;
+drop table t2;

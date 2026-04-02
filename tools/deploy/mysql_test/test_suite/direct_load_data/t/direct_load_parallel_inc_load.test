@@ -1,0 +1,125 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: cyh438514
+# owner group: Storage
+# description: parallel inc direct load case
+
+--source mysql_test/test_suite/direct_load_data/include/copy_data_for_direct_load.inc
+
+set GLOBAL ob_query_timeout = 1000000000000;
+set GLOBAL ob_trx_timeout = 1000000000000;
+
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn2,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+
+connection conn;
+--disable_warnings
+--disable_query_log
+drop table if exists t1, t2, t3, t4;
+--enable_query_log
+--enable_warnings
+
+# create table 
+create table t1 (c1 int primary key, c2 int, c3 int);
+create table t2 (c1 int primary key, c2 int, c3 int);
+create table t3 (c1 int primary key, c2 int, c3 int);
+
+create table t4 (c1 int primary key, c2 int, c3 int) partition by range(c1) (
+  partition p0 values less than(10),
+  partition p1 values less than(20),
+  partition p2 values less than(30),
+  partition p3 values less than (MAXVALUE)
+);
+
+# insert data
+insert into t1 values (1,1,1), (11,11,11), (21,21,21), (31,31,31);
+insert into t2 values (2,2,2), (12,12,12);
+insert into t3 values (23,23,23), (33,33,33);
+
+# query table id and tablet id
+let $table_id = query_get_value(select table_id from oceanbase.__all_table where table_name = 't4', table_id, 1);
+let $p0_tablet_id = query_get_value(select tablet_id from oceanbase.__all_part where table_id = $table_id and part_name = 'p0', tablet_id, 1);
+let $p1_tablet_id = query_get_value(select tablet_id from oceanbase.__all_part where table_id = $table_id and part_name = 'p1', tablet_id, 1);
+let $p2_tablet_id = query_get_value(select tablet_id from oceanbase.__all_part where table_id = $table_id and part_name = 'p2', tablet_id, 1);
+let $p3_tablet_id = query_get_value(select tablet_id from oceanbase.__all_part where table_id = $table_id and part_name = 'p3', tablet_id, 1);
+
+# insert into partition p0 p1 p2 p3 (all partitions)
+connection conn1;
+begin;
+insert /*+ direct(true, 0, 'inc') enable_parallel_dml(2) parallel(2) */ into t4 select * from t1;
+
+--echo # query obj lock
+connection sys;
+let $p0_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p0_tablet_id, count(*), 1);
+let $p1_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p1_tablet_id, count(*), 1);
+let $p2_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p2_tablet_id, count(*), 1);
+let $p3_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p3_tablet_id, count(*), 1);
+echo $p0_lock;
+echo $p1_lock;
+echo $p2_lock;
+echo $p3_lock;
+
+# commit insert into partition p0 p1 p2 p3 (all partitions)
+connection conn1;
+commit;
+
+# insert into partition p0 p1
+connection conn1;
+begin;
+insert /*+ direct(true, 0, 'inc') enable_parallel_dml(2) parallel(2) */ into t4 partition(p0, p1) select * from t2;
+
+--echo # query obj lock
+connection sys;
+let $p0_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p0_tablet_id, count(*), 1);
+let $p1_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p1_tablet_id, count(*), 1);
+let $p2_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p2_tablet_id, count(*), 1);
+let $p3_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p3_tablet_id, count(*), 1);
+echo $p0_lock;
+echo $p1_lock;
+echo $p2_lock;
+echo $p3_lock;
+
+# insert into partition p2 p3
+connection conn2;
+begin;
+insert /*+ direct(true, 0, 'inc') enable_parallel_dml(2) parallel(2) */ into t4 partition(p2, p3) select * from t3;
+
+--echo # query obj lock
+connection sys;
+let $p0_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p0_tablet_id, count(*), 1);
+let $p1_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p1_tablet_id, count(*), 1);
+let $p2_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p2_tablet_id, count(*), 1);
+let $p3_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p3_tablet_id, count(*), 1);
+echo $p0_lock;
+echo $p1_lock;
+echo $p2_lock;
+echo $p3_lock;
+
+# commit insert into partition p0 p1
+connection conn1;
+commit;
+
+--echo # query obj lock
+connection sys;
+let $p0_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p0_tablet_id, count(*), 1);
+let $p1_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p1_tablet_id, count(*), 1);
+let $p2_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p2_tablet_id, count(*), 1);
+let $p3_lock = query_get_value(select count(*) from oceanbase.__all_virtual_obj_lock where obj_id = $p3_tablet_id, count(*), 1);
+echo $p0_lock;
+echo $p1_lock;
+echo $p2_lock;
+echo $p3_lock;
+
+# commit insert into partition p2 p3
+connection conn2;
+commit;
+
+# check insert lines
+select count(*) from t4;
+
+# clean up
+drop table if exists t1, t2, t3, t4;
+

@@ -1,0 +1,1453 @@
+# owner: sean.yyj
+# owner group: sql-sql4
+# description: mysql分区裁剪-COLUMNS分区,Key分区
+# tags: ddl,dml,delete,group_by,order_by, optimizer
+# author: whh01047778
+
+
+purge recyclebin;
+let $char_charset = 'utf8';
+--disable_warnings
+drop database if exists whhtest;
+--enable_warnings
+create database whhtest;
+use whhtest;
+set timestamp = 1600000000;
+set ob_trx_timeout = 10000000000;
+set ob_query_timeout = 10000000000;
+set @@session.explicit_defaults_for_timestamp=off;
+--result_format 4
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-RANGE COLUMNS 分区 --------------------------------------------------
+--echo ### 用例：RANGE COLUMNS 分区，日期数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-1，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+--disable_warnings
+drop table if exists t_testdata;
+--enable_warnings
+create table t_testdata (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp);
+
+insert into t_testdata values('2022-12-01','12:00:00.1000','2020','2022-12-01 12:00:00.1000','2022-12-01 12:00:00.1000');
+insert into t_testdata values('2022-12-02','13:00:00.1000','2021','2022-12-02 13:00:00.1000','2022-12-02 12:00:00.1001');
+insert into t_testdata values('2022-12-03','14:00:00.1000','2022','2022-12-03 14:00:00.1000','2022-12-03 12:00:00.1002');
+insert into t_testdata values('2022-12-04','15:00:00.1000','2023','2022-12-04 15:00:00.1000','2022-12-04 12:00:00.1003');
+
+
+--echo ######################## RANGE COLUMNS 分区 - 分区键 date ########################
+--disable_warnings
+drop table if exists t_range_columns;
+--enable_warnings
+create table t_range_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01'),
+  PARTITION p1 VALUES LESS THAN ('2022-01-01'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_range_columns where c1 = '2022-12-01' limit 5;
+explain select c1,c2 from t_range_columns where c4 = '2022-12-01' and c1 = c4;
+explain select c1,c2 from t_range_columns where c1 in ('2022-12-01','2022-12-05') order by c1;
+explain select c1,c2 from t_range_columns group by c1 having c1 = '2022-02-01';
+explain select c1,c2 from t_range_columns where c1 between '2021-02-10'and '2021-02-15';
+explain select c1,c2 from t_range_columns where c1 >= '2021-02-11' and c1 <= '2021-02-15';
+explain select c1,c2 from t_range_columns where to_days(c1) = to_days('2000-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set c1 = '2021-12-29' where c1 = '2022-12-29';
+explain update t_range_columns set c1 = '2021-12-29' where c1 in ('2021-01-16','2021-01-15');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where c1 between '2021-02-10'and '2021-02-15';
+explain delete from t_range_columns where c1 >= '2021-02-11' and c1 <= '2021-02-15';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(c1) values (null);
+explain insert into t_range_columns(c1) values ('2021-01-16');
+explain insert into t_range_columns(c1) select c1 from t_testdata where c1 = '2021-02-01'limit 5;
+explain insert into t_testdata(c1) select c1 from t_range_columns where c1 = '2021-02-10';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_range_columns t2 where t1.c1 > t2.c1 and t2.c1 = '2022-12-01');
+
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 time ########################
+drop table t_range_columns;
+--echo # issue:39111004 bug8: 创建分区键time数据类型的range columns分区表，mysql成功，ob失败
+create table t_range_columns (c1 date, c2 time NOT NULL PRIMARY KEY, c3 year, c4 datetime, c5 timestamp) partition by range columns(c2)
+(PARTITION p0 VALUES LESS THAN ('09:00:00'),
+  PARTITION p1 VALUES LESS THAN ('12:00:00'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_range_columns where c2 = '12:00:00.1000' limit 5;
+explain select c1,c2 from t_range_columns where c2 in ('12:00:00.1000','18:00:00.1000') order by c2;
+explain select c1,c2 from t_range_columns group by c2 having c2 = '12:00:00.1000';
+explain select c1,c2 from t_range_columns where c2 between '02:00:00.1000' and '12:00:00.1000';
+explain select c1,c2 from t_range_columns where c2 >= '12:00:00.1000' and c2 <= '22:00:00.1000';
+explain select c1,c2 from t_range_columns where time_to_sec(c2) =time_to_sec('12:00:00.1000');
+
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 year ########################
+--disable_warnings
+drop table if exists t_range_columns;
+--enable_warnings
+--error 1654
+create table t_range_columns (c1 date, c2 time, c3 year NOT NULL PRIMARY KEY, c4 datetime, c5 timestamp) partition by range columns(c3)
+(PARTITION p0 VALUES LESS THAN ('2000'),
+  PARTITION p1 VALUES LESS THAN ('2021'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 datetime ########################
+--disable_warnings
+drop table if exists t_range_columns;
+--enable_warnings
+create table t_range_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c4)
+(PARTITION p0 VALUES LESS THAN ('2000-01-01 12:00:00.1000'),
+  PARTITION p1 VALUES LESS THAN ('2021-01-01 12:00:00.1000'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c4 from t_range_columns where c4 = '2022-12-01 12:00:00.1000';
+explain select c1,c2 from t_range_columns where c1 = '2022-12-01' and c4 = c1;
+explain select c1,c4 from t_range_columns where c4 in ('2022-12-01 12:00:00.1000','2022-12-04 12:00:00.1000') order by c4;
+explain select c1,c4 from t_range_columns group by c4 having c4 = '2022-12-04 12:00:00.1000';
+explain select c1,c4 from t_range_columns where c4 between '2021-12-01 12:00:00.1000' and '2022-12-04 12:00:00.1000';
+explain select c1,c4 from t_range_columns where c4 >= '2000-12-01 12:00:00.1000' and c4 <= '2020-12-02 12:00:00.1000';
+explain select c1,c4 from t_range_columns where to_days(c4) = to_days('2022-12-01 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set c4 = '2021-12-29' where c4 = '2022-12-01 12:00:00.1000';
+explain update t_range_columns set c4 = '2021-12-29' where c4 in ('2022-12-01 12:00:00.1000','2022-12-03 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where c4 between '2022-12-03 12:00:00.1000'and '2022-12-04 12:00:00.1000';
+explain delete from t_range_columns where c4 >= '2022-12-01 12:00:00.1000' and c4 <= '2022-12-03 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(c4) values (null);
+explain insert into t_range_columns(c4) values ('2000-12-04 12:00:00.1000');
+explain insert into t_testdata(c4) select c4 from t_range_columns where c4 = '2022-12-06 12:00:00.1000' limit 5;
+explain insert into t_range_columns(c4) select c4 from t_testdata where c4 = '2000-12-07 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_range_columns t2 where t1.c1 > t2.c1 and t2.c4 = '2022-12-01 12:00:00.1000');
+
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 timestamp ########################
+drop table t_range_columns;
+create table t_range_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c5)
+(PARTITION p0 VALUES LESS THAN ('2010-01-01 12:00:00.1000'),
+  PARTITION p1 VALUES LESS THAN ('2020-01-01 12:00:00.1000'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+  
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 2个 ########################
+--disable_warnings
+drop table if exists t_range_columns;
+--enable_warnings
+create table t_range_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by range columns(c1,c4)
+(PARTITION p0 VALUES LESS THAN ('2010-01-01','2010-01-01 12:00:00.1000'),
+  PARTITION p1 VALUES LESS THAN ('2020-01-01','2020-01-01 12:00:00.1000'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE,MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_range_columns where c1 = '2020-01-01' and c4 = c1;
+explain select c1,c2 from t_range_columns where c1 = '2021-02-12' and c4 = '2020-01-01 10:00:00' group by c1 having c1 < '2021-12-31';
+explain select c1,c2 from t_range_columns where c1 in ('2021-01-16','2021-01-15') and c4 in ('2020-01-01 10:00:00','2021-01-01 12:00:00');
+explain select c1,c4 from t_range_columns group by c1,c4 having c1 = '2021-02-01' and c4 = '2022-01-01 10:00:00' limit 5;
+explain select c1,c2 from t_range_columns where (c1 between '2021-02-10'and '2021-02-15') and (c4 between '2020-01-01 10:00:00'and '2021-01-01 13:00:00');
+explain select c1,c2 from t_range_columns where (c1 >= '2021-02-11' and c1 <= '2021-02-15') and (c4 >= '2008-01-01 10:00:00' and c4 <= '2009-01-01 13:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set c1 = '2021-12-29' where c1 = '2008-02-02' and c4 = '2008-01-01 10:00:00';
+explain update t_range_columns set c1 = '2021-12-29' where c1 in ('2021-01-10','2021-01-15') and c4 in ('2011-01-01 01:00:00','2012-01-01 10:00:00');
+explain update t_range_columns set c1 = '2021-12-29' where (c1 between '2021-02-10'and '2021-02-15') and (c4 between '2021-01-01 10:00:00'and '2022-01-01 18:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where c1 = '2021-02-02' and c4 = '2008-01-01 10:00:00';
+explain delete from t_range_columns where c1 in ('2021-01-16','2021-01-15') and c4 in ('2011-01-01 01:00:00','2012-01-01 10:00:00');
+explain delete from t_range_columns where (c1 >= '2021-02-14' and c1 <= '2021-02-15') and (c4 >= '2008-01-01 10:00:00' and c4 <= '2009-01-01 13:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(c1,c4) values (null,null);
+explain insert into t_range_columns(c1,c4) values (null,'2022-02-10 10:00:00');
+explain insert into t_range_columns(c1,c4) values ('2021-02-10',null);
+explain insert into t_range_columns(c1,c4) values ('2021-02-12','2021-02-12 10:00:00');
+explain insert into t_testdata(c1,c4) select c1,c4 from t_range_columns where c1 = '2021-02-01' and c4= '2021-02-10 10:00:00' limit 5;
+explain insert into t_range_columns(c1,c4) select c1,'2021-02-10 10:00:00' from t_testdata where c1 = '2021-02-10';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_range_columns t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15' and t2.c4 = '2021-02-10 10:00:00');
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select c1,c2 from t_range_columns where c3 = '2022-01-01';
+
+--echo # 查询条件包含部分分区键
+explain select c1,c2 from t_range_columns where c1 = '2021-01-01';
+explain select c1,c2 from t_range_columns having c1 < '2010-01-01';
+explain select c1,c2 from t_range_columns where c4 = '2021-01-01 10:00:00';
+explain select c1,c2 from t_range_columns group by c1 having c1 = '2021-02-12' and c2 = '10:00:00';
+
+--echo # 没有查询条件
+explain select c1,c2 from t_range_columns limit 2;
+explain select c1,c2 from t_range_columns group by c1,c2;
+
+--echo # 查询范围大于分区数
+explain select c1,c4 from t_range_columns where c1 > '2009-01-01' and c4 > '2009-01-01 12:00:00.1000';
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_range_columns where c1 != '2021-02-01' and c4 != '2020-01-01 01:00:00';
+explain delete from t_range_columns where c1 not in ('2021-01-10','2021-01-15') and c2 not in ('2009-01-01 01:00:00','2009-01-01 21:00:00');
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select c1,c4 from t_range_columns where datediff(c1,c1) < 0 and c4 = '2009-01-01 10:00:00';
+explain select c1,c4 from t_range_columns where to_days(c1) = 0 and c4 = '2009-01-01 10:00:00';
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_range_columns(c1,c2) select '2021-02-11','2009-01-01 12:00:00';
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-RANGE COLUMNS分区 --------------------------------------------------
+--echo ### 用例：RANGE COLUMNS分区，数值数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-2，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real);
+
+insert into t_testdata values(1,true,true,4,5,6,7,8,9.0,10,11.100,12,13.123,14.456,15);
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 4个数值数据类型（tinyint,bool,boolean,smallint） ########################
+drop table t_range_columns;
+create table t_range_columns (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real) 
+partition by range columns (n0,n1,n2,n3)
+(PARTITION p0 VALUES LESS THAN (1,0,0,1),
+  PARTITION p1 VALUES LESS THAN (2,1,1,2),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE,MAXVALUE,MAXVALUE,MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n0,n1,n2,n3 from t_range_columns where n0 = 1 and n1 = true and n2 = n1 and n3 = n0 limit 5;
+explain select n0,n1,n2,n3 from t_range_columns where n0 = 1 and n1 = true and n2 = true and n3 = 4 limit 5;
+explain select n0,n1,n2,n3 from t_range_columns where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (4,5) order by n1;
+explain select n0,n1,n2,n3 from t_range_columns group by n0,n1,n2,n3 having n0 = 1 and n1 = false and n2 = true and n3 = 4;
+explain select n0,n1,n2,n3 from t_range_columns where (n0 between 1 and 2) and n1 = true and n2 = false and (n3 between 3 and 4);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set n3 = 3 where n0 = 1 and n1 = false and n2 = false and n3 = 4;
+explain update t_range_columns set n3 = 3 where n0 in (1,2) and n1 in (true) and n2 in (false) and n3 in (4,5);
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where (n0 >= 1 and n0 <= 2) and n1 = true and n2 = false and (n3 >= 4 and n3 <= 5);
+explain delete from t_range_columns where n0+1 = 5 and n1 = true and n2 = false and n3 = 4;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(n0,n1,n2,n3) values (null,null,null,null);
+explain insert into t_range_columns(n0,n1,n2,n3) values (null,true,null,2);
+explain insert into t_testdata(n0,n1,n2,n3) select n0,n1,n2,n3 from t_range_columns where n0 = 1 and n1 = true and n2 = true and n3 = 4;
+explain insert into t_range_columns(n0,n1,n2,n3) select n0,n1,n2,n3 from t_testdata where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (4,5);
+
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 4个数值数据类型（mediumint,int,integer,bigint） ########################
+drop table t_range_columns;
+create table t_range_columns (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by range columns (n4,n5,n6,n7)
+(PARTITION p0 VALUES LESS THAN (1,1,1,1),
+  PARTITION p1 VALUES LESS THAN (2,2,2,2),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE,MAXVALUE,MAXVALUE,MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n4,n5,n6,n7,n8 from t_range_columns where n0 = 1 and n1 = n0 and n2 = n0 and n3 = n0 limit 5;
+explain select n4,n5,n6,n7,n8 from t_range_columns where n4=5 and n5=6 and n6=7 and n7=8 limit 5;
+explain select n4,n5,n6,n7,n8 from t_range_columns where (n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8));
+explain select n4,n5,n6,n7,n8 from t_range_columns group by n4,n5,n6,n7,n8 having n4=5 and n5=6 and n6=7 and n7=8 ;
+explain select n4,n5,n6,n7,n8 from t_range_columns where (n4 between 1 and 2) and (n5 between 3 and 4) and (n6 between 3 and 4) and (n7 between 3 and 4);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set n3 = 3 where n4=5 and n5=6 and n6=7 and n7=8;
+explain update t_range_columns set n3 = 3 where (n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8));
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where (n4 >= 1 and n4 <= 2) and (n5 >= 4 and n5 <= 5) and (n6 >= 4 and n6 <= 5) and (n7 >= 4 and n7 <= 5);
+explain delete from t_range_columns where abs(n4)=5 and n5=6 and abs(n6)=7 and floor(n7)=8;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(n4,n5,n6,n7) values (null,null,null,null);
+explain insert into t_range_columns(n4,n5,n6,n7) values (null,1,null,2);
+explain insert into t_range_columns(n4,n5,n6,n7) values (1,1,1,1);
+explain insert into t_range_columns(n4,n5,n6,n7) values (1,2,1,2);
+explain insert into t_testdata(n4,n5,n6,n7) select n4,n5,n6,n7 from t_range_columns where n4=5 and n5=6 and n6=7 and n7=8 ;
+explain insert into t_range_columns(n4,n5,n6,n7) select n4,n5,n6,n7 from t_testdata where (n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8));
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select n4,n5,n6,n7 from t_range_columns where n0 = 1;
+
+--echo # 查询条件包含部分分区键
+explain select n4,n5,n6,n7 from t_range_columns where n4 = 4;
+explain select n4,n5,n6,n7 from t_range_columns where n5 = 5;
+explain select n4,n5,n6,n7 from t_range_columns where n6 = 6;
+explain select n4,n5,n6,n7 from t_range_columns where n7 = 7;
+explain select n4,n5,n6,n7 from t_range_columns group by n4 having n4=5 and n5=6 and n6=7 and n7=8;
+explain select n4,n5,n6,n7 from t_range_columns group by n5 having n4=5 and n5=6 and n6=7 and n7=8;
+
+--echo # 没有查询条件
+explain select n4,n5,n6,n7 from t_range_columns limit 2;
+
+--echo # 查询范围大于分区数
+explain select n4,n5,n6,n7 from t_range_columns where n9 > 1;
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_range_columns where  n4!=5 and n5!=6 and n6!=7 and n7!=8;
+explain delete from t_range_columns where (n4 not in (4)) and (n5 not in (5)) and (n6 not in (6,7)) and (n7 not in (8));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select n4,n5,n6,n7 from t_range_columns where  abs(n4)=5 and n5=6 and abs(n6)=7 and floor(n7)=8;
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_range_columns(n4,n5,n6,n7) select 1,2,3,4;
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-RANGE COLUMNS分区 --------------------------------------------------
+--echo ### 用例：RANGE COLUMNS分区，字符数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-3，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'));
+
+insert into t_testdata(s0,s1,s6,s7) values('char','varchar','1','2');
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 char ########################
+drop table if exists t_range_columns;
+create table t_range_columns (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'))
+partition by range columns (s0)
+(PARTITION p0 VALUES LESS THAN ('a'),
+  PARTITION p1 VALUES LESS THAN ('h'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_range_columns where s0 like '%char%';
+explain select s0,s1,s6,s7 from t_range_columns where s0 REGEXP '^char';
+explain select s0,s1,s6,s7 from t_range_columns where s0 = 'char' limit 5;
+explain select s0,s1,s6,s7 from t_range_columns where s1 = 'char' and s0 = s1;
+explain select s0,s1,s6,s7 from t_range_columns where s0 in ('char','char1') order by s0;
+explain select s0,s1,s6,s7 from t_range_columns group by s0 having s0 = 'char';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set s1 = 'varchar1' where s0 = 'a' limit 5;
+explain update t_range_columns set s1 = 'varchar1' where s0 in ('char','h') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where s0 like '%char%';
+explain delete from t_range_columns where s0 REGEXP '^char';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(s0) values (null);
+explain insert into t_range_columns(s0) values ('char2');
+explain insert into t_range_columns(s0) values ('h');
+explain insert into t_testdata(s0) select s0 from t_range_columns where s0 = 'char';
+explain insert into t_range_columns(s0) select s0 from t_testdata where s0 = 'char';
+
+
+--echo ######################## RANGE COLUMNS分区 - 分区键 varchar ########################
+drop table t_range_columns;
+create table t_range_columns (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'))
+partition by range columns (s1) 
+(PARTITION p0 VALUES LESS THAN ('a'),
+  PARTITION p1 VALUES LESS THAN ('h'),
+  PARTITION p2 VALUES LESS THAN (MAXVALUE));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_range_columns where s1 like '%varchar%';
+explain select s0,s1,s6,s7 from t_range_columns where s1 REGEXP '^varchar';
+explain select s0,s1,s6,s7 from t_range_columns where s1 = 'varchar' limit 5;
+explain select s0,s1,s6,s7 from t_range_columns where s0 = 'varchar' and s1 = s0;
+explain select s0,s1,s6,s7 from t_range_columns where s1 in ('varchar','char1') order by s0;
+explain select s0,s1,s6,s7 from t_range_columns group by s1 having s1 = 'varchar';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_range_columns set s1 = 'varchar1' where s1 = 'varchar' limit 5;
+explain update t_range_columns set s1 = 'varchar1' where s1 in ('avarchar','hchar1') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_range_columns where s1 like '%varchar%';
+explain delete from t_range_columns where s1 REGEXP '^varchar';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_range_columns(s1) values (null);
+explain insert into t_range_columns(s1) values ('char2');
+explain insert into t_range_columns(s1) values ('gchar2');
+explain insert into t_testdata(s1) select s1 from t_range_columns where s1 = 'varchar';
+explain insert into t_range_columns(s1) select s1 from t_testdata where s1 = 'varchar';
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select * from t_range_columns where s0 = '1';
+
+--echo # 没有查询条件
+explain select * from t_range_columns limit 2;
+
+--echo # 查询范围大于分区数
+explain select * from t_range_columns where s1 > '0a';
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_range_columns where s1 != 'a' ;
+explain delete from t_range_columns where (s1 not in ('3','4'));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select * from t_range_columns where  s1+1 = '1';
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_range_columns(s1) select '1';
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-LIST COLUMNS 分区 --------------------------------------------------
+--echo ### 用例：LIST COLUMNS 分区，日期数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-1，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp);
+
+insert into t_testdata values('2000-01-01','12:00:00.1000','2020','2000-01-01 12:00:00','2022-12-01 12:00:00.1000');
+insert into t_testdata values('2010-01-01','13:00:00.1000','2021','2010-01-01 12:00:00','2022-12-02 12:00:00.1001');
+insert into t_testdata values('2020-01-01','14:00:00.1000','2022','2020-01-01 12:00:00','2022-12-03 12:00:00.1002');
+insert into t_testdata values('2022-01-01','15:00:00.1000','2023','2022-01-01 12:00:00','2022-12-04 12:00:00.1003');
+
+--echo ######################## LIST COLUMNS 分区 - 分区键 date ########################
+--disable_warnings
+drop table if exists t_list_columns;
+--enable_warnings
+create table t_list_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1)
+(PARTITION p0 VALUES IN ('2000-01-01','2000-06-01','2000-12-01'),
+  PARTITION p1 VALUES IN ('2010-01-01','2010-06-01','2010-12-01'),
+  PARTITION p2 VALUES IN ('2020-01-01','2020-06-01','2022-01-01'));
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_list_columns where c4 = '2000-01-01' and c1 = c4;
+explain select c1,c2 from t_list_columns where c1 = '2000-01-01' limit 5;
+explain select c1,c2 from t_list_columns where c1 in ('2010-01-01','2010-12-01') order by c1;
+explain select c1,c2 from t_list_columns group by c1 having c1 = '2020-01-01';
+explain select c1,c2 from t_list_columns where c1 between '2010-01-01' and '2010-06-30';
+explain select c1,c2 from t_list_columns where c1 >= '2020-01-01' and c1 <= '2020-01-30';
+explain select c1,c2 from t_list_columns where to_days(c1) = to_days('2000-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set c1 = '2021-12-29' where c1 = '2010-06-01';
+explain update t_list_columns set c1 = '2021-12-29' where c1 in ('2010-06-01','2000-06-01');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where c1 between '2020-05-01'and '2020-07-01';
+explain delete from t_list_columns where c1 >= '2000-02-11' and c1 <= '2000-12-15';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(c1) values (null);
+explain insert into t_list_columns(c1) values ('2020-06-01');
+explain insert into t_list_columns(c1) select c1 from t_testdata where c1 = '2021-02-01'limit 5;
+explain insert into t_testdata(c1) select c1 from t_list_columns where c1 = '2021-02-10';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_list_columns t1 where c3 > (select t2.c3 from t_list_columns t2 where t1.c1 > t2.c1 and t2.c1 = '2022-12-01');
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 time ########################
+drop table t_list_columns;
+create table t_list_columns (c1 date, c2 time NOT NULL PRIMARY KEY, c3 year, c4 datetime, c5 timestamp) partition by list columns(c2)
+(PARTITION p0 VALUES IN ('06:00:00','09:00:00'),
+  PARTITION p1 VALUES IN ('10:00:00','12:00:00'),
+  PARTITION p2 VALUES IN ('20:00:00','22:00:00'));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_list_columns where c2 = '06:00:00.1000' limit 5;
+explain select c1,c2 from t_list_columns where c2 in ('09:00:00.1000','10:00:00.1000') order by c2;
+explain select c1,c2 from t_list_columns group by c2 having c2 = '12:00:00.1000';
+explain select c1,c2 from t_list_columns where c2 between '02:00:00.1000' and '12:00:00.1000';
+explain select c1,c2 from t_list_columns where c2 >= '12:00:00.1000' and c2 <= '22:00:00.1000';
+explain select c1,c2 from t_list_columns where time_to_sec(c2) =time_to_sec('12:00:00.1000');
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 year ########################
+--disable_warnings
+drop table if exists t_list_columns;
+--enable_warnings
+--error 1654
+create table t_list_columns (c1 date, c2 time, c3 year NOT NULL PRIMARY KEY, c4 datetime, c5 timestamp) partition by list columns(c3)
+(PARTITION p0 VALUES IN ('2000','2002'),
+  PARTITION p1 VALUES IN ('2010','2012'),
+  PARTITION p2 VALUES IN ('2020','2022'));
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 datetime ########################
+--disable_warnings
+drop table if exists t_list_columns;
+--enable_warnings
+create table t_list_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c4)
+(PARTITION p0 VALUES IN ('2000-01-01 12:00:00','2002-01-01 12:00:00'),
+  PARTITION p1 VALUES IN ('2010-01-01 12:00:00','2012-01-01 12:00:00'),
+  PARTITION p2 VALUES IN ('2020-01-01 12:00:00','2022-01-01 12:00:00'));
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c4 from t_list_columns where c4 = '2022-01-01 12:00:00.123456';
+explain select c1,c4 from t_list_columns where c1 = '2022-01-01 12:00:00' and c4 =c1;
+explain select c1,c4 from t_list_columns where c4 = '2022-01-01 12:00:00';
+explain select c1,c4 from t_list_columns where c4 in ('2022-01-01 12:00:00','2020-01-01 12:00:00') order by c4;
+explain select c1,c4 from t_list_columns group by c4 having c4 = '2022-01-01 12:00:00.1000';
+explain select c1,c4 from t_list_columns where c4 between '2020-01-01 12:00:00' and '2022-02-01 12:00:00';
+explain select c1,c4 from t_list_columns where c4 >= '2010-12-01 12:00:00' and c4 <= '2020-12-02 12:00:00';
+explain select c1,c4 from t_list_columns where to_days(c4) = to_days('2022-01-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set c4 = '2021-12-29' where c4 = '2022-01-01 12:00:00';
+explain update t_list_columns set c4 = '2021-12-29' where c4 in ('2020-01-01 12:00:00.1000','2022-01-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where c4 between '2022-01-01 10:00:00'and '2022-01-01 13:00:00';
+explain delete from t_list_columns where c4 >= '2021-12-01 12:00:00.1000' and c4 <= '2022-12-03 12:00:00';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(c4) values (null);
+explain insert into t_list_columns(c4) values ('2002-01-01 12:00:00');
+explain insert into t_testdata(c4) select c4 from t_list_columns where c4 = '2022-01-01 12:00:00' limit 5;
+explain insert into t_list_columns(c4) select c4 from t_testdata where c4 = '2000-01-01 12:00:00';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_list_columns t2 where t1.c1 > t2.c1 and t2.c4 = '2012-01-01 12:00:00');
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 timestamp ########################
+drop table t_list_columns;
+--error 1659
+create table t_list_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c5)
+(PARTITION p0 VALUES IN ('2000-01-01 12:00:00','2002-01-01 12:00:00'),
+  PARTITION p1 VALUES IN ('2010-01-01 12:00:00','2012-01-01 12:00:00'),
+  PARTITION p2 VALUES IN ('2020-01-01 12:00:00','2022-01-01 12:00:00'));
+  
+
+--echo ######################## LIST COLUMNS分区 - 分区键 2个 ########################
+--disable_warnings
+drop table if exists t_list_columns;
+--enable_warnings
+create table t_list_columns (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by list columns(c1,c4)
+(PARTITION p0 VALUES IN (('2000-01-01','2000-01-01 12:00:00'),('2005-01-01','2005-01-01 12:00:00')),
+  PARTITION p1 VALUES IN (('2010-01-01','2010-01-01 12:00:00'),('2015-01-01','2015-01-01 12:00:00')),
+  PARTITION p2 VALUES IN (('2020-01-01','2020-01-01 12:00:00'),('2022-01-01','2022-01-01 12:00:00')));
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_list_columns where c1 = '2015-01-01 12:00:00' and c4 = c1;
+explain select c1,c2 from t_list_columns where c1 = '2015-01-01' and c4 = '2015-01-01 12:00:00' group by c1 having c1 < '2021-12-31';
+explain select c1,c2 from t_list_columns where c1 in ('2000-01-01','2010-01-01') and c4 in ('2005-01-01 12:00:00','2000-01-01 12:00:00');
+explain select c1,c4 from t_list_columns group by c1,c4 having c1 = '2010-01-01' and c4 = '2010-01-01 12:00:00' limit 5;
+explain select c1,c2 from t_list_columns where (c1 between '2004-12-20'and '2005-01-20') and (c4 between '2004-12-20 10:00:00'and '2005-01-20 13:00:00');
+explain select c1,c2 from t_list_columns where (c1 >= '2020-01-01' and c1 <= '2020-02-02') and (c4 >= '2020-01-01 10:00:00' and c4 <= '2020-02-02 13:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set c1 = '2021-12-29' where c1 = '2010-01-01' and c4 = '2010-01-01 12:00:00';
+explain update t_list_columns set c1 = '2021-12-29' where c1 in ('2010-01-01','2015-01-01') and c4 in ('2015-01-01 01:00:00','2015-01-01 12:00:00');
+explain update t_list_columns set c1 = '2021-12-29' where (c1 between '2020-01-01'and '2020-02-15') and (c4 between '2020-01-01 12:00:00'and '2021-01-01 23:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where c1 = '2020-01-01' and c4 = '2020-01-01 12:00:00';
+explain delete from t_list_columns where c1 in ('2015-01-01','2020-01-01') and c4 in ('2015-01-01 12:00:00','2020-01-01 12:00:00');
+explain delete from t_list_columns where (c1 >= '2015-01-01' and c1 <= '2015-02-15') and (c4 >= '2015-01-01 10:00:00' and c4 <= '2015-01-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(c1,c4) values (null,null);
+explain insert into t_list_columns(c1,c4) values (null,'2025-01-01 12:00:00');
+explain insert into t_list_columns(c1,c4) values ('2021-01-01',null);
+explain insert into t_list_columns(c1,c4) values ('2022-01-01','2022-01-01 12:00:00');
+explain insert into t_testdata(c1,c4) select c1,c4 from t_list_columns where c1 = '2010-01-01' and c4= '2010-01-01 12:00:00' limit 5;
+explain insert into t_list_columns(c1,c4) select c1,c4 from t_testdata where c1 = '2020-01-01' and c4= '2020-01-01 12:00:00';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_list_columns t2 where t1.c1 > t2.c1 and t2.c1 = '2025-01-01' and t2.c4 = '2025-01-01 12:00:00');
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select c1,c2 from t_list_columns where c3 = '2022-01-01';
+
+--echo # 查询条件包含部分分区键
+--echo # issue:39111212  bug9: 创建分区键是多列的list columns分区表，查询条件只包含分区键中第一列，mysql分区裁剪成功，ob分区裁剪失败
+explain select c1,c2 from t_list_columns where c1 = '2020-01-01';
+explain select c1,c2 from t_list_columns where c1 in ('2010-01-01','2015-01-01');
+explain select c1,c2 from t_list_columns having c1 < '2020-01-01';
+explain select c1,c2 from t_list_columns where c4 = '2025-01-01 12:00:00';
+explain select c1,c2 from t_list_columns group by c1 having c1 = '2021-02-12' and c2 = '10:00:00';
+
+--echo # 没有查询条件
+explain select c1,c2 from t_list_columns limit 2;
+explain select c1,c2 from t_list_columns group by c1,c2;
+
+--echo # 查询范围大于分区数
+explain select c1,c4 from t_list_columns where c1 > '1999-01-01' and c4 > '1999-01-01 12:00:00.1000';
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_list_columns where c1 != '2021-02-01' and c4 != '2020-01-01 01:00:00';
+explain delete from t_list_columns where c1 not in ('2021-01-10','2021-01-15') and c2 not in ('2009-01-01 01:00:00','2009-01-01 21:00:00');
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select c1,c4 from t_list_columns where datediff(c1,c1) < 0 and c4 = '2009-01-01 10:00:00';
+explain select c1,c4 from t_list_columns where to_days(c1) = 0 and c4 = '2009-01-01 10:00:00';
+
+--echo # INSERT ... SELECT  常数
+--disable_warnings
+explain insert into t_list_columns(c1,c2) select '2021-02-11','2009-01-01 12:00:00';
+--enable_warnings
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-LIST COLUMNS分区 --------------------------------------------------
+--echo ### 用例：LIST COLUMNS分区，数值数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-2，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real);
+
+insert into t_testdata values(1,true,true,1,5,6,7,8,9.0,10,11.100,12,13.123,14.456,15);
+
+--echo ######################## LIST COLUMNS分区 - 分区键 4个数值数据类型（tinyint,bool,boolean,smallint） ########################
+drop table t_list_columns;
+create table t_list_columns (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real) 
+partition by list columns (n0,n1,n2,n3)
+(PARTITION p0 VALUES IN ((1,0,0,1),(1,1,1,1)),
+  PARTITION p1 VALUES IN ((2,1,0,2),(2,0,1,2)),
+  PARTITION p2 VALUES IN ((3,0,0,3),(3,1,1,3)));
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n0,n1,n2,n3 from t_list_columns where n0 = 1 and n1 = true and n2 = n1 and n3 = n0 limit 5;
+explain select n0,n1,n2,n3 from t_list_columns where n0 = 1 and n1 = true and n2 = true and n3 = 1 limit 5;
+explain select n0,n1,n2,n3 from t_list_columns where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (1,2) order by n1;
+explain select n0,n1,n2,n3 from t_list_columns group by n0,n1,n2,n3 having n0 = 2 and n1 = false and n2 = true and n3 =2;
+explain select n0,n1,n2,n3 from t_list_columns where (n0 between 1 and 3) and n1 = true and n2 = true and (n3 between 1 and 3);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set n3 = 3 where n0 = 3 and n1 = false and n2 = false and n3 = 3;
+explain update t_list_columns set n3 = 3 where n0 in (1,2) and n1 in (true) and n2 in (false) and n3 in (2,3);
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where (n0 >= 1 and n0 <= 2) and n1 = true and n2 = false and (n3 >= 2 and n3 <= 5);
+explain delete from t_list_columns where n0+1 = 5 and n1 = true and n2 = false and n3 = 4;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(n0,n1,n2,n3) values (null,null,null,null);
+explain insert into t_list_columns(n0,n1,n2,n3) values (2,true,false,2);
+explain insert into t_testdata(n0,n1,n2,n3) select n0,n1,n2,n3 from t_list_columns where n0 = 1 and n1 = true and n2 = true and n3 = 1;
+explain insert into t_list_columns(n0,n1,n2,n3) select n0,n1,n2,n3 from t_testdata where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (1,2);
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 4个数值数据类型（mediumint,int,integer,bigint） ########################
+drop table t_list_columns;
+create table t_list_columns (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by list columns (n4,n5,n6,n7)
+(PARTITION p0 VALUES IN ((1,1,1,1),(2,2,2,2)),
+  PARTITION p1 VALUES IN((5,6,7,8),(9,10,11,13)),
+  PARTITION p2 VALUES IN ((3,3,3,3),(4,4,4,4)));
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n4,n5,n6,n7,n8 from t_list_columns where n4=4 and n5=n4 and n6=n4 and n7=n4; 
+explain select n4,n5,n6,n7,n8 from t_list_columns where n4=5 and n5=6 and n6=7 and n7=8 limit 5;
+explain select n4,n5,n6,n7,n8 from t_list_columns where (n4 in (3,4,5)) and (n5 in (5,6)) and (n6 in (6,7)) and (n7 in (8));
+explain select n4,n5,n6,n7,n8 from t_list_columns group by n4,n5,n6,n7,n8 having n4=5 and n5=6 and n6=7 and n7=8 ;
+explain select n4,n5,n6,n7,n8 from t_list_columns where (n4 between 1 and 3) and (n5 between 1 and 3) and (n6 between 1 and 3) and (n7 between 1 and 3);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set n3 = 3 where n4=5 and n5=6 and n6=7 and n7=8;
+explain update t_list_columns set n3 = 3 where (n4 in (3,4)) and (n5 in (3,5)) and (n6 in (3,6,7)) and (n7 in (3,8));
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where (n4 >= 1 and n4 <= 3) and (n5 >= 3 and n5 <= 5) and (n6 >= 3 and n6 <= 5) and (n7 >= 3 and n7 <= 5);
+explain delete from t_list_columns where abs(n4)=5 and n5=6 and abs(n6)=7 and floor(n7)=8;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(n4,n5,n6,n7) values (null,null,null,null);
+explain insert into t_list_columns(n4,n5,n6,n7) values (1,1,1,1);
+explain insert into t_testdata(n4,n5,n6,n7) select n4,n5,n6,n7 from t_list_columns where n4=5 and n5=6 and n6=7 and n7=8 ;
+explain insert into t_list_columns(n4,n5,n6,n7) select n4,n5,n6,n7 from t_testdata where (n4 in (4)) and (n5 in (4)) and (n6 in (4,7)) and (n7 in (4,8));
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select n4,n5,n6,n7 from t_list_columns where n0 = 1;
+
+--echo # 查询条件包含部分分区键
+--echo # issue:39111212	bug9: 创建分区键是多列的list columns分区表，查询条件只包含分区键中第一列，mysql分区裁剪成功，ob分区裁剪失败
+explain select n4,n5,n6,n7 from t_list_columns where n4 = 4;
+explain select n4,n5,n6,n7 from t_list_columns where n5 = 5;
+explain select n4,n5,n6,n7 from t_list_columns where n6 = 6;
+explain select n4,n5,n6,n7 from t_list_columns where n7 = 7;
+explain select n4,n5,n6,n7 from t_list_columns group by n4 having n4=5 and n5=6 and n6=7 and n7=8;
+explain select n4,n5,n6,n7 from t_list_columns group by n5 having n4=5 and n5=6 and n6=7 and n7=8;
+
+--echo # 没有查询条件
+explain select n4,n5,n6,n7 from t_list_columns limit 2;
+
+--echo # 查询范围大于分区数
+explain select n4,n5,n6,n7 from t_list_columns where n4 >= 0 and n5 >= 0 and n6 >= 0 and n7 >= 0 ;
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_list_columns where  n4!=5 and n5!=6 and n6!=7 and n7!=8;
+explain delete from t_list_columns where (n4 not in (1,2,3,4,5,9)) and (n5 not in (1,2,3,4,6,10)) and (n6 not in (1,2,3,4,7,11)) and (n7 not in (1,2,3,4,8,12));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select n4,n5,n6,n7 from t_list_columns where  abs(n4)=5 and n5=6 and abs(n6)=7 and floor(n7)=8;
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_list_columns(n4,n5,n6,n7) select 1,1,1,1;
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-LIST COLUMNS分区 --------------------------------------------------
+--echo ### 用例：LIST COLUMNS分区，字符数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-3，partition_key_type-3，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'));
+
+insert into t_testdata(s0,s1,s6,s7) values('char','varchar','1','2');
+
+--echo ######################## LIST COLUMNS分区 - 分区键 char ########################
+drop table t_list_columns;
+create table t_list_columns (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'))
+partition by list columns (s0)
+(PARTITION p0 VALUES IN ('a','char0'),
+  PARTITION p1 VALUES IN ('b','char1'),
+  PARTITION p2 VALUES IN ('char'));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_list_columns where s0 like '%char%';
+explain select s0,s1,s6,s7 from t_list_columns where s0 REGEXP '^char';
+explain select s0,s1,s6,s7 from t_list_columns where s0 = 'char' limit 5;
+explain select s0,s1,s6,s7 from t_list_columns where s1 = 'char' and s0 = s1;
+explain select s0,s1,s6,s7 from t_list_columns where s0 in ('char','char1') order by s0;
+explain select s0,s1,s6,s7 from t_list_columns group by s0 having s0 = 'char';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set s1 = 'varchar1' where s0 = 'a' limit 5;
+explain update t_list_columns set s1 = 'varchar1' where s0 in ('char','a') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where s0 like '%char%';
+explain delete from t_list_columns where s0 REGEXP '^char';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(s0) values (null);
+explain insert into t_list_columns(s0) values ('char1');
+explain insert into t_testdata(s0) select s0 from t_list_columns where s0 = 'char';
+explain insert into t_list_columns(s0) select s0 from t_testdata where s0 = 'char1';
+
+
+--echo ######################## LIST COLUMNS分区 - 分区键 varchar ########################
+drop table t_list_columns;
+create table t_list_columns (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1'), s7 set('2'))
+partition by list columns (s1)
+(PARTITION p0 VALUES IN ('a','varchar0'),
+  PARTITION p1 VALUES IN ('b','varchar1'),
+  PARTITION p2 VALUES IN ('varchar'));
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_list_columns where s1 like '%varchar%';
+explain select s0,s1,s6,s7 from t_list_columns where s1 REGEXP '^varchar';
+explain select s0,s1,s6,s7 from t_list_columns where s1 = 'varchar' limit 5;
+explain select s0,s1,s6,s7 from t_list_columns where s0 = 'varchar' and s1 = s0;
+explain select s0,s1,s6,s7 from t_list_columns where s1 in ('varchar','varchar1') order by s0;
+explain select s0,s1,s6,s7 from t_list_columns group by s1 having s1 = 'varchar';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_list_columns set s1 = 'varchar1' where s1 = 'varchar' limit 5;
+explain update t_list_columns set s1 = 'varchar1' where s1 in ('varchar','varchar1') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_list_columns where s1 like '%varchar%';
+explain delete from t_list_columns where s1 REGEXP '^varchar';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_list_columns(s1) values (null);
+explain insert into t_list_columns(s1) values ('varchar1');
+explain insert into t_testdata(s1) select s1 from t_list_columns where s1 = 'varchar1';
+explain insert into t_list_columns(s1) select s1 from t_testdata where s1 = 'varchar';
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select * from t_list_columns where s0 = '1';
+
+--echo # 没有查询条件
+explain select * from t_list_columns limit 2;
+
+--echo # 查询范围大于分区数
+explain select * from t_list_columns where s1 in ('a','b','c','varchar','varchar1','varchar0');
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_list_columns where s1 != 'a' ;
+explain delete from t_list_columns where (s1 not in ('a','b','varchar','varchar1','varchar0'));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select * from t_list_columns where  lower(s1) = 'varchar';
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_list_columns(s1) select 'varchar';
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-key分区 --------------------------------------------------
+--echo ### 用例：key分区，日期数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-5，partition_key_type-1，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp);
+
+insert into t_testdata values('2022-12-01','12:00:00.1000','2020','2022-12-01 12:00:00.1000','2022-12-01 12:00:00.1000');
+insert into t_testdata values('2022-12-02','13:00:00.1000','2021','2022-12-02 13:00:00.1000','2022-12-02 12:00:00.1001');
+insert into t_testdata values('2022-12-03','14:00:00.1000','2022','2022-12-03 14:00:00.1000','2022-12-03 12:00:00.1002');
+insert into t_testdata values('2022-12-04','15:00:00.1000','2023','2022-12-04 15:00:00.1000','2022-12-04 12:00:00.1003');
+
+--echo ######################## key分区 - 分区键 date ########################
+--disable_warnings
+drop table if exists t_part_key;
+--enable_warnings
+create table t_part_key (c1 date NOT NULL PRIMARY KEY, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_part_key where c1 = '2022-12-01' limit 5;
+explain select c1,c2 from t_part_key where c4 = '2022-12-01' and c1 = c4;
+explain select c1,c2 from t_part_key where c1 in ('2022-12-01','2022-12-05') order by c1;
+explain select c1,c2 from t_part_key group by c1 having c1 = '2022-02-01';
+explain select c1,c2 from t_part_key where c1 between '2021-02-10'and '2021-02-15';
+explain select c1,c2 from t_part_key where c1 >= '2021-02-11' and c1 <= '2021-02-15';
+explain select c1,c2 from t_part_key where to_days(c1) =to_days('2000-01-01');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c1 = '2021-12-29' where c1 = '2022-12-29';
+explain update t_part_key set c1 = '2021-12-29' where c1 in ('2021-01-16','2021-01-15');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c1 between '2021-02-10'and '2021-02-15';
+explain delete from t_part_key where c1 >= '2021-02-11' and c1 <= '2021-02-15';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c1) values (null);
+explain insert into t_part_key(c1) values ('2021-01-16');
+explain insert into t_testdata(c1) select c1 from t_part_key where c1 = '2021-02-01'limit 5;
+explain insert into t_part_key(c1) select c1 from t_testdata where c1 = '2021-02-10';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c1 = '2022-12-01');
+
+
+--echo ######################## key分区 - 分区键 time ########################
+drop table t_part_key;
+create table t_part_key (c1 date, c2 time NOT NULL PRIMARY KEY, c3 year, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_part_key where c2 = '12:00:00.1000' limit 5;
+explain select c1,c2 from t_part_key where c2 in ('12:00:00.1000','18:00:00.1000') order by c2;
+explain select c1,c2 from t_part_key group by c2 having c2 = '12:00:00.1000';
+explain select c1,c2 from t_part_key where c2 between '02:00:00.1000'and '12:00:00.1000';
+explain select c1,c2 from t_part_key where c2 >= '12:00:00.1000' and c2 <= '22:00:00.1000';
+explain select c1,c2 from t_part_key where time_to_sec(c2) =time_to_sec('12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c2 = '2021-12-29' where c2 = '12:00:00.1000';
+explain update t_part_key set c2 = '2021-12-29' where c2 in ('12:00:00.1000','22:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c2 between '02:00:00.1000'and '12:00:00.1000';
+explain delete from t_part_key where c2 >= '12:00:00.1000' and c2 <= '22:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c2) values (null);
+explain insert into t_part_key(c2) values ('02:00:00.1000');
+explain insert into t_testdata(c2) select c2 from t_part_key where c2 = '12:00:00.1000' limit 5;
+explain insert into t_part_key(c2) select c2 from t_testdata where c2 = '02:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c2 = '12:00:00.1000' );
+
+
+--echo ######################## key分区 - 分区键 year ########################
+drop table t_part_key;
+create table t_part_key (c1 date, c2 time, c3 year NOT NULL PRIMARY KEY, c4 datetime, c5 timestamp) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+--echo # issue:38984664 bug5: 创建分区键是year类型的key分区表,进行等值查询时,mysql分区裁剪成功，ob(mysql)分区裁剪失效
+explain select c1,c3 from t_part_key where c3 = '2021' limit 5;
+explain select c1,c3 from t_part_key where c3 in ('2020','2022') order by c3;
+explain select c1,c3 from t_part_key group by c3 having c3 = '2021';
+explain select c1,c3 from t_part_key where c3 between '2021' and '2023';
+explain select c1,c3 from t_part_key where c3 >= '2021' and c3 <= '2022';
+explain select c1,c3 from t_part_key where c3+1 = 2021;
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c1 = '2021-12-29' where c3 = '2021';
+explain update t_part_key set c1 = '2021-12-29' where c3 in ('2020','2021');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c3 between '2021'and '2023';
+explain delete from t_part_key where c3 >= '2021' and c3 <= '2023';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c3) values (null);
+explain insert into t_part_key(c3) values ('2023');
+explain insert into t_testdata(c3) select c3 from t_part_key where c3 = '2023' limit 5;
+explain insert into t_part_key(c3) select c3 from t_testdata where c3 = '2023';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c3 = '2021');
+
+
+--echo ######################## key分区 - 分区键 datetime ########################
+drop table t_part_key;
+create table t_part_key (c1 date, c2 time, c3 year, c4 datetime NOT NULL PRIMARY KEY, c5 datetime) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c4 from t_part_key where c4 = '2022-12-01 12:00:00.1000';
+explain select c1,c4 from t_part_key where c5 = '2022-12-01 12:00:00.1000' and c4 = c5;
+explain select c1,c4 from t_part_key where c4 in ('2022-12-01 12:00:00.1000','2022-12-04 12:00:00.1000') order by c4;
+explain select c1,c4 from t_part_key group by c4 having c4 = '2022-12-04 12:00:00.1000';
+explain select c1,c4 from t_part_key where c4 between '2022-12-01 12:00:00.1000' and '2022-12-04 12:00:00.1000';
+explain select c1,c4 from t_part_key where c4 >= '2022-12-01 12:00:00.1000' and c4 <= '2022-12-02 12:00:00.1000';
+explain select c1,c4 from t_part_key where to_days(c4) = to_days('2022-12-01 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c4 = '2021-12-29' where c4 = '2022-12-01 12:00:00.1000';
+explain update t_part_key set c4 = '2021-12-29' where c4 in ('2022-12-01 12:00:00.1000','2022-12-03 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c4 between '2022-12-03 12:00:00.1000'and '2022-12-04 12:00:00.1000';
+explain delete from t_part_key where c4 >= '2022-12-01 12:00:00.1000' and c4 <= '2022-12-03 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c4) values (null);
+explain insert into t_part_key(c4) values ('2022-12-04 12:00:00.1000');
+explain insert into t_testdata(c4) select c4 from t_part_key where c4 = '2022-12-06 12:00:00.1000' limit 5;
+explain insert into t_part_key(c4) select c4 from t_testdata where c4 = '2022-12-07 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c4 = '2022-12-01 12:00:00.1000');
+
+
+--echo ######################## key分区 - 分区键 timestamp ########################
+drop table t_part_key;
+create table t_part_key (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp NOT NULL PRIMARY KEY) partition by key()
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c5 from t_part_key where c5 = '2022-12-01 12:00:00.1000';
+explain select c1,c5 from t_part_key where c5 in ('2022-12-01 12:00:00.1000','2022-12-04 12:00:00.1000') order by c5;
+explain select c1,c5 from t_part_key group by c5 having c5 = '2022-12-04 12:00:00.1000';
+explain select c1,c5 from t_part_key where c5 between '2022-12-01 12:00:00.1000' and '2022-12-04 12:00:00.1000';
+explain select c1,c5 from t_part_key where c5 >= '2022-12-01 12:00:00.1000' and c5 <= '2022-12-02 12:00:00.1000';
+explain select c1,c5 from t_part_key where to_days(c5) = to_days('2022-12-01 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c5 = '2021-12-29' where c5 = '2022-12-01 12:00:00.1000';
+explain update t_part_key set c5 = '2021-12-29' where c5 in ('2022-12-01 12:00:00.1000','2022-12-03 12:00:00.1000');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c5 between '2022-12-03 12:00:00.1000'and '2022-12-04 12:00:00.1000';
+explain delete from t_part_key where c5 >= '2022-12-01 12:00:00.1000' and c5 <= '2022-12-03 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c5) values (null);
+explain insert into t_part_key(c5) values ('2022-12-04 12:00:00.1000');
+explain insert into t_testdata(c5) select c5 from t_part_key where c5 = '2022-12-06 12:00:00.1000' limit 5;
+explain insert into t_part_key(c5) select c5 from t_testdata where c5 = '2022-12-07 12:00:00.1000';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c5 = '2022-12-01 12:00:00.1000');
+
+
+--echo ######################## key分区 - 分区键 2个 ########################
+drop table t_part_key;
+create table t_part_key (c1 date, c2 time, c3 year, c4 datetime, c5 timestamp) partition by key(c1,c2)
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c1,c2 from t_part_key where c1 = '2021-02-12' and c2 = '10:00:00' group by c1 having c1 < '2021-12-31';
+explain select c1,c2 from t_part_key where c1 in ('2021-01-16','2021-01-15') and c2 in ('10:00:00','12:00:00');
+explain select c1,c2 from t_part_key group by c1,c2 having c1 = '2021-02-01' and c2 = '10:00:00' limit 5;
+explain select c1,c2 from t_part_key where (c1 between '2021-02-10'and '2021-02-15') and (c2 between '10:00:00'and '13:00:00');
+explain select c1,c2 from t_part_key where (c1 >= '2021-02-11' and c1 <= '2021-02-15') and (c2 >= '10:00:00' and c2 <= '13:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c1 = '2021-12-29' where c1 = '2021-02-02' and c2 = '10:00:00';
+explain update t_part_key set c1 = '2021-12-29' where c1 in ('2021-01-10','2021-01-15') and c2 in ('01:00:00','10:00:00');
+explain update t_part_key set c1 = '2021-12-29' where (c1 between '2021-02-10'and '2021-02-15') and (c2 between '10:00:00'and '18:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where c1 = '2021-01-14' and c2 = '10:00:00' order by c1;
+explain delete from t_part_key where c1 in ('2021-01-16','2021-01-15') and c2 in ('10:00:00','13:00:00');
+explain delete from t_part_key where (c1 >= '2021-02-14' and c1 <= '2021-02-15') and (c2 >= '10:00:00' and c2 <= '13:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c1,c2) values (null,null);
+explain insert into t_part_key(c1,c2) values (null,'10:00:00');
+explain insert into t_part_key(c1,c2) values ('2021-02-10',null);
+explain insert into t_part_key(c1,c2) values ('2021-02-12','10:00:00');
+explain insert into t_testdata(c1,c2) select c1,c2 from t_part_key where c1 = '2021-02-01' and c2 = '10:00:00' limit 5;
+explain insert into t_part_key(c1,c2) select c1,'10:00:00' from t_testdata where c1 = '2021-02-10';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where c3 > (select t2.c3 from t_part_key t2 where t1.c1 > t2.c1 and t2.c1 = '2022-01-15' and t2.c2 = '10:00:00');
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select c1,c2 from t_part_key where c3 = '2022-01-01';
+
+--echo # 查询条件包含部分分区键
+explain select c1,c2 from t_part_key where c1 = '2021-01-01';
+explain select c1,c2 from t_part_key where c2 = '10:00:00';
+explain select c1,c2 from t_part_key having c1 < '2021-12-31';
+explain select c1,c2 from t_part_key group by c2 having c1 = '2021-02-12' and c2 = '10:00:00';
+
+--echo # 没有查询条件
+explain select c1,c2 from t_part_key limit 2;
+explain select c1,c2 from t_part_key group by c1,c2;
+
+--echo # 查询范围大于分区数
+explain select c1,c2 from t_part_key where c1 > '2021-01-01' and c2 > '01:00:00';
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_part_key where c1 != '2021-02-01' and c2 != '01:00:00';
+explain delete from t_part_key where c1 not in ('2021-01-10','2021-01-15') and c2 not in ('01:00:00','21:00:00');
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select c1,c2 from t_part_key where datediff(c1,c1) < 0 and c2 = '10:00:00';
+explain select c1,c2 from t_part_key where to_days(c1) = 0 and c2 = '10:00:00';
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_part_key(c1,c2) select '2021-02-11','12:00:00';
+
+
+--echo ######################## key分区 - 分区键 3个 ########################
+drop table t_part_key;
+create table t_part_key (c2 date, c3 time, c4 year, c5 datetime, c6 timestamp) partition by key(c3,c5,c6)
+partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select c3,c5,c6 from t_part_key where c3 = '12:00:00' and c5 = '2022-02-02 10:00:00' and c6 = '2022-02-02 10:00:00' ;
+explain select c3,c5,c6 from t_part_key where c3 in ('12:00:00','13:00:00') and c5 in ('2022-02-02 10:00:00','2022-02-02 10:00:00') and c6 in ('2021-01-15 10:00:00','2021-01-11 10:00:00');
+explain select c3,c5,c6 from t_part_key group by c3,c5,c6 having c3 = '12:00:00' and c5 = '2022-02-02 10:00:00' and c6 = '2021-02-02 10:00:00' ;
+explain select c2,c4 from t_part_key where (c3 between '10:00:00'and '13:00:00') and (c5 between '2021-02-10'and '2021-02-15') and (c6 between '2021-02-10'and '2021-02-15');
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set c4 = '2024' where c3 = '12:00:00' and c5 = '2022-02-02 10:00:00' and c6 = '2021-02-02 10:00:00';
+explain update t_part_key set c4 = '2025' where c3 in ('12:00:00') and c5 in ('2021-01-10 10:00:00','2021-01-11 10:00:00') and c6 in ('2021-01-10 10:00:00','2021-01-11 10:00:00');
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where (c3 between '10:00:00'and '13:00:00') and (c5 between '2021-02-10'and '2021-02-15') and (c6 between '2021-02-10'and '2021-02-15');
+explain delete from t_part_key where (c3 >= '10:00:00' and c3 <= '13:00:00') and (c5 >= '2021-02-14' and c5 <= '2021-02-15') and (c6 >= '2021-02-12' and c6 <=  '2021-02-15');
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(c3,c5,c6) values (null,null,null);
+explain insert into t_part_key(c3,c5,c6) values (null,'2021-02-10','2021-02-10');
+explain insert into t_testdata(c2,c4,c5) select c3,c5,c6 from t_part_key where c3 = '12:00:00' and c5 = '2022-02-02 10:00:00' and c6 = '2022-02-02 10:00:00';
+explain insert into t_part_key(c3,c5,c6) select c2,c4,c5 from t_testdata where c2 = '12:00:00' and c4 = '2022-02-02 10:00:00' and c5 = '2022-02-02 10:00:00';
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-key分区 --------------------------------------------------
+--echo ### 用例：key分区，数值数据类型，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-5，partition_key_type-2，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real);
+
+insert into t_testdata values(1,true,true,4,5,6,7,8,9.0,10,11.100,12,13.123,14.456,15);
+
+--echo ######################## key分区 - 分区键 4个数值数据类型（tinyint,bool,boolean,smallint） ########################
+drop table t_part_key;
+create table t_part_key (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by key (n0,n1,n2,n3) partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n0,n1,n2,n3 from t_part_key where n0 = 1 and n1 = n0 and n2 = n0 and n3 = 4 ;
+explain select n0,n1,n2,n3 from t_part_key where n0 = 1 and n1 = true and n2 = true and n3 = 4 limit 5;
+explain select n0,n1,n2,n3 from t_part_key where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (4,5) order by n1;
+explain select n0,n1,n2,n3 from t_part_key group by n0,n1,n2,n3 having n0 = 1 and n1 = false and n2 = true and n3 = 4;
+explain select n0,n1,n2,n3 from t_part_key where (n0 between 1 and 2) and n1 = true and n2 = false and (n3 between 3 and 4);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set n3 = 3 where n0 = 1 and n1 = false and n2 = false and n3 = 4;
+explain update t_part_key set n3 = 3 where n0 in (1,2) and n1 in (true) and n2 in (false) and n3 in (4,5);
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where (n0 >= 1 and n0 <= 2) and n1 = true and n2 = false and (n3 >= 4 and n3 <= 5);
+explain delete from t_part_key where n0+1 = 5 and n1 = true and n2 = false and n3 = 4;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(n0,n1,n2,n3) values (null,null,null,null);
+explain insert into t_part_key(n0,n1,n2,n3) values (null,true,null,2);
+explain insert into t_testdata(n0,n1,n2,n3) select n0,n1,n2,n3 from t_part_key where n0 = 1 and n1 = true and n2 = true and n3 = 4;
+explain insert into t_part_key(n0,n1,n2,n3) select n0,n1,n2,n3 from t_testdata where n0 in (1,2) and n1 in (true) and n2 in (true) and n3 in (4,5);
+
+
+--echo ######################## key分区 - 分区键 5个数值数据类型（mediumint,int,integer,bigint,decimal） ########################
+drop table t_part_key;
+create table t_part_key (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by key (n4,n5,n6,n7,n8) partitions 6;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n4,n5,n6,n7,n8 from t_part_key where n4=5 and n5=n4+1 and n6=n4+2 and n7=n4+3 and n8=n4+4; 
+explain select n4,n5,n6,n7,n8 from t_part_key where n4=5 and n5=6 and n6=7 and n7=8 and n8=9 limit 5;
+explain select n4,n5,n6,n7,n8 from t_part_key where (n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8)) and (n8 in (8,9));
+explain select n4,n5,n6,n7,n8 from t_part_key group by n4,n5,n6,n7,n8 having n4=5 and n5=6 and n6=7 and n7=8 and n8=9;
+explain select n4,n5,n6,n7,n8 from t_part_key where (n4 between 1 and 2) and (n5 between 3 and 4) and (n6 between 3 and 4) and (n7 between 3 and 4) and (n8 between 3 and 4);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set n3 = 3 where n4=5 and n5=6 and n6=7 and n7=8 and n8=9 ;
+explain update t_part_key set n3 = 3 where (n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8)) and (n8 in (8,9));
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where (n4 >= 1 and n4 <= 2) and (n5 >= 4 and n5 <= 5) and (n6 >= 4 and n6 <= 5) and (n7 >= 4 and n7 <= 5) and (n8 >= 4 and n8 <= 5);
+explain delete from t_part_key where abs(n4)=5 and n5=6 and abs(n6)=7 and floor(n7)=8 and ceiling(n8) =9;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(n4,n5,n6,n7,n8) values (null,null,null,null,null);
+explain insert into t_part_key(n4,n5,n6,n7,n8) values (null,1,null,2,null);
+explain insert into t_testdata(n4,n5,n6,n7,n8) select n4,n5,n6,n7,n8 from t_part_key where n4=5 and n5=6 and n6=7 and n7=8 and n8=9;
+explain insert into t_part_key(n4,n5,n6,n7,n8) select n4,n5,n6,n7,n8 from t_testdata where(n4 in (4)) and (n5 in (5)) and (n6 in (6,7)) and (n7 in (8)) and (n8 in (8,9));
+
+
+--echo ######################## key分区 - 分区键 6个数值数据类型（dec,float,numeric,double,double precision,real） ########################
+drop table t_part_key;
+create table t_part_key (n0 tinyint, n1 bool, n2 boolean, n3 smallint,n4 mediumint, n5 int, n6 integer,n7 bigint,n8 decimal, n9 dec, n10 float, n11 numeric,n12 double, n13 double precision, n14 real)
+partition by key (n9,n10,n11,n12,n13,n14) partitions 6;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n9=5 and n10=n9 and n11=n9 and n12=n9 and n13=n9 and n14=n9;
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n9=5 and n10=6 and n11=7 and n12=8 and n13=9 and n14=15 limit 5;
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where (n9 in (9)) and (n10 in (11)) and (n11 in (12,7)) and (n12 in (13)) and (n13 in (8,9)) and (n14 in (14,15));
+explain select n9,n10,n11,n12,n13,n14 from t_part_key group by n9,n10,n11,n12,n13,n14 having n9=5 and n10=6 and n11=7 and n12=8 and n13=9 and n14=15;
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where (n9 between 1 and 2) and (n10 between 3 and 4) and (n11 between 3 and 4) and (n12 between 3 and 4) and (n13 between 3 and 4) and (n14 between 3 and 4);
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set n3 = 3 where n9=5 and n10=6 and n11=7 and n12=8 and n13=9 and n14=15 ;
+explain update t_part_key set n3 = 3 where (n9 in (4)) and (n10 in (5)) and (n11 in (6,7)) and (n12 in (8)) and (n13 in (8,9)) and (n14 in (8,9));
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where (n9 >= 1 and n9 <= 2) and (n10 >= 4 and n10 <= 5) and (n11 >= 4 and n11 <= 5) and (n12 >= 4 and n12 <= 5) and (n13 >= 4 and n13 <= 5) and (n14 >= 4 and n14 <= 5);
+explain delete from t_part_key where abs(n9)=5 and n10=6 and abs(n11)=7 and floor(n12)=8 and ceiling(n13) =9 and n14 =9;
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(n9,n10,n11,n12,n13,n14) values (null,null,null,null,null,null);
+explain insert into t_part_key(n9,n10,n11,n12,n13,n14) values (null,1,null,2,null,15);
+explain insert into t_testdata(n9,n10,n11,n12,n13,n14) select n9,n10,n11,n12,n13,n14 from t_part_key where n9=5 and n10=6 and n11=7 and n12=8 and n13=9 and n14=9;
+explain insert into t_part_key(n9,n10,n11,n12,n13,n14) select n9,n10,n11,n12,n13,n14 from t_testdata where(n9 in (4)) and (n10 in (5)) and (n11 in (6,7)) and (n12 in (8)) and (n13 in (8,9)) and (n14 in (8,9));
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n0 = 1;
+
+--echo # 查询条件包含部分分区键
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n9 = '2021-01-01';
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n12=8;
+explain select n9,n10,n11,n12,n13,n14 from t_part_key group by n9 having n9=5 and n10=6 and n11=7 and n12=8 and n13=9 and n14=15;
+
+--echo # 没有查询条件
+explain select n9,n10,n11,n12,n13,n14 from t_part_key limit 2;
+
+--echo # 查询范围大于分区数
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where n9 > 1;
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_part_key where n9!=5 and n10!=6 and n11!=7 and n12!=8 and n13!=9 and n14!=15;
+explain delete from t_part_key where (n9 not in (4)) and (n10 not in (5)) and (n11 not in (6,7)) and (n12 not in (8)) and (n13 not in (8,9)) and (n14 not in (8,9));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select n9,n10,n11,n12,n13,n14 from t_part_key where  abs(n9)=5 and n10=6 and abs(n11)=7 and floor(n12)=8 and ceiling(n13) =9 and n14 =9;
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_part_key(n9,n10,n11,n12,n13,n14) select 1,2,3,4,5,6;
+
+
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo ------------------------- 分区裁剪-分区类型-一级分区-key分区 --------------------------------------------------
+--echo ### 用例：key分区，字符数据类型，分区表的列，分区裁剪sql语句，查询条件/一级分区场合，分区裁剪失效场景
+--echo ### 标签：partition_type-1-5，partition_key_type-3，partition_fn-1，partition_pruning_dml，partition_where-1，partition_pruning_invalid
+--echo -----------------------------------------------------------------------------------------------------------------
+--echo # 公共表
+drop table t_testdata;
+create table t_testdata (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1','2','3','4'), s7 set('1','2','3','4'));
+
+insert into t_testdata(s0,s1,s6,s7) values('char','varchar','1','1');
+insert into t_testdata(s0,s1,s6,s7) values('char','varchar','2','2');
+
+
+--echo ######################## key分区 - 分区键 char ########################
+drop table t_part_key;
+create table t_part_key (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1','2','3','4'), s7 set('1','2','3','4'))
+partition by key (s0) partitions 5;
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_part_key where s1 = 'char' and s0 = s1;
+explain select s0,s1,s6,s7 from t_part_key where s0 = 'char' limit 5;
+explain select s0,s1,s6,s7 from t_part_key where s0 in ('char','char1') order by s0;
+explain select s0,s1,s6,s7 from t_part_key where s0 like '%char%';
+explain select s0,s1,s6,s7 from t_part_key where s0 REGEXP '^char';
+explain select s0,s1,s6,s7 from t_part_key group by s0 having s0 = 'char';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set s1 = 'varchar1' where s0 = 'char' limit 5;
+explain update t_part_key set s1 = 'varchar1' where s0 in ('char','char1') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where s0 like '%char%';
+explain delete from t_part_key where s0 REGEXP '^char';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(s0) values (null);
+explain insert into t_part_key(s0) values ('char2');
+explain insert into t_testdata(s0) select s0 from t_part_key where s0 = 'char';
+explain insert into t_part_key(s0) select s0 from t_testdata where s0 = 'char';
+
+
+--echo ######################## key分区 - 分区键 varchar ########################
+drop table t_part_key;
+create table t_part_key (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1','2','3','4'), s7 set('1','2','3','4'))
+partition by key (s1) partitions 4;
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_part_key where s0 = 'varchar' and s1 = s0;
+explain select s0,s1,s6,s7 from t_part_key where s1 = 'varchar' limit 5;
+explain select s0,s1,s6,s7 from t_part_key where s1 in ('varchar','char1') order by s0;
+explain select s0,s1,s6,s7 from t_part_key where s1 like '%varchar%';
+explain select s0,s1,s6,s7 from t_part_key where s1 REGEXP '^varchar';
+explain select s0,s1,s6,s7 from t_part_key group by s1 having s1 = 'varchar';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set s1 = 'varchar1' where s1 = 'varchar' limit 5;
+explain update t_part_key set s1 = 'varchar1' where s1 in ('varchar','char1') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where s1 like '%varchar%';
+explain delete from t_part_key where s1 REGEXP '^varchar';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(s1) values (null);
+explain insert into t_part_key(s1) values ('char2');
+explain insert into t_testdata(s1) select s1 from t_part_key where s1 = 'varchar';
+explain insert into t_part_key(s1) select s1 from t_testdata where s1 = 'varchar';
+
+
+--echo ######################## key分区 - 分区键 enum ########################
+drop table t_part_key;
+create table t_part_key (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1','2','3','4'), s7 set('1','2','3','4'))
+partition by key (s6) partitions 4;
+
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+explain select s0,s1,s6,s7 from t_part_key where s6 = '1' limit 5;
+explain select s0,s1,s6,s7 from t_part_key where s6 in ('3','4') order by s0;
+explain select s0,s1,s6,s7 from t_part_key where s6 like '%1%';
+explain select s0,s1,s6,s7 from t_part_key where s6 REGEXP '^1';
+explain select s0,s1,s6,s7 from t_part_key group by s6 having s6 = '1';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set s1 = 'varchar1' where s6 = '2';
+explain update t_part_key set s1 = 'varchar1' where s6 in ('1','3') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where s6  = '3';
+explain delete from t_part_key where s6 like '%1%';
+explain delete from t_part_key where s6 REGEXP '^1';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(s6) values (null);
+--echo # bug19: 创建分区键是enum数据类型的key分区，插入数据时，mysql进行分区裁剪，ob报错。FIXED
+explain insert into t_part_key(s6) values ('2');
+explain insert into t_part_key(s6) values ('3');
+explain insert into t_part_key(s6) values ('4');
+explain insert into t_testdata(s6) select s6 from t_part_key where s6 = '2';
+explain insert into t_part_key(s6) select s6 from t_testdata where s6 = '1';
+
+
+--echo ######################## key分区 - 分区键 set ########################
+drop table t_part_key;
+create table t_part_key (s0 char(10), s1 varchar(10),s2 tinytext,s3 text, s4 mediumtext, s5 longtext, s6 enum('1','2','3','4'), s7 set('1','2','3','4'))
+partition by key (s7) partitions 4;
+
+--echo ****** 标签partition_pruning_dml-1（select语句）
+--echo # issue: 38984664 bug5: 创建分区键是year类型的key分区表,进行等值查询时,mysql分区裁剪成功，ob(mysql)分区裁剪失效
+explain select s0,s1,s6,s7 from t_part_key where s7 = '1' limit 5;
+explain select s0,s1,s6,s7 from t_part_key where s7 in ('4','2') order by s0;
+explain select s0,s1,s6,s7 from t_part_key where s7 like '%2%';
+explain select s0,s1,s6,s7 from t_part_key where s7 REGEXP '^2';
+explain select s0,s1,s6,s7 from t_part_key group by s7 having s7 = '2';
+
+
+--echo ****** 标签partition_pruning_dml-2（update语句）
+explain update t_part_key set s1 = 'varchar1' where s7 = '2' limit 5;
+explain update t_part_key set s1 = 'varchar1' where s7 in ('2','3') order by s0;
+
+
+--echo ****** 标签partition_pruning_dml-3（delete语句）
+explain delete from t_part_key where s7 = '3';
+explain delete from t_part_key where s7 like '%2%';
+explain delete from t_part_key where s7 REGEXP '^2';
+
+
+--echo ****** 标签partition_pruning_dml-4（insert语句）
+explain insert into t_part_key(s7) values (null);
+explain insert into t_part_key(s7) values ('3');
+explain insert into t_testdata(s7) select s7 from t_part_key where s7 = '2';
+explain insert into t_part_key(s7) select s7 from t_testdata where s7 = '2';
+
+
+--echo ****** 标签partition_pruning_dml-5（子查询中使用到分区表）
+explain select * from t_testdata t1 where s7 = (select t2.s7 from t_part_key t2 where t1.s0 = t2.s0 and t2.s7 = '2');
+
+
+--echo ****** 标签partition_pruning_invalid（分区裁剪失效场景）
+--echo # 查询条件不包含分区键
+explain select * from t_part_key where s0 = '1';
+
+--echo # 没有查询条件
+explain select * from t_part_key limit 2;
+
+--echo # 查询范围大于分区数
+explain select * from t_part_key where s7 in ('1','2','3','4');
+
+--echo # 查询条件(如 not in/!= )
+explain delete from t_part_key where s7 != 5 ;
+explain delete from t_part_key where (s7 not in ('2'));
+
+--echo # 分区表达式 fn(col)形式 ,查询条件也是 fn(col) 形式指定范围
+explain select * from t_part_key where  s7 + 1 = '1';
+
+--echo # INSERT ... SELECT  常数
+explain insert into t_part_key(s7) select '1';
+
+
+--echo ######## 清空回收站，删除测试数据，表等 ########
+--disable_warnings
+--error 0,1051
+drop table t_testdata;
+--error 0,1051
+drop table t_range_columns;
+--error 0,1051
+drop table t_list_columns;
+--error 0,1051
+drop table t_part_key;
+drop database if exists whhtest;
+--enable_warnings
+purge recyclebin;
+

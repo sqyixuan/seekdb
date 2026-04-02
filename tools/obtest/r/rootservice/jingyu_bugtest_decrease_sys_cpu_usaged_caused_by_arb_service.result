@@ -1,0 +1,73 @@
+===============================================
+bootstrap
+===============================================
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=0,asvr_num=2);
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+ob1.asvr1.set status=enable;
+ob1.asvr1.reboot;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'true' tenant = all;
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+ob1.mysql ALTER SYSTEM SET enable_transfer = 'true' tenant = all;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.DBA_OB_ARBITRATION_SERVICE where arbitration_service = "$arb_svr_ip:$arb_svr_port", 1, 5;
+=================================================
+create tenant
+=================================================
+set @@session.ob_query_timeout = 200000000;
+alter system set __min_full_resource_pool_memory=1073741824;
+use oceanbase;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2');
+ob1.mysql CREATE TENANT mysql RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2", PRIMARY_ZONE = "z1,z2", enable_arbitration_service = true SET ob_tcp_invited_nodes='%';
+=======================================================
+check log_stream count and wait schema refresh
+=======================================================
+ob1.check_until_timeout select count(*) as cnt from oceanbase.CDB_OB_LS, 5, 30;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where (a.refreshed_schema_version != b.refreshed_schema_version or a.refreshed_schema_version % 8 != 0) and a.tenant_id = 1, 0, 120;
+ob1.z1.obs0.check_log_until_success -c "end refresh and add schema by tenant(ret=0, ret=\"OB_SUCCESS\", tenant_id=1001";
+ob1.z1.obs0.check_log_until_success -c "end refresh and add schema by tenant(ret=0, ret=\"OB_SUCCESS\", tenant_id=1002";
+==================================================
+statistic arbitration related inner sql
+==================================================
+==================================================
+check arbitration related inner sql under sys
+==================================================
+check sys tenant inner sql execution
+ob1.check_until_timeout select $sys_inner_sql_count_after - $sys_inner_sql_count_before <= $sys_inner_sql_expect_inc_count as expected, 1, 1;
+==================================================
+check arbitration related inner sql under meta
+==================================================
+check meta tenant inner sql execution
+ob1.check_until_timeout select $meta_inner_sql_count_after - $meta_inner_sql_count_before <= $meta_inner_sql_expect_inc_count as expected, 1, 1;
+==================================================
+check arbitration related inner sql under user
+==================================================
+check user tenant inner sql execution
+ob1.check_until_timeout select $user_inner_sql_count_after - $user_inner_sql_count_before <= $user_inner_sql_expect_inc_count as expected, 1, 1;
+==================================================================
+check arb service can wakeup by replace arbitration service
+==================================================================
+replace arbitration service A with B
+ob1.mysql alter system replace arbitration service "$arb_svr_ip:$arb_svr_port" with "$arb_svr_ip_2:$arb_svr_port_2";
+ob1.z1.obs0.check_rs_log_until_success -c "start to wakeup all tenant arbitration service";
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$sys_tenant_id)";
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$meta_tenant_id)";
+ob1.check_until_timeout select count(*) as ctn from oceanbase.__all_virtual_log_stat where arbitration_member like "%$arb_svr_ip:$arb_svr_port%", 0, 10;
+ob1.check_until_timeout select count(*) as ctn from oceanbase.__all_virtual_log_stat where tenant_id in ($tenant_id, $meta_tenant_id) and arbitration_member not like "%$arb_svr_ip_2:$arb_svr_port_2%", 0, 30;
+==================================================
+check arb service can wakeup by alter tenant
+==================================================
+enable tenant arbitration service again
+alter tenant mysql set enable_arbitration_service = true;
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$meta_tenant_id)";
+disable tenant arbitration service again
+alter tenant sys set enable_arbitration_service = false;
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$sys_tenant_id)";
+disable tenant arbitration service
+alter tenant mysql set enable_arbitration_service = false;
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$meta_tenant_id)";
+ob1.check_until_timeout select count(*) as ctn from oceanbase.__all_virtual_log_stat where arbitration_member like "%$arb_svr_ip_2:$arb_svr_port_2%", 0, 10;
+enable tenant arbitration service
+alter tenant mysql set enable_arbitration_service = true;
+ob1.z1.obs0.check_rs_log_until_success -c "success to wakeup tenant arbitration service(ret=0, ret=\"OB_SUCCESS\", tenant_id=$meta_tenant_id)";
+ob1.check_until_timeout select count(*) as ctn from oceanbase.__all_virtual_log_stat where tenant_id in ($tenant_id, $meta_tenant_id) and arbitration_member not like "%$arb_svr_ip_2:$arb_svr_port_2%", 0, 30;

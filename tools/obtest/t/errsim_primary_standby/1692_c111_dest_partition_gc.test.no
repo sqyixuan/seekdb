@@ -1,0 +1,70 @@
+#owner : msy164651
+#owner group: rs
+#description: 分区分裂
+# 测试点：在pg中的目标分区的回收
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=0,proxy_num = 0);
+ob1.reboot;
+ob1.mysql alter system set _enable_split_partition = true;
+ob1.source include/merge.inc;
+ob1.source include/migrate.inc;
+source include/fast_auto_rebalance_configuration.inc;
+ob1.mysql alter system set schema_drop_gc_delay_time='0s';
+ob1.mysql alter system set ilog_flush_trigger_time = '30s';
+ob1.mysql set global recyclebin = off; 
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_parameter_info where name like "%enable_split_partition%" and value = 'True', 3, 10;
+#分裂没有结束之前不能回收源分区
+ob_connect(conn, ob1.z1.obs0, root@sys, , test, , USE_MYSQL_CONNECTOR);
+connection conn;
+create table test(c1 int primary key, c2 int);
+alter table test partition by range(c1) (partition p0 values less than(29), partition p1 values less than(maxvalue));
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name = 'test', table_id, 1);
+sleep 30;
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_partition_info where table_id = $table_id and partition_idx = 0;
+ob1.mysql alter system major freeze;
+ob1.check_version 2;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_info where table_id = $table_id and partition_idx = 0, 0 , 300;
+
+#分裂失败，目标分区已经创建成功
+#分裂没有成功之前，删除表
+create tablegroup pg binding = true;
+create table t1 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2)) tablegroup = pg;
+alter table t1 partition by list columns(c1, c2) (partition p0 values in (default));
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 1;
+--error 4013
+alter tablegroup pg partition by list columns 2 (partition p0 values in ((1,2),(2,3),(3,4)), partition p1 values in (default));
+drop table t1;
+let $t1_id = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name ='pg' and tenant_id = 1, tablegroup_id, 1);
+#分裂失败，会gc掉目标分区
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_partition_info where table_id = $t1_id and partition_idx > 0, 0, 100;
+
+#分裂没有成功之前，删除表
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+create tablegroup pg1 binding = true;
+create table t1 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2)) tablegroup = 'pg1';
+create table t2 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2)) tablegroup = 'pg1';
+alter table t1 partition by list columns(c1, c2) (partition p0 values in (default));
+alter table t2 partition by list columns(c1, c2) (partition p0 values in (default));
+alter tablegroup pg1 partition by list columns 2 (partition p0 values in ((1,2),(2,3),(3,4)), partition p1 values in (default));
+let $t1_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name ='t1' and tenant_id = 1, table_id, 1);
+drop table t1;
+#源分区gc完成之后，才能gc目标分区
+ob1.check_until_timeout select count(*) < 6 from oceanbase.__all_virtual_pg_partition_info where table_id = $t1_id and partition_idx != 0, 1, 100;
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_pg_partition_info where table_id = $t1_id and partition_idx = 0;
+#
+#分裂过程中，删除pg
+alter system set_tp tp_no = 82, error_code = 4013, frequency = 0;
+create tablegroup pg4 binding = true;
+create table t1 (c1 int, c2 varchar(20), c3 int, primary key(c1, c2)) tablegroup = 'pg4';
+alter table t1 partition by list columns(c1, c2) (partition p0 values in (default));
+alter tablegroup pg4 partition by list columns 2 (partition p0 values in ((1,2),(2,3),(3,4)), partition p1 values in (default));
+drop table t1;
+let $tg_id = deploy_get_value(ob1.select select tablegroup_id from oceanbase.__all_virtual_tablegroup where tablegroup_name ='pg4', tablegroup_id, 1);
+drop tablegroup pg4;
+alter system major freeze;
+
+ob1.force_stop;
+sleep 20;
+ob1.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where start_service_time > 0,3, 100;
+

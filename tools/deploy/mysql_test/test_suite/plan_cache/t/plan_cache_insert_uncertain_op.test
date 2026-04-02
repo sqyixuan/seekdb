@@ -1,0 +1,107 @@
+#owner: luofan.zp
+#owner group: SQL1
+# tags: optimizer
+
+# TEST NAME: plan_cache_insert_uncertain_op.test
+# DESCRIPTION: test insert query with uncertain local operator
+# ATTENTION: insert query with uncertain local operator is banned in 2_1_x_release
+
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+--disable_query_log
+--disable_result_log
+
+alter system flush plan cache global;
+--sleep 3
+
+alter system set large_query_threshold = '1s';
+alter system set enable_auto_leader_switch=false;
+
+--enable_query_log
+--enable_result_log
+
+connection default;
+
+set ob_trx_timeout = 1000000000;
+set autocommit = 0;
+
+--disable_warnings
+drop database if exists test_db;
+--enable_warnings
+
+create database test_db;
+use test_db;
+
+--disable_result_log
+create table tt1 (a int);
+create table tt2 (a int);
+
+insert into tt1 values (1);
+
+connection conn_admin;
+
+--echo
+--echo ### Geting Meta Infos ###
+let $tbl_id_1 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tt1', table_id, 1);
+let $tbl_id_2 = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name = 'tt2', table_id, 1);
+
+let $tbl1_main_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_1 and role = 1, svr_ip, 1);
+let $tbl1_backup_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_1 and role = 2, svr_ip, 1);
+let $tbl1_main_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_1 and role = 1, svr_port, 1);
+let $tbl1_backup_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_1 and role = 2, svr_port, 1);
+
+let $tbl2_main_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_2 and role = 1, svr_ip, 1);
+let $tbl2_backup_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_2 and role = 2, svr_ip, 1);
+let $tbl2_main_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_2 and role = 1, svr_port, 1);
+let $tbl2_backup_port = query_get_value(select svr_port from oceanbase.__all_virtual_meta_table where table_id = $tbl_id_2 and role = 2, svr_port, 1);
+
+--echo ### DONE ###
+
+--echo // switch t2 to backup server
+--disable_query_log
+--disable_result_log
+eval alter system switch replica leader partition_id='0%0@$tbl_id_2' server='$tbl2_backup_ip:$tbl2_backup_port';
+--sleep 10
+
+connection default;
+--enable_query_log
+--enable_result_log
+
+insert into tt2 select * from tt1;
+
+explain insert into tt2 select * from tt1;
+
+connection conn_admin;
+--echo // switch tt1 to backup server
+--disable_query_log
+--disable_result_log
+eval alter system switch replica leader partition_id='0%0@$tbl_id_1' server='$tbl1_backup_ip:$tbl1_backup_port';
+--sleep 10
+
+
+connection default;
+--enable_query_log
+--enable_result_log
+
+insert into tt2 select * from tt1;
+insert into tt2 select * from tt1;
+
+--echo
+explain insert into tt2 select * from tt1;
+
+--echo
+select * from tt2;
+
+--echo ### CLEANUP ###
+
+--disable_result_log
+--disable_warnings
+drop table tt1, tt2;
+drop database test_db;
+--enable_warnings
+
+connection conn_admin;
+
+alter system set large_query_threshold = '100ms';
+alter system set enable_auto_leader_switch = true;

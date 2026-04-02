@@ -1,0 +1,394 @@
+# owner: lana.lgx
+# owner group: data
+# description: materialized view
+# tags: mv_basic
+# author: wb-ljh01399065
+ 
+
+--disable_warnings
+drop database  IF EXISTS  ljh;
+--enable_warnings
+create database ljh;
+use ljh;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 30000000;
+SET ob_query_timeout = 30000000;
+
+--echo ##设置相同sql_mode;
+SET @@sql_mode='';
+
+
+
+--echo ##增量更新暂不支持汇总
+--echo ##针对聚合函数min/max 的增量更新
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with rowid, sequence (c2,c3,c4) including new values ;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2, count(*) cnt,  min(c2) min_c2 from t1 group by c2;
+--error 9760
+create materialized view mv2 refresh fast  as select c2 as c2, count(*) cnt,  max(c2) max_c2 from t1 group by c2;
+
+--echo ##使用内联视图
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table t1;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with rowid, sequence (c2,c3,c4) including new values purge  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2, count(*) cnt  from (select c2 as c2, count(*) cnt from t1 group by c2)t1 group by c2;
+
+--echo ##使用join
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view  if exists mv1;
+create table t1(c1 int primary key, c2 int, c3 int, c4 int);
+create table t2(c1 int, c2 int, c3 int, c4 int);
+insert into t1 values(1,1,1,1);
+insert into t2 values(1,1,1,1);
+create materialized view log on t1 with primary key, rowid, sequence ( c2, c3) including new values;
+create materialized view log on t2 with  rowid, sequence (c1, c2, c3) including new values;
+--error 9760
+create materialized view mv1 refresh fast  as select t1.c2 as c2, count(*) cnt  from t1 inner join t2 on t1.c2=t2.c2 group by t1.c2;
+--error 9760
+create materialized view mv1 refresh fast  as select t1.c2 as c2, count(*) cnt  from t1  join (select 1 c2 from dual)t2 on t1.c2=t2.c2 group by t1.c2;
+
+--echo ##使用子查询
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table if exists  t1;
+drop materialized view if exists  mv1;
+drop materialized view  if exists mv2;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values purge  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c1 as c1  from t1 where c1 is not null group by c1;
+--error 9760
+create materialized view mv2 refresh fast  as select c1 as c1  from t1 where c1 > 1 group by c1;
+
+
+--echo ##子查询结合group by预期创建失败;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2, count(*) cnt  from t1 where c1 in (select c1 from t1)  group by c2;
+
+
+--echo ##包含 rownum/rand 等不能稳定输出值的表达式
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view  if exists mv1;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values purge  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2  from t1  limit 5  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2 , count(*) cnt from t1 group by c2  limit 5  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2 , count(*) cnt, rand(5) from t1  group by c2  ;
+
+
+
+--echo ##仅支持SUM/COUNT 及使用这两种构造的聚合函数;
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values purge  ;
+create materialized view mv1 refresh fast  as select COUNT(*) cnt,sum(c2) as sum_c2,count(c2) count_c2 from t1 ;
+create materialized view mv2 refresh fast  as select c2 as c2 ,COUNT(*) cnt,sum(c2) as sum_c2,count(c2) count_c2 from t1 group by c2;
+create materialized view mv3 refresh fast  as select c2 as c2 , count(*) cnt,sum(c2) as sum_c2,count(c2) count_c2 from t1 where c1 is not null group by c2  ;
+
+
+--echo ##聚合函数中仅支持简单column，必须输出 COUNT(*) 与 group by 列
+--echo ##结合having使用报错不支持
+--error 9760
+create materialized view mv3 refresh fast  as select c2 as c2 , count(*) as count from t1  group by c2 having sum(c2)>1;
+--error 9760
+create materialized view mv4 refresh fast  as select c2 as c2 , count(*) as count from (select c2 as c2 ,count(*)as count from t1 group by c2) t1  group by c2 having sum(c2)>1;
+
+--echo ##group by不使用COUNT(*)
+--error 9760
+create materialized view mv3 refresh fast  as select c2 as c2  from t1  group by c2 ;
+
+--echo ##单独使用having
+--error 9760
+create materialized view mv5 refresh fast  as select sum(c2) as sum_c2 from t1  having sum(c2)>(select 1 from dual group by 1);
+--error 9760
+create materialized view mv5 refresh fast  as select avg(c2) as avg_c2 from t1  having avg(c2)>(select 1 from dual group by 1);
+--error 9760
+create materialized view mv5 refresh fast  as select min(c2) as min_c2 from t1  having min(c2)>(select 1 from dual group by 1);
+--error 9760
+create materialized view mv5 refresh fast  as select max(c2) as max_c2 from t1  having max(c2)>(select 1 from dual group by 1);
+--error 9760
+create materialized view mv5 refresh fast  as select count(c2) as count_c2 from t1  having count(c2)>(select 1 from dual group by 1);
+
+
+--echo ##单独使用rollup
+--error 9760
+create materialized view mv5 refresh fast  as select c1 as c1,c2 as c2 ,sum(c4) as sum_c4  from t1  group by c1,c2 with rollup ;
+--error 9760
+create materialized view mv5 refresh fast  as select c1 as c1,c2 as c2 ,avg(c4) as avg_c4  from t1  group by c1,c2 with rollup ;
+--error 9760
+create materialized view mv5 refresh fast  as select c1 as c1,c2 as c2 ,min(c4) as min_c4  from t1  group by c1,c2 with rollup ;
+--error 9760
+create materialized view mv5 refresh fast  as select c1 as c1,c2 as c2 ,max(c4) as max_c4  from t1  group by c1,c2 with rollup ;
+--error 9760
+create materialized view mv5 refresh fast  as select c1 as c1,c2 as c2 ,count(c4) as count_c4  from t1  group by c1,c2 with rollup ;
+
+
+--echo ##将having和rollup放置在子查询当中
+--error 9760
+create materialized view mv5 refresh fast  as select c2 as c2,sum(c2) as sum_c2 from (select sum(c2) from t1  having sum(c2)> 1)t,t1  group by c2;
+--error 9760
+create materialized view mv5 refresh fast  as select t1.c2 as a,sum(t1.c2) as sum_c2 from (select c1 as c1,c2 as c2 ,sum(c4) as sum_c4  from t1  group by c1,c2 with rollup)t,t1  group by t1.c2;
+
+--echo ##order by使用
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values purge  ;
+--error 9760
+create materialized view mv1 refresh fast  as select c1 as c1,c2 as c2 from t1  order by c2 desc ;
+--error 9760
+create materialized view mv2 refresh fast  as select c1 as c1,c2 as c2 from t1  order by c2 ;
+
+--echo ##order by正交group by
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2,COUNT(*) cnt,sum(c2) as sum_c2,count(c2) count_c2 from t1 group by c2 order by c2 desc ;
+--error 9760
+create materialized view mv2 refresh fast  as select c2 as c2,COUNT(*) cnt,sum(c2) as sum_c2,count(c2) count_c2 from t1 group by c2 order by c2  ;
+
+
+--echo ##select子句中使用distinct
+--error 9760
+create materialized view mv5 refresh fast  as select distinct c2  from t1 ;
+
+--echo ##结合group by创建成功,和子查询问题类似 ;
+create materialized view mv5 refresh fast  as select distinct c2 ,count(*) as cnt_c2 from t1 group by c2;
+
+--echo ##聚合函数中使用distinct
+--error 9760
+create materialized view mv6 refresh fast  as select  count(distinct c2) as dt_c2 from t1  ;
+
+--echo ##集合中使用distinct
+--error 9760
+create materialized view mv6 refresh fast  as select  distinct c2 from t1   UNION SELECT DISTINCT c2  FROM t1 ;
+
+
+--echo ##集合中正交group by使用
+--error 9760
+create materialized view mv6 refresh fast  as select  distinct c2,count(*) as cnt_c2 from t1 group by c2  UNION SELECT DISTINCT c2 , count(*) as cnt_c2 FROM t1 group by c2 ;
+
+--echo ##使用窗口函数
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,SUM(c2) OVER (ORDER BY c1) AS running_total_c2 FROM t1 ;
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,SUM(c2) OVER (ORDER BY c1) AS running_total_c2 FROM t1 group by c1,c2;
+
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,c3,AVG(c2) OVER (PARTITION BY c3) AS avg_c2_by_c3 FROM t1;
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,c3,AVG(c2) OVER (PARTITION BY c3) AS avg_c2_by_c3 FROM t1 group by c1,c2,c3;
+
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,RANK() OVER (ORDER BY c2 DESC) AS rank_by_c2,ROW_NUMBER() OVER (ORDER BY c2 DESC) AS rownum_by_c2 FROM t1;
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,RANK() OVER (ORDER BY c2 DESC) AS rank_by_c2,ROW_NUMBER() OVER (ORDER BY c2 DESC) AS rownum_by_c2 FROM t1 group by c1,c2;
+
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,LAG(c2) OVER (ORDER BY c1) AS prev_c2,LEAD(c2) OVER (ORDER BY c1) AS next_c2 FROM t1;
+--error 9760
+create materialized view mv6 refresh fast  as SELECT c1,c2,LAG(c2) OVER (ORDER BY c1) AS prev_c2,LEAD(c2) OVER (ORDER BY c1) AS next_c2 FROM t1 group by c1,c2;
+
+--echo ##不包含group by
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values ;
+create materialized view mv1 refresh fast on demand as select sum(c2*c2) as sum_c2,count(c2) count_c2 from t1 ;
+create materialized view mv2 refresh fast on demand as select count(c2*c2) as sum_c2,count(c2) count_c2 from t1 ;
+--error 9760
+create materialized view mv3 refresh fast on demand as select count(c2*c2) as sum_c2,count(c2)count_c2,count(c2*c2) as sum_c3,count(c2*c2) as sum_c4,count(c2*c2) as sum_c5,count(c2*c2) as sum_c6,count(c2*c2) as sum_c7,count(c2*c2) as sum_c8,count(c2*c2) as sum_c9,count(c2*c2) as sum_c10,count(c2*c2) as sum_c11,count(c2*c2) as sum_c12,count(c2*c2) as sum_c13,count(c2*c2) as sum_c14,count(c2*c2) as sum_c15,count(c2*c2) as sum_c16,count(c2*c2) as sum_c17,count(c2*c2) as sum_c18,count(c2*c2) as sum_c19,count(c2*c2) as sum_c20,count(c2*c2) as sum_c21,count(c2*c2) as sum_c22,count(c2*c2) as sum_c23,count(c2*c2) as sum_c24,count(c2*c2) as sum_c25,count(c2*c2) as sum_c26,count(c2*c2) as sum_c27,count(c2*c2) as sum_c28,count(c2*c2) as sum_c29,count(c2*c2) as sum_c30,count(c2*c2) as sum_c31,count(c2*c2) as sum_c32,count(c2*c2) as sum_c33,count(c2*c2) as sum_c34,count(c2*c2) as sum_c35,count(c2*c2) as sum_c36,count(c2*c2) as sum_c37,count(c2*c2) as sum_c38,count(c2*c2) as sum_c39,count(c2*c2) as sum_c40,count(c2*c2) as sum_c41,count(c2*c2) as sum_c42,count(c2*c2) as sum_c43,count(c2*c2) as sum_c44,count(c2*c2) as sum_c45,count(c2*c2) as sum_c46,count(c2*c2) as sum_c47,count(c2*c2) as sum_c48,count(c2*c2) as sum_c49,count(c2*c2) as sum_c50,count(c2*c2) as sum_c51,count(c2*c2) as sum_c52,count(c2*c2) as sum_c53,count(c2*c2) as sum_c54,count(c2*c2) as sum_c55,count(c2*c2) as sum_c56,count(c2*c2) as sum_c57,count(c2*c2) as sum_c58,count(c2*c2) as sum_c59,count(c2*c2) as sum_c60,count(c2*c2) as sum_c61,count(c2*c2) as sum_c62,count(c2*c2) as sum_c63,count(c2*c2) as sum_c64,count(c2*c2) as sum_c65,count(c2*c2) as sum_c66,count(c2*c2) as sum_c67,count(c2*c2) as sum_c68,count(c2*c2) as sum_c69,count(c2*c2) as sum_c70,count(c2*c2) as sum_c71,count(c2*c2) as sum_c72,count(c2*c2) as sum_c73,count(c2*c2) as sum_c74,count(c2*c2) as sum_c75,count(c2*c2) as sum_c76 from t1 ;
+
+
+
+--echo ##聚合函数正交问题
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view  if exists mv1;
+drop materialized view  if exists mv2;
+drop materialized view  if exists mv3;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values purge  ;
+
+--echo ##sum中不同列运算
+--error 9760
+create materialized view mv1 refresh fast  as select c2 as c2 ,c1 as c1 ,COUNT(*) cnt,sum(c1*c2) as sum_c2,count(c2) count_c2 from t1 group by c1,c2;
+
+--echo ##sum中相同列运算
+create materialized view mv2 refresh fast  as select c2 as c2 ,COUNT(*) cnt,sum(c2*c2) as sum_c2,count(c2) count_c2 from t1 group by c2;
+
+--error 9760
+create materialized view mv6 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2,avg(c2) avg_c2  from t1 group by c2;
+--error 9760                             
+create materialized view mv7 refresh fast on demand as select null as c2,COUNT(*) cnt,count(c2) count_c2,sum(c2) sum_c2  from t1 group by c2;
+
+
+
+--echo ##group by中包含50列
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view  if exists mv1;
+drop materialized view  if exists mv2;
+drop materialized view  if exists mv3;
+create table t1(c1 number(38) primary key, c2 number(38), c3 number(38), c4 number(38),c5 number(38),c6 number(38),c7 number(38),c8 number(38),c9 number(38),c10 number(38),c11 number(38),c12 number(38),c13 number(38),c14 number(38),c15 number(38),c16 number(38),c17 number(38),c18 number(38),c19 number(38),c20 number(38),c21 number(38),c22 number(38),c23 number(38),c24 number(38),c25 number(38),c26 number(38),c27 number(38),c28 number(38),c29 number(38),c30 number(1),c31 number(38), c32 number(38), c33 number(38), c34 number(38),c35 number(38),c36 number(38),c37 number(38),c38 number(38),c39 number(38),c40 number(38),c41 number(38),c42 number(38),c43 number(38),c44 number(38),c45 number(38),c46 number(38),c47 number(38),c48 number(38),c49 number(38),c50 number(38));
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2 ,c3 ,c4,c5 ,c6 ,c7 ,c8 ,c9 ,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50) including new values purge  ;
+create materialized view mv2 refresh fast  as select COUNT(*) cnt,c1 as c1 ,c2 as c2 ,c3 as c3 ,c4 as c4 ,c5 as c5 ,c6 as c6 ,c7 as c7 ,c8 as c8 ,c9 as c9 ,c10 as c10 ,c11 as c11 ,c12 as c12 ,c13 as c13 ,c14 as c14 ,c15 as c15 ,c16 as c16 ,c17 as c17 ,c18 as c18 ,c19 as c19 ,c20 as c20 ,c21 as c21 ,c22 as c22 ,c23 as c23 ,c24 as c24 ,c25 as c25 ,c26 as c26 ,c27 as c27 ,c28 as c28 ,c29 as c29 ,c30 as c30 ,c31 as c31 ,c32 as c32 ,c33 as c33 ,c34 as c34 ,c35 as c35 ,c36 as c36 ,c37 as c37 ,c38 as c38 ,c39 as c39 ,c40 as c40 ,c41 as c41 ,c42 as c42 ,c43 as c43 ,c44 as c44 ,c45 as c45 ,c46 as c46 ,c47 as c47 ,c48 as c48 ,c49 as c49 ,c50 as c50 from t1  group by c1 ,c2 ,c3 ,c4,c5 ,c6 ,c7 ,c8 ,c9 ,c10,c11,c12,c13,c14,c15,c16,c17,c18,c19,c20,c21,c22,c23,c24,c25,c26,c27,c28,c29,c30,c31,c32,c33,c34,c35,c36,c37,c38,c39,c40,c41,c42,c43,c44,c45,c46,c47,c48,c49,c50  ;
+
+--echo ##支持的聚合函数之间正交
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table if exists  t1;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+drop materialized view if exists mv4;
+drop materialized view if exists mv5;
+drop materialized view if exists mv6;
+drop materialized view if exists mv7;
+drop materialized view if exists mv8;
+drop materialized view if exists mv9;
+drop materialized view if exists mv10;
+drop materialized view if exists mv11;
+drop materialized view if exists mv12;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values ;
+create materialized view mv1 refresh fast on demand  as select COUNT(*) cnt from t1 ;
+create materialized view mv2 refresh fast on demand  as select count(c2) count_c2  from t1 ;
+create materialized view mv3 refresh fast on demand  as select COUNT(*) cnt,count(c2) count_c2  from t1 ;
+create materialized view mv4 refresh fast on demand  as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+create materialized view mv6 refresh fast on demand  as select COUNT(c2) cnt,sum(c2) sum_c2  from t1 ;
+create materialized view mv7 refresh fast on demand  as select c2 as c2,COUNT(*) cnt,count(c2) count_c2,sum(c2) sum_c2  from t1 group by c2;
+create materialized view mv8 refresh fast on demand  as select COUNT(c2) cnt_c2,sum(c2) sum_c2,avg(c2) avg_c2  from t1 ;
+create materialized view mv9 refresh fast on demand  as select c2 as c2,COUNT(*) cnt,COUNT(c2) cnt_c2,sum(c2) sum_c2,avg(c2) avg_c2  from t1 group by c2;
+
+--echo ##聚合函数间的运算ob可以创建,oracle报错;暂不兼容oracle
+create materialized view mv11 refresh fast on demand as select c2 as c2,c3 as c3, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3, avg(c3) avg_c3, avg(c3) * sum(c3)/c2 calc1, c2+sum(c3) calc2 from t1 group by c2,c3;
+
+
+--echo ##聚合函数之间的运算扩展
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view if exists mv1;
+drop materialized view if exists mv2;
+drop materialized view if exists mv3;
+drop materialized view if exists mv4;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values ;
+create materialized view mv1 refresh fast on demand as select c2 as c2, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3, avg(c3) avg_c3, avg(c3) * sum(c3)/c2 calc1, c2+sum(c3) calc2 from t1 group by c2;
+create materialized view mv2 refresh fast on demand as select c2 as c2,c3 as c3, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3, avg(c3) avg_c3, avg(c3)/c2 calc1, c2+sum(c3) calc2,c3+sum(c3) calc3 from t1 group by c2,c3;
+create materialized view mv3 refresh fast on demand as select c2 as c2,c3 as c3, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3, avg(c3) avg_c3, avg(c3) * sum(c3)*c3*c2 calc1, c2+sum(c3) calc2,c3+sum(c3) calc3,sum(c3*c3) as sum_cc3 from t1 group by c2,c3;
+
+--echo ##存在常量刷新报错4007;
+create materialized view mv4 refresh fast on demand as select c2 as c2,count(*) cnt, count(c3) cnt_c3,10 as a  from t1 group by c2;
+insert into t1 values(1,0,0,1);
+insert into t1 values(2,0,0,1);
+CALL DBMS_MVIEW.REFRESH('mv4','f');
+select * from t1 order by c2;
+select * from mv4 order by c2;
+
+
+--echo ##结合case when使用
+DROP MATERIALIZED VIEW LOG ON t1;
+drop table  if exists t1;
+drop materialized view  if exists mv1;
+create table t1(c1 number primary key, c2 number, c3 number, c4 number);
+create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c2,c3,c4) including new values ;
+create materialized view mv1 refresh fast on demand as select c2 as c2, c3 as c3, count(*) cnt, count(c3) cnt_c3, sum(c3) sum_c3, avg(c3) avg_c3, avg(c3) * sum(c3)/c2 calc1, c2+sum(c3) calc2,c3+sum(c3) calc3,CASE  WHEN c2 BETWEEN 1 AND 100 THEN c2    ELSE c3  END AS c2_group  FROM t1 GROUP BY  c2,c3;
+
+insert into t1 values(2,1,1,1);
+insert into t1 values(1,100,1,1);
+insert into t1 values(3,200,1,1);
+insert into t1 values(4,null,1,1);
+insert into t1 values(495,9999,1,1);
+CALL DBMS_MVIEW.REFRESH('mv1','f');
+select * from t1 order by c1;
+select * from mv1 order by c2;
+
+
+
+###--echo ##千万级数据验证并发
+###
+###DROP MATERIALIZED VIEW LOG ON t1;
+###drop table t1;
+###drop materialized view mv1;
+###drop materialized view mv2;
+###create table t1 (c1 bigint, c2 varchar(10));
+###Insert /*+ append enable_parallel_dml parallel(8) */ into t1 select random(), randstr(10, random()) from table(generator(10000000));
+###create materialized view log on t1 parallel 9 with primary key,rowid, sequence (c1,c2) including new values ;
+###create /*+ parallel(1) */ materialized view mv1 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###--echo ##此处使用hint反而速度变慢
+###create /*+ parallel(8) */ materialized view mv2 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###create /*+ parallel(2) */ materialized view mv3 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###create /*+ parallel(3) */ materialized view mv4 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###create /*+ parallel(4) */ materialized view mv5 refresh fast on demand as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###
+###select count(*) from mv1;
+###select count(*) from mv2;
+###
+###
+###DROP MATERIALIZED VIEW LOG ON t1;
+###drop table t1;
+###drop materialized view mv3;
+###drop materialized view mv4;
+###create table t1 (c1 number, c2 varchar(10));
+###create /*+ parallel(1) */ materialized view mv3 refresh complete  as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###create /*+ parallel(8) */ materialized view mv4 refresh complete  as select c2 as c2,COUNT(*) cnt,count(c2) count_c2  from t1 group by c2;
+###Insert /*+ append enable_parallel_dml parallel(8) */ into t1 select random(), randstr(10, random()) from table(generator(10000000));
+###CALL DBMS_MVIEW.REFRESH('mv3','c');
+###CALL DBMS_MVIEW.REFRESH('mv4','c',refresh_parallel => 8);
+###select count(*) from mv3;
+###select count(*) from mv4;
+
+
+
+
+###--echo ##针对单表最多创建多少个物化视图
+###drop materialized view mv1;
+###drop materialized view mv2;
+###drop materialized view mv3;
+###drop table t1;
+###create table t1(c1 number , c2 number, c3 number, c4 number);
+###CREATE OR REPLACE PROCEDURE p1 IS
+###BEGIN
+###  FOR i IN 1..1000000 LOOP
+###    INSERT INTO t1 (c1, c2, c3, c4)
+###    VALUES (DBMS_RANDOM.VALUE(1, 100000), 
+###            DBMS_RANDOM.VALUE(1, 100000), 
+###            DBMS_RANDOM.VALUE(1, 100000), 
+###            DBMS_RANDOM.VALUE(1, 100000));
+###  END LOOP;
+###  COMMIT;
+###END p1;
+###/
+###
+###BEGIN
+###  p1;
+###END;
+###/
+###
+###CREATE MATERIALIZED VIEW mv1 AS SELECT * FROM t1;
+###CREATE MATERIALIZED VIEW mv2 PARALLEL 10 AS SELECT * FROM t1;
+###CREATE MATERIALIZED VIEW mv3 PARALLEL 100  AS SELECT * FROM t1;
+###CREATE /*+ PARALLEL(8)*/MATERIALIZED VIEW mv4  AS SELECT * FROM t1;
+
+
+
+--echo  ########清空回收站，删除测试数据库，表等 ##########
+--disable_warnings
+drop database  IF EXISTS ljh;
+

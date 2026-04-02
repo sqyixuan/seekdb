@@ -1,0 +1,23 @@
+drop table if exists t1;
+create table t1(deptno int primary key,dname varchar(20),loc varchar(20)) partition by key(deptno)partitions 2;
+insert into t1 values (10,'ACCOUNTING','NEW YORK');
+insert into t1 values (20,'RESEARCH','DALLAS');
+insert into t1 values (30,'SALES','CHICAGO');
+insert into t1 values (40,'OPERATIONS','BOSTON');
+drop table if exists t2;
+create table t2(empno int,ename varchar(10),job varchar(9),mgr int,hiredate date,sal int,comm int,deptno int)
+partition by list(deptno) (partition p1 values in(10),partition p2 values in(20),partition p3 values in(30,40));
+insert into t2 values (7369,'SMITH','CLERK',7902,'1980-12-17',800,100,20);
+insert into t2 values (7499,'ALLEN','SALESMAN',7698,'1981-2-20',1600,300,30);
+insert into t2 values (7521,'WARD','SALESMAN',7698,'1981-2-22',1250,500,30);
+insert into t2 values (7566,'JONES','MANAGER',7839,'1981-4-2',2975,358.69,20);
+insert into t2 values (7654,'MARTIN','SALESMAN',7698,'1981-9-28',1150,1400,30);
+insert into t2 values (7698,'BLAKE','MANAGER',7839,'1981-5-1',2850,-2100,30);
+insert into t2 values (7782,'CLARK','MANAGER',7839,'1981-6-9',2550,744.9,10); 
+insert into t2 values (7788,'SCOTT','ANALYST',7566,'1987-4-13',3000,-200,20);
+insert into t2 values (7839,'KING','PRESIDENT',NULL,'1981-11-17',4999,-196.7,10);
+insert into t2 values (7844,'TURNER','SALESMAN',7698,'1981-9-8',1500,0,30);
+insert into t2 values (7876,'ADAMS','CLERK',7788,'1987-5-13',1100,-99.9,20);
+insert into t2 values (7900,'JAMES','CLERK',7698,'1981-12-3',950,-1808,30);
+insert into t2 values (7902,'FORD','ANALYST',7566,'1981-12-3',3010,753.9,20);
+insert into t2 values (7934,'MILLER','CLERK',7782,'1982-1-23',1300,729,10);

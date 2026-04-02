@@ -1,0 +1,173 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: yibo.tyf
+#owner group: sql1
+#description: 测试myqsl系统变量sql_safe_updates，该变量用于限制表更新
+
+--disable_warnings
+drop table if exists t1, t2;
+--enable_warnings
+
+create table t1(c1 int primary key, c2 int, c3 int, c4 int, c5 int, index(c2, c3));
+create table t2(c1 int primary key, c2 int, c3 int, c4 int, c5 int, index(c2, c3));
+
+--disable_query_log
+--disable_result_log
+insert into t1 values (1, 1, 1, 1, 1);
+insert into t1 values (2, 2, 1, 2, 2);
+insert into t1 values (3, 2, 2, 3, 3);
+insert into t1 values (4, 3, 2, 4, 4);
+insert into t1 values (5, 4, 5, 5, 5);
+insert into t2 values (1, 1, 1, 1, 1);
+insert into t2 values (2, 2, 1, 2, 2);
+insert into t2 values (3, 2, 2, 3, 3);
+insert into t2 values (4, 3, 2, 4, 4);
+insert into t2 values (5, 4, 5, 5, 5);
+select/**/ count(*) from t1;
+select/**/ count(*) from t2;
+--enable_result_log
+--enable_query_log
+
+--result_format 4
+
+##default values
+
+show variables like 'sql_safe_updates';
+show session variables like 'sql_safe_updates';
+show global variables like 'sql_safe_updates';
+
+##enable sql_safe_updates
+
+set sql_safe_updates = 1;
+show session variables like 'sql_safe_updates';
+
+#####################
+##
+## 1. test update
+##
+#####################
+
+##测试没有where条件，没有limit条件
+--error 1175
+update t1 set t1.c1 = 100;
+--error 1175
+update t1,t2 set t1.c1 = 100, t2.c3 = 100;
+
+##测试没有where条件，有limit条件
+update t1 set t1.c1 = 100 limit 1;
+--error 5869
+update t1,t2 set t1.c5 = 100, t2.c5 = 100 limit 1;
+
+##测试有where条件，不能抽取query range
+--error 1175
+update t1 set t1.c3 = 100 where t1.c3 > 4;
+--error 1175
+update t1 set t1.c4 = 100 where t1.c4 > 4;
+--error 1175
+update t1 set t1.c5 = 100 where 2 > 1;
+--error 1175
+update t1,t2 set t1.c1 = 100, t2.c3 = 100 where t1.c3 > 4 and t2.c3 > 3;
+--error 1175
+update t1,t2 set t1.c1 = 100, t2.c3 = 100 where t1.c4 > 4 and t2.c5 < 3;
+--error 1175
+update t1,t2 set t1.c1 = 100, t2.c3 = 100 where 4 > 2 and 3 > 1;
+
+##测试有where条件，不能抽取query range，但有limit条件
+update t1 set t1.c3 = 100 where t1.c3 > 4 limit 1;
+update t1 set t1.c4 = 100 where t1.c4 > 4 limit 1;
+update t1 set t1.c5 = 100 where 2 > 1 limit 1;
+--error 5869
+update t1,t2 set t1.c3 = 100, t2.c3 = 100 where t1.c3 > 4 and t2.c3 > 3 limit 1;
+--error 5869
+update t1,t2 set t1.c4 = 100, t2.c3 = 100 where t1.c4 > 4 and t2.c5 < 3 limit 1;
+--error 5869
+update t1,t2 set t1.c5 = 100, t2.c3 = 100 where 4 > 2 and 3 > 1 limit 1;
+
+##测试有where条件，有索引可用（可以抽取query range），没有limit条件
+update t1 set t1.c3 = 100 where t1.c1 > 4;
+update /*+index(t1 c2)*/ t1 set t1.c4 = 100 where t1.c2 > 4;
+update /*+index(t1 c2)*/ t1 set t1.c5 = 100 where t1.c2 > 4 and t1.c3 > 4;
+update t1,t2 set t1.c3 = 100, t2.c3 = 100 where t1.c1 > 4 and t2.c1 > 3;
+update /*+index(t2 c2) index(t1 c2)*/t1,t2 set t1.c4 = 100, t2.c3 = 100 where t1.c2 > 4 and t2.c2 > 3;
+
+##测试有where条件，有索引可用（可以抽取query range），有limit条件
+update t1 set t1.c3 = 100 where t1.c1 > 4 limit 1;
+update t1 set t1.c4 = 100 where t1.c2 > 4 limit 1;
+update t1 set t1.c5 = 100 where t1.c2 > 4 and t1.c3 > 4 limit 1;
+update t2 set t2.c5 = 100 where t2.c1 > (select c1 from t1 limit 1) limit 1;
+--error 5869
+update t1,t2 set t1.c3 = 100, t2.c3 = 100 where t1.c1 > 4 and t2.c1 > 3 limit 1;
+--error 5869
+update t1,t2 set t1.c4 = 100, t2.c3 = 100 where t1.c2 > 4 and t2.c2 < 3 limit 1;
+
+##测试多表条件下有where条件，有部分表的索引可用（可以抽取query range），没有limit条件
+--error 1175
+update t1,t2 set t1.c3 = 100, t2.c3 = 100 where t1.c1 > 4 and t2.c3 > 3;
+--error 1175
+update t1,t2 set t1.c4 = 100, t2.c3 = 100 where t1.c2 > 4 and t2.c4 < 3;
+
+##测试多表条件下有where条件，有部分表的索引可用（可以抽取query range），有limit条件
+--error 5869
+update t1,t2 set t1.c3 = 100, t2.c3 = 100 where t1.c1 > 4 and t2.c3 > 3 limit 1;
+--error 5869
+update t1,t2 set t1.c4 = 100, t2.c3 = 100 where t1.c2 > 4 and t2.c4 < 3 limit 1;
+
+####################
+##
+## 2. test delete
+##
+####################
+
+##测试多表删除(mysql在安全模式下不允许多表删除，即使删除的单表语句出现在了多表删除的语句里面，都不允许)
+--error 1175
+delete t1 from t1;
+--error 1175
+delete t1 from t1, t2;
+--error 1175
+delete t1, t2 from t1, t2;
+--error 1175
+delete t1 from t1;
+--error 1175
+delete t1 from t1, t2;
+--error 1175
+delete t1, t2 from t1, t2;
+--error 1175
+delete t1 from t1 where t1.c1 = 2;
+--error 1175
+delete t1 from t1, t2 where t1.c1 = 2 and t1.c2 = 2;
+--error 1175
+delete t1, t2 from t1, t2 where t1.c1 = 2 and t1.c2 = 2;
+
+##测试没有where条件，没有limit条件
+--error 1175
+delete from t1;
+
+##测试没有where条件，有limit条件
+--error 1175
+delete from t1 limit 1;
+
+##测试有where条件，不能抽取query range
+--error 1175
+delete from t1 where t1.c3 > 4;
+--error 1175
+delete from t1 where t1.c4 > 5;
+--error 1175
+delete from t1 where 2 > 1;
+
+##测试有where条件，不能抽取query range，但有limit条件
+delete from t1 where t1.c3 > 4 limit 1;
+delete from t1 where t1.c4 > 5 limit 1;
+--error 1175
+delete from t1 where 2 > 1 limit 1;
+
+##测试有where条件，有索引可用（可以抽取query range），没有limit
+delete from t1 where t1.c1 = 2;
+delete /*+index(t1 c2)*/ from t1 where t1.c2 >= 4 and t1.c3 >= 4;
+
+##测试有where条件，有索引可用（可以抽取query range），有limit条件
+delete from t1 where t1.c1 = 3 limit 1;
+delete from t1 where t1.c2 >= 4 and t1.c3 >= 4 limit 1;
+
+drop table t1;
+drop table t2;

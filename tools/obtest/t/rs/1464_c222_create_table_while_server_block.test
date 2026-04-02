@@ -1,0 +1,30 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试建副本不选择block掉的机器；
+# 
+## case设计： block掉z3 的server后，检查新建表会失败；改成非严格模式下成功，但是少1个副本；
+
+ob1=OBI(cluster=2:2:2,proxy_num=0,init_unit_cpu=0);
+ob1.reboot;
+
+ob1.mysql create resource pool pool1 unit = 'sys_unit_config', unit_num = 2, zone_list = ('z1', 'z2', 'z3');
+ob1.mysql create tenant tt resource_pool_list=('pool1'), primary_zone = 'z1', locality = 'F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tt', tenant_id, 1);
+ob1.mysql update oceanbase.__all_server set block_migrate_in_time = time_to_usec(now()) where zone ='z3';
+ob1.mysql alter system reload server;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(tt_conn, $proxy_ip, root@tt,,test, $proxy_port);
+connect(sys_conn, $proxy_ip, root@sys,,test, $proxy_port);
+
+connection tt_conn;
+--error 4624 
+create table test(c1 int primary key, c2 int) partition by hash(c1) partitions 4;
+set ob_create_table_strict_mode = off;
+create table test(c1 int primary key, c2 int) partition by hash(c1) partitions 4;
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = 'test', table_id, 1);
+connection sys_conn;
+eval select count(*) from oceanbase.__all_virtual_meta_table where tenant_id = 1001 and table_id = $table_id;
+

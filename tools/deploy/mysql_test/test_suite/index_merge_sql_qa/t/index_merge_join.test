@@ -1,0 +1,125 @@
+#owner: guohanyun.ghy
+#tags: optimizer,SQL,index merge
+#owner group: sql1
+#description: 测试全文索引index merge+join场景
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop sequence if exists s1;
+drop sequence if exists s2;
+--enable_warnings
+set ob_query_timeout=30000000;
+alter system set _enable_index_merge=true;
+create table t1 (c1 int primary key, c2 int, c3 int, c4 varchar(100), c5 varchar(100));
+create table t2 (c1 int primary key, c2 int, c3 int, c4 varchar(100), c5 varchar(100))
+PARTITION BY RANGE(c1)
+(
+    PARTITION p0 VALUES LESS THAN (100000),
+    PARTITION p1 VALUES LESS THAN (200000),
+    PARTITION p2 VALUES LESS THAN (300000),
+    PARTITION p3 VALUES LESS THAN MAXVALUE
+);
+create sequence s1 cache 1000000 order;
+create sequence s2 cache 1000000 order;
+insert /*+enable_parallel_dml parallel(16) query_timeout(1000000000)*/ into t1 select s1.nextval, s1.currval-200000, s1.currval%1000, CONCAT('鄂A', s1.currval), CONCAT('鄂A', s1.currval%1000) from table(generator(400000));
+insert /*+enable_parallel_dml parallel(16) query_timeout(1000000000)*/ into t2 select s2.nextval, s2.currval-200000, s2.currval%1000, CONCAT('鄂A', s2.currval), CONCAT('鄂A', s2.currval%1000) from table(generator(400000));
+create index c2 on t1(c2) local;
+create index c3 on t1(c3) local;
+create index cg3 on t1(c3) global;
+create index c4 on t1(c4) local;
+create FULLTEXT INDEX fidx4 ON t1(c4);
+create index c5 on t1(c5) local;
+create index c23 on t1(c2,c3) local;
+create index c2 on t2(c2) local;
+create index c3 on t2(c3) local;
+create index cg3 on t2(c3) global;
+create index c4 on t2(c4) local;
+create FULLTEXT INDEX fidx4 ON t2(c4);
+create index c5 on t2(c5) local;
+create index c23 on t2(c2,c3) local;
+call dbms_stats.gather_schema_stats(NULL);
+
+--source mysql_test/include/minor_merge_tenant.inc
+
+# left join
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t2.c2 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 or t2.c2 = 1;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 left join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+no_expand union_merge(t2 c5 primary)*/* from t1 left join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 left join t2 on (t1.c1=t2.c1) where (t2.c5 = '鄂A242' or t2.c2 = 10) and t1.c2 = 13242-200000;
+explain select /*+union_merge(t1 c5 c2)*/* from t1 left join t2 on (t1.c1=t2.c1) where (t1.c5 = '鄂A242' or t1.c2 = 10) and t2.c2 = 13242-200000;
+explain select /*+no_expand union_merge(t2 c5 c2)*/* from t1 left join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and t1.c1 = 123242 or t2.c2 = 123242-200000;
+explain select /*+no_expand union_merge(t1 c5 c2)*/* from t1 left join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and t2.c1 = 123242 or t1.c2 = 123242-200000;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and (t2.c1 = 123242 or t2.c2 = 1);
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and (t1.c1 = 123242 or t1.c2 = 1);
+
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t2.c2 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1;
+explain basic select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1 or t2.c1 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1 or t1.c1 = 2;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t2.c2 = 1 and t1.c1 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where (MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1) and t2.c1 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') and t2.c3 = 242 or t1.c2 = 1;
+explain select * from t1 left join t2 on (t1.c1=t2.c1 or t2.c3 = 242 or t2.c2 = 1) where MATCH(t1.c4) against('鄂A13242') ;
+
+# right join
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t2.c2 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 or t2.c2 = 1;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 right join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+no_expand union_merge(t2 c5 primary)*/* from t1 right join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 right join t2 on (t1.c1=t2.c1) where (t2.c5 = '鄂A242' or t2.c2 = 10) and t1.c2 = 13242-200000;
+explain select /*+union_merge(t1 c5 c2)*/* from t1 right join t2 on (t1.c1=t2.c1) where (t1.c5 = '鄂A242' or t1.c2 = 10) and t2.c2 = 13242-200000;
+explain select /*+no_expand union_merge(t2 c5 c2)*/* from t1 right join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and t1.c1 = 123242 or t2.c2 = 123242-200000;
+explain select /*+no_expand union_merge(t1 c5 c2)*/* from t1 right join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and t2.c1 = 123242 or t1.c2 = 123242-200000;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and (t2.c1 = 123242 or t2.c2 = 123242-200000);
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and (t1.c1 = 123242 or t1.c2 = 123242-200000);
+
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t1.c2 = 1;
+explain basic select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1 or t1.c1 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1 or t2.c1 = 2;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t1.c2 = 1 and t2.c1 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where (MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1) and t1.c1 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') and t1.c3 = 242 or t2.c2 = 1;
+explain select * from t1 right join t2 on (t1.c1=t2.c1 or t1.c3 = 242 or t1.c2 = 1) where MATCH(t2.c4) against('鄂A13242') ;
+
+# inner join
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t2.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 or t2.c2 = 1;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 inner join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+no_expand union_merge(t2 c5 primary)*/* from t1 inner join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A13242' or t1.c1 = 10 and t2.c2 = 10-200000;
+explain select /*+union_merge(t2 c5 c2)*/* from t1 inner join t2 on (t1.c1=t2.c1) where (t2.c5 = '鄂A242' or t2.c2 = 10) and t1.c2 = 13242-200000;
+explain select /*+union_merge(t1 c5 c2)*/* from t1 inner join t2 on (t1.c1=t2.c1) where (t1.c5 = '鄂A242' or t1.c2 = 10) and t2.c2 = 13242-200000;
+explain select /*+no_expand union_merge(t2 c5 c2)*/* from t1 inner join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and t1.c1 = 123242 or t2.c2 = 123242-200000;
+explain select /*+no_expand union_merge(t1 c5 c2)*/* from t1 inner join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and t2.c1 = 123242 or t1.c2 = 123242-200000;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where t1.c5 = '鄂A242' and (t2.c1 = 123242 or t2.c2 = 123242-200000);
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where t2.c5 = '鄂A242' and (t1.c1 = 123242 or t1.c2 = 123242-200000);
+
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t2.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t1.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1 or t2.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1 or t1.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1 or t1.c1 = 2;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1 or t2.c1 = 2;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') or t2.c2 = 1 and t1.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') or t1.c2 = 1 and t2.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where (MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1) and t2.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where (MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1) and t1.c1 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where (MATCH(t1.c4) against('鄂A13242') or t1.c2 = 1) and (t2.c1 = 1 or t2.c2 = 242);
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where (MATCH(t2.c4) against('鄂A13242') or t2.c2 = 1) and (t1.c1 = 1 or t1.c2 = 242);
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') and t2.c3 = 242 or t1.c2 = 1;
+explain select * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') and t1.c3 = 242 or t2.c2 = 1;
+explain select /*+union_merge(t2 c3 c2)*/ * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t1.c4) against('鄂A13242') and (t2.c3 = 242 or t2.c2 = 1);
+explain select /*+union_merge(t1 c3 c2)*/ * from t1 inner join t2 on (t1.c1=t2.c1) where MATCH(t2.c4) against('鄂A13242') and (t1.c3 = 242 or t1.c2 = 1);
+
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop sequence if exists s1;
+drop sequence if exists s2;
+--enable_warnings
+
+alter system set _enable_index_merge = false;

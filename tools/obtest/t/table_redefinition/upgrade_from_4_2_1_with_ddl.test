@@ -1,0 +1,182 @@
+##
+# owner      : liujixiong.ljx
+# owner group: storage
+# description: 测试从4.2 升级到master分支, Offline DDL Lob meta数据补全.
+##
+ob1=OBI(cluster=1:1:1,version=4_2_1_0,oblog_version=current);
+ob1.proxy0.set extra_config=syslog_level=debug;
+# 本地测试环境可能需要指定网卡名(非bond0时)
+# let $arb_extra_conf = "memory_limit='1G',log_disk_size='5G',devname='eth0'";
+# let $arb_extra_conf = "memory_limit='1G',log_disk_size='5G'";
+
+ob1.reboot;
+sleep 5;
+ob1.mysql alter system set leak_mod_to_check='ModulePageAlloc';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+#ob1.mysql alter system set syslog_level='ERROR';
+
+# 1.启动之后首先检查配置项文件正常
+let $work_dir=deploy_get_value(ob1.z1.obs0.workdir);
+ob1.z1.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z2.obs0.workdir);
+ob1.z2.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+let $work_dir=deploy_get_value(ob1.z3.obs0.workdir);
+ob1.z3.obs0.sh cd $work_dir/; ls -l {etc,etc2,etc3}/observer.conf*.bin;
+
+let $z1_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_rpc_port = deploy_get_value(ob1.z1.obs0.port);
+let $not_changed = deploy_get_value(ob1.select select count(*) as not_changed from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", not_changed, 1);
+ob1.mysql alter tenant sys set primary_zone = "z1";
+--disable_query_log
+if ($not_changed == 0)
+{
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_LS_LOCATIONS where zone = "z1" and role = "LEADER", 1, 120;
+ob1.check_until_timeout select (rs_svr_ip = "$z1_ip" and rs_svr_port = $z1_rpc_port) as passed from __all_rootservice_event_history where event = "full_rootservice" order by gmt_create desc limit 1, 1, 120;
+}
+--enable_query_log
+
+# 2.创建oracle租户
+ob1.mysql create resource unit box1 max_cpu 2,memory_size 5368709120;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+ob1.mysql alter tenant oracle set variables autocommit='on';
+ob1.mysql alter tenant oracle set primary_zone = 'z1';
+sleep 5;
+ob_connect(conn_oracle, ob1.proxy0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+
+# 3. 创建链接
+let $ip=deploy_get_value(ob1.proxy0.ip);
+let $port=deploy_get_value(ob1.proxy0.port);
+ob_connect(conn_oracle,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+
+# 4. 修改配置项&系统变量
+# 4.1 配置项
+ob1.mysql alter system set balancer_idle_time='10s';
+ob1.mysql alter system set merger_check_interval='10s' tenant all;
+ob1.mysql alter system set ob_compaction_schedule_interval='10s' tenant all;
+# 4.2 系统变量
+ob1.mysql set global ob_sql_audit_percentage=80;
+# 4.3 proxy配置项
+alter proxyconfig set server_state_refresh_interval='1s';
+
+# 升级ob集群之前，仲裁server已经升级，在这种混跑阶段测试仲裁升降级功能
+# kill z2触发降级;
+ob1.z2.obs0.force_stop;
+let $z2_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_port0 = deploy_get_value(ob1.z2.obs0.port);
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and status='INACTIVE',1,60;
+
+# start follower触发升级
+ob1.z2.obs0.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time <= 0 or status='INACTIVE'),0,120;
+# 确认升级成功
+source include/check_schema_sync.inc;
+
+sleep 10;
+# 5 打开升级配置, 升级前检查
+ob1.upgrade_check_before;
+
+# 6.执行升级SQL
+ob1.upgrade_commond_for_server pre;
+#sleep 5;
+#6.1 升级z2
+connection conn_sys;
+set @@session.ob_query_timeout = 60000000;
+alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2',INACTIVE,20;
+ob1.check_until_timeout select count(1) as leader_count  from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader',0,20;
+ob1.z2.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and status='INACTIVE',1,60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null  or status='INACTIVE'),0,300;
+ob1.check_until_timeout  select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO',0,600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z2';
+sleep 2;
+
+#6.2 验证版本混部情况下, DDL执行情况
+# 6.2.1 数据准备
+connection conn_sys;
+ALTER SYSTEM SET enable_ddl=true;
+connection conn_oracle;
+# FOR MODIFY PK.
+CREATE TABLE TEST1(C1 NUMBER, C2 CLOB, C3 CLOB, C4 NUMBER, C5 VARCHAR2(1024));
+INSERT INTO TEST1(C1, C2, C3, C4, C5) SELECT RANDOM(), RANDSTR(8000, RANDOM()), RANDSTR(5000, RANDOM()), RANDOM(), RANDSTR(1000, RANDOM()) FROM TABLE(GENERATOR(1000));
+
+# FOR DROP COLUMN.
+CREATE TABLE TEST2(C1 NUMBER, C2 CLOB, C3 CLOB, C4 NUMBER, C5 VARCHAR2(1024));
+INSERT INTO TEST2(C1, C2, C3, C4, C5) SELECT RANDOM(), RANDSTR(8000, RANDOM()), RANDSTR(5000, RANDOM()), RANDOM(), RANDSTR(1000, RANDOM()) FROM TABLE(GENERATOR(1000));
+
+# FOR INSERT APPEND.
+CREATE TABLE TEST3(C1 NUMBER, C2 CLOB, C3 CLOB, C4 NUMBER, C5 VARCHAR2(1024));
+INSERT INTO TEST3(C1, C2, C3, C4, C5) SELECT RANDOM(), RANDSTR(8000, RANDOM()), RANDSTR(5000, RANDOM()), RANDOM(), RANDSTR(1000, RANDOM()) FROM TABLE(GENERATOR(1000));
+
+# 6.2.2. 设置DEBUG SYNC卡点
+connection conn_oracle;
+ob1.mysql set ob_global_debug_sync = 'DDL_REDEFINITION_HOLD_SNAPSHOT wait_for signal execute 10000';
+sleep 2;
+
+ob_connect(conn_oracle_add_pk, ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+send ALTER TABLE TEST1 ADD PRIMARY KEY(C1);
+sleep 3;
+
+ob_connect(conn_oracle_drop_col, ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+send ALTER TABLE TEST2 DROP COLUMN C5;
+sleep 3;
+
+ob_connect(conn_oracle_load_data, ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+set ob_query_timeout = 1000000000000;
+CREATE TABLE TEST4(C1 NUMBER, C2 CLOB, C3 CLOB, C4 NUMBER, C5 VARCHAR2(1024));
+send INSERT /*+ enable_parallel_dml parallel(2) APPEND */ INTO TEST4 SELECT * FROM TEST3;
+sleep 3;
+
+
+# 6.2.3 清除掉debug sync卡点，让DDL任务执行继续.
+connection conn_sys;
+ob1.mysql set ob_global_debug_sync = 'reset';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'reset';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'reset';
+sleep 2;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+sleep 2;
+
+# 加主键场景
+connection conn_oracle_add_pk;
+reap;
+DESC TEST1;
+
+# 删列场景
+connection conn_oracle_drop_col;
+reap;
+DESC TEST2;
+
+# Load data场景
+connection conn_oracle_load_data;
+reap;
+DESC TEST4;
+
+connection conn_sys;
+--disable_query_log
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='oracle', tenant_id, 1);
+let $TEST1_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and table_name = 'TEST1', table_id, 1);
+let $TEST2_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and table_name = 'TEST2', table_id, 1);
+let $TEST4_tid = query_get_value(select table_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and table_name = 'TEST4', table_id, 1);
+
+eval select tenant_id, ls_id, tablet_id, start_log_scn, end_log_scn, upper_trans_version, data_block_count, index_block_count, linked_block_count from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type = 10 and data_block_count != 0 and tablet_id in (select tablet_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and data_table_id=$TEST1_tid and table_name like '%META%');
+
+eval select tenant_id, ls_id, tablet_id, start_log_scn, end_log_scn, upper_trans_version, data_block_count, index_block_count, linked_block_count from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type = 10 and data_block_count != 0 and tablet_id in (select tablet_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and data_table_id=$TEST2_tid and table_name like '%META%');
+
+eval select tenant_id, ls_id, tablet_id, start_log_scn, end_log_scn, upper_trans_version, data_block_count, index_block_count, linked_block_count from oceanbase.__all_virtual_table_mgr where tenant_id=$tenant_id and table_type = 10 and data_block_count != 0 and tablet_id in (select tablet_id from oceanbase.__all_virtual_table where tenant_id=$tenant_id and data_table_id=$TEST4_tid and table_name like '%META%');
+--enable_query_log

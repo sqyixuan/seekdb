@@ -332,6 +332,9 @@ public:
     TASK_TYPE_DDL_FORK_REUSE = 172,
     TASK_TYPE_DDL_FORK_REWRITE = 173,
     TASK_TYPE_DDL_FORK_MERGE = 174,
+    TASK_TYPE_RESTORE_COMPLETE_INITIAL = 175,
+    TASK_TYPE_RESTORE_COMPLETE_WAIT_DATA_READY = 176,
+    TASK_TYPE_RESTORE_COMPLETE_FINISH = 177,
     TASK_TYPE_MAX,
   };
 
@@ -641,7 +644,7 @@ public:
   bool check_finished_and_set_stop();
   // independent dag process() exit loop when dag is final status
   bool is_final_status() const { return is_dag_failed()
-                                     || is_finish_status(dag_status_)
+                                     || is_finish_status(dag_status_) 
                                      || is_stop_; }
   virtual int report_result()
   {

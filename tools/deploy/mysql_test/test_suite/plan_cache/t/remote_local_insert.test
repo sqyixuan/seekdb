@@ -1,0 +1,230 @@
+#owner: xiaoyi.xy
+#owner group: sql3
+#tags: optimizer
+#review: 
+#aone: 
+--source mysql_test/include/backup_spm_var.inc
+
+--result_format 4
+--enable_sorted_result
+connect (conn_admin, $OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection conn_admin;
+
+--disable_info
+--disable_metadata
+
+alter system flush plan cache global;
+
+--enable_query_log
+--enable_result_log
+
+connection default;
+set ob_trx_timeout = 1000000000000;
+set autocommit = 0;
+
+--disable_warnings
+drop table if exists t1,t2,t3,t4,pindex;
+--enable_warnings
+
+# t1 作为C模式下的local表
+create table t1(c1 int);
+# t2 作为C模式下的remote表
+create table t2(c1 int);
+create table t3(c1 int) partition by hash(c1) partitions 4;
+create table t4(c2 int) partition by hash(c2) partitions 4;
+create table pindex(c1 int, c2 int, c3 int) partition by hash(c1) partitions 4;
+create index i on pindex(c2) partition by hash(c2) partitions 2;
+
+explain basic select * from t1;
+explain basic select * from t2;
+explain basic select * from t3;
+
+# local + local 是一个local计划
+insert into t1 values(1),(2),(3),(4);
+insert into pindex values(1,1,1),(2,2,2),(3,3,3),(4,4,4),(5,5,5);
+
+--echo // local + local = local plan
+insert into t2 select * from t1;
+--echo // dist(multi part convert to local) + local = local plan
+insert into t3 select * from t1;
+--echo // dist(multi part convert to local) + local = local plan
+insert into t4 select * from t1;
+--echo // local + dist = dist plan
+insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+--echo // local + local = local
+insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+--echo // local + dist = dist plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+insert into t2 select c1 from t3;
+--echo // local + local = local plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+explain basic insert into t2 select * from t1;
+explain basic insert into t3 select * from t1;
+explain basic insert into t4 select * from t1;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+explain basic insert into t2 select c1 from t3;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+select * from t4 order by c2;
+# 查询plan cache hint情况
+--disable_warnings
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t4 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = ?';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = ?';
+--enable_warnings
+insert into t2 select * from t1;
+insert into t3 select * from t1;
+insert into t4 select * from t1;
+insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+insert into t2 select c1 from t3;
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+--disable_warnings
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t4 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = ?';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = ?';
+--enable_warnings
+delete from t2;
+
+## 进行切主操作，将t2表的partition leader 切到remote端
+connection conn_admin;
+--echo // switch t2 to backup server
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like 't2' order by table_id desc limit 1,table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like 't2' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id order by table_id desc limit 1,ls_id, 1);
+let $backup_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $backup_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+
+--disable_query_log
+eval alter system switch replica leader ls=$ls_id server='$backup_ip:$backup_port' tenant='mysql';
+--enable_query_log
+--sleep 10
+
+connection default;
+select * from t2;
+explain basic select * from t2;
+explain basic insert into t2 select * from t1;
+--echo // remote(multi part insert) + local  = dist plan
+insert into t2 select * from t1;
+--echo // local(multi part insert convert dist to local) + local  = local plan
+insert into t3 select * from t1;
+--echo // remote(multi part insert) + dist  = dist plan
+insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+--echo // remote(multi part insert) + local  = dist plan
+insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+--echo // remote(multi part insert) + dist  = dist plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+insert into t2 select c1 from t3;
+--echo // remote(multi part insert) + local = dist plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+explain basic insert into t2 select * from t1;
+explain basic insert into t3 select * from t1;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+explain basic insert into t2 select c1 from t3;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+--disable_warnings
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = ?';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = ?';
+--enable_warnings
+insert into t2 select * from t1;
+insert into t3 select * from t1;
+insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+insert into t2 select c1 from t3;
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+--disable_warnings
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = ?';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = ?';
+--enable_warnings
+delete from t2;
+
+# 将t2的leader重新切回来
+connection conn_admin;
+--echo // switch t2 to main server
+# 通过t1找到main节点
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like 't1' order by table_id desc limit 1,table_id, 1);
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_virtual_table where table_name like 't2' order by table_id desc limit 1,tenant_id, 1);
+let $ls_id = query_get_value(select ls_id from oceanbase.__all_virtual_tablet_to_ls where table_id = $table_id order by table_id desc limit 1,ls_id, 1);
+let $backup_ip = query_get_value(select svr_ip from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_ip, 1);
+let $backup_port = query_get_value(select svr_port from oceanbase.__all_virtual_ls_meta_table a where ls_id = $ls_id and tenant_id = $tenant_id and role = 2 limit 1, svr_port, 1);
+# 找到t2的table id
+let $table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name like 't2' order by table_id desc limit 1,table_id, 1);
+
+--disable_query_log
+eval alter system switch replica leader ls=$ls_id server='$backup_ip:$backup_port' tenant='mysql';
+--enable_query_log
+--sleep 10
+connection default;
+explain basic select * from t2;
+select * from t2;
+explain basic select * from t2;
+explain basic insert into t2 select * from t1;
+--echo // local + local = local plan
+insert into t2 select * from t1;
+--disable_warnings
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+--echo // local(multi part insert convert dist to local) + local  = local
+insert into t3 select * from t1;
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+insert into t2 select * from t1;
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select * from t1';
+insert into t3 select * from t1;
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t3 select * from t1';
+delete from t2;
+--echo // local + dist = dist plan
+insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+--echo // local + local = local plan
+insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = ?';
+--echo // local + dist = dist plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+insert into t2 select c1 from t3;
+--echo // local + loca = local plan
+insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select c1 from t3';
+select hit_count, type from oceanbase.GV$OB_PLAN_CACHE_PLAN_STAT where statement like 'insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = ?';
+--enable_warnings
+
+explain basic insert into t2 select * from t1;
+explain basic insert into t3 select * from t1;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex;
+explain basic insert into t2 select /*+index(pindex i)*/ c3 from pindex where c2 = 1;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3;
+explain basic insert into t2 select c1 from t3;
+explain basic insert into t2 select /*+use_px,parallel(2)*/ c1 from t3 where c1 = 2;
+
+
+# 清理环境
+drop table t1,t2,t3;
+set autocommit = 1;
+--source mysql_test/include/recover_spm_var.inc
+
+connection conn_admin;
+alter system flush plan cache global;

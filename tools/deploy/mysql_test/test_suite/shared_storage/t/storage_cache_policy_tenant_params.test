@@ -1,0 +1,181 @@
+# owner: baonian.wcx
+# group: cloud storage
+# desc: test prewarming hot tablet
+
+let $table_name = basic_sc;
+
+connect (ob_sys,$OBMYSQL_MS0,root@sys,,Oceanbase,$OBMYSQL_PORT);
+connect (ob_mysql,$OBMYSQL_MS0,root,,test,$OBMYSQL_PORT);
+connection ob_mysql;
+let $check_scp_task_tenant = `select effective_tenant()`;
+let $check_scp_task_tenant_id = `select effective_tenant_id()`;
+
+connection ob_sys;
+let $server_count = query_get_value(SELECT COUNT(*) as server_count FROM oceanbase.__all_server, server_count, 1);
+connection ob_mysql;
+
+# disable major compaction prewarm
+alter system set _ss_major_compaction_prewarm_level = 2;
+# reset tenant params
+alter system set enable_manual_storage_cache_policy = true;
+alter system set default_storage_cache_policy = 'AUTO';
+alter system set suspend_storage_cache_task = false;
+
+--disable_warnings
+eval drop table if exists $table_name;
+--enable_warnings
+
+create table basic_sc(c1 bigint, c2 varchar(1000), c3 bigint) storage_cache_policy = (global = "auto");
+let $check_scp_task_tablet_id = query_get_value(select tablet_id from oceanbase.__all_virtual_table where table_name = '$table_name', tablet_id, 1);
+
+let $storage_cache_policy = query_get_value(select storage_cache_policy from oceanbase.__all_virtual_table where table_name = '$table_name', storage_cache_policy, 1);
+if ($storage_cache_policy != '{"GLOBAL":"AUTO"}')
+{
+  --echo $storage_cache_policy
+  --echo storage_cache_policy is wrong when create table
+}
+
+--echo =========== 1 insert data ===========
+--disable_query_log
+set ob_query_timeout = 200000000;
+eval insert into $table_name select random() c1, randstr(1000, random()) c2, normal(0, 1, random()) c3 from table(generator(100));
+--enable_query_log
+
+--echo =========== 2 launch and wait major freeze ===========
+alter system major freeze;
+let $frozen_scn = query_get_value(select max(frozen_scn) as v from oceanbase.__all_freeze_info, v, 1);
+let $i=600;
+while($i > 0)
+{
+  dec $i;
+  sleep 1;
+  let $last_scn = query_get_value(select last_scn from oceanbase.DBA_OB_MAJOR_COMPACTION, last_scn, 1);
+  if ($last_scn == $frozen_scn)
+  {
+    let $i = -5;
+  }
+}
+if ($i != -5)
+{
+  --echo fail to do major freeze
+}
+
+--echo =========== 3 basic: trigger prewarm task ===========
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+eval alter table $table_name storage_cache_policy = (global = "hot");
+let $expect_scp_prewarm_task_exist = 1;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4 check prewarm task after update tenant params ===========
+# There are eight possible combination states in total
+#    enable_manual_storage_cache_policy  default_storage_cache_policy   expect_scp_prewarm_task_exist
+# 1. true -> false                       AUTO                           false
+# 2. false                               AUTO -> HOT                    true if last final status is auto
+# 3. false                               HOT -> AUTO                    false
+# 4. false -> true                       AUTO                           depend on tablet storage_cache_policy
+# 5. true                                AUTO -> HOT                    false
+# 6. true -> false                       HOT                            true if last final status is auto
+# 7. false -> true                       HOT                            won't generate task because last final status is hot
+# 8. true                                HOT -> AUTO                    false
+
+--echo =========== 4.1 enable_manual_storage_cache_policy: true -> false, default_storage_cache_policy: AUTO ===========
+# current status should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = false;
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.2 enable_manual_storage_cache_policy: false, default_storage_cache_policy: AUTO -> HOT ===========
+# 4.1 set tablet policy status to auto
+# current status should generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set default_storage_cache_policy = 'HOT';
+let $expect_scp_prewarm_task_exist = 1;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.3 enable_manual_storage_cache_policy: false, default_storage_cache_policy: HOT -> AUTO ===========
+# current status should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set default_storage_cache_policy = 'AUTO';
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.4 enable_manual_storage_cache_policy: false -> true, default_storage_cache_policy: AUTO ===========
+--echo =========== 4.4.1 tablet storage_cache_policy: HOT ===========
+# tablet policy is HOT, should generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = true;
+let $expect_scp_prewarm_task_exist = 1;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.4.2 tablet storage_cache_policy: AUTO ===========
+# tablet policy is AUTO, should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+eval alter table $table_name storage_cache_policy = (global = "auto");
+alter system set enable_manual_storage_cache_policy = false;
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = true;
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.5 enable_manual_storage_cache_policy: true, default_storage_cache_policy: AUTO -> HOT ===========
+# current status should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set default_storage_cache_policy = 'HOT';
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.6 enable_manual_storage_cache_policy: true -> false, default_storage_cache_policy: HOT ===========
+# current status should generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = false;
+let $expect_scp_prewarm_task_exist = 1;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.7 enable_manual_storage_cache_policy: false -> true, default_storage_cache_policy: HOT ===========
+--echo =========== 4.7.1 tablet storage_cache_policy: AUTO ===========
+# tablet policy is AUTO, should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = true;
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.7.2 tablet storage_cache_policy: HOT ===========
+# tablet policy is HOT, should generate task
+
+# first reset enable_manual_storage_cache_policy
+# current default_storage_cache_policy is HOT, so a task should be generated
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = false;
+let $expect_scp_prewarm_task_exist = 1;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+# second change storage_cache_policy
+# current enable_manual_storage_cache_policy is false, so no task will be generated
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+eval alter table $table_name storage_cache_policy = (global = "hot");
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+# third, enable_manual_storage_cache_policy: false -> true
+# last final status is hot: first step change final policy status to hot, second step won't change status
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set enable_manual_storage_cache_policy = true;
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== 4.8 enable_manual_storage_cache_policy: true, default_storage_cache_policy: HOT -> AUTO ===========
+# current status should not generate task
+let $check_scp_task_init_timestamp = `select current_timestamp(6)`;
+alter system set default_storage_cache_policy = 'AUTO';
+let $expect_scp_prewarm_task_exist = 0;
+--source mysql_test/include/check_storage_cache_policy_prewarm_task.inc
+
+--echo =========== reset tenant params ===========
+alter system set _ss_major_compaction_prewarm_level = 0;
+alter system set enable_manual_storage_cache_policy = true;
+alter system set default_storage_cache_policy = 'AUTO';
+alter system set suspend_storage_cache_task = false;

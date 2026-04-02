@@ -1,0 +1,172 @@
+# owner: keqing.llt
+# owner group: clog
+# description: check of log integrity on replica change RtoF
+
+ob1=OBI(cluster=4, proxy_num=0, ct_num =0, locality=SH);
+ob1.z1.obs0.set extra_config=devname=bond0;
+ob1.z1.obs1.set extra_config=devname=bond0;
+ob1.z1.obs2.set extra_config=devname=bond0;
+ob1.z1.obs3.set extra_config=devname=bond0;
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=$mini_ob_config;
+ob1.z1.obs1.set extra_config=$mini_ob_config;
+ob1.z1.obs2.set extra_config=$mini_ob_config;
+ob1.z1.obs3.set extra_config=$mini_ob_config;
+
+ob1.reboot;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+
+ob1.mysql alter system set resource_hard_limit = 3200;
+ob1.mysql alter system set merger_switch_leader_duration_time=0;
+ob1.mysql alter system set enable_auto_leader_switch = false;
+ob1.mysql alter system set enable_rereplication = true;
+ob1.mysql alter system set enable_rebalance = false;
+ob1.mysql alter system set merge_thread_count = 64;
+ob1.mysql alter system set minor_merge_concurrency = 64;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_data_copy_in_concurrency = 1000;
+ob1.mysql alter system set server_data_copy_out_concurrency = 1000;
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set data_copy_concurrency = 1000;
+ob1.mysql alter system set migrate_concurrency = 64;
+ob1.mysql alter system set minor_merge_concurrency = 64;
+ob1.mysql alter system set _mini_merge_concurrency = 64;
+ob1.mysql alter system set location_fetch_concurrency = 64;
+ob1.mysql alter system set partition_table_check_interval = '1m';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $tmp_ip = deploy_get_value(ob1.z1.obs3.ip);
+let $tmp_port = deploy_get_value(ob1.z1.obs3.mysql_port);
+
+connect(sys_conn_tmp, $tmp_ip, root@sys,,test, $tmp_port);
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+
+ob1.mysql create resource unit box1 max_cpu 2, max_memory = '2G' , max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='768M', MIN_IOPS=128;
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 2;
+ob1.mysql create tenant tt1 replica_num = 2, resource_pool_list=('pool1'), primary_zone="z1", locality = "F,R@z1" set ob_tcp_invited_nodes='%';
+
+sleep 2;
+
+#find tenant server
+let $tt1_host1 = deploy_get_value(ob1.select select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'tt1' and zone='z1', host, 1);
+let $tt1_host2 = deploy_get_value(ob1.select select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'tt1' and zone='z1', host, 2);
+let $tt1 = deploy_get_value(ob1.get_obs_by_addr $tt1_host1);
+let $tt1_ip = deploy_get_value($tt1.ip);
+let $tt1_port = deploy_get_value($tt1.port);
+let $tt1_mysql_port = deploy_get_value($tt1.mysql_port);
+let $sys_host = deploy_get_value(ob1.select select distinct concat(svr_ip,':', svr_port) host from __all_server where concat(svr_ip,':', svr_port)!='$tt1_host1' and concat(svr_ip,':', svr_port)!='$tt1_host2' and zone='z1', host, 2);
+let $rootsys = deploy_get_value(ob1.get_obs_by_addr $sys_host);
+let $sys_ip = deploy_get_value($rootsys.ip);
+let $sys_port = deploy_get_value($rootsys.port);
+let $sys_mysql_port = deploy_get_value($rootsys.mysql_port);
+
+connect(tt1_conn, $tt1_ip, root@tt1,,test, $tt1_mysql_port);
+connection tt1_conn;
+
+use test;
+create table t_1(c1 int primary key) partition by hash(c1) partitions 20;
+create table t_2(c1 int primary key) partition by hash(c1) partitions 20;
+create table t_3(c1 int primary key) partition by hash(c1) partitions 20;
+create table t_4(c1 int primary key) partition by hash(c1) partitions 20;
+
+
+--disable_query_log
+let $cnt = 1;
+
+while ($cnt <= 200) 
+{
+  eval insert into test.t_1 values($cnt);
+  eval insert into test.t_2 values($cnt);
+  eval insert into test.t_3 values($cnt);
+  inc $cnt;
+}
+--enable_query_log
+
+connect(sys_conn, $sys_ip, root@sys,,test, $sys_mysql_port);
+connection sys_conn;
+
+ob1.mysql alter system major freeze;
+
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_meta_table where data_version != 2, 0, 60000;
+
+ob1.check_version 2;
+
+sleep 2;
+
+#find F replica server
+let $crash_host = deploy_get_value(ob1.select select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_1') and role = 'LEADER' and status = 'ACTIVE' union select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_2') and role = 'LEADER' and status = 'ACTIVE' union select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_3') and role = 'LEADER' and status = 'ACTIVE' union select distinct concat(svr_ip,':', svr_port) host from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_4') and role = 'LEADER' and status = 'ACTIVE', host, 1);
+let $crash = deploy_get_value(ob1.get_obs_by_addr $crash_host);
+let $crash_ip = deploy_get_value($crash.ip);
+let $crash_port = deploy_get_value($crash.port);
+
+#record alive tenant connnection
+let $alive_host = deploy_get_value(ob1.select select concat(svr_ip,':', svr_port) host from oceanbase.__all_resource_pool a, oceanbase.__all_unit b, oceanbase.__all_tenant c where (svr_port!='$crash_port' or svr_ip!='$crash_ip') and c.tenant_id=a.tenant_id and a.resource_pool_id=b.resource_pool_id and c.tenant_name = 'tt1' and zone='z1', host, 1);
+let $alive = deploy_get_value(ob1.get_obs_by_addr $alive_host);
+let $alive_ip = deploy_get_value($alive.ip);
+let $alive_port = deploy_get_value($alive.port);
+let $alive_mysql_port = deploy_get_value($alive.mysql_port);
+
+connection tt1_conn;
+
+--disable_query_log
+let $cnt = 201;
+
+while ($cnt <= 400)
+{
+  eval insert into test.t_1 values($cnt);
+  eval insert into test.t_2 values($cnt);
+  inc $cnt;
+}
+
+sleep 10;
+
+let $cnt = 401;
+
+while ($cnt <= 600)
+{
+  eval insert into test.t_2 values($cnt);
+  eval insert into test.t_3 values($cnt);
+  eval insert into test.t_4 values($cnt);
+  inc $cnt;
+}
+--enable_query_log
+
+connection sys_conn;
+
+ob1.mysql set ob_global_debug_sync = 'FAST_RECOVER_BEFORE_PROCESS wait_for signal_1 execute 10000000';
+
+sleep 10;
+#shutdown F replica
+$crash.force_stop;
+
+#begin RtoF and wait fetch log finished
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where module = 'server_fast_recovery' and value1 like '%$crash_ip:$crash_port%' and event = 'switch state', 1, 180000000;
+
+ob1.check_until_timeout select count(*) > 0 from __all_virtual_partition_migration_status where migrate_type = 'CHANGE_REPLICA_OP', 1, 180000000;
+
+sleep 120;
+
+ob1.mysql set ob_global_debug_sync = 'now signal signal_1';
+
+#check partition count
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_1') and role = 'LEADER' and status = 'ACTIVE', 20, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_2') and role = 'LEADER' and status = 'ACTIVE', 20, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_3') and role = 'LEADER' and status = 'ACTIVE', 20, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_clog_stat where table_id = (select table_id from oceanbase.__all_virtual_table where table_name = 't_4') and role = 'LEADER' and status = 'ACTIVE', 20, 60;
+
+connect(tt1_conn_alive, $alive_ip, root@tt1,,test, $alive_mysql_port);
+connection tt1_conn_alive;
+
+use test;
+
+#check count and sum
+select count(*) from test.t_1;
+select count(*) from test.t_2;
+select count(*) from test.t_3;
+select count(*) from test.t_4;
+select sum(c1) from test.t_1;
+select sum(c1) from test.t_2;
+select sum(c1) from test.t_3;
+select sum(c1) from test.t_4;

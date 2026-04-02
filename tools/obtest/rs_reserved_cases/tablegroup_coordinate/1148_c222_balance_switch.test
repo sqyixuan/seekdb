@@ -1,0 +1,99 @@
+# owner: rongxuan.lc
+# description: 本case是为了验证enable_balancer和enable_replicate
+##在少副本又需要均衡的情况下；看着两个开关的控制能力
+
+ob1=OBI(cluster=3:3:3, init_unit_cpu=2, proxy_num=0, ct_num = 0);
+ob1.reboot;
+let $case_index=1;
+
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_out_concurrency = 20;
+ob1.mysql alter system set server_data_copy_in_concurrency = 20;
+sleep 4;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,F@z2,F@z3' set ob_tcp_invited_nodes='%';
+sleep 3;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = "tenant_1", tenant_id, 1); 
+
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create tablegroup tg1 partition by hash partitions 20;
+create table test2(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+create table test3(c1 int primary key, c2 int) tablegroup = 'tg1' partition by hash(c1) partitions 20;
+
+#(STEP 1:)
+##选择partition_id = 0的副本，手动迁移。在zone3上面造成test2:0 在z3.obs0上面；test3:0 在z3.obs1上面。 
+##需要进行pg group;检查结果 test3:0迁移到z3.obs0上面；
+let $t2_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test2" and tenant_id = "$tenant_id", table_id, 1);
+let $t3_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where table_name = "test3" and tenant_id = "$tenant_id", table_id, 1);
+
+let $dest_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $dest_port = deploy_get_value(ob1.z3.obs0.port);
+let $migrate_count = 0 ;
+##检查test2:0是否在z3.obs0上面，不在则做迁移
+--disable_all_result_log
+let $in = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where table_id = $t2_id and tenant_id=$tenant_id and zone="z3" and svr_ip="$dest_ip" and svr_port=$dest_port and partition_id = 0, c, 1);
+if ($in == 0)
+{
+  let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where table_id = $t2_id and tenant_id=$tenant_id and zone="z3" and partition_id = 0, svr_ip, 1);
+  let $src_port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where table_id = $t2_id and tenant_id=$tenant_id and zone="z3" and partition_id = 0, svr_port, 1); 
+  ob1.mysql alter system move replica partition_id ="0%20@$t2_id" source "$src_ip:$src_port" destination "$dest_ip:$dest_port";
+  inc $migrate_count;
+}
+--enable_all_result_log
+
+##检查test3:0是否在z3.obs1上面，不在则做迁移
+let $z3_obs1_ip = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_obs1_port = deploy_get_value(ob1.z3.obs1.port);
+--disable_all_result_log
+let $in = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where table_id = $t3_id and tenant_id=$tenant_id and zone="z3" and svr_ip="$z3_obs1_ip" and svr_port=$z3_obs1_port and partition_id = 0, c, 1);
+if ($in == 0)
+{
+  let $src_ip = deploy_get_value(ob1.select select svr_ip from __all_virtual_meta_table where table_id = $t3_id and tenant_id=$tenant_id and zone="z3" and partition_id = 0, svr_ip, 1);
+  let $src_port = deploy_get_value(ob1.select select svr_port from __all_virtual_meta_table where table_id = $t3_id and tenant_id=$tenant_id and zone="z3" and partition_id = 0, svr_port, 1); 
+  ob1.mysql alter system move replica partition_id ="0%20@$t3_id" source "$src_ip:$src_port" destination "$z3_obs1_ip:$z3_obs1_port";
+  inc $migrate_count;
+}
+--enable_all_result_log
+##等待迁移做完
+ob1.check_until_timeout select count(*) from __all_rootservice_event_history where event like '%finish%' and (value1 like '%$t2_id%' or value1 like '%$t3_id%'), $migrate_count, 60;
+let $z2_ip = deploy_get_value(ob1.z2.obs2.ip);
+let $z2_port = deploy_get_value(ob1.z2.obs2.port);
+
+#(step 2: 在z2上宕机一台机器；)
+ob1.z2.obs2.stop;
+ob1.mysql alter system set server_permanent_offline_time = '20s';
+ob1.mysql alter system set server_temporary_offline_time = '15s';
+sleep 30;
+
+##开启负载均衡；
+ob1.mysql alter system set enable_rebalance = 'true';
+
+##等待pg coordinate完成；
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $t3_id and tenant_id=$tenant_id and zone="z3" and partition_id = 0 and svr_ip = "$dest_ip" and svr_port=$dest_port, 1, 240;
+##检查副本复制还是没做；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%$z2_ip:$z2_port%', 0, 60; 
+let $c = deploy_get_value(ob1.select select count(*) c from __all_rootservice_event_history where event = 'start_add_replica', c, 1);
+if ($c == 0)
+{
+  echo 'success';
+}
+##开启容灾
+ob1.mysql alter system set enable_rereplication = 'true';
+let $count = deploy_get_value(ob1.select select count(*) c from __all_virtual_meta_table where role = 1, c, 1);
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where role = 1 and member_list like '%,%,%', $count, 240;
+

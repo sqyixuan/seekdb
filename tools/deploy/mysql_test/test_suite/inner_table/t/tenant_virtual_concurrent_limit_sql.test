@@ -1,0 +1,147 @@
+#owner: xiaoyi.xy
+#owner group: SQL4
+#tags: outline
+##
+## Test Name: tenant_virtual_concurrent_limit_sql
+##
+
+## 测试目的：测试__tenant_virtual_concurrent_limit_sql虚拟表和DBA_OB_CONCURRENT_LIMIT_SQL的有效性
+## 测试方案
+
+## 1.测试outline_content的正确性
+## 1)outline_content为空的情况
+## 2)仅有限流的情况
+## 3)outline_content含有有效hint的情况
+
+## 2.测试concurrent_num的正确性
+## 测试concurrent_num分别为<0, =0 ,>0,int64_t最大值的情况
+
+## 3.测试limit_target的正确性
+## 测试含有hint的情况
+## 测试没有hint的情况
+## 测试fix_param回填是否正确：1）不需要回填；2）需要回填
+
+
+## 4.虚拟表正确性测试
+## 测试为空的情况
+## 测试一个outline记录没有限流的情况
+## 测试一个outline记录中有多个限流的情况
+## 测试多个outline记录中有多个限流的情况
+## 测试where条件是否生效
+
+## 5.测试limit_target对应fix_param分别为不同数据类型的情况
+
+## 6.测试limit_target对应not_param的情况
+
+## 7.测试DBA_OB_CONCURRENT_LIMIT_SQL
+
+##################################### create tenant #####################################
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+--disable_warnings
+--disable_query_log
+--disable_result_log
+#call oceanbase.drop_tenant_force('yts_tt');
+#call oceanbase.create_mysql_tenant_mini('yts_tt');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_result_log
+--enable_warnings
+
+connect (conn_admin,$OBMYSQL_MS0,admin@sys,admin,*NO-ONE*,$OBMYSQL_PORT);
+connect (conn1,$OBMYSQL_MS0,root,,*NO-ONE*,$OBMYSQL_PORT);
+--enable_query_log
+--enable_result_log
+select effective_tenant();
+connection conn1;
+
+##################################### test __tenant_virtual_concurrent_limit_sql  #####################################
+
+start transaction;
+
+--disable_warnings
+drop database if exists ol_db;
+--enable_warnings
+create database ol_db;
+use ol_db;
+
+select * from oceanbase.__tenant_virtual_concurrent_limit_sql;
+create table t1(c1 int, c2 int);
+connection conn1;
+create table t2(c1 int, c2 int);
+connection conn1;
+
+## 1.测试outline_content的正确性
+create outline ol1_1 on select 1;
+create outline ol1_2 on select /*+max_concurrent(1)*/* from t1;
+--error 5272
+alter outline ol1_2 add select /*+trace_log*/* from t1;
+create outline ol1_3 on select /*+use_nl(t2) leading(t1 t2)*/* from t1,t2;
+sleep 3;
+select outline_name, outline_content from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol1\_%";
+
+## 2.测试concurrent_num的正确性
+create outline ol2_1 on select /*+max_concurrent(-1)*/* from t1 where c1 = 1;
+create outline ol2_2 on select /*+max_concurrent(0)*/* from t1 where c1 > 1;
+create outline ol2_3 on select /*+max_concurrent(10)*/* from t1 where c1 < 1;
+create outline ol2_4 on select /*+max_concurrent(9223372036854775807)*/* from t1 where c1 >= 1;
+create outline ol2_5 on select /*+max_concurrent(9223372036854775808)*/* from t1 where c1 <= 1;
+sleep 3;
+select outline_name, concurrent_num from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol2\_%";
+
+
+## 3.测试limit_target的正确性
+create outline ol3_1 on select /*+max_concurrent(1)*/* from t1 order by c1;
+create outline ol3_2 on select /*+max_concurrent(1)*/* from t1 order by c1 to select /*+trace_log*/* from t1 order by c1;
+create outline ol3_3 on select /*+max_concurrent(1)*/* from t1 where c1 = 1 and c2 = 1 order by 1;
+alter outline ol3_3 add select /*+max_concurrent(1)*/* from t1 where c1 = ? and c2 = ? order by 1;
+sleep 3;
+select outline_name, limit_target from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol3\_%";
+
+## 4.虚拟表正确性测试
+create outline ol4_1 on select /*+FULL(t1)*/* from t1 where c1 = 1 and c2 > 1;
+create outline ol4_2 on select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = 1 and t1.c2 > 1 and t2.c1 =1 and t2.c2 < 1;
+alter outline ol4_2 add select /*+max_concurrent(2)*/* from t1,t2 where t1.c1 = ? and t1.c2 > 1 and t2.c1 =1 and t2.c2 < 1;
+alter outline ol4_2 add select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = ? and t1.c2 > ? and t2.c1 =1 and t2.c2 < 1;
+alter outline ol4_2 add select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = ? and t1.c2 > ? and t2.c1 =? and t2.c2 < 1;
+alter outline ol4_2 add select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = ? and t1.c2 > ? and t2.c1 =? and t2.c2 < ?;
+sleep 3;
+select outline_name, limit_target from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol4\_%";
+
+## 5.测试limit_target对应fix_param分别为不同数据类型的情况
+create outline ol5_1 on select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = '1' and t1.c2 > 1.200 and t2.c1 ='2016-01-01 12:00:00' and t2.c2 < '92233720368547758070' limit 1;
+alter outline ol5_1 add select /*+max_concurrent(1)*/* from t1,t2 where t1.c1 = ? and t1.c2 > 1.200 and t2.c1 ='2016-01-01 12:00:00' and t2.c2 < '92233720368547758070' limit 1;
+sleep 3;
+select outline_name, limit_target from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol5\_%";
+
+## 6.测试limit_target对应not_param的情况
+create outline ol6_1 on select /*+max_concurrent(1)*/* from t2 where t2.c1 = 1 and t2.c1 != ? and t2.c1 > (1 + 1) order by 1 limit 1;
+create outline ol6_2 on select /*+max_concurrent(1)*/'????' from t2 where t2.c1 > 1 and t2.c1 != ? and t2.c1 > (1 + 1) order by 1 limit 1;
+sleep 3;
+select outline_name, limit_target from oceanbase.__tenant_virtual_concurrent_limit_sql where outline_name like "ol6\_%";
+
+## 7.测试DBA_OB_CONCURRENT_LIMIT_SQL
+select database_name, outline_name, outline_content, visible_signature, sql_text, concurrent_num, limit_target from oceanbase.DBA_OB_CONCURRENT_LIMIT_SQL;
+
+--disable_warnings
+drop database if exists ol_db;
+--enable_warnings
+
+
+
+
+##################################### delete tenant #####################################
+# login using admin acount
+connection conn_admin;
+--disable_query_log
+#call oceanbase.drop_tenant_force('yts_tt');
+--enable_query_log
+
+--disable_query_log
+--disable_result_log
+sleep 20;
+--enable_result_log
+--enable_query_log
+
+commit;

@@ -1,0 +1,209 @@
+# CASE_OWNER:
+#    @shouju.zyp
+# CASE_DESC:
+#    Basic Net Standby
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+ob1.z1.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z2.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.z3.obs0.set extra_config = "cpu_count=14,memory_limit='38G',system_memory='7G',__min_full_resource_pool_memory='1073741824',cache_wash_threshold='1G',_ob_minor_merge_schedule_interval='3s'";
+ob1.reboot;
+
+# 固定sys租户规格
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set ob_compaction_schedule_interval = '3s' tenant all_user;
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+CREATE RESOURCE UNIT large_unit MAX_CPU=2, MEMORY_SIZE='4G', LOG_DISK_SIZE='2G';
+CREATE RESOURCE POOL large_pool UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_1 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_2 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_3 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z1','z2','z3');
+CREATE RESOURCE POOL large_pool_4 UNIT large_unit, UNIT_NUM 1, ZONE_LIST ('z3');
+
+#系统租户创建删除表，变更locality，验证是否能够成功
+create table sys_t1(a int, b int, c int);
+insert into sys_t1(a, b) values(1, 1);
+
+create table sys_t2(a int, b int, c int);
+insert into sys_t2(a, b) values(1, 1);
+
+drop table sys_t1;
+drop table sys_t2;
+
+create table sys_t3(a int, b int, c int);
+insert into sys_t3(a, b) values(1, 1);
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality = '' and LOCALITY = 'FULL{1}@z1, FULL{1}@z2, FULL{1}@z3', 1, 10;
+ALTER TENANT sys locality = "F@z1,F@z2";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality != '', 0, 300;
+
+ALTER TENANT sys locality = "F@z1,F@z2,F@z3";
+ob1.check_until_timeout select count(*) c from oceanbase.__all_tenant where tenant_id = 1 and previous_locality != '', 0, 300;
+
+ob1.check_until_timeout select count(*) c from oceanbase.__all_virtual_tablet_pointer_status where tenant_id = 1 and tablet_id=200002, 0, 100;
+ob1.mysql alter system set _backup_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval = '10s';
+ob1.mysql alter system set enable_async_syslog=false;
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+
+# create mysql tenant, test create tenant before major freeze
+ob1.create_tenant CREATE TENANT backup_mysql_tenant RESOURCE_POOL_LIST = ('large_pool'), primary_zone = "z1,z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $backup_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='backup_mysql_tenant', tenant_id, 1);
+
+#mysql租户  开启日志备份
+ob1.mysql alter system archivelog;
+#ob1.check_until_timeout select status from oceanbase.CDB_OB_ARCHIVELOG where tenant_id=$backup_mysql_tenant_id, DOING, 600;
+
+ob1.mysql alter system major freeze tenant = 'backup_mysql_tenant';
+ob1.check_until_timeout select (frozen_scn - last_scn) as result from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id=$backup_mysql_tenant_id, 0, 600;
+
+# get primary tenant access point
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $backup_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+
+# create log restore source user
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+create user mytest identified by "test";
+GRANT SELECT on OCEANBASE.DBA_OB_ACCESS_POINT to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_UNITS to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_TENANTS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_PARAMETERS to mytest;
+GRANT SELECT on OCEANBASE.GV$OB_LOG_STAT to mytest;
+GRANT SELECT on OCEANBASE.DBA_OB_LS to mytest;
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+
+ob_connect(sys_conn, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--disable_all_result_log
+send CREATE STANDBY TENANT IF NOT EXISTS standby_mysql_tenant LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@backup_mysql_tenant PASSWORD=test' PRIMARY_ZONE='z1, z2', RESOURCE_POOL_LIST=('large_pool_1'),locality='F@z1,F@z2,F@z3', comment='aaaaaaaa';
+--enable_all_result_log
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_tenant WHERE tenant_name='standby_mysql_tenant', 1, 100;
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+ob1.check_until_timeout SELECT count(*) FROM oceanbase.__all_virtual_ls_status WHERE tenant_id=$tenant_id, 3, 200;
+ob1.check_until_timeout SELECT status FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant', NORMAL, 200;
+
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+
+create table t1(a int, b int, c int);
+insert into t1(a, b) values(1, 1);
+
+create table part_table(c1 int) partition by hash(c1) partitions 4;
+
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_mysql_tenant_id and ls_id = 1001 and role = 'LEADER', end_scn, 1);
+let $schema_version = deploy_get_value(ob1.select select max(schema_version) as s from oceanbase.__all_virtual_ddl_operation where tenant_id = $backup_mysql_tenant_id, s, 1);
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant' and READABLE_SCN >= $check_scn, 1, 50;
+
+sleep 3;
+
+ob_connect(standby_tenant_conn, ob1.z1.obs0,root@standby_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection standby_tenant_conn;
+select * from t1;
+# 1 1
+
+ob_connect(primary_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection primary_tenant_conn;
+insert into t1(a, b) values(2, 2);
+
+
+#卡住transfer start 状态运行，卡在事务commit之前
+ob1.mysql alter system set _transfer_start_trans_timeout = '600s' tenant = all_user;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_START_COMMIT wait_for continue_signal execute 10000';
+
+
+#手动insert transfer任务
+connection sys_conn;
+
+let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.CDB_OB_TABLE_LOCATIONS where tenant_id = $backup_mysql_tenant_id and table_name = 't1' and role = 'LEADER', table_id, 1);
+let $object_id = deploy_get_value(ob1.select select object_id from oceanbase.CDB_OB_TABLE_LOCATIONS where tenant_id = $backup_mysql_tenant_id and table_name = 't1' and role = 'LEADER', object_id, 1);
+let $src_ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_TABLE_LOCATIONS where tenant_id = $backup_mysql_tenant_id and table_name = 't1' and role = 'LEADER', ls_id, 1);
+let $dest_ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.__all_virtual_ls_status where tenant_id = $backup_mysql_tenant_id and ls_id != 1 and ls_id !=$src_ls_id , ls_id, 1);
+
+
+ob1.mysql alter system transfer partition table_id = $table_id, object_id = $object_id to LS $dest_ls_id tenant = 'backup_mysql_tenant';
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = $backup_mysql_tenant_id and status = 'START', 1, 600;
+sleep 10;
+
+#当还未执行主切备时，验证执行备切主报错
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+--error 4179
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+
+# case 1. 验证系统租户switchover 普通租户
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_mysql_tenant_id and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+select TENANT_ID, TENANT_NAME, TENANT_TYPE, COMPATIBILITY_MODE, STATUS, IN_RECYCLEBIN, LOCKED, TENANT_ROLE, SWITCHOVER_STATUS, LOG_MODE from DBA_OB_TENANTS order by TENANT_ID;
+select count(*) from DBA_OB_TENANTS where SYNC_SCN >= REPLAYABLE_SCN and REPLAYABLE_SCN>=READABLE_SCN and RECOVERY_UNTIL_SCN !=0 and TENANT_TYPE = "USER";
+# 2
+let $check_scn=deploy_get_value(ob1.select select end_scn from __all_virtual_log_stat where tenant_id = $backup_mysql_tenant_id and ls_id = 1001 and role = 'LEADER';, end_scn, 1);
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@backup_mysql_tenant, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM SWITCHOVER TO STANDBY VERIFY;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+eval ALTER SYSTEM SWITCHOVER TO STANDBY TENANT backup_mysql_tenant;
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'standby_mysql_tenant' and SYNC_SCN >= $check_scn, 1, 50;
+
+# 等待备租户switchover_status状态是normal
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# sleep下保证sync scn已经最新了
+sleep 10;
+let $check_scn=deploy_get_value(ob1.select select sync_scn from __all_virtual_tenant_info where tenant_id = 1004, sync_scn, 1);
+# 等所有日志流副本回放位点都跨过sync scn
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_replay_stat where unsubmitted_log_scn <= $check_scn and tenant_id = 1004, 0, 300;
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT standby_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = 1004 and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+
+#1004租户transfer完成
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRANSFER_START_COMMIT clear';
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+#检查transfer任务完成
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task where tenant_id = 1004, 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_transfer_task_history where tenant_id = 1004 and status = 'COMPLETED', 1, 600;
+
+ob_connect(standby_tenant_conn, ob1.z1.obs0,root@standby_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection standby_tenant_conn;
+select * from t1;
+# 1   1
+# 2   2
+insert into t1(a, b) values(3, 3);
+
+
+# case 2. 验证连续switchover
+# get new primary tenant access point
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $standby_mysql_tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name='standby_mysql_tenant', tenant_id, 1);
+
+let $server_ip_port_1=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $standby_mysql_tenant_id and ls_id = 1 and role = 'LEADER' order by svr_ip, sql_port limit 1;, host, 1);
+let $server_ip_port_2=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $standby_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' order by svr_ip, sql_port limit 1, host, 1);
+let $server_ip_port_3=deploy_get_value(ob1.select select concat(svr_ip,':',sql_port) as host from CDB_OB_LS_LOCATIONS where tenant_id = $standby_mysql_tenant_id and ls_id = 1 and role = 'FOLLOWER' and concat(svr_ip,':',sql_port) not like "%$server_ip_port_2%" limit 1, host, 1);
+--disable_all_result_log
+eval alter system set LOG_RESTORE_SOURCE = 'service=$server_ip_port_1;$server_ip_port_2;$server_ip_port_3 USER=mytest@standby_mysql_tenant PASSWORD=test' tenant = 'backup_mysql_tenant';
+--enable_all_result_log
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $standby_mysql_tenant_id and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys_ob1, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $check_scn=deploy_get_value(ob1.select select min(end_scn) as min_end_scn from __all_virtual_log_stat where tenant_id = $standby_mysql_tenant_id and role = 'LEADER', min_end_scn, 1);
+ALTER SYSTEM SWITCHOVER TO STANDBY TENANT standby_mysql_tenant;
+ob1.check_until_timeout SELECT count(*) FROM dba_ob_tenants WHERE TENANT_NAME = 'backup_mysql_tenant' and SYNC_SCN >= $check_scn, 1, 50;
+
+# 等待备租户switchover_status状态是normal
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_mysql_tenant_id and tenant_role = 'STANDBY' and switchover_status = 'NORMAL', 1, 10;
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+# sleep下保证sync scn已经最新了
+sleep 10;
+let $check_scn=deploy_get_value(ob1.select select sync_scn from __all_virtual_tenant_info where tenant_id = $backup_mysql_tenant_id, sync_scn, 1);
+# 等所有日志流副本回放位点都跨过sync scn
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_replay_stat where unsubmitted_log_scn <= $check_scn and tenant_id = $backup_mysql_tenant_id, 0, 300;
+eval ALTER SYSTEM SWITCHOVER TO PRIMARY TENANT backup_mysql_tenant;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tenant_info where tenant_id = $backup_mysql_tenant_id and tenant_role = 'PRIMARY' and switchover_status = 'NORMAL' and recovery_until_scn = 4611686018427387903, 1, 10;
+
+ob_connect(backup_mysql_tenant_conn, ob1.z1.obs0,root@backup_mysql_tenant,,test,,USE_MYSQL_CONNECTOR);
+connection backup_mysql_tenant_conn;
+select * from t1;
+# 1   1
+# 2   2
+# 3   3

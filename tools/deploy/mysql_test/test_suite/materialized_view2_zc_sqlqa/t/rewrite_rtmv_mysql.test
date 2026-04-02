@@ -1,0 +1,503 @@
+#owner:guohanyun.ghy
+#owner group:技术部-SQL-优化器
+#description:实时物化视图改写
+#tags: mv_optimizer,mview
+#author: wb-zc01084078
+
+--result_format 4
+--enable_sorted_result
+PURGE RECYCLEBIN;
+
+##clean PLAN
+alter system flush plan cache global;
+
+####开启物化改写(检查关，非实时物化开)
+SET QUERY_REWRITE_ENABLED = 'FORCE';
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+#ALTER SESSION SET QUERY_REWRITE_ENABLED = TRUE;
+#ALTER SESSION set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_info;
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_item;
+--error 0,942,1051
+DROP table col_item;
+--error 0,942,1051
+DROP table col_info;
+
+CREATE table col_info(c1 int,c2 int,PRIMARY KEY(c2)) PARTITION by hash(c2) partitions 100;
+CREATE TABLE col_item(c1 int PRIMARY KEY,c2 int,c3 VARCHAR(1000),FOREIGN KEY(C1) REFERENCES col_info(C2)) PARTITION by hash(c1) partitions 16;
+
+CREATE MATERIALIZED VIEW LOG ON col_info parallel 1 WITH PRIMARY KEY,ROWID,SEQUENCE(c1)INCLUDING NEW VALUES;
+CREATE MATERIALIZED VIEW LOG ON col_item parallel 2 WITH PRIMARY KEY,ROWID,SEQUENCE(c2,c3) INCLUDING NEW VALUES;
+
+##先添加数据
+INSERT INTO col_info SELECT 1,1 from dual;
+INSERT INTO col_info SELECT c1+1,c2+1 from col_info;
+INSERT INTO col_info SELECT c1+2,c2+2 from col_info;
+INSERT INTO col_info SELECT c1+4,c2+4 from col_info;
+INSERT INTO col_info SELECT c1+8,c2+8 from col_info;
+
+INSERT INTO col_item VALUES(1,1,'A');
+INSERT INTO col_item SELECT C1+1,C2+1,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+2,C2+2,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+4,C2+4,C3 FROM col_item;
+INSERT INTO col_item SELECT C1+8,C2+8,C3 FROM col_item;
+
+
+--error 0,12003,9757
+DROP materialized view ZC_RTMV1;
+--error 0,12003,9757
+DROP materialized view ZC_RTMV2;
+
+
+##RTMV
+create materialized view ZC_RTMV1 REFRESH FORCE ON DEMAND enable on query computation enable query rewrite AS
+select zt1.C1 AS c1,zt2.C1 as c2,zt1.c2 AS c3,zt2.c2 AS c4,zt2.c3 AS c5
+from col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2;
+
+create materialized view ZC_RTMV2 REFRESH FORCE ON DEMAND enable on query computation enable query rewrite AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5
+from col_item ZT2 inner join col_info zt1
+ON zt1.c2 = zt2.c1;
+
+
+##建好物化视图后再次添加数据
+INSERT INTO col_info SELECT c1+16,c2+16 from col_info;
+INSERT INTO col_info SELECT c1+32,c2+32 from col_info WHERE C1 IS NOT NULL;
+INSERT INTO col_item SELECT C1+16,C2+16,C3 FROM col_item WHERE C3 IS NOT NULL;
+UPDATE col_info SET C1 = 999 WHERE C2 = 1;
+UPDATE col_item SET C3 = 'N' WHERE C2 = 2;
+DELETE FROM col_info WHERE C1 BETWEEN 55 AND 56;
+DELETE FROM col_item WHERE C3 LIKE '%N%';
+
+####收集统计信息
+CALL dbms_stats.gather_table_stats('test', 'col_info');
+CALL dbms_stats.gather_table_stats('test', 'col_item');
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV1');
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV2');
+
+####SELECT
+##re
+SELECT * FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT * FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 ORDER BY 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 ORDER BY 1;
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+
+##nore
+select /*+mv_rewrite(ZC_RTMV1)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select /*+mv_rewrite(ZC_RTMV1)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+
+##re
+select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 > 10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 > 10 order by 1;
+
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 > 10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 > 10 order by 1;
+
+
+####开启物化改写(检查关，实时物化开)
+####实时物化内部展开,要注意此模式下的查询性能不高
+SET QUERY_REWRITE_ENABLED = 'FORCE';
+set QUERY_REWRITE_INTEGRITY = enforced;
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+select /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 order by 1;
+
+##re
+SELECT * FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 AND zt1.c1 > 10 ORDER by 1;
+SELECT /*+no_mv_rewrite*/* FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 AND zt1.c1 > 10 ORDER by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic SELECT * FROM col_info ZT1 ,col_item ZT2 WHERE zt1.C1 = zt2.C2 AND zt1.c1 > 10 ORDER by 1;
+
+####开启物化改写(检查开，非实时物化开)
+SET QUERY_REWRITE_ENABLED = 'true';
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+##nore
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+
+##re
+select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+
+CREATE INDEX in_rtmv2 ON ZC_RTMV2(c1);
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 order by 1;
+
+##inner join连接和,连接查询不会互相改写
+##nore
+select /*+mv_rewrite(ZC_RTMV1)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_info ZT1 inner join col_item zt2 ON zt1.c1 = zt2.c2  order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select /*+mv_rewrite(ZC_RTMV1)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_info ZT1 inner join col_item zt2 ON zt1.c1 = zt2.c2 order by 1;
+
+##nore
+select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 , col_info zt1 WHERE zt1.c2 = zt2.c1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from col_item ZT2 , col_info zt1 WHERE zt1.c2 = zt2.c1 order by 1;
+
+##from后的顺序别名不影响改写
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from  col_item zt2,col_info ZT1 WHERE zt1.c1 = zt2.c2 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4,zt2.c3 as c5 from  col_item zt2,col_info ZT1 WHERE zt1.c1 = zt2.c2 order by 1;
+
+##re
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4 from col_info ZT2 inner join col_item zt1 ON zt2.c2 = zt1.c1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4 from col_info ZT2 inner join col_item zt1 ON zt2.c2 = zt1.c1 order by 1;
+
+
+####不带where
+--error 0,12003,9757
+DROP materialized view ZC_RTMV3;
+create materialized view ZC_RTMV3 REFRESH FORCE ON DEMAND enable on query computation enable query rewrite AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4
+from col_item ZT2 , col_info zt1;
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV3');
+
+##re
+SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##nore
+SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 >10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 >10 order by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 >10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 >10 order by 1;
+
+##where中有mv没有的列
+##nore
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt2.c3 = 'A' order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt2.c3 = 'A' order by 1;
+
+##where condition
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 is NULL order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 is NULL order by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 IN(1,10,20) order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 IN(1,10,20) order by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 BETWEEN 10 AND 20 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 BETWEEN 10 AND 20 order by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 LIKE 1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 LIKE 1 order by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 + zt2.c1 > 10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.c1 + zt2.c1 > 10 order by 1;
+
+##group BY
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 group BY zt1.c1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 group BY zt1.c1 order by 1;
+
+##HAVING
+##re
+SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 group BY zt1.c1 HAVING zt1.c1>10 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 group BY zt1.c1 HAVING zt1.c1>10 order by 1;
+
+####SELECT item
+##DISTINCT
+##re
+SELECT distinct COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT distinct COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##constant
+##re
+SELECT DISTINCT 1,NULL,'a' as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT DISTINCT 1,NULL,'a' as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##CAST
+##re
+SELECT DISTINCT CAST(zt1.c1 as CHAR(10)) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT DISTINCT CAST(zt1.c1 as CHAR(10)) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##CONCAT
+##re
+SELECT COUNT(CONCAT(zt1.c1,zt2.c2)) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(CONCAT(zt1.c1,zt2.c2)) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##case WHEN
+##re
+SELECT DISTINCT CASE WHEN zt1.c1 >10 then 'a' ELSE 'b' end FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT DISTINCT CASE WHEN zt1.c1 >10 then 'a' ELSE 'b' end FROM col_item ZT2 , col_info zt1 order by 1;
+
+##NULLIF
+##re
+SELECT DISTINCT NULLIF(zt1.c1,zt1.c2) FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT DISTINCT NULLIF(zt1.c1,zt1.c2) FROM col_item ZT2 , col_info zt1 order by 1;
+
+##mv不含查询列
+##nore
+SELECT COUNT(zt2.c3) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(zt2.c3) as c1 FROM col_item ZT2 , col_info zt1 order by 1;
+
+##re(rtmv1)
+SELECT  /*+mv_rewrite(ZC_RTMV1)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV1)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+
+##re(rtmv3)
+SELECT  /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+
+##re(DEFAULT rtmv1)
+SELECT  COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+
+SELECT  /*+mv_rewrite(ZC_RTMV3,ZC_RTMV1)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT  /*+mv_rewrite(ZC_RTMV3,ZC_RTMV1)*/COUNT(*) as c1 FROM col_item ZT2 , col_info zt1 WHERE zt1.C1 = zt2.C2 order by 1;
+
+
+####带where(rtmv WITH PRIMARY KEY AND PARTITION)
+##带分区的实时物化改写报4016，待修复
+--error 0,12003,9757
+DROP materialized view ZC_RTMV3;
+create materialized view ZC_RTMV3 (PRIMARY KEY(c2)) PARTITION BY RANGE(C2) subpartition by hash(C2)subpartitions 2 (PARTITION P0 VALUES LESS THAN (10),PARTITION P1 VALUES LESS THAN(MAXVALUE))
+REFRESH FORCE ON DEMAND enable on query computation enable query rewrite AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4
+from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10;
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV3');
+
+#SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##re(rtmv2)
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+
+--error 0,12003,9757
+DROP materialized view ZC_RTMV3;
+create materialized view ZC_RTMV3 (PRIMARY KEY(c2))
+REFRESH FORCE ON DEMAND enable on query computation enable query rewrite AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4
+from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10;
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV3');
+
+##re
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##re(rtmv2)
+SELECT /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV2)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##nore
+SELECT /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+no_mv_rewrite*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+####关闭物化改写
+SET QUERY_REWRITE_ENABLED = 'false';
+#set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+##re(rtmv3)
+SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##nore
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+####开启物化改写(检查开，实时物化开)
+SET QUERY_REWRITE_ENABLED = 'true';
+set QUERY_REWRITE_INTEGRITY = enforced;
+
+##create !rtmv
+--error 0,12003,9757
+DROP materialized view ZC_RTMV4;
+create materialized view ZC_RTMV4 (PRIMARY KEY(c2))
+REFRESH FORCE ON DEMAND enable query rewrite AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4
+from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10;
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV4');
+
+##nore
+SELECT /*+mv_rewrite(ZC_RTMV4)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV4)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##re(rtmv3open)
+SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+#--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/
+#explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+##re
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+#--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+#explain basic SELECT /*+LEADING(ZT2 zt1) USE_NL(zt1)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+
+####开启物化改写(检查开，非实时物化开)
+SET QUERY_REWRITE_ENABLED = 'true';
+set QUERY_REWRITE_INTEGRITY = stale_tolerated;
+
+##create !rtmv
+--error 0,12003,9757
+DROP materialized view ZC_RTMV4;
+create materialized view ZC_RTMV4 (PRIMARY KEY(c2))
+REFRESH FORCE ON DEMAND enable on query computation AS
+select ZT1.c1 as c1,ZT1.C2 AS C2,ZT2.C1 AS C3 ,zt2.c2 AS C4
+from col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10;
+CALL dbms_stats.gather_table_stats('test', 'ZC_RTMV4');
+
+##nore
+SELECT /*+mv_rewrite(ZC_RTMV4)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV4)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 ORDER by 1;
+
+--error 0,12003,9757
+DROP materialized view ZC_RTMV4;
+
+
+##re(rtmv2)
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c2 < 20 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c2 < 20 ORDER by 1;
+
+##re
+SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c2 < 20 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c2 < 20 ORDER by 1;
+
+##re(rtmv2)
+SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT1.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 ORDER by 1;
+
+##re(rtmv2)
+SELECT ZT1.c1 as c1,ZT2.C3 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c1 < 20 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT ZT1.c1 as c1,ZT2.C3 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt2.c1 < 20 ORDER by 1;
+
+##nore
+SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT2.C3 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT /*+mv_rewrite(ZC_RTMV3)*/ZT1.c1 as c1,ZT2.C3 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 ORDER by 1;
+
+
+##re(rtmv2)
+
+SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2 ORDER by 1;
+--replace_regex /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2 ORDER by 1;
+
+####开启物化改写(检查开，实时物化开)
+SET QUERY_REWRITE_ENABLED = 'true';
+set QUERY_REWRITE_INTEGRITY = enforced;
+
+##re
+
+SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2 ORDER by 1;
+SELECT /*+no_mv_rewrite*/COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2 ORDER by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2 ORDER by 1;
+
+
+####subquery
+##re
+select * from col_info t1 WHERE t1.c1 IN (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) ORDER by 1;
+select * from col_info t1 WHERE t1.c1 IN (SELECT /*+no_mv_rewrite*/ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) ORDER by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic select * from col_info t1 WHERE t1.c1 IN (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) ORDER by 1;
+
+##re
+
+SELECT * from (SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) t1 ORDER BY 1;
+SELECT * from (SELECT /*+no_mv_rewrite*/COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) t1 ORDER BY 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic SELECT * from (SELECT COUNT(*) as c1,ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 < 20 group by zt2.c2) t1 ORDER BY 1;
+
+##re
+SELECT DISTINCT (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 group by zt2.c2) as c1 FROM col_info t1 order by 1;
+SELECT DISTINCT (SELECT /*+no_mv_rewrite*/ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 group by zt2.c2) as c1 FROM col_info t1 order by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic SELECT DISTINCT (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 group by zt2.c2) as c1 FROM col_info t1 order by 1;
+
+##re
+select * from col_info t1 WHERE t1.c1 = (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 AND zt1.c2 = t1.c2 group by zt2.c2) ORDER by 1;
+select * from col_info t1 WHERE t1.c1 = (SELECT /*+no_mv_rewrite*/ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 AND zt1.c2 = t1.c2 group by zt2.c2) ORDER by 1;
+--replace_regex /last_refresh_scn\([0-9]+\)/last_refresh_scn/ /:[0-9]+/:/
+explain basic select * from col_info t1 WHERE t1.c1 = (SELECT ZT2.C2 AS C2 FROM col_item ZT2 inner join col_info zt1 ON zt1.c2 = zt2.c1 WHERE zt1.c1 >10 AND zt1.c2 = 20 AND zt1.c2 = t1.c2 group by zt2.c2) ORDER by 1;
+
+
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_info;
+--error 0,942,1146
+DROP MATERIALIZED VIEW LOG ON col_item;
+--error 0,942,1051
+DROP table col_item;
+--error 0,942,1051
+DROP table col_info;
+
+--error 0,12003,9757
+DROP materialized view ZC_RTMV1;
+--error 0,12003,9757
+DROP materialized view ZC_RTMV2;
+--error 0,12003,9757
+DROP materialized view ZC_RTMV3;
+--error 0,12003,9757
+DROP materialized view ZC_RTMV4;
+
+SET QUERY_REWRITE_ENABLED = 'FALSE';
+SET QUERY_REWRITE_INTEGRITY = ENFORCED;

@@ -1,0 +1,166 @@
+#owner: lly378788
+#tags: format_outline
+##
+## Test Name: in_expr_formalize
+## Description: test SQLs with 'in' conditions 
+## Date: 2024-02-18
+##
+
+--disable_info
+--disable_metadata
+
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+--sleep 5
+connection default;
+
+--disable_warnings
+drop database if exists inexpr_db;
+--enable_warnings
+create database inexpr_db;
+use inexpr_db;
+
+create table t1(c1 int primary key, c2 int, c3 int, key(c2), key(c3,c2));
+insert into t1 value(1, 2, 4), (2,2,3), (3,2,2), (4,2,1);
+insert into t1 value(11, 3, 4), (12,3,3), (13,3,2), (14,3,1);
+create table t2 (c1 int primary key, c2 varchar(100), c3 varchar(100), key(c2), key(c3));
+insert into t2 value(1,'2','4'), (2,'2','3'), (3,'2','2'), (4,'2','1');
+insert into t2 value(11,'3', '4'), (12,'3','3'), (13,'3','2'), (14,'3','1');
+set autocommit = 0;
+sleep 1;
+
+## case that can be parameterized
+
+## 1. "c2 - 1" equals "c2 + -1", and should hit plan to "c2 + 1"
+select c2 - 1, c3 - 1 from t1 where c2 in (2) and c3 in (1,2,3,4);
+SELECT STATEMENT_DIGEST_TEXT("select c2 - 1, c3 - 1 from t1 where c2 in (2) and c3 in (1,2,3,4)") from dual;
+select c2 + 1, c3 + 1 from t1 where c2 in (2) and c3 in (1,2,3,4);
+SELECT STATEMENT_DIGEST_TEXT("select c2 + 1, c3 + 1 from t1 where c2 in (2) and c3 in (1,2,3,4)") from dual;
+
+select c2 from t1 where (c3 - 1) in (0,1,2,3);
+SELECT STATEMENT_DIGEST_TEXT("select c2 from t1 where (c3 - 1) in (0,1,2,3)") from dual;
+
+
+## 2. limit n
+select c1,c2 from t1 where c2 in (2,3) limit 5;
+SELECT STATEMENT_DIGEST_TEXT("select c1,c2 from t1 where c2 in (2,3) limit 5") from dual;   
+
+
+## 3. functions e.g. abs(n) and abs((n))
+## there's a great difference between abs(n) and abs((n))
+## just compare it with mysql8
+set @sql1 = "SELECT c2 \n, c3 \n FROM t1 \n WHERE (c2,c3) in ( (2,4), \n (2,3)) and 1 in (1, abs(1))";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+set @sql1 = "SELECT c2 \n, c3 \n FROM t1 \n WHERE (c2,c3) in ( (2,4), \n (2,3)) and 1 in (1, abs((c1)))";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+
+
+
+## cases that cannot be parameterized
+## and also most cases are different from mysql8
+
+## 1. parameters like @a
+set @a = 1;
+SELECT STATEMENT_DIGEST_TEXT("set @a = 1") from dual;
+select c1 from t1 where c1 in (@a);
+# 
+SELECT STATEMENT_DIGEST_TEXT("select c1 from t1 where c1 in (@a)") from dual;
+
+
+## 2. params in HINT
+set @b = "select /*+  parallel(2)  */c1 from t1 where c2 in (1,2,3,4,5)";
+SELECT STATEMENT_DIGEST_TEXT(@b) from dual;
+
+
+## 3. order by
+set @a = "select c1 from t1 where c2 in (1) order by 1";    
+SELECT STATEMENT_DIGEST_TEXT(@a) from dual;
+
+## 4. expr(c1)
+set @aa = "select userenv('sid') from dual";
+SELECT STATEMENT_DIGEST_TEXT(@aa) from dual;
+
+set @aa = "select UNIX_TIMESTAMP('2001-01-01 00:00:00') from dual";
+SELECT STATEMENT_DIGEST_TEXT(@aa) from dual;
+
+## 5. expr(c1,c2,c3)
+set @bb = " select * from t1 where  c1 in (substr('abc', 1, 2))";
+SELECT STATEMENT_DIGEST_TEXT(@bb) from dual;
+
+## 6. expr(c1,c2)
+set @cc = " select * from t1 where  c1 in (substr('abc', 1))";
+SELECT STATEMENT_DIGEST_TEXT(@cc) from dual;
+
+set @cc = " select * from t1 where  (1,c1) in ((1,STR_TO_DATE('20160620002220',  '%Y%m%d%H%i%s')))";
+SELECT STATEMENT_DIGEST_TEXT(@cc) from dual;
+
+## cases that in conditions are not always CONSTANT
+## 1. one column
+set @c = "SELECT c2 FROM t1 WHERE 1 in (1, c1)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+set @c = "SELECT c2 FROM t1 WHERE 1 in (c1, 1, 2)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+set @c = "SELECT c2 FROM t1 WHERE 1 in (1, c1, 1, 2)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+set @c = "SELECT c2 FROM t1 WHERE 1 in (4, 3, c1, 1, 2)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+set @c = "SELECT c2 FROM t1 WHERE 1 in (4, c2, 3, c1, 1, 2)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+set @c = "SELECT c2 FROM t1 WHERE 1 in (5, c2, 4, 3, c1, 1, 2)";
+SELECT STATEMENT_DIGEST_TEXT(@c) from dual;
+
+
+## 2. two columns
+set @d = "SELECT c2 FROM t1 WHERE (1,2) in ((1,2),(a,b))"; 
+SELECT STATEMENT_DIGEST_TEXT(@d) from dual;
+
+
+## cases with special characters where they should all lead to same result
+
+## 1. 换行符
+## 1.1 one column
+set @sql1 = "select c2 \n, c3 \n from t1 where c2 in (\n 2 \n) and c3 in (1, \n 2, \n 3, \n 4)";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+set @sql1 = "select c2 \n, c3 \n from t1 where c2 in (\n 2 \n) and c3 in (1, 
+2, 
+3, 
+4)";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+## 1.2 two columns
+set @sql1 = "SELECT c2 \n, c3 \n FROM t1 \n WHERE (c2,c3) in ( (2,4), \n (2,3), (2,2) )";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+set @sql1 = "SELECT c2 \n, c3 \n FROM t1 \n WHERE (c2,c3) in ( \n (2,3) )";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+set @sql1 = "SELECT c2 \n, c3 \n FROM t1 \n WHERE (c2,c3) in ( \n (2, \n 3) )";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+
+set @sql1 = "select t1.c2,t2.c3 from t1 join t2 on t1.c1=t2.c1 where (t1.c2, t2.c2) in ((2,\'2\'))";
+SELECT STATEMENT_DIGEST_TEXT(@sql1);
+
+
+## 2. Tab字符
+## 2.1 one column
+set @sql2 = "select c2 \t, c3 \t from t1 where c2 in (\t 2) and c3 in (1, \t 2, \t 3, \t 4)";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+# 
+set @sql2 = "select c2 \t, c3 \t from t1 where c2 in (\t 2) and c3 in (1 \t)";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+set @sql2 = "select c2 \t, c3 \t from t1 where c2 in (\t c3) and c3 in (1 \t)";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+## 2.2 two columns
+set @sql2 = "SELECT c2 \t, c3 \t FROM t1 \t WHERE (c2,c3) in ( (2,4), \t (2,3), (2,2) )";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+set @sql2 = "SELECT c2 \t, c3 \t FROM t1 \t WHERE (c2,c3) in ( \t (2,3))";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+set @sql2 = "SELECT c2 \t, c3 \t FROM t1 \t WHERE (c2,c3) in ( \t (2, \t 3) \t, (2, \t 2))";
+SELECT STATEMENT_DIGEST_TEXT(@sql2);
+
+
+## 3. NULL
+set @sql3 = "select  c2 , c3 from t1 where c2 in (2) and c3 in (\0)";
+--error 1064
+SELECT STATEMENT_DIGEST_TEXT(@sql3);
+set @sql3 = "select  c2 , c3 from t1 where c2 in (2,NULL) and c3 in (NULL,NULL)";
+SELECT STATEMENT_DIGEST_TEXT(@sql3);
+
+

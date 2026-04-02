@@ -1,0 +1,476 @@
+# CASE_OWNER:
+#    @jinqian.zzy
+# CASE_DESC:
+#    测试容灾拆租户兼容性相关
+#
+# sh copy_for_compat.sh
+#######################################################################
+#                        create inital objects
+#######################################################################
+
+ob1=OBI(cluster=1:1:1:1,proxy_num=0,init_unit_cpu=0,version=4_3_3_0);
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql ALTER SYSTEM SET enable_rebalance = 'false';
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+# create new tenant mysql_tenant
+source include/create_unit_config.inc;
+ob1.mysql CREATE RESOURCE POOL tenant_pool UNIT = "2c2g", UNIT_NUM = 1, ZONE_LIST = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql CREATE TENANT mysql_tenant RESOURCE_POOL_LIST=('tenant_pool'), LOCALITY = "F@z1, F@z2, F@z3", PRIMARY_ZONE = "z1" SET ob_tcp_invited_nodes='%';
+
+let $tenant_id = deploy_get_value(ob1.select SELECT tenant_id FROM oceanbase.DBA_OB_TENANTS WHERE tenant_name = "mysql_tenant", tenant_id, 1);
+let $meta_tenant_id = deploy_get_value(ob1.select select tenant_id - 1 as meta_tenant_id from oceanbase.DBA_OB_TENANTS where tenant_name = "mysql_tenant", meta_tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select SELECT resource_pool_id FROM oceanbase.DBA_OB_RESOURCE_POOLS WHERE tenant_id = $tenant_id, resource_pool_id, 1);
+
+let $z1_dst_ip0 = deploy_get_value(ob1.z1.obs0.ip);
+let $z1_dst_port0 = deploy_get_value(ob1.z1.obs0.port);
+let $z1_dst0 = $z1_dst_ip0:$z1_dst_port0;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+
+let $z4_dst_ip0 = deploy_get_value(ob1.z4.obs0.ip);
+let $z4_dst_port0 = deploy_get_value(ob1.z4.obs0.port);
+let $z4_dst0 = $z4_dst_ip0:$z4_dst_port0;
+
+--disable_query_log
+--echo ========================================================================
+--echo ||                    [MILESTONE] prepare finished                    ||
+--echo ========================================================================
+
+--echo ========================================================================
+--echo ||                      [TEST1] 去内存兼容性测试                         ||
+--echo ========================================================================
+# 升级z1为新版本的observer，rs在z1新机器上，下发任务后不进行调度
+# 切换rs到其他observer，验证探活可以清除任务并重新下发任务
+
+# 升级z1 z1为新的binary
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+ob1.upgrade_check_before;
+ob1.upgrade_commond_for_server pre;
+
+alter system begin upgrade;
+alter system begin rolling upgrade;
+
+alter system stop zone 'z1';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z1', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z1' and role='leader', 0, 20;
+ob1.z1.force_stop;
+ob1.z2.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z1' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z1.upgrade;
+ob1.z1.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z1' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z1';
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+connection sys_conn;
+
+ALTER SYSTEM SET enable_ddl = true;
+ALTER SYSTEM SET enable_rereplication = 'true';
+
+# 1.确保RS在z1
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+
+# 2.只生成等待状态的任务, 不调度任务(旧二进制上没有这个errsim标识，所以会报错，但是实际会在新二进制上生效)
+--error 1210
+alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 1;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+# 3.生成三个日志流的等待状态的补副本任务
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 3, 30;
+
+# 4.切rs到旧版本上，验证探活功
+eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z2', 1, 60;
+
+# 5.等待探活逻辑清理掉所有无效任务
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_LS_REPLICA_TASK_RESULT_UNCERTAIN%", 3, 40;
+
+# 6.清理完没有下发的任务后，重新检测生成任务并执行完成
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 3, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z4_dst0%', 3, 20;
+
+# 7.reset错误注入
+--error 1210
+alter system set_tp tp_name = ERRSIM_DISASTER_RECOVERY_POP_AND_EXECUTE_TASK, error_code = 4016, frequency = 0;
+
+# 8.切rs回到新版本上
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 6, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z4_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002), 9, 60;
+sleep 10;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 9, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z4_dst0%', 3, 20;
+
+# 9.打印task_history视图记录任务执行结果
+select tenant_id, ls_id, task_type, priority, task_status, target_paxos_replica_number, target_replica_type, source_paxos_replica_number, source_replica_type, comment from oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY;
+ob1.check_until_timeout select count(*) from __all_tenant where previous_locality != '', 0, 20;
+sleep 10;
+
+--echo ========================================================================
+--echo ||                   [TEST2] observer汇报兼容性测试                      ||
+--echo ========================================================================
+# 1.新rs下发给旧observer后旧observer汇报(test1中有覆盖)
+# 2.旧rs下发给旧observer后旧observer汇报(test1中有覆盖)
+# 3.新rs下发给新observer后新observer汇报(如下)
+# 4.旧rs下发给新observer后新observer汇报(如下)
+
+# 升级z2
+alter system stop zone 'z2';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z2', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z2' and role='leader', 0, 20;
+ob1.z2.force_stop;
+ob1.z1.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z2' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z2.upgrade;
+ob1.z2.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z2' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z2';
+
+# 测试新rs下发给新observer后新observer汇报
+# 1.切rs到z1 新observer
+eval ALTER TENANT sys SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 12, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z2_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002), 9, 60;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 15, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z2_dst0%', 3, 20;
+
+# 测试旧rs下发给新observer后新observer汇报
+eval ALTER TENANT sys SET PRIMARY_ZONE="z3;z2;z1";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z3', 1, 60;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 18, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z2_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002), 9, 60;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 21, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z2_dst0%', 3, 20;
+
+--disable_query_log
+--echo ========================================================================
+--echo ||                     [TEST3] 运维命令兼容性测试                        ||
+--echo ========================================================================
+# 1. 新obserer给旧RS发请求
+# 2. 新observer给新RS发请求
+# 3. 旧observer给新RS发请求
+# 要求立刻调度任务
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+
+# 1.当前链接在ob1.z1.obs0, rs在z3（新obserer给旧RS发请求）
+eval alter system remove replica ls=1001 server='$z4_dst0' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 22, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1001 server='$z4_dst0' replica_type='F' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 23, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 1, 20;
+
+# 2.当前链接在ob1.z1.obs0, rs在z2（新obserer给新RS发请求）
+eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z2', 1, 60;
+
+eval alter system remove replica ls=1001 server='$z4_dst0' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 24, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1001 server='$z4_dst0' replica_type='F' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 25, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 1, 20;
+
+# 3.链接在ob1.z3.obs0, rs在z2（旧obserer给新RS发请求）
+let $proxy_ip3 = deploy_get_value(ob1.z3.obs0.ip);
+let $proxy_port3 = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect(sys_conn3, $proxy_ip3, root@sys,,oceanbase, $proxy_port3);
+connection sys_conn3;
+
+eval alter system remove replica ls=1001 server='$z4_dst0' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 26, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1001 server='$z4_dst0' replica_type='F' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 27, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z4_dst0%', 1, 20;
+
+--echo ========================================================================
+--echo ||          [TEST4] 升级全部observer，推高cluster version                ||
+--echo ========================================================================
+--disable_query_log
+# 升级z3
+alter system stop zone 'z3';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z3', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z3' and role='leader', 0, 20;
+ob1.z3.force_stop;
+ob1.z1.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z3' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z3.upgrade;
+ob1.z3.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z3';
+sleep 30;
+
+connection sys_conn;
+# 升级z4
+alter system stop zone 'z4';
+ob1.check_until_timeout select status from DBA_OB_ZONES where zone='z4', INACTIVE, 20;
+ob1.check_until_timeout select count(1) as leader_count from CDB_OB_LS_LOCATIONS where zone='z4' and role='leader', 0, 20;
+ob1.z4.force_stop;
+ob1.z1.obs0.check_until_timeout select count(*) from oceanbase.DBA_OB_SERVERS where zone = 'z4' and (start_service_time is null and status='INACTIVE'), 1, 60;
+ob1.z4.upgrade;
+ob1.z4.nstart;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z4' and (start_service_time is null or status='INACTIVE'), 0, 300;
+ob1.check_until_timeout select count(1) as unsync_cnt from GV\$OB_LOG_STAT where in_sync = 'NO', 0, 600;
+source include/check_schema_sync_for_restart.inc;
+ob1.mysql alter system start zone 'z4';
+
+alter system end rolling upgrade;
+alter system end upgrade;
+
+connection sys_conn;
+eval ALTER TENANT sys SET PRIMARY_ZONE="z3;z2;z1";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z3', 1, 60;
+eval ALTER TENANT mysql_tenant SET PRIMARY_ZONE="z2;z1;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1001 and ls_id = 1 and role = 'leader' and zone = 'z2', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and zone = 'z2', 1, 60;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+--disable_query_log
+# 测试运维命令
+eval alter system remove replica ls=1001 server='$z1_dst0' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 28, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1001 server='$z1_dst0' replica_type='F' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 29, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+eval alter system remove replica ls=1 server='$z1_dst0' paxos_replica_num = 4 tenant='sys';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 30, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1 server='$z1_dst0' replica_type='F' paxos_replica_num = 4 tenant='sys';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 31, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+
+# 升级系统租户
+alter system run upgrade job 'UPGRADE_ALL' tenant=sys;
+sleep 2;
+let $max_job_id = query_get_value(select job_id from oceanbase.__all_rootservice_job order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_id=$max_job_id, SUCCESS, 600;
+
+--echo ========================================================================
+--echo ||          [TEST5] sys租户data version推高后，测试自动容灾               ||
+--echo ========================================================================
+connection sys_conn;
+eval ALTER TENANT sys SET PRIMARY_ZONE="z2;z1;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and zone = 'z2', 1, 60;
+eval ALTER TENANT mysql_tenant SET PRIMARY_ZONE="z1;z2;z3";
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1001 and ls_id = 1 and role = 'leader' and zone = 'z1', 1, 60;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and zone = 'z1', 1, 60;
+
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 34, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002), 9, 60;
+sleep 10;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 37, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z1_dst0%', 3, 20;
+
+eval ALTER TENANT sys LOCALITY = "F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 38, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1, 3, 60;
+sleep 10;
+
+eval ALTER TENANT sys LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 39, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+--echo ========================================================================
+--echo ||          [TEST6] sys租户data version推高后，测试运维命令               ||
+--echo ========================================================================
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'false';
+--disable_query_log
+eval alter system remove replica ls=1001 server='$z1_dst0' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 40, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1001 server='$z1_dst0' replica_type='F' paxos_replica_num = 4 tenant='mysql_tenant';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 41, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1002 and ls_id = 1001 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+eval alter system remove replica ls=1 server='$z1_dst0' paxos_replica_num = 4 tenant='sys';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 42, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1, 3, 40;
+sleep 10;
+
+eval alter system add replica ls=1 server='$z1_dst0' replica_type='F' paxos_replica_num = 4 tenant='sys';
+# sleep一会确认唤醒成功
+sleep 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS where task_status = 'WAITING', 0, 3;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 43, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and ls_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+--echo ========================================================================
+--echo ||             [TEST7] 推高所有租户data version测试自动容灾               ||
+--echo ========================================================================
+
+# 升级系统租户
+alter system run upgrade job 'UPGRADE_ALL';
+sleep 2;
+let $max_job_id = query_get_value(select job_id from oceanbase.__all_rootservice_job order by job_id desc limit 1, job_id, 1);
+ob1.check_until_timeout select job_status from oceanbase.__all_rootservice_job where job_id=$max_job_id, SUCCESS, 600;
+
+connection sys_conn;
+ob1.mysql ALTER SYSTEM SET enable_rereplication = 'true';
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 46, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002), 9, 60;
+sleep 10;
+
+eval ALTER TENANT mysql_tenant LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 49, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where (tenant_id = 1001 or tenant_id = 1002) and role = 'leader' and member_list like '%$z1_dst0%', 3, 20;
+
+eval ALTER TENANT sys LOCALITY = "F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 50, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 0, 20;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1, 3, 60;
+sleep 10;
+
+eval ALTER TENANT sys LOCALITY = "F@z1,F@z2,F@z3,F@z4";
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_SUCCESS%", 51, 40;
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASKS, 0, 40;
+ob1.check_until_timeout select count(*) from CDB_OB_LS_LOCATIONS where tenant_id = 1 and role = 'leader' and member_list like '%$z1_dst0%', 1, 20;
+
+--echo ========================================================================
+--echo ||                           [TEST8] 收尾确认                          ||
+--echo ========================================================================
+
+# 确认所有任务都是汇报删除的而不是探活删除的
+ob1.check_until_timeout SELECT COUNT(*) FROM oceanbase.CDB_OB_LS_REPLICA_TASK_HISTORY where EXECUTE_RESULT like "%OB_LS_REPLICA_TASK_RESULT_UNCERTAIN%", 3, 40;

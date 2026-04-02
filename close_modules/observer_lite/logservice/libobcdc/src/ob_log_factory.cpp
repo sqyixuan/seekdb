@@ -1,0 +1,84 @@
+/*
+ * Copyright (c) 2025 OceanBase.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#define USING_LOG_PREFIX OBLOG
+#include "ob_log_factory.h"
+#include "lib/objectpool/ob_resource_pool.h"
+
+namespace oceanbase
+{
+namespace libobcdc
+{
+using namespace oceanbase::common;
+
+#define RPALLOCATOR_ALLOC(object, LABEL) rp_alloc(object, LABEL)
+#define RPALLOCATOR_FREE(object, LABEL) rp_free(object, LABEL)
+
+#define LIBOBLOG_FACTORY_CLASS_IMPLEMENT(object_name, LABEL, allocator_type, arg...)  \
+  int64_t object_name##Factory::alloc_count_ = 0; \
+  int64_t object_name##Factory::release_count_ = 0; \
+  const char *object_name##Factory::mod_type_ = #LABEL; \
+  object_name *object_name##Factory::alloc(arg)  \
+  {  \
+    object_name *object = NULL;    \
+    if (REACH_TIME_INTERVAL(LIBOBLOG_MEM_STAT_INTERVAL)) {  \
+      LOG_INFO("libobcdc factory statistics",  \
+                "object_name", #object_name,       \
+                "label", #LABEL,                   \
+                K_(alloc_count), K_(release_count), "used", alloc_count_ - release_count_);  \
+    }  \
+    if (NULL != (object = allocator_type##_ALLOC(object_name, LABEL))) { \
+      (void)ATOMIC_FAA(&alloc_count_, 1);  \
+    }  \
+    return object;  \
+  }                                             \
+  void object_name##Factory::free(object_name *object)  \
+  {\
+    if (OB_ISNULL(object)) {\
+      LOG_ERROR_RET(OB_ERR_UNEXPECTED, "object is null", KP(object));\
+    } else {\
+      object->destroy();  \
+      allocator_type##_FREE(object, LABEL);        \
+      object = NULL;\
+      (void)ATOMIC_FAA(&release_count_, 1);\
+    }\
+  }\
+  int64_t object_name##Factory::get_alloc_count()  \
+  {  \
+    return alloc_count_;  \
+  }  \
+  int64_t object_name##Factory::get_release_count()\
+  {\
+    return release_count_;\
+  }\
+  const char *object_name##Factory::get_mod_type()\
+  {\
+    return mod_type_;\
+  }\
+
+
+#define LIBOBLOG_FACTORY_CLASS_IMPLEMENT_USE_RP_ALLOC(object_name, LABEL, arg...) LIBOBLOG_FACTORY_CLASS_IMPLEMENT(object_name, LABEL, RPALLOCATOR, arg)
+
+static constexpr const char STORE_TASK[] = "StoreTask";
+static constexpr const char READ_LOG_BUF[] = "ReadLogBuf";
+static constexpr const char BIG_BLOCK[] = "BigBlock";
+
+LIBOBLOG_FACTORY_CLASS_IMPLEMENT_USE_RP_ALLOC(ObLogStoreTask, STORE_TASK)
+LIBOBLOG_FACTORY_CLASS_IMPLEMENT_USE_RP_ALLOC(ReadLogBuf, READ_LOG_BUF)
+LIBOBLOG_FACTORY_CLASS_IMPLEMENT_USE_RP_ALLOC(BigBlock, BIG_BLOCK)
+
+}
+}

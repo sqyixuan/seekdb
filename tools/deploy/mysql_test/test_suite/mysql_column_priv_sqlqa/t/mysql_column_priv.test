@@ -1,0 +1,1696 @@
+# owner group:SQL-优化器
+# owner: sean.yyj
+# description:MySQL Column_priv
+# tags: Column_priv
+# author:wb-ykk01675116
+
+
+--echo # 环境清理
+purge recyclebin;
+--enable_sorted_result
+--disable_warnings
+--error 0,1396
+drop user ykk@'%';
+--enable_warnings
+create user ykk IDENTIFIED BY 'ykk';
+grant all on *.* to ykk WITH GRANT OPTION;
+connect (conn1,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn1;
+
+
+############################################# 语法验证 #############################################
+
+# 创建数据库
+--error 0,1008
+DROP DATABASE ykk_db1;
+CREATE DATABASE ykk_db1;
+
+--error 0,1008
+DROP DATABASE ykk;
+CREATE DATABASE ykk;
+
+
+USE ykk_db1;
+
+# 创建测试表
+--error 1051
+DROP TABLE t1;
+CREATE TABLE t1(
+    c1 int,
+    c2 int,
+    c3 int
+);
+
+--error 1051
+DROP TABLE t2;
+CREATE TABLE t2(
+    c1 int
+);
+
+
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+--error 0,1396
+DROP USER ykk2;
+CREATE USER 'ykk2'@'%' IDENTIFIED BY 'ykk123';
+
+--error 0,1396
+DROP USER ykk3;
+CREATE USER 'ykk3'@'%' IDENTIFIED BY 'ykk123';
+
+### 创建用户时将列权限授权给用户
+--error 0,1396
+DROP USER ykk4;
+CREATE USER 'ykk4'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk_db1.t1 TO ykk4 WITH GRANT OPTION;
+
+--error 0,1396
+DROP USER ykk5;
+CREATE USER 'ykk5'@'%' IDENTIFIED BY 'ykk123';
+
+
+
+### 授权：
+### 将列权限授权给没有列权限的用户
+
+# 给ykk1授权SELECT（不带 WITH GRANT OPTION）
+GRANT SELECT ON ykk_db1.t1 TO ykk1;
+GRANT SELECT ON ykk_db1.t2 TO ykk1;
+
+# 给ykk3授权SELECT（带 WITH GRANT OPTION）
+GRANT SELECT ON ykk_db1.t1 TO ykk3 WITH GRANT OPTION;
+
+
+###
+# 登录ykk1
+connect (conn2,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn2;
+###
+--echo # ykk1授权给ykk2，预期失败
+--error 1142
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+# 验证ykk1用户是否拥有ykk_db1.t1表的SELECT权限
+SELECT * FROM t1;
+
+
+###
+# 登录ykk3
+connect (conn3,$OBMYSQL_MS0,ykk3,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn3;
+###
+--echo # ykk3授权给ykk2
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+
+###
+# 登录ykk2
+connect (conn4,$OBMYSQL_MS0,ykk2,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn4;
+###
+--echo #  查询t1，验证SELECT权限
+USE ykk_db1;
+
+# 验证ykk2用户是否拥有ykk_db1.t1表的SELECT权限
+SELECT * FROM t1;
+
+
+
+### 撤销授权：
+
+###
+# 登录root
+connect (conn5,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn5;
+###
+
+
+# 撤销ykk1的SELECT权限（不带 WITH GRANT OPTION）
+REVOKE SELECT ON ykk_db1.t1 FROM ykk1;
+
+
+###
+# 登录ykk1
+connect (conn6,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn6;
+###
+--echo #  查询t1，验证SELECT权限
+USE ykk_db1;
+--error 1142
+SELECT * FROM ykk_db1.t1;
+
+
+###
+# 登录ykk2
+connect (conn7,$OBMYSQL_MS0,ykk2,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn7;
+###
+--echo #  查询t1，验证SELECT权限
+USE ykk_db1;
+SELECT * FROM t1;
+
+###
+# 登录root
+connect (conn8,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn8;
+###
+
+
+# 撤销ykk3的SELECT权限（带 WITH GRANT OPTION）
+--error 1064
+REVOKE SELECT ON ykk_db1.t1 FROM ykk3 WITH GRANT OPTION;
+
+
+### 将列权限授权给已有列权限的用户
+--echo # 再次执行用户ykk4的SELECT授权语句
+GRANT SELECT ON ykk_db1.t1 TO ykk4;
+
+# 再次执行授权语句时，携带 WITH GRANT OPTION
+GRANT SELECT ON ykk_db1.t1 TO ykk4 WITH GRANT OPTION;
+
+
+### 已有列权限的用户授权给没有列权限的用户
+# 使用ykk4用户给其他用户授权
+###
+# 登录ykk4
+connect (conn9,$OBMYSQL_MS0,ykk4,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn9;
+###
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+
+### 已有列权限的用户授权给已有列权限的用户
+GRANT SELECT ON ykk_db1.t1 TO ykk2;
+
+
+###
+# 登录root
+connect (conn10,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn10;
+###
+
+### 用户没有列权限时撤销用户的列权限
+# 表列没有 SELECT、INSERT、UPDATE 权限时，撤销 SELECT/INSERT/UPDATE
+--error 5362,1147
+REVOKE SELECT ON ykk_db1.t1 FROM ykk1;
+--error 5362,1147
+REVOKE INSERT ON ykk_db1.t1 FROM ykk1;
+--error 5362,1147
+REVOKE UPDATE ON ykk_db1.t1 FROM ykk1;
+
+# 表列拥有SELECT权限时，撤销INSERT、UPDATE权限
+--echo # 给用户ykk1授权SELECT
+GRANT SELECT ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的UPDATE/INSERT权限
+REVOKE INSERT ON ykk_db1.t1 FROM ykk1;
+REVOKE UPDATE ON ykk_db1.t1 FROM ykk1;
+
+# 表列拥有INSERT权限时，撤销SELECT、UPDATE权限
+--echo # 给用户ykk1授权INSERT
+GRANT INSERT ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的UPDATE/SELECT权限
+REVOKE SELECT ON ykk_db1.t1 FROM ykk1;
+REVOKE UPDATE ON ykk_db1.t1 FROM ykk1;
+
+# 表列拥有UPDATE权限时，撤销SELECT、INSERT权限
+--echo # 给用户ykk1授权UPDATE
+GRANT UPDATE ON ykk_db1.t1 TO ykk1;
+--echo # 撤销用户ykk1的INSERT/SELECT权限
+REVOKE SELECT ON ykk_db1.t1 FROM ykk1;
+REVOKE INSERT ON ykk_db1.t1 FROM ykk1;
+
+
+
+############################################# 列级权限场景 #############################################
+### 授权权限 
+# 单一权限授权
+# 登录root
+connect (conn11,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn11;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+# 创建表
+use ykk_db1;
+--error 0,1051
+DROP TABLE t_sel;
+CREATE TABLE t_sel(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_ins;
+CREATE TABLE t_ins(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_upd;
+CREATE TABLE t_upd(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+
+--echo # 授权单列/多列 SELECT 权限
+# 单列
+GRANT SELECT(c1) ON ykk_db1.t_sel TO ykk1;
+# 多列
+GRANT SELECT(c2,c3,c4) ON ykk_db1.t_sel TO ykk1;
+
+--echo # 授权单列/多列 INSERT 权限
+# 单列
+GRANT INSERT(c1) ON ykk_db1.t_ins TO ykk1;
+# 多列
+GRANT INSERT(c2,c3,c4) ON ykk_db1.t_ins TO ykk1;
+
+--echo # 授权单列/多列 UPDATE 权限
+# 单列
+GRANT UPDATE(c1) ON ykk_db1.t_upd TO ykk1;
+# 多列
+GRANT UPDATE(c2,c3,c4) ON ykk_db1.t_upd TO ykk1;
+
+
+### 权限验证
+--echo # 查询授权语法
+SHOW GRANTS FOR ykk1;
+--echo # 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv ORDER BY user,Column_name;
+--echo # 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE TABLE_SCHEMA = 'ykk_db1' ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+
+
+# 执行DML验证
+# 登录ykk1
+connect (conn12,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn12;
+
+use ykk_db1;
+
+# t_sel表SELECT权限验证
+SELECT c1 FROM t_sel;
+SELECT c2,c3,c4 FROM t_sel;
+SELECT c1,c2,c3,c4 FROM t_sel;
+SELECT * FROM t_sel;
+
+# t_ins表INSERT权限验证
+INSERT t_ins(c1) VALUES(1);
+INSERT t_ins(c2,c3,c4) VALUES('a','b','c');
+INSERT t_ins(c1,c2,c3,c4) VALUES(2,'x','y','z');
+INSERT t_ins VALUES(3,'x','y','z');
+
+# t_upd表UPDATE权限验证
+UPDATE t_upd SET c1 = 1;
+UPDATE t_upd SET c2 = 'h', c3 = 'j', c4 = 'k';
+UPDATE t_upd SET c1 = 2, c2 = 'h', c3 = 'j', c4 = 'k';
+
+
+# 组合权限授权
+
+# 登录root
+connect (conn13,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn13;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk2;
+CREATE USER 'ykk2'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk3;
+CREATE USER 'ykk3'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk4;
+CREATE USER 'ykk4'@'%' IDENTIFIED BY 'ykk123';
+--error 0,1396
+DROP USER ykk5;
+CREATE USER 'ykk5'@'%' IDENTIFIED BY 'ykk123';
+
+
+# 使用ykk_db1数据库
+use ykk_db1;
+
+--error 0,1051
+DROP TABLE t_com1;
+CREATE TABLE t_com1(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_com2;
+CREATE TABLE t_com2(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--error 0,1051
+DROP TABLE t_com3;
+CREATE TABLE t_com3(
+    c1 int,
+    c2 varchar(50),
+    c3 varchar(50),
+    c4 varchar(50)
+);
+
+--echo # 授权单列/多列 SELECT+INSERT 权限
+# 单列
+GRANT SELECT(c1), INSERT(c1) ON ykk_db1.t_com1 TO ykk1;
+# 多列
+GRANT SELECT(c2,c3,c4), INSERT(c2,c3,c4) ON ykk_db1.t_com2 TO ykk1;
+
+# 查询授权语法
+SHOW GRANTS FOR ykk1;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk1';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk1'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 授权单列/多列 SELECT+UPDATE 权限
+# 单列
+GRANT SELECT(c1), UPDATE(c1) ON ykk_db1.t_com1 TO ykk2;
+# 多列
+GRANT SELECT(c2,c3,c4), UPDATE(c2,c3,c4) ON ykk_db1.t_com2 TO ykk2;
+
+# 查询授权语法
+SHOW GRANTS FOR ykk2;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk2';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk2'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 授权单列/多列 INSERT+UPDATE 权限
+# 单列
+GRANT INSERT(c1), UPDATE(c1) ON ykk_db1.t_com1 TO ykk3;
+# 多列
+GRANT INSERT(c2,c3,c4), UPDATE(c2,c3,c4) ON ykk_db1.t_com2 TO ykk3;
+
+# 查询授权语法
+SHOW GRANTS FOR ykk3;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk3';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk3'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 分别给不同的列授不同的权限
+# 单列
+GRANT SELECT(c1), INSERT(c2), UPDATE(c3) ON ykk_db1.t_com1 TO ykk4;
+# 多列
+GRANT SELECT(c1,c2), INSERT(c2,c3), UPDATE(c3,c4) ON ykk_db1.t_com2 TO ykk4;
+
+# 查询授权语法
+SHOW GRANTS FOR ykk4;
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+####################################
+# 防止用户没有任何权限时，无法连接
+GRANT SELECT ON ykk.* TO ykk1;
+GRANT SELECT ON ykk.* TO ykk2;
+GRANT SELECT ON ykk.* TO ykk3;
+GRANT SELECT ON ykk.* TO ykk4;
+GRANT SELECT ON ykk.* TO ykk5;
+####################################
+
+# 登录ykk1
+connect (conn14,$OBMYSQL_MS0,ykk1,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn14;
+
+--echo ## 验证 SELECT+INSERT 权限
+INSERT into ykk_db1.t_com1(c1) VALUES(1);
+INSERT into ykk_db1.t_com1(c1) VALUES(2);
+SELECT c1 FROM ykk_db1.t_com1;
+SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+INSERT into ykk_db1.t_com1(c1) SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+--error 1143
+INSERT into ykk_db1.t_com2(c1) VALUES(1);
+--error 1143
+SELECT c2 FROM ykk_db1.t_com1;
+--error 1143
+SELECT c1 FROM ykk_db1.t_com2;
+
+INSERT into ykk_db1.t_com2(c2,c3,c4) VALUES('a','b','c');
+SELECT c2 FROM ykk_db1.t_com2;
+SELECT c3,c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+INSERT into ykk_db1.t_com2(c2) SELECT c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+--error 1143
+INSERT into ykk_db1.t_com1(c2) VALUES('11');
+--error 1143
+INSERT into ykk_db1.t_com2(c1) VALUES(1);
+--error 1143
+SELECT * FROM ykk_db1.t_com2;
+--error 1143
+######### mysql报错1142，ob1143
+SELECT * FROM ykk_db1.t_com1;
+
+
+# 登录ykk2
+connect (conn15,$OBMYSQL_MS0,ykk2,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn15; 
+
+--echo ## 验证 SELECT+UPDATE 权限
+SELECT c1 FROM ykk_db1.t_com1;
+SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+UPDATE ykk_db1.t_com1 SET c1 = 2;
+UPDATE ykk_db1.t_com1 SET c1 = 3 WHERE c1 = 1;
+--error 1143
+SELECT c2 FROM ykk_db1.t_com1;
+--error 1143
+SELECT c1 FROM ykk_db1.t_com2;
+--error 1143
+UPDATE ykk_db1.t_com1 SET c2 = 'xxx';
+--error 1143
+UPDATE ykk_db1.t_com1 SET c1 = 3 WHERE c2 = 'xxx';
+
+SELECT c2 FROM ykk_db1.t_com2;
+SELECT c3,c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+UPDATE ykk_db1.t_com2 SET c2 = 'a', c3 = 'j', c4 = 'k';
+UPDATE ykk_db1.t_com2 SET c2 = (SELECT c3 FROM ykk_db1.t_com2 WHERE c4 = 'v');
+--error 1143
+SELECT c1 FROM ykk_db1.t_com2;
+--error 1143
+SELECT c2 FROM ykk_db1.t_com1;
+--error 1143
+UPDATE ykk_db1.t_com1 SET c2 = 'a';
+--error 1143
+UPDATE ykk_db1.t_com2 SET c1 = 10;
+
+
+
+# 登录ykk3
+connect (conn16,$OBMYSQL_MS0,ykk3,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn16; 
+
+--echo ## 验证 INSERT+UPDATE 权限
+INSERT INTO ykk_db1.t_com1(c1) VALUES(3);
+INSERT INTO ykk_db1.t_com2(c2,c3,c4) VALUES('asd','xxx','ccc');
+UPDATE ykk_db1.t_com1 SET c1 = 2;
+UPDATE ykk_db1.t_com2 SET c2 = 'aaa';
+UPDATE ykk_db1.t_com2 SET c3 = 'ccc';
+UPDATE ykk_db1.t_com2 SET c4 = 'ggg';
+
+UPDATE ykk_db1.t_com2 SET c2 = '111', c3 = 'sss', c4 = '333';
+
+--error 1143
+INSERT INTO ykk_db1.t_com1 VALUES(3,'xxx','ccc','sss');
+--error 1143
+INSERT INTO ykk_db1.t_com2 VALUES(3,'xxx','ccc','sss');
+--error 1143
+INSERT INTO ykk_db1.t_com1(c2,c3,c4) VALUES(3,'xxx','ccc');
+--error 1143
+INSERT INTO ykk_db1.t_com2(c1) VALUES(3);
+--error 1143
+UPDATE ykk_db1.t_com1 SET c2 = 'xxx';
+--error 1143
+UPDATE ykk_db1.t_com2 SET c1 = 3;
+
+
+# 登录ykk4
+connect (conn17,$OBMYSQL_MS0,ykk4,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn17;
+
+USE ykk_db1;
+--echo # 验证分别给不同的列授不同的权限
+INSERT INTO ykk_db1.t_com1(c2) VALUES(11);
+SELECT c1 FROM ykk_db1.t_com1 ORDER BY c1;
+UPDATE ykk_db1.t_com1 SET c3 = 22;
+INSERT INTO ykk_db1.t_com1(c2) SELECT c1 FROM ykk_db1.t_com1;
+UPDATE ykk_db1.t_com1 SET c3 = (SELECT c1 FROM ykk_db1.t_com1 LIMIT 1);
+
+SELECT c1,c2 FROM ykk_db1.t_com2;
+INSERT INTO ykk_db1.t_com2(c2,c3) VALUES ('xxx','asa');
+UPDATE ykk_db1.t_com2 SET c3 = '15', c4 = 'as';
+INSERT INTO ykk_db1.t_com2(c2) SELECT c2 FROM ykk_db1.t_com2;
+INSERT INTO ykk_db1.t_com2(c3) SELECT c2 FROM ykk_db1.t_com2;
+UPDATE ykk_db1.t_com2 SET c3 = c2 WHERE c1 = 1;
+UPDATE ykk_db1.t_com2 SET c4 = c2 WHERE c1 = 1;
+UPDATE ykk_db1.t_com2 SET c4 = (SELECT c2 FROM ykk_db1.t_com2 WHERE c2 = 'a');
+UPDATE ykk_db1.t_com2 SET c4 = (SELECT c2 FROM ykk_db1.t_com2 WHERE c2 = 'b');
+
+--error 1143
+SELECT c2 FROM ykk_db1.t_com1;
+--error 1143
+SELECT c3 FROM ykk_db1.t_com1;
+--error 1143
+SELECT c4 FROM ykk_db1.t_com1;
+--error 1143
+SELECT * FROM ykk_db1.t_com1;
+--error 1143
+INSERT INTO ykk_db1.t_com1(c1) VALUES('11');
+--error 1143
+INSERT INTO ykk_db1.t_com1(c3) VALUES('11');
+--error 1143
+INSERT INTO ykk_db1.t_com1(c4) VALUES('11');
+--error 1143
+UPDATE ykk_db1.t_com1 SET c1 = 22;
+--error 1143
+UPDATE ykk_db1.t_com1 SET c2 = '22';
+--error 1143
+UPDATE ykk_db1.t_com1 SET c4 = '22';
+--error 1143
+SELECT * FROM ykk_db1.t_com2;
+--error 1143
+INSERT INTO ykk_db1.t_com2(c1) VALUES(1);
+--error 1143
+INSERT INTO ykk_db1.t_com2 VALUES(1,'2','3','4');
+--error 1143
+UPDATE ykk_db1.t_com2 SET c1 = 55;
+--error 1143
+UPDATE ykk_db1.t_com2 SET c1 = 3, c2 = c3, c4 = c2 WHERE c4 = 'aaa';
+
+
+# 登录root
+connect (conn18,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn18;
+--echo # 同时授权表和表列SELECT/INSERT/UPDATE权限
+# 表列
+GRANT SELECT(c1), INSERT(c1), UPDATE(c1) ON ykk_db1.t_com3 TO ykk5;
+
+--echo # 查询授权语法
+SHOW GRANTS FOR ykk5;
+--echo # 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+--echo # 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+# 表
+GRANT SELECT, INSERT, UPDATE ON ykk_db1.t_com3 TO ykk5;
+
+--echo # 查询授权语法
+SHOW GRANTS FOR ykk5;
+--echo # 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+--echo # 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+# 登录ykk5
+connect (conn19,$OBMYSQL_MS0,ykk5,ykk123,ykk_db1,$OBMYSQL_PORT);
+connection conn19;
+--echo # 验证权限
+SELECT c1 FROM ykk_db1.t_com3;
+SELECT c2,c3,c4 FROM ykk_db1.t_com3;
+SELECT * FROM ykk_db1.t_com3;
+INSERT INTO ykk_db1.t_com3 VALUES(1,'2','3','aaa');
+UPDATE ykk_db1.t_com3 SET c1 = 10;
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3 WHERE c4 = 'aaa';
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3;
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3 WHERE c1 = 1;
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3, c3 = c4, c4 = c2;
+
+
+
+# 撤销权限验证
+
+# 登录root
+connect (conn20,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn20;
+
+--echo # 撤销单列/多列 SELECT+INSERT 权限
+# 单列
+REVOKE SELECT(c1), INSERT(c1) ON ykk_db1.t_com1 FROM ykk1;
+# 多列
+REVOKE SELECT(c2,c3,c4), INSERT(c2,c3,c4) ON ykk_db1.t_com2 FROM ykk1;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk1';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk1'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 撤销单列/多列 SELECT+UPDATE 权限
+# 单列
+REVOKE SELECT(c1), UPDATE(c1) ON ykk_db1.t_com1 FROM ykk2;
+# 多列
+REVOKE SELECT(c2,c3,c4), UPDATE(c2,c3,c4) ON ykk_db1.t_com2 FROM ykk2;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk2';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk2'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 撤销单列/多列 INSERT+UPDATE 权限
+# 单列
+REVOKE INSERT(c1), UPDATE(c1) ON ykk_db1.t_com1 FROM ykk3;
+# 多列
+REVOKE INSERT(c2,c3,c4), UPDATE(c2,c3,c4) ON ykk_db1.t_com2 FROM ykk3;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk3';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk3'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+--echo # 撤销分别给不同的不同的权限
+# 单列
+REVOKE SELECT(c1), INSERT(c2), UPDATE(c3) ON ykk_db1.t_com1 FROM ykk4;
+# 多列
+REVOKE SELECT(c1,c2), INSERT(c2,c3), UPDATE(c3,c4) ON ykk_db1.t_com2 FROM ykk4;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE USER = 'ykk4';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk4'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+
+# 登录ykk1
+connect (conn21,$OBMYSQL_MS0,ykk1,ykk123,ykk,$OBMYSQL_PORT);
+connection conn21;
+
+--echo # 验证 撤销SELECT+INSERT 权限
+--error 1142
+INSERT into ykk_db1.t_com1(c1) VALUES(1);
+--error 1142
+INSERT into ykk_db1.t_com1(c1) VALUES(2);
+--error 1142
+SELECT c1 FROM ykk_db1.t_com1;
+--error 1142
+SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+--error 1142
+INSERT into ykk_db1.t_com1(c1) SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+
+--error 1142
+INSERT into ykk_db1.t_com2(c2,c3,c4) VALUES('a','b','c');
+--error 1142
+SELECT c2 FROM ykk_db1.t_com2;
+--error 1142
+SELECT c3,c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+--error 1142
+INSERT into ykk_db1.t_com2(c2) SELECT c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+--error 1142
+SELECT * FROM ykk_db1.t_com1;
+
+
+# 登录ykk2
+connect (conn22,$OBMYSQL_MS0,ykk2,ykk123,ykk,$OBMYSQL_PORT);
+connection conn22; 
+
+--echo # 验证 撤销SELECT+UPDATE 权限
+--error 1142
+SELECT c1 FROM ykk_db1.t_com1;
+--error 1142
+SELECT c1 FROM ykk_db1.t_com1 WHERE c1 = 1;
+--error 1142
+UPDATE ykk_db1.t_com1 SET c1 = 2;
+--error 1142
+UPDATE ykk_db1.t_com1 SET c1 = 3 WHERE c1 = 1;
+
+--error 1142
+SELECT c2 FROM ykk_db1.t_com2;
+--error 1142
+SELECT c3,c4 FROM ykk_db1.t_com2 WHERE c2 = 'a';
+--error 1142
+UPDATE ykk_db1.t_com2 SET c2 = 'a', c3 = 'j', c4 = 'k';
+--error 1142
+UPDATE ykk_db1.t_com2 SET c2 = (SELECT c3 FROM ykk_db1.t_com2 WHERE c4 = 'v');
+
+
+
+# 登录ykk3
+connect (conn23,$OBMYSQL_MS0,ykk3,ykk123,ykk,$OBMYSQL_PORT);
+connection conn23; 
+
+--echo # 验证 撤销INSERT+UPDATE 权限
+--error 1142
+INSERT INTO ykk_db1.t_com1(c1) VALUES(3);
+--error 1142
+INSERT INTO ykk_db1.t_com2(c2,c3,c4) VALUES('asd','xxx','ccc');
+--error 1142
+UPDATE ykk_db1.t_com1 SET c1 = 2;
+--error 1142
+UPDATE ykk_db1.t_com2 SET c2 = 'aaa';
+--error 1142
+UPDATE ykk_db1.t_com2 SET c3 = 'ccc';
+--error 1142
+UPDATE ykk_db1.t_com2 SET c4 = 'ggg';
+
+--error 1142
+UPDATE ykk_db1.t_com2 SET c2 = '111', c3 = 'sss', c4 = '333';
+
+
+
+# 登录ykk4
+connect (conn24,$OBMYSQL_MS0,ykk4,ykk123,ykk,$OBMYSQL_PORT);
+connection conn24;
+
+--echo # 验证撤销不同列的不同的权限
+--error 1142
+INSERT INTO ykk_db1.t_com1(c2) VALUES(11);
+--error 1142
+SELECT c1 FROM ykk_db1.t_com1;
+--error 1142
+UPDATE ykk_db1.t_com1 SET c3 = 22;
+--error 1142
+INSERT INTO ykk_db1.t_com1(c2) SELECT c1 FROM ykk_db1.t_com1;
+--error 1142
+UPDATE ykk_db1.t_com1 SET c3 = (SELECT c1 FROM ykk_db1.t_com1);
+
+--error 1142
+SELECT c1,c2 FROM ykk_db1.t_com2;
+--error 1142
+INSERT INTO ykk_db1.t_com2(c2,c3) VALUES ('xxx','asa');
+--error 1142
+UPDATE ykk_db1.t_com2 SET c3 = '15', c4 = 'as';
+--error 1142
+INSERT INTO ykk_db1.t_com2(c2) SELECT c2 FROM ykk_db1.t_com2;
+--error 1142
+INSERT INTO ykk_db1.t_com2(c3) SELECT c2 FROM ykk_db1.t_com2;
+--error 1142
+UPDATE ykk_db1.t_com2 SET c3 = c2 WHERE c1 = 1;
+--error 1142
+UPDATE ykk_db1.t_com2 SET c4 = c2 WHERE c1 = 1;
+--error 1142
+UPDATE ykk_db1.t_com2 SET c4 = (SELECT c2 FROM ykk_db1.t_com2 WHERE c2 = 'a');
+--error 1142
+UPDATE ykk_db1.t_com2 SET c4 = (SELECT c2 FROM ykk_db1.t_com2 WHERE c2 = 'b');
+
+
+
+################################# 撤销表权限和表列权限 #################################
+
+# 登录root
+connect (conn25,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn25;
+
+--error 0,1396
+DROP USER ykk5;
+CREATE USER 'ykk5'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk.* TO ykk5;
+
+# 给表列授权SELECT/INSERT/UPDATE权限
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON ykk_db1.t_com3 TO ykk5;
+
+# 给表t_com3授权SELECT/INSERT/UPDATE权限
+GRANT SELECT, INSERT, UPDATE ON ykk_db1.t_com3 TO ykk5;
+
+# 使用撤销表列权限的方式撤销列权限
+REVOKE SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON ykk_db1.t_com3 FROM ykk5;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+# 登录ykk5
+connect (conn26,$OBMYSQL_MS0,ykk5,ykk123,ykk,$OBMYSQL_PORT);
+connection conn26;
+--echo # 验证权限
+SELECT c1 FROM ykk_db1.t_com3;
+SELECT c2,c3,c4 FROM ykk_db1.t_com3;
+SELECT * FROM ykk_db1.t_com3;
+INSERT INTO ykk_db1.t_com3 VALUES(1,'2','3','aaa');
+UPDATE ykk_db1.t_com3 SET c1 = 10;
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3 WHERE c4 = 'aaa';
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3;
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3 WHERE c1 = 1;
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3, c3 = c4, c4 = c2;
+
+
+# 登录root
+connect (conn27,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn27;
+
+# 给表列授权SELECT/INSERT/UPDATE权限
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON ykk_db1.t_com3 TO ykk5;
+
+# 撤销表权限
+REVOKE SELECT, INSERT, UPDATE ON ykk_db1.t_com3 FROM ykk5;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+# 登录ykk5
+connect (conn28,$OBMYSQL_MS0,ykk5,ykk123,ykk,$OBMYSQL_PORT);
+connection conn28;
+--echo # 验证权限
+--error 1142
+SELECT c1 FROM ykk_db1.t_com3;
+--error 1142
+SELECT c2,c3,c4 FROM ykk_db1.t_com3;
+--error 1142
+SELECT * FROM ykk_db1.t_com3;
+--error 1142
+INSERT INTO ykk_db1.t_com3 VALUES(1,'2','3','aaa');
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 10;
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3 WHERE c4 = 'aaa';
+--error 1142
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3;
+--error 1142
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3 WHERE c1 = 1;
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3, c3 = c4, c4 = c2;
+
+
+
+#################### REVOKEALL权限时，表列的权限也会被撤销 ####################
+
+# 登录root
+connect (conn29,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn29;
+
+# 授权表列
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON ykk_db1.t_com3 TO ykk5;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+# 撤销表所有权限
+REVOKE ALL ON ykk_db1.t_com3 FROM ykk5;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk5';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk5'@'%'" ORDER BY TABLE_NAME,Column_name;
+
+
+# 登录ykk5
+connect (conn30,$OBMYSQL_MS0,ykk5,ykk123,ykk,$OBMYSQL_PORT);
+connection conn30;
+
+--echo # 验证权限
+--error 1142
+SELECT c1 FROM ykk_db1.t_com3;
+--error 1142
+SELECT c2,c3,c4 FROM ykk_db1.t_com3;
+--error 1142
+SELECT * FROM ykk_db1.t_com3;
+--error 1142
+INSERT INTO ykk_db1.t_com3 VALUES(1,'2','3','aaa');
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 10;
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3 WHERE c4 = 'aaa';
+--error 1142
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3;
+--error 1142
+INSERT INTO ykk_db1.t_com3(c1,c2,c3,c4) SELECT c1,c2,c3,c4 FROM ykk_db1.t_com3 WHERE c1 = 1;
+--error 1142
+UPDATE ykk_db1.t_com3 SET c1 = 2, c2 = c3, c3 = c4, c4 = c2;
+
+
+
+### # 撤销表权限，列权限也会被撤销
+# 登录root
+connect (conn31,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn31;
+
+GRANT SELECT(c1) ON ykk_db1.t_com1 TO ykk1;
+GRANT SELECT(c1) ON ykk.* TO ykk1;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk1'@'%'" ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+REVOKE SELECT ON ykk_db1.t_com1 FROM ykk1;
+
+# 查询列权限表
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1';
+# 查询权限视图
+SELECT * FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = "'ykk1'@'%'" ORDER BY GRANTEE,TABLE_NAME,Column_name;
+
+
+# 登录ykk1
+connect (conn32,$OBMYSQL_MS0,ykk1,ykk123,ykk,$OBMYSQL_PORT);
+connection conn32;
+
+--error 1142
+select c1 from ykk_db1.t_com1;
+--error 1142
+select * from ykk_db1.t_com1;
+
+
+
+
+########################## 新增的表和视图 ########################## 
+
+# 登录root
+connect (conn33,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn33;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+
+# 给用户授权mysql库columns_priv表的权限
+# SELECT
+GRANT SELECT(Db,user,table_name,Column_priv) ON mysql.columns_priv TO ykk1;
+
+
+# 登录ykk1
+connect (conn34,$OBMYSQL_MS0,ykk1,ykk123,mysql,$OBMYSQL_PORT);
+connection conn34;
+SELECT Db,user,table_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1';
+--error 1143
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv;
+
+
+
+
+#################################################### 补充场景 #################################################### 
+
+# 登录root
+connect (conn39,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn39;
+
+### 异常授权场景
+--error 1064
+GRANT CREATE(c1) ON ykk_db1.t_com1 TO ykk1;
+--error 1064
+REVOKE CREATE(c1) ON ykk_db1.t_com1 FROM ykk1;
+
+--error 1064
+GRANT ALTER(c1) ON ykk_db1.t_com1 TO ykk1;
+--error 1064
+REVOKE ALTER(c1) ON ykk_db1.t_com1 FROM ykk1;
+
+--error 1064
+GRANT DROP(c1) ON ykk_db1.t_com1 TO ykk1;
+--error 1064
+REVOKE DROP(c1) ON ykk_db1.t_com1 FROM ykk1;
+
+--error 1064
+GRANT TRUNCATE(c1) ON ykk_db1.t_com1 TO ykk1;
+--error 1064
+REVOKE TRUNCATE(c1) ON ykk_db1.t_com1 FROM ykk1;
+
+--error 1064
+GRANT DELETE(c1) ON ykk_db1.t_com1 TO ykk1;
+--error 1064
+REVOKE DELETE(c1) ON ykk_db1.t_com1 FROM ykk1;
+
+
+### 删除表或删除列时，关注权限
+--error 0,1008
+DROP DATABASE data1;
+CREATE DATABASE data1;
+
+USE data1;
+
+CREATE TABLE t1(
+    c1 varchar(20),
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+
+GRANT SELECT(c1,c2,c3,c4) ON data1.t1 TO ykk1;
+
+############################ 在ALTER TABLE中删除列 ###########################
+ALTER TABLE t1 DROP c2;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1' AND Table_name = 't1' AND Db = 'data1';
+
+### 登录ykk1
+connect (conn40,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn40;
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+# 登录root
+connect (conn41,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn41;
+USE data1;
+
+
+############################ 在ALTER TABLE中修改列 ###########################
+ALTER TABLE t1 CHANGE c1 c11 INT;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1' AND Table_name = 't1' AND Db = 'data1';
+
+# 登录ykk1
+connect (conn42,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn42;
+--error 1143
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+# 登录root
+connect (conn43,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn43;
+USE data1;
+
+
+############################ 在ALTER TABLE中修改列 ###########################
+ALTER TABLE t1 CHANGE c11 c1 INT;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1' AND Table_name = 't1' AND Db = 'data1';
+
+# 登录ykk1
+connect (conn44,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn44;
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+# 登录root
+connect (conn45,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn45;
+USE data1;
+
+# 使用DROP删除用户
+############################### 使用DROP删除用户 ##############################
+DROP USER ykk1;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1';
+
+# 创建用户，查看权限
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+GRANT SELECT ON ykk.* TO ykk1;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE user = 'ykk1';
+
+# 登录ykk1
+connect (conn46,$OBMYSQL_MS0,ykk1,ykk123,ykk,$OBMYSQL_PORT);
+connection conn46;
+--error 1142
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+# 登录root
+connect (conn66,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn66;
+
+GRANT SELECT(c1,c2,c3,c4) ON data1.t1 TO ykk1;
+USE data1;
+
+
+############################### 使用 DROP删除表 ##############################
+# 删除表
+DROP TABLE t1;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE Table_name = 't1' AND Db = 'data1';
+
+# 创建表
+CREATE TABLE t1(
+    c1 varchar(20),
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE Table_name = 't1' AND Db = 'data1';
+
+# 登录ykk1
+connect (conn47,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn47;
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+# 登录root
+connect (conn48,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn48;
+
+
+# 使用DROP删除库
+############################### 使用 DROP删除库 ##############################
+DROP DATABASE data1;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE Db = 'data1';
+
+# 创建数据库
+CREATE DATABASE data1;
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE Db = 'data1';
+
+USE data1;
+
+# 创建表
+CREATE TABLE t1(
+    c1 varchar(20),
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+SELECT Host,Db,User,Table_name,Column_name,Column_priv FROM mysql.columns_priv WHERE Table_name = 't1' AND Db = 'data1';
+
+# 登录ykk1
+connect (conn49,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn49;
+SELECT * FROM data1.t1;
+#############################################################################
+
+
+
+
+
+
+#################################################### SELECT子句 #################################################### 
+# 测试数据准备：
+
+# 登录root
+connect (conn50,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn50;
+
+USE data1;
+
+# 创建表
+--error 0,1051
+DROP TABLE t1;
+CREATE TABLE t1(
+    c1 int,
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+INSERT INTO t1 VALUES(1,'a',null,null);
+INSERT INTO t1 VALUES(2,'b',null,null);
+INSERT INTO t1 VALUES(3,'c',null,null);
+INSERT INTO t1 VALUES(4,'a',null,null);
+INSERT INTO t1 VALUES(5,'b',null,null);
+INSERT INTO t1 VALUES(6,'c',null,null);
+
+CREATE INDEX inxt1 ON t1 (c1);
+
+--error 0,1051
+DROP TABLE t2;
+CREATE TABLE t2(
+    c1 int,
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+INSERT INTO t2 VALUES(1,'AAA',null,null);
+INSERT INTO t2 VALUES(2,'BBB',null,null);
+INSERT INTO t2 VALUES(3,'CCC',null,null);
+INSERT INTO t2 VALUES(4,'AAA',null,null);
+INSERT INTO t2 VALUES(5,'BBB',null,null);
+INSERT INTO t2 VALUES(6,'CCC',null,null);
+
+--error 0,1051
+DROP TABLE t3;
+CREATE TABLE t3(
+    c1 int PRIMARY KEY,
+    c2 varchar(20),
+    c3 varchar(20),
+    c4 varchar(20)
+);
+
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+GRANT SELECT(c1,c2), INSERT(c1,c2) ON data1.t1 TO ykk1;
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4) ON data1.t2 TO ykk1;
+GRANT SELECT(c1,c2,c3,c4), INSERT(c1,c2,c3,c4) ON data1.t3 TO ykk1;
+
+GRANT CREATE ON data1.* TO ykk1;
+
+
+
+# 登录ykk1
+connect (conn51,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn51;
+USE data1;
+
+# SELECT后使用有SELECT权限的字段
+SELECT c1,c2 FROM t1;
+
+
+# SELECT后使用无SELECT权限的字段
+--error 1143
+SELECT c3 FROM t1;
+--error 1143
+SELECT c2,c3 FROM t1;
+
+
+# 表中字段都有SELECT权限时 使用SELECT *
+SELECT * FROM t2;
+
+
+# 表中有无SELECT权限的字段时 使用SELECT *
+--error 1143
+SELECT * FROM t1;
+
+
+# WHERE后使用有SELECT权限字段做为控制条件
+SELECT c1,c2 FROM t1 WHERE c1 = 1;
+
+
+# WHERE后使用无SELECT权限字段做为控制条件
+--error 1143
+SELECT c1,c2 FROM t1 WHERE c3 = '1';
+
+
+# 在GROUP BY时 使用有SELECT权限的字段
+SELECT c1,c2 FROM t1 GROUP BY c1;
+
+
+# 在GROUP BY时 使用无SELECT权限的字段
+--error 1143
+SELECT c1,c2 FROM t1 GROUP BY c3;
+
+
+# 在ORDER BY时 使用有SELECT权限的字段
+SELECT c1,c2 FROM t1 ORDER BY c1;
+
+
+# 在ORDER BY时 使用无SELECT权限的字段
+--error 1143
+SELECT c1,c2 FROM t1 ORDER BY c3;
+
+
+# 多表联合查询时 多个表的列都有SELECT权限
+SELECT t1.c1, t1.c2, t2.c1, t2.c2, t2.c3, t2.c4 FROM t1 LEFT JOIN t2 ON t1.c1 = t2.c1;
+
+
+# 多表联合查询时 多个表的部分列没有SELECT权限
+--error 1143
+SELECT * FROM t1 LEFT JOIN t2 ON t1.c1 = t2.c1;
+--error 1143
+SELECT t1.c1, t1.c2, t1.c3, t1.c4, t2.c1, t2.c2, t2.c3, t2.c4 FROM t1 LEFT JOIN t2 ON t1.c1 = t2.c1;
+
+
+# SELECT...INTO
+SELECT c1, c2 INTO @var1,@var2 FROM t1 LIMIT 1;
+SELECT c1, c2 INTO @var1,@var2 FROM t2 WHERE c1 = 4;
+
+--error 1143
+SELECT * INTO @var1,@var2,@var3,@var4 FROM t1;
+--error 1143
+SELECT c1, c2, c3, c4 INTO @var1,@var2,@var3,@var4 FROM t1;
+--error 1143
+SELECT c1, c2 INTO @var1,@var2 FROM t1 WHERE c3 = '4';
+
+
+# CTAS
+--error 1142
+CREATE TABLE t4 AS SELECT c1,c2 FROM t1;
+--error 1142
+CREATE TABLE t5 AS SELECT * FROM t2;
+--error 1142
+CREATE TABLE tt4 AS SELECT * FROM t1;
+--error 1142
+CREATE TABLE tt4 AS SELECT c1,c2,c3 FROM t1;
+--error 1142
+CREATE TABLE tt4 AS SELECT c1,c2 FROM t1 WHERE c3 IS NULL;
+
+
+# UNION
+SELECT c1 FROM t1 UNION ALL SELECT c1 FROM t2;
+--error 1143
+SELECT * FROM t1 UNION ALL SELECT * FROM t2;
+
+
+
+
+
+### INSERT场景补充
+
+INSERT INTO t1 SET c1 = 1, c2 = '2';
+--error 1143
+INSERT INTO t1 SET c1 = 1, c2 = '2', c3 = '3', c4 = '4';
+
+INSERT INTO t2 SET c1 = 1, c2 = '2', c3 = '3', c4 = '4';
+
+--error 1143
+INSERT INTO t1 VALUES();
+
+INSERT INTO t2 VALUES();
+
+--error 1142
+INSERT INTO t1 (c1, c2) VALUES (1, 'Value A') ON DUPLICATE KEY UPDATE c2 = VALUES(c2);
+
+--error 1142
+INSERT INTO t3 (c1, c2, c3, c4) VALUES (1, 'Value A', 'Value B', 'Value C') ON DUPLICATE KEY UPDATE c2 = VALUES(c2), c3 = VALUES(c3), c4 = VALUES(c4);
+
+INSERT IGNORE INTO t1 (c1, c2) VALUES (1, 'A');
+
+INSERT IGNORE INTO t3 (c1, c2, c3, c4) VALUES (1, 'A', 'B', 'C');
+
+--error 1142
+REPLACE INTO t1 (c1, c2) VALUES (1, 'A');
+
+--error 1142
+REPLACE INTO t2 VALUES (1, 'A', 'B', 'C');
+
+
+
+
+# 登录root
+connect (conn67,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn67;
+
+# 给表授权
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON data1.t1 TO ykk1;
+GRANT SELECT, INSERT, UPDATE, DELETE ON data1.t2 TO ykk1;
+GRANT SELECT, INSERT, UPDATE ON data1.t3 TO ykk1;
+
+
+# 登录 ykk1
+USE data1;
+
+INSERT INTO t1 SET c1 = 1, c2 = '2';
+
+INSERT INTO t1 SET c1 = 1, c2 = '2', c3 = '3', c4 = '4';
+
+INSERT INTO t2 SET c1 = 1, c2 = '2', c3 = '3', c4 = '4';
+
+INSERT INTO t1 VALUES();
+
+INSERT INTO t2 VALUES();
+
+INSERT INTO t1 (c1, c2) VALUES (1, 'Value A') ON DUPLICATE KEY UPDATE c2 = VALUES(c2);
+
+INSERT INTO t3 (c1, c2, c3, c4) VALUES (1, 'Value A', 'Value B', 'Value C') ON DUPLICATE KEY UPDATE c2 = VALUES(c2), c3 = VALUES(c3), c4 = VALUES(c4);
+
+INSERT IGNORE INTO t1 (c1, c2) VALUES (1, 'A');
+
+INSERT IGNORE INTO t3 (c1, c2, c3, c4) VALUES (1, 'A', 'B', 'C');
+
+REPLACE INTO t1 (c1, c2) VALUES (1, 'A');
+
+REPLACE INTO t2 VALUES (1, 'A', 'B', 'C');
+
+
+
+
+#### SHOW
+
+# 登录root
+connect (conn52,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn52;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+# 授权
+GRANT SELECT(c1,c2,c3,c4) ON data1.t1 TO ykk1;
+
+# 授权
+GRANT SELECT ON data1.t2 TO ykk1;
+
+
+# 登录ykk1
+connect (conn53,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn53;
+
+USE data1;
+
+# 查看创建表结构
+--error 0,1142
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+
+# 查看t1表列结构
+SHOW COLUMNS FROM t1;
+SHOW COLUMNS FROM t2;
+
+# 查看t1表c1列结构
+SHOW COLUMNS FROM t1 like '%c1%';
+SHOW COLUMNS FROM t2 like '%c1%';
+
+# 查看t1表索引信息
+SHOW INDEX FROM t1;
+SHOW INDEX FROM t2;
+
+# 查看t1表的状态信息
+--disable_result_log
+SHOW TABLE STATUS like '%t1%';
+SHOW TABLE STATUS like '%t2%';
+--enable_result_log
+
+# 查看t1表详细的列信息
+SHOW FULL COLUMNS FROM t1;
+SHOW FULL COLUMNS FROM t2;
+
+
+
+# 登录root
+connect (conn54,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn54;
+
+# 撤销授权
+REVOKE SELECT(c2,c3,c4) ON data1.t1 FROM ykk1;
+
+# 撤销授权
+REVOKE SELECT ON data1.t2 FROM ykk1;
+
+
+
+# 登录ykk1
+connect (conn55,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn55;
+
+USE data1;
+
+# 查看创建表结构
+--error 1142
+SHOW CREATE TABLE t1;
+--error 1142
+SHOW CREATE TABLE t2;
+
+# 查看t1表列结构
+SHOW COLUMNS FROM t1;
+--error 1142
+SHOW COLUMNS FROM t2;
+
+# 查看t1表c1列结构
+SHOW COLUMNS FROM t1 like '%c2%';
+--error 1142
+SHOW COLUMNS FROM t2 like '%c3%';
+
+# 查看t1表索引信息
+SHOW INDEX FROM t1;
+--error 1142
+SHOW INDEX FROM t2;
+
+# 查看t1表的状态信息
+--disable_result_log
+SHOW TABLE STATUS like '%t1%';
+SHOW TABLE STATUS like '%t2%';
+--enable_result_log
+
+# 查看t1表详细的列信息
+SHOW FULL COLUMNS FROM t1;
+--error 1142
+SHOW FULL COLUMNS FROM t2;
+
+###################### 特殊表、列 ######################
+
+# 登录root
+connect (conn56,$OBMYSQL_MS0,ykk,ykk,,$OBMYSQL_PORT);
+connection conn56;
+
+# 创建用户
+--error 0,1396
+DROP USER ykk1;
+CREATE USER 'ykk1'@'%' IDENTIFIED BY 'ykk123';
+
+--error 0,1396
+DROP USER ykk2;
+CREATE USER 'ykk2'@'%' IDENTIFIED BY 'ykk123';
+
+--error 0,1396
+DROP USER ykk3;
+CREATE USER 'ykk3'@'%' IDENTIFIED BY 'ykk123';
+
+--error 0,1396
+DROP USER ykk4;
+CREATE USER 'ykk4'@'%' IDENTIFIED BY 'ykk123';
+
+
+USE data1;
+
+# 普通表
+--error 0,1051
+DROP TABLE t1;
+CREATE TABLE t1(
+    c1 INT NOT NULL,
+    c2 VARCHAR(100) NOT NULL,
+    c3 VARCHAR(100) NOT NULL,
+    c4 VARCHAR(200) AS (CONCAT(c1, c2)) STORED,
+    c5 VARCHAR(200) AS (CONCAT(c2, c3)) VIRTUAL,
+    PRIMARY KEY (c1) 
+);
+INSERT INTO t1(c1,c2,c3) VALUES(1001, 'AAAA', 'AAAAAAAA');
+INSERT INTO t1(c1,c2,c3) VALUES(2001, 'BBBB', 'BBBBBBBB');
+INSERT INTO t1(c1,c2,c3) VALUES(3001, 'CCCC', 'CCCCCCCC');
+
+
+# 视图
+CREATE VIEW v1 AS SELECT * FROM t1;
+
+
+# 分区表
+--error 0,1051
+DROP TABLE tt1;
+CREATE TABLE tt1 (
+    c1 INT NOT NULL,
+    c2 VARCHAR(100) NOT NULL,
+    c3 VARCHAR(100) NOT NULL,
+    c4 VARCHAR(200) AS (CONCAT(c1, c2)) STORED,
+    c5 VARCHAR(200) AS (CONCAT(c2, c3)) VIRTUAL,
+    PRIMARY KEY (c1)
+) PARTITION BY RANGE (c1) (
+    PARTITION p0 VALUES LESS THAN (1000),
+    PARTITION p1 VALUES LESS THAN (2000),
+    PARTITION p2 VALUES LESS THAN (3000),
+    PARTITION p3 VALUES LESS THAN MAXVALUE
+);
+INSERT INTO tt1(c1,c2,c3) VALUES(1001, 'AAAA', 'AAAAAAAA');
+INSERT INTO tt1(c1,c2,c3) VALUES(2001, 'BBBB', 'BBBBBBBB');
+INSERT INTO tt1(c1,c2,c3) VALUES(3001, 'CCCC', 'CCCCCCCC');
+
+
+
+# 授权
+GRANT SELECT(c1,c2,c3,c4,c5), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON data1.t1 TO ykk1;
+GRANT SELECT(c1,c2,c3,c4,c5), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON data1.v1 TO ykk1;
+GRANT SELECT(c1,c2,c3,c4,c5), INSERT(c1,c2,c3,c4), UPDATE(c1,c2,c3,c4) ON data1.tt1 TO ykk1;
+
+# 授权
+GRANT SELECT, INSERT, UPDATE ON data1.t1 TO ykk2;
+GRANT SELECT, INSERT, UPDATE ON data1.v1 TO ykk2;
+GRANT SELECT, INSERT, UPDATE ON data1.tt1 TO ykk2;
+
+# 授权
+GRANT SELECT(c1,c2,c3), INSERT(c1,c2,c3), UPDATE(c1,c2,c3) ON data1.t1 TO ykk3;
+GRANT SELECT(c1,c2,c3), INSERT(c1,c2,c3), UPDATE(c1,c2,c3) ON data1.v1 TO ykk3;
+GRANT SELECT(c1,c2,c3), INSERT(c1,c2,c3), UPDATE(c1,c2,c3) ON data1.tt1 TO ykk3;
+
+# 授权
+GRANT SELECT(c4,c5) ON data1.t1 TO ykk4;
+GRANT SELECT(c4,c5) ON data1.v1 TO ykk4;
+GRANT SELECT(c4,c5) ON data1.tt1 TO ykk4;
+
+
+
+
+
+# 登录ykk1
+connect (conn57,$OBMYSQL_MS0,ykk1,ykk123,data1,$OBMYSQL_PORT);
+connection conn57;
+
+USE data1;
+
+INSERT INTO t1(c1,c2,c3) VALUES(4001, 'DDDD', 'DDDDDDDD');
+UPDATE t1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM t1;
+
+INSERT INTO v1(c1,c2,c3) VALUES(5001, 'EEEE', 'EEEEEEEE');
+UPDATE v1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM v1;
+
+INSERT INTO tt1(c1,c2,c3) VALUES(4001, 'DDDD', 'DDDDDDDD');
+UPDATE tt1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM tt1;
+
+
+
+# 登录ykk2
+connect (conn58,$OBMYSQL_MS0,ykk2,ykk123,data1,$OBMYSQL_PORT);
+connection conn58;
+
+USE data1;
+
+INSERT INTO t1(c1,c2,c3) VALUES(6001, 'DDDD', 'DDDDDDDD');
+UPDATE t1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM t1;
+
+INSERT INTO v1(c1,c2,c3) VALUES(7001, 'DDDD', 'DDDDDDDD');
+UPDATE v1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM v1;
+
+INSERT INTO tt1(c1,c2,c3) VALUES(5001, 'DDDD', 'DDDDDDDD');
+UPDATE tt1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+SELECT * FROM tt1;
+
+
+
+# 登录ykk3
+connect (conn59,$OBMYSQL_MS0,ykk3,ykk123,data1,$OBMYSQL_PORT);
+connection conn59;
+
+USE data1;
+
+INSERT INTO t1(c1,c2,c3) VALUES(8001, 'DDDD', 'DDDDDDDD');
+UPDATE t1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+--error 1143
+SELECT * FROM t1;
+
+INSERT INTO v1(c1,c2,c3) VALUES(9001, 'DDDD', 'DDDDDDDD');
+UPDATE v1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+--error 1143
+SELECT * FROM v1;
+
+INSERT INTO tt1(c1,c2,c3) VALUES(6001, 'DDDD', 'DDDDDDDD');
+UPDATE tt1 SET c3 = 'CCCCCCCCCCCCCCCC' WHERE c1 = 3001;
+--error 1143
+SELECT * FROM tt1;
+
+
+
+# 登录ykk4
+connect (conn60,$OBMYSQL_MS0,ykk4,ykk123,data1,$OBMYSQL_PORT);
+connection conn60;
+
+USE data1;
+
+--error 1143
+SELECT * FROM t1;
+--error 1143
+SELECT * FROM v1;
+--error 1143
+SELECT * FROM tt1;
+
+SELECT c4,c5 FROM t1;
+SELECT c4,c5 FROM v1;
+SELECT c4,c5 FROM tt1;
+
+
+
+# 登录root
+connect (conn61,$OBMYSQL_MS0,ykk,ykk,data1,$OBMYSQL_PORT);
+connection conn61;
+
+USE data1;
+
+DROP TABLE t1;
+DROP TABLE tt1;
+DROP VIEW v1;
+DROP DATABASE data1;
+DROP DATABASE ykk_db1;
+DROP USER ykk1;
+DROP USER ykk2;
+DROP USER ykk3;
+DROP USER ykk4;

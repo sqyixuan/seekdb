@@ -1,0 +1,87 @@
+# CASE_OWNER:
+#    @cangming.zl
+# CASE_DESC:
+#    C 副本运维命令
+
+ob1=OBI(cluster=2:2:2,proxy_num=0);
+ob1.reboot;
+
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+ob1.mysql alter system set enable_rebalance = 'false';
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql CREATE RESOURCE UNIT unit_1 MAX_CPU 2, MEMORY_SIZE '2G';
+ob1.mysql CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2, ZONE_LIST=('z1', 'z2', 'z3');
+ob1.mysql CREATE TENANT tt1 RESOURCE_POOL_LIST = ('pool_1'), primary_zone = 'z1', locality = 'F@z1,F@z2' set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+ob1.mysql set ob_global_debug_sync = 'BEFORE_TRY_DISASTER_RECOVERY wait_for signal1';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name='tt1', tenant_id, 1);
+
+ob_connect(sys_conn, ob1.z1.obs0,root@sys, ,oceanbase, , USE_MYSQL_CONNECTOR);
+connection sys_conn;
+
+let $z2_dst_ip0 = deploy_get_value(ob1.z2.obs0.ip);
+let $z2_dst_port0 = deploy_get_value(ob1.z2.obs0.port);
+let $z2_dst0 = $z2_dst_ip0:$z2_dst_port0;
+let $z3_dst_ip0 = deploy_get_value(ob1.z3.obs0.ip);
+let $z3_dst_port0 = deploy_get_value(ob1.z3.obs0.port);
+let $z3_dst0 = $z3_dst_ip0:$z3_dst_port0;
+let $z3_dst_ip1 = deploy_get_value(ob1.z3.obs1.ip);
+let $z3_dst_port1 = deploy_get_value(ob1.z3.obs1.port);
+let $z3_dst1 = $z3_dst_ip1:$z3_dst_port1;
+
+let $ls_id = deploy_get_value(ob1.select select ls_id from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z2_dst_ip0' and svr_port = '$z2_dst_port0' and ls_id != 1, ls_id, 1);
+
+--disable_query_log
+--echo =========================================================
+--echo case 1: add C replica
+--echo =========================================================
+eval alter system add replica ls=$ls_id server='$z3_dst0' replica_type='C' data_source='$z2_dst0' tenant='tt1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z3_dst_ip0' and svr_port = '$z3_dst_port0' and ls_id = $ls_id and replica_type = 'COLUMNSTORE', 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 0, 120;
+
+--echo =========================================================
+--echo case 2: C-replica type transform to F/R is not supported
+--echo =========================================================
+# C->F
+--error 1235
+eval alter system modify replica ls=$ls_id server='$z3_dst0' replica_type = 'F' paxos_replica_num=3 tenant='tt1';
+# C->R
+--error 1235
+eval alter system modify replica ls=$ls_id server='$z3_dst0' replica_type = 'R' tenant='tt1';
+
+--echo =========================================================
+--echo case 3: migrate C replica
+--echo =========================================================
+eval alter system migrate replica ls=$ls_id source='$z3_dst0' destination='$z3_dst1' tenant='tt1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z3_dst_ip1' and svr_port = '$z3_dst_port1' and ls_id = $ls_id and replica_type = 'COLUMNSTORE', 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 0, 120;
+
+--echo =========================================================
+--echo case 4: remove C replica
+--echo =========================================================
+eval alter system remove replica ls=$ls_id server='$z3_dst1' tenant='tt1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z3_dst_ip1' and svr_port = '$z3_dst_port1' and ls_id = $ls_id and replica_type = 'COLUMNSTORE', 0, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 0, 120;
+sleep 30;
+
+--echo =========================================================
+--echo case 5: C replica type transform is not supported
+--echo =========================================================
+# R->C
+# add R-replica first
+eval alter system add replica ls=$ls_id server='$z3_dst0' replica_type='R' data_source='$z2_dst0' tenant='tt1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z3_dst_ip0' and svr_port = '$z3_dst_port0' and ls_id = $ls_id and replica_type = 'READONLY', 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 0, 120;
+--error 1235
+eval alter system modify replica ls=$ls_id server='$z3_dst0' replica_type = 'C' tenant='tt1';
+
+# F->C
+# modify to F first
+eval alter system modify replica ls=$ls_id server='$z3_dst0' replica_type = 'F' paxos_replica_num=3 tenant='tt1';
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_LS_LOCATIONS where tenant_id = $tenant_id and svr_ip = '$z3_dst_ip0' and svr_port = '$z3_dst_port0' and ls_id = $ls_id and replica_type = 'FULL', 1, 120;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_replica_task where tenant_id = $tenant_id, 0, 120;
+--error 1235
+eval alter system modify replica ls=$ls_id server='$z3_dst0' replica_type = 'C' paxos_replica_num=2 tenant='tt1';
+
+--enable_query_log

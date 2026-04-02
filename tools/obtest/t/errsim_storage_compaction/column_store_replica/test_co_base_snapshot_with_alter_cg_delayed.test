@@ -1,0 +1,113 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: 测试异步行转列时 co base snapshot version, 同时测试 C 副本 data checksum 校验
+
+ob1=OBI(cluster=1:1:2:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant obtest;
+ob1.mysql alter system set merger_check_interval = '10s' tenant obtest;
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool cs_replica_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4');
+ob1.mysql create TENANT tenant1 resource_pool_list=('cs_replica_pool'), locality = "F@z1, R@z2, C@z3, C@z4" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant1", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo =================  Step 2: create table   =====================
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+ob_connect(z3_obs0, ob1.z3.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+
+create table t1 (k int primary key, c1 int, c2 int, c3 int);
+create table t2 (k int primary key, c1 int, c2 int, c3 int);
+create sequence seq1 cache 1000 noorder;
+create sequence seq2 cache 1000 noorder;
+insert into t1 select seq1.nextval, seq1.nextval + 1, seq1.nextval + 2, seq1.nextval + 3 from table(generator(1000));
+insert into t2 select seq2.nextval, seq2.nextval + 1, seq2.nextval + 2, seq2.nextval + 3 from table(generator(1000));
+select * from t1 order by k limit 3;
+select * from t2 order by k limit 3;
+
+--echo ===============================================================
+--echo ==== Step 3: wait major freeze and do alter cg delayed   ======
+--echo ===============================================================
+connection sys_conn;
+ob1.mysql alter system major freeze tenant tenant1;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+let $tablet_id_t1 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t1', tablet_id, 1);
+let $tablet_id_t2 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t2', tablet_id, 1);
+eval select co_base_snapshot_version > 0 as nozero from __all_virtual_tablet_replica_checksum where tablet_id = $tablet_id_t1 order by svr_port;
+eval select co_base_snapshot_version > 0 as nozero from __all_virtual_tablet_replica_checksum where tablet_id = $tablet_id_t2 order by svr_port;
+
+connection z1_obs0;
+alter table t1 add column group(each column) delayed;
+alter table t2 add column group(each column, all columns) delayed;
+
+connection sys_conn;
+ob1.mysql alter system major freeze tenant tenant1;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+eval select co_base_snapshot_version > 0 as nozero from __all_virtual_tablet_replica_checksum where tablet_id = $tablet_id_t1 order by svr_port;
+eval select co_base_snapshot_version > 0 as nozero from __all_virtual_tablet_replica_checksum where tablet_id = $tablet_id_t2 order by svr_port;
+
+--echo ===============================================================
+--echo ==== Step 4: full direct load data and convert co merge =======
+--echo ===============================================================
+connection z1_obs0;
+create table t3    (k int primary key, c1 int, c2 int, c3 int);
+create table tload (k int primary key, c1 int, c2 int, c3 int);
+create sequence seq3 cache 1000 noorder;
+insert into tload select seq3.nextval, seq3.nextval + 1, seq3.nextval + 2, seq3.nextval + 3 from table(generator(1000));
+insert /*+ enable_parallel_dml parallel(7) append*/ into t3 select * from tload;
+
+connection sys_conn;
+let $tablet_id_t3 = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where table_name='t3', tablet_id, 1);
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $tenant_id and tablet_id = $tablet_id_t3 and co_base_snapshot_version > 0, 2, 600;
+
+ob1.mysql alter system major freeze tenant tenant1;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and LAST_SCN != GLOBAL_BROADCAST_SCN , 0, 600;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_tablet_replica_checksum where tenant_id = $tenant_id and tablet_id = $tablet_id_t3 and co_base_snapshot_version > 0, 2, 600;
+
+--echo ===============================================================
+--echo ==== Step 5: errsim and make data checksum error ==============
+--echo ===============================================================
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DATA_CHECKSUM_ERROR", error_code = $tablet_id_t3, frequency = 1;
+ob1.mysql alter system set_tp tp_name = "EN_COMPACTION_DATA_CHECKSUM_CO_BASE_SNAPSHOT_VERSION", error_code = 4016, frequency = 1;
+ob1.mysql alter system major freeze tenant tenant1;
+sleep 60;
+ob1.check_until_timeout select count(*) from oceanbase.CDB_OB_MAJOR_COMPACTION where tenant_id = $tenant_id and INFO = 'CHECKSUM_ERROR' , 1, 600;
+
+
+
+
+
+
+

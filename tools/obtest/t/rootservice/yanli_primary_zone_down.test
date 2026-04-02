@@ -1,0 +1,66 @@
+# CASE_OWNER:
+#    @msy164651
+# CASE_DESC:
+#    本case测试在primary zone宕机的情况下，leader仍然在primary zone所在的region。
+
+# 系统租户的primary zone在HZ
+ob1=OBI(cluster=1:1:1:1:1,proxy_num=0,init_unit_cpu=0,locality=HZ:HZ:SH:SH:SZ);
+ob1.reboot;
+
+# 创建租户tt1，primary zone在z1，primary zone所在region为HZ
+ob1.mysql create resource unit test_unit max_cpu = 1, memory_size = '2G';
+ob1.mysql create resource pool xx1 unit = 'test_unit', unit_num = 1, zone_list = ('z1', 'z2', 'z3', 'z4', 'z5');
+ob1.mysql create tenant tt1 resource_pool_list('xx1'), primary_zone "z3" set ob_tcp_invited_nodes='%';
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'tt1', tenant_id, 1);
+let $proxy_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z5.obs0.mysql_port);
+
+connect(tt1_conn,$proxy_ip,root@tt1,,test, $proxy_port);
+
+# 租户tt1新建10张表
+connection tt1_conn;
+
+let $cnt = 0;
+while ($cnt < 10)
+{
+  eval create table t$cnt (k int primary key, v int);
+  inc $cnt;
+}
+
+connect(sys_conn,$proxy_ip,root@sys,,test, $proxy_port);
+
+# 系统租户连接
+connection sys_conn;
+
+ob1.mysql_p select ls_id, zone from oceanbase.__all_virtual_ls_meta_table where role = 1 and tenant_id = $tenant_id; 
+
+# double check
+ob1.mysql_p select ls_id, zone from oceanbase.__all_virtual_ls_meta_table where role = 1 and tenant_id = $tenant_id; 
+
+# stop server in primary zone
+ob1.z3.obs0.force_stop;
+
+# get expected zone
+let $primary_region = deploy_get_value(ob1.select select info from __all_zone where zone = "z3" and name = "region", info, 1);
+echo $primary_region;
+
+let $expected_zone = deploy_get_value(ob1.select select zone from __all_zone where zone != "z3" and info = "$primary_region", zone, 1);
+echo $expected_zone;
+sleep 5;
+ob1.mysql_p select ls_id, zone from oceanbase.__all_virtual_ls_meta_table where role = 1 and tenant_id = $tenant_id;
+
+
+# restart the server that was stopped
+ob1.z3.obs0.start;
+# sleep for election and leader coordinator
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z3' and start_service_time > 0, 1, 30;
+ob1.mysql_p select ls_id, zone from oceanbase.__all_virtual_ls_meta_table where role = 1 and tenant_id = $tenant_id;
+
+ob1.mysql alter tenant tt1 primary_zone "z4";
+
+let $primary_zone = z4;
+echo $primary_zone;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ls_status where tenant_id = $tenant_id and primary_zone != 'z4', 0, 20;
+sleep 5;
+ob1.mysql_p select ls_id, zone from oceanbase.__all_virtual_ls_meta_table where role = 1 and tenant_id = $tenant_id;

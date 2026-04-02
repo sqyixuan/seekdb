@@ -1,0 +1,94 @@
+drop table if exists t1, t2;
+result_format: 4
+create table t1(c1 int, c2 int ,c3 int) partition by hash(c1) partitions 8;
+create table t2(c1 int, c2 int ,c3 int);
+create index idx on t1(c2);
+create index idx on t2(c2);
+insert into t1 select n c1, n c2, n c3 from (select row_number() over() as n from table(generator(100000)));
+insert into t2 select n*1000 c1, n*1000 c2, n*1000 c3 from (select row_number() over() as n from table(generator(100)));
+call dbms_stats.set_table_prefs('TEST', 'T1', 'ESTIMATE_BLOCK', 'false');
+call dbms_stats.set_table_prefs('TEST', 'T2', 'ESTIMATE_BLOCK', 'false');
+call dbms_stats.gather_table_stats('TEST', 'T1', method_opt=>'for all columns size 64', estimate_percent=>100);
+call dbms_stats.gather_table_stats('TEST', 'T2', method_opt=>'for all columns size 64', estimate_percent=>100);
+
+explain
+select * from t1, t2 where t1.c2 = t2.c2;
+Query Plan
+=================================================================
+|ID|OPERATOR                      |NAME   |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------
+|0 |NESTED-LOOP JOIN              |       |104     |14287       |
+|1 |├─TABLE FULL SCAN             |t2     |100     |10          |
+|2 |└─DISTRIBUTED TABLE RANGE SCAN|t1(idx)|2       |142         |
+=================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t2.c1], [t2.c2], [t2.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([t2.c2(:0)]), use_batch=true
+  1 - output([t2.c2], [t2.c1], [t2.c3]), filter(nil), rowset=256
+      access([t2.c2], [t2.c1], [t2.c3]), partitions(p0)
+      is_index_back=false, is_global_index=false, 
+      range_key([t2.__pk_increment]), range(MIN ; MAX)always true
+  2 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=256
+      access([GROUP_ID], [t1.__pk_increment], [t1.c1], [t1.c2], [t1.c3]), partitions(p[0-7])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN ; MAX), 
+      range_cond([t1.c2 = :0])
+
+explain
+select /*+use_nl(t1 t2) leading(t1) index(t1 idx) index(t2 idx)*/ * from t1, t2 where t1.c2 = t2.c2;
+Query Plan
+===============================================================
+|ID|OPERATOR                   |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |NESTED-LOOP JOIN           |        |104     |2516072     |
+|1 |├─PX COORDINATOR           |        |99984   |441426      |
+|2 |│ └─EXCHANGE OUT DISTR     |:EX10000|99984   |384447      |
+|3 |│   └─PX PARTITION ITERATOR|        |99984   |256484      |
+|4 |│     └─TABLE FULL SCAN    |t1(idx) |99984   |256484      |
+|5 |└─TABLE RANGE SCAN         |t2(idx) |1       |20          |
+===============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t2.c1], [t2.c2], [t2.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([t1.c2(:0)]), use_batch=true
+  1 - output([t1.c2], [t1.c1], [t1.c3]), filter(nil), rowset=256
+  2 - output([t1.c2], [t1.c1], [t1.c3]), filter(nil), rowset=256
+      dop=1
+  3 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=256
+      force partition granule
+  4 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=256
+      access([t1.__pk_increment], [t1.c1], [t1.c2], [t1.c3]), partitions(p[0-7])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  5 - output([t2.c2], [t2.c1], [t2.c3]), filter(nil), rowset=256
+      access([GROUP_ID], [t2.__pk_increment], [t2.c2], [t2.c1], [t2.c3]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t2.c2], [t2.__pk_increment]), range(MIN ; MAX), 
+      range_cond([:0 = t2.c2])
+
+explain
+select /*+use_nl(t1 t2) leading(t2) index(t1 idx) index(t2 idx)*/ * from t1, t2 where t1.c2 = t2.c2;
+Query Plan
+=================================================================
+|ID|OPERATOR                      |NAME   |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------
+|0 |NESTED-LOOP JOIN              |       |104     |14538       |
+|1 |├─TABLE FULL SCAN             |t2(idx)|100     |261         |
+|2 |└─DISTRIBUTED TABLE RANGE SCAN|t1(idx)|2       |142         |
+=================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([t1.c1], [t1.c2], [t1.c3], [t2.c1], [t2.c2], [t2.c3]), filter(nil), rowset=256
+      conds(nil), nl_params_([t2.c2(:0)]), use_batch=true
+  1 - output([t2.c2], [t2.c1], [t2.c3]), filter(nil), rowset=256
+      access([t2.__pk_increment], [t2.c2], [t2.c1], [t2.c3]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([t2.c2], [t2.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+  2 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=256
+      access([GROUP_ID], [t1.__pk_increment], [t1.c1], [t1.c2], [t1.c3]), partitions(p[0-7])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN ; MAX), 
+      range_cond([t1.c2 = :0])
+
+drop table if exists t1, t2;

@@ -1,0 +1,286 @@
+result_format: 4
+explain_protocol: 2
+drop table if exists t1;
+create table t1(c1 int, c2 int, c3 int, index idx (c2)) partition by hash(c1) partitions 2;
+
+
+## 1. can only allcoate partition gi above partition wise window function
+EXPLAIN select /*+parallel(5)*/ sum(c1) over (partition by(c1)) from t1;
+Query Plan
+=============================================================================
+|ID|OPERATOR                                 |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------
+|0 |PX COORDINATOR                           |        |12      |9           |
+|1 |└─EXCHANGE OUT DISTR                     |:EX10001|12      |6           |
+|2 |  └─WINDOW FUNCTION                      |        |12      |4           |
+|3 |    └─SORT                               |        |12      |3           |
+|4 |      └─EXCHANGE IN DISTR                |        |12      |3           |
+|5 |        └─EXCHANGE OUT DISTR (HASH LOCAL)|:EX10000|12      |2           |
+|6 |          └─PX BLOCK ITERATOR            |        |12      |1           |
+|7 |            └─TABLE FULL SCAN            |t1      |12      |1           |
+=============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(T_FUN_SUM(t1.c1))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(T_FUN_SUM(t1.c1))]), filter(nil), rowset=16
+      dop=5
+  2 - output([T_FUN_SUM(t1.c1)]), filter(nil), rowset=16
+      win_expr(T_FUN_SUM(t1.c1)), partition_by([t1.c1]), order_by(nil), window_type(RANGE), upper(UNBOUNDED PRECEDING), lower(UNBOUNDED FOLLOWING)
+  3 - output([t1.c1]), filter(nil), rowset=16
+      sort_keys([t1.c1, ASC])
+  4 - output([t1.c1]), filter(nil), rowset=16
+  5 - output([t1.c1]), filter(nil), rowset=16
+      (#keys=1, [t1.c1]), dop=5
+  6 - output([t1.c1]), filter(nil), rowset=16
+  7 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.c1]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.__pk_increment]), range(MIN ; MAX)always true
+select /*+parallel(5)*/ sum(c1) over (partition by(c1)) from t1;
++---------------------------------+
+| sum(c1) over (partition by(c1)) |
++---------------------------------+
+|                               4 |
+|                               4 |
+|                               4 |
+|                               4 |
+|                               8 |
+|                               8 |
+|                               8 |
+|                               8 |
+|                              12 |
+|                              12 |
+|                              12 |
+|                              12 |
++---------------------------------+
+
+## 2. can not allocate gi above window function which is not partition wise
+EXPLAIN select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c1) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over() ws from t1) v group by c2;
+Query Plan
+=============================================================================
+|ID|OPERATOR                                 |NAME    |EST.ROWS|EST.TIME(us)|
+-----------------------------------------------------------------------------
+|0 |PX COORDINATOR                           |        |12      |40          |
+|1 |└─EXCHANGE OUT DISTR                     |:EX10002|12      |37          |
+|2 |  └─MERGE GROUP BY                       |        |12      |33          |
+|3 |    └─EXCHANGE IN MERGE SORT DISTR       |        |12      |33          |
+|4 |      └─EXCHANGE OUT DISTR (HASH)        |:EX10001|12      |31          |
+|5 |        └─MERGE GROUP BY                 |        |12      |28          |
+|6 |          └─SORT                         |        |12      |27          |
+|7 |            └─EXCHANGE IN DISTR          |        |12      |27          |
+|8 |              └─EXCHANGE OUT DISTR (HASH)|:EX10000|12      |25          |
+|9 |                └─HASH GROUP BY          |        |12      |21          |
+|10|                  └─SUBPLAN SCAN         |v       |12      |20          |
+|11|                    └─PX BLOCK ITERATOR  |        |12      |20          |
+|12|                      └─TABLE FULL SCAN  |t1(idx) |12      |20          |
+=============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(T_FUN_SUM(T_FUN_SUM(dup(v.c1))))]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(T_FUN_SUM(T_FUN_SUM(dup(v.c1))))]), filter(nil), rowset=16
+      dop=2
+  2 - output([T_FUN_SUM(T_FUN_SUM(dup(v.c1)))]), filter(nil), rowset=16
+      group([v.c2]), agg_func([T_FUN_SUM(T_FUN_SUM(dup(v.c1)))])
+  3 - output([v.c2], [AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+      sort_keys([v.c2, ASC], [AGGR_CODE, ASC])
+  4 - output([v.c2], [AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+      (#keys=1, [v.c2]), dop=2
+  5 - output([v.c2], [AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+      group([v.c2], [AGGR_CODE]), agg_func([T_FUN_SUM(dup(v.c1))])
+  6 - output([v.c2], [AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      sort_keys([v.c2, ASC], [AGGR_CODE, ASC], [dup(v.c1), ASC])
+  7 - output([v.c2], [AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+  8 - output([v.c2], [AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      (#keys=3, [v.c2], [AGGR_CODE], [dup(v.c1)]), dop=2
+  9 - output([v.c2], [AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      group([v.c2], [AGGR_CODE], [dup(v.c1)]), agg_func(nil)
+ 10 - output([v.c1], [v.c2]), filter(nil), rowset=16
+      access([v.c1], [v.c2])
+ 11 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+ 12 - output([t1.c1], [t1.c2]), filter(nil), rowset=16
+      access([t1.__pk_increment], [t1.c1], [t1.c2]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c1) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over() ws from t1) v group by c2;
++------------------+
+| sum(distinct c1) |
++------------------+
+|                1 |
+|                2 |
+|                3 |
++------------------+
+
+## 3. allcoate gi above window function
+EXPLAIN select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c1) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c1) ws from t1) v;
+Query Plan
+=========================================================================
+|ID|OPERATOR                             |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |1       |28          |
+|1 |└─PX COORDINATOR                     |        |2       |28          |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|2       |27          |
+|3 |    └─MERGE GROUP BY                 |        |2       |26          |
+|4 |      └─SORT                         |        |12      |26          |
+|5 |        └─EXCHANGE IN DISTR          |        |12      |26          |
+|6 |          └─EXCHANGE OUT DISTR (HASH)|:EX10000|12      |24          |
+|7 |            └─HASH GROUP BY          |        |12      |20          |
+|8 |              └─SUBPLAN SCAN         |v       |12      |19          |
+|9 |                └─PX BLOCK ITERATOR  |        |12      |19          |
+|10|                  └─TABLE FULL SCAN  |t1(idx) |12      |19          |
+=========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(dup(v.c1)))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(dup(v.c1)))])
+  1 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+  2 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+      dop=2
+  3 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c1))]), filter(nil), rowset=16
+      group([AGGR_CODE]), agg_func([T_FUN_SUM(dup(v.c1))])
+  4 - output([AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      sort_keys([AGGR_CODE, ASC], [dup(v.c1), ASC])
+  5 - output([AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+  6 - output([AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      (#keys=2, [AGGR_CODE], [dup(v.c1)]), dop=2
+  7 - output([AGGR_CODE], [dup(v.c1)]), filter(nil), rowset=16
+      group([AGGR_CODE], [dup(v.c1)]), agg_func(nil)
+  8 - output([v.c1]), filter(nil), rowset=16
+      access([v.c1])
+  9 - output([t1.c1]), filter(nil), rowset=16
+ 10 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.__pk_increment], [t1.c1]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c1) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c1) ws from t1) v;
++------------------+
+| sum(distinct c1) |
++------------------+
+|                6 |
++------------------+
+EXPLAIN select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c2) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c1) ws from t1) v;
+Query Plan
+=========================================================================
+|ID|OPERATOR                             |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------
+|0 |SCALAR GROUP BY                      |        |1       |12          |
+|1 |└─PX COORDINATOR                     |        |2       |11          |
+|2 |  └─EXCHANGE OUT DISTR               |:EX10001|2       |11          |
+|3 |    └─MERGE GROUP BY                 |        |2       |10          |
+|4 |      └─SORT                         |        |12      |10          |
+|5 |        └─EXCHANGE IN DISTR          |        |12      |10          |
+|6 |          └─EXCHANGE OUT DISTR (HASH)|:EX10000|12      |8           |
+|7 |            └─HASH GROUP BY          |        |12      |4           |
+|8 |              └─SUBPLAN SCAN         |v       |12      |3           |
+|9 |                └─PX BLOCK ITERATOR  |        |12      |3           |
+|10|                  └─TABLE FULL SCAN  |t1(idx) |12      |3           |
+=========================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([T_FUN_SUM(T_FUN_SUM(dup(v.c2)))]), filter(nil), rowset=16
+      group(nil), agg_func([T_FUN_SUM(T_FUN_SUM(dup(v.c2)))])
+  1 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c2))]), filter(nil), rowset=16
+  2 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c2))]), filter(nil), rowset=16
+      dop=2
+  3 - output([AGGR_CODE], [T_FUN_SUM(dup(v.c2))]), filter(nil), rowset=16
+      group([AGGR_CODE]), agg_func([T_FUN_SUM(dup(v.c2))])
+  4 - output([AGGR_CODE], [dup(v.c2)]), filter(nil), rowset=16
+      sort_keys([AGGR_CODE, ASC], [dup(v.c2), ASC])
+  5 - output([AGGR_CODE], [dup(v.c2)]), filter(nil), rowset=16
+  6 - output([AGGR_CODE], [dup(v.c2)]), filter(nil), rowset=16
+      (#keys=2, [AGGR_CODE], [dup(v.c2)]), dop=2
+  7 - output([AGGR_CODE], [dup(v.c2)]), filter(nil), rowset=16
+      group([AGGR_CODE], [dup(v.c2)]), agg_func(nil)
+  8 - output([v.c2]), filter(nil), rowset=16
+      access([v.c2])
+  9 - output([t1.c2]), filter(nil), rowset=16
+ 10 - output([t1.c2]), filter(nil), rowset=16
+      access([t1.c2]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ sum(distinct c2) from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c1) ws from t1) v;
++------------------+
+| sum(distinct c2) |
++------------------+
+|                6 |
++------------------+
+
+EXPLAIN select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ distinct c1 from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c2,c1) ws from t1) v;
+Query Plan
+=============================================================
+|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------
+|0 |PX COORDINATOR           |        |12      |24          |
+|1 |└─EXCHANGE OUT DISTR     |:EX10000|12      |22          |
+|2 |  └─PX PARTITION ITERATOR|        |12      |20          |
+|3 |    └─HASH DISTINCT      |        |12      |20          |
+|4 |      └─SUBPLAN SCAN     |v       |12      |19          |
+|5 |        └─TABLE FULL SCAN|t1(idx) |12      |19          |
+=============================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(v.c1)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(v.c1)]), filter(nil), rowset=16
+      dop=2
+  2 - output([v.c1]), filter(nil), rowset=16
+      partition wise, force partition granule
+  3 - output([v.c1]), filter(nil), rowset=16
+      distinct([v.c1])
+  4 - output([v.c1]), filter(nil), rowset=16
+      access([v.c1])
+  5 - output([t1.c1]), filter(nil), rowset=16
+      access([t1.__pk_increment], [t1.c1]), partitions(p[0-1])
+      is_index_back=true, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ distinct c1 from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c2,c1) ws from t1) v;
++------+
+| c1   |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+EXPLAIN select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ distinct c2 from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c2,c1) ws from t1) v;
+Query Plan
+======================================================================
+|ID|OPERATOR                          |NAME    |EST.ROWS|EST.TIME(us)|
+----------------------------------------------------------------------
+|0 |PX COORDINATOR                    |        |12      |10          |
+|1 |└─EXCHANGE OUT DISTR              |:EX10001|12      |8           |
+|2 |  └─MERGE DISTINCT                |        |12      |6           |
+|3 |    └─EXCHANGE IN MERGE SORT DISTR|        |12      |6           |
+|4 |      └─EXCHANGE OUT DISTR (HASH) |:EX10000|12      |5           |
+|5 |        └─PX BLOCK ITERATOR       |        |12      |3           |
+|6 |          └─MERGE DISTINCT        |        |12      |3           |
+|7 |            └─SUBPLAN SCAN        |v       |12      |3           |
+|8 |              └─TABLE FULL SCAN   |t1(idx) |12      |3           |
+======================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([INTERNAL_FUNCTION(v.c2)]), filter(nil), rowset=16
+  1 - output([INTERNAL_FUNCTION(v.c2)]), filter(nil), rowset=16
+      dop=2
+  2 - output([v.c2]), filter(nil), rowset=16
+      distinct([v.c2])
+  3 - output([v.c2]), filter(nil), rowset=16
+      sort_keys([v.c2, ASC]), Local Order
+  4 - output([v.c2]), filter(nil), rowset=16
+      (#keys=1, [v.c2]), dop=2
+  5 - output([v.c2]), filter(nil), rowset=16
+  6 - output([v.c2]), filter(nil), rowset=16
+      distinct([v.c2])
+  7 - output([v.c2]), filter(nil), rowset=16
+      access([v.c2])
+  8 - output([t1.c2]), filter(nil), rowset=16
+      access([t1.c2]), partitions(p[0-1])
+      is_index_back=false, is_global_index=false, 
+      range_key([t1.c2], [t1.__pk_increment]), range(MIN,MIN ; MAX,MAX)always true
+select /*+parallel(2) no_use_hash_aggregation no_rewrite*/ distinct c2 from (select /*+index(t1 idx)*/ c1, c2, sum(c3) over(partition by c2,c1) ws from t1) v;
++------+
+| c2   |
++------+
+|    1 |
+|    2 |
+|    3 |
++------+
+
+drop table t1;

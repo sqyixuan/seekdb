@@ -1,0 +1,60 @@
+##############################
+# owner: qianfu
+# owner group: sql
+# 功能点：测试多个partition切主的时间差引起强一致性读变成跨机读的情况下的重试逻辑
+
+ob1=OBI(cluster=1:1:1,proxy_num=0,init_unit_cpu=1);
+ob1.reboot;
+
+ob1.mysql set global ob_query_timeout = 10000000;
+ob1.mysql alter system set enable_auto_leader_switch = 'False';
+sleep 2;
+let $ip=deploy_get_value(ob1.z1.obs0.ip);
+let $port=deploy_get_value(ob1.z1.obs0.mysql_port);
+connect (conn_obtest,$ip,root@obtest,,oceanbase,$port);
+connect (conn_sys,$ip,root@sys,,oceanbase,$port);
+connection conn_obtest;
+create table test.t1 (pk int primary key, c1 int);
+create table test.t2 (pk int primary key, c1 int);
+
+insert into test.t1 (pk, c1) values (1, 11);
+insert into test.t1 (pk, c1) values (2, 12);
+insert into test.t2 (pk, c1) values (1, 21);
+insert into test.t2 (pk, c1) values (3, 23);
+
+# 将t1和t2的主切到不同的机器
+ob1.z1.obs0.switch_partition obtest:test:t1;
+sleep 5;
+ob1.z1.obs0.check_leader obtest:test:t1;
+
+ob1.z2.obs0.switch_partition obtest:test:t2;
+sleep 5;
+ob1.z2.obs0.check_leader obtest:test:t2;
+
+let $ob1_z1_obs0_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $ob1_z1_obs0_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(ob1_z1_obs0_conn,$ob1_z1_obs0_ip,root@obtest,,test, $ob1_z1_obs0_port);
+connection ob1_z1_obs0_conn;
+
+let $ob1_z3_obs0_ip = deploy_get_value(ob1.z3.obs0.ip);
+let $ob1_z3_obs0_port = deploy_get_value(ob1.z3.obs0.mysql_port);
+connect(ob1_z3_obs0_conn,$ob1_z3_obs0_ip,root@obtest,,test, $ob1_z3_obs0_port);
+connection ob1_z3_obs0_conn;
+use test;
+# 超时重试逻辑可能返回两个错误码，这里都认为是正确的
+# 2.0支持跨机
+select * from t1 left outer join t2 on t1.pk = t2.pk;
+send select * from t1 left outer join t2 on t1.pk = t2.pk;
+
+connection ob1_z1_obs0_conn;
+ob1.z1.obs0.switch_partition obtest:test:t2;
+sleep 5;
+ob1.z1.obs0.check_leader obtest:test:t2;
+
+connection ob1_z3_obs0_conn;
+reap;
+
+ob1.z1.obs0.force_stop;
+ob1.z2.obs0.force_stop;
+ob1.z3.obs0.force_stop;
+

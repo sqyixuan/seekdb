@@ -1,0 +1,129 @@
+##owner: fanxingkun.fxk
+##owner group: 底层引擎部-轻量版
+##description: MERGE TABLE 对 HEAP 表的支持测试
+##tags: merge_table heap
+##author: fanxingkun.fxk
+
+--disable_warnings
+drop database if exists db_merge_heap;
+--enable_warnings
+
+connect (obsys,$OBMYSQL_MS0,root@sys,,oceanbase,$OBMYSQL_PORT);
+connection default;
+
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+
+--echo ============================================
+--echo 1. HEAP 表 MERGE STRATEGY FAIL - 无冲突场景
+--echo ============================================
+
+create database db_merge_heap;
+use db_merge_heap;
+
+create table t_a (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+create table t_b (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+insert into t_a values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_b values (3, 'Charlie', 70), (4, 'David', 95);
+
+merge table db_merge_heap.t_b into db_merge_heap.t_a;
+select * from t_a order by id;
+
+--echo ============================================
+--echo 2. HEAP 表 MERGE STRATEGY FAIL - 有冲突场景（预期报错）
+--echo ============================================
+
+create table t_c (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+create table t_d (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+insert into t_c values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d values (1, 'Alice', 99), (3, 'Charlie', 70);
+
+--error 4179
+merge table db_merge_heap.t_d into db_merge_heap.t_c;
+
+--echo ============================================
+--echo 3. HEAP 表 MERGE STRATEGY THEIRS - 冲突用 incoming 覆盖
+--echo ============================================
+
+create table t_c2 (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+create table t_d2 (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+insert into t_c2 values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d2 values (1, 'Alice', 99), (3, 'Charlie', 70);
+
+merge table db_merge_heap.t_d2 into db_merge_heap.t_c2 strategy theirs;
+select * from t_c2 order by id;
+
+--echo ============================================
+--echo 4. HEAP 表 MERGE STRATEGY OURS - 冲突保留 current
+--echo ============================================
+
+create table t_c3 (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+create table t_d3 (id int primary key, name varchar(20), score int) ORGANIZATION = HEAP;
+insert into t_c3 values (1, 'Alice', 80), (2, 'Bob', 90);
+insert into t_d3 values (1, 'Alice', 99), (3, 'Charlie', 70);
+
+merge table db_merge_heap.t_d3 into db_merge_heap.t_c3 strategy ours;
+select * from t_c3 order by id;
+
+--echo ============================================
+--echo 5. HEAP 表 MERGE 后 DIFF 验证两表一致
+--echo ============================================
+
+create table t_verify_cur (id int primary key, name varchar(20)) ORGANIZATION = HEAP;
+create table t_verify_inc (id int primary key, name varchar(20)) ORGANIZATION = HEAP;
+insert into t_verify_cur values (1, 'A');
+insert into t_verify_inc values (1, 'X'), (2, 'B');
+
+merge table db_merge_heap.t_verify_inc into db_merge_heap.t_verify_cur strategy theirs;
+
+--echo # MERGE 后两表应该一致，DIFF 无输出
+diff table db_merge_heap.t_verify_inc against db_merge_heap.t_verify_cur;
+
+--echo ============================================
+--echo 6. HEAP 表 NULL 值的 MERGE
+--echo ============================================
+
+create table t_null_cur (id int primary key, v int) ORGANIZATION = HEAP;
+create table t_null_inc (id int primary key, v int) ORGANIZATION = HEAP;
+insert into t_null_cur values (1, 10), (2, NULL);
+insert into t_null_inc values (1, NULL), (2, NULL), (3, 30);
+
+--echo # id=1: 冲突(10 vs NULL), THEIRS->NULL; id=2: NULL<=>NULL 相同; id=3: incoming独有->插入
+merge table db_merge_heap.t_null_inc into db_merge_heap.t_null_cur strategy theirs;
+select * from t_null_cur order by id;
+
+--echo ============================================
+--echo 7. HEAP 表复合主键 MERGE
+--echo ============================================
+
+create table t_cpk_cur (a int, b int, v int, primary key(a, b)) ORGANIZATION = HEAP;
+create table t_cpk_inc (a int, b int, v int, primary key(a, b)) ORGANIZATION = HEAP;
+insert into t_cpk_cur values (1, 1, 100), (1, 2, 200), (2, 1, 300);
+insert into t_cpk_inc values (1, 1, 100), (1, 2, 999), (2, 2, 400);
+
+--echo # (1,1): 相同; (1,2): 冲突->THEIRS覆盖; (2,1): current保留; (2,2): incoming独有->插入
+merge table db_merge_heap.t_cpk_inc into db_merge_heap.t_cpk_cur strategy theirs;
+select * from t_cpk_cur order by a, b;
+
+--echo ============================================
+--echo 8. HEAP 表 MERGE 幂等性 - 连续执行两次应无变化
+--echo ============================================
+
+create table t_idem_cur (id int primary key, v int) ORGANIZATION = HEAP;
+create table t_idem_inc (id int primary key, v int) ORGANIZATION = HEAP;
+insert into t_idem_cur values (1, 10);
+insert into t_idem_inc values (1, 20), (2, 30);
+
+merge table db_merge_heap.t_idem_inc into db_merge_heap.t_idem_cur strategy theirs;
+select * from t_idem_cur order by id;
+
+--echo # 第二次 MERGE 应该没有变化
+merge table db_merge_heap.t_idem_inc into db_merge_heap.t_idem_cur strategy theirs;
+select * from t_idem_cur order by id;
+
+--echo ============================================
+--echo 9. 清理
+--echo ============================================
+
+drop database if exists db_merge_heap;

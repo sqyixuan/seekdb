@@ -1,0 +1,144 @@
+##########################
+#owner :msy164651
+# 测试点：测试cancel transfer partition的基础功能
+##########################
+
+
+ob1=OBI(cluster=2:2,proxy_num=0);
+
+source include/mini_ob_config.inc;
+ob1.set extra_config=$mini_ob_config;
+ob1.reboot;
+
+ob_connect(conn_sys, ob1.z1.obs0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+connection conn_sys;
+alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set debug_sync_timeout = '1000s';
+ob1.mysql alter system set _transfer_start_trans_timeout = '60s';
+
+
+set @@session.ob_query_timeout = 1000000000;
+
+#mysql tenant
+eval CREATE RESOURCE UNIT unit_1 MAX_CPU 1, MEMORY_SIZE '2G';
+eval CREATE RESOURCE POOL pool_1 UNIT = 'unit_1', UNIT_NUM = 2;
+eval CREATE TENANT mysql RESOURCE_POOL_LIST = ('pool_1'), primary_zone='z1' set ob_tcp_invited_nodes='%';
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'mysql', tenant_id, 1);
+ob1.mysql alter system set partition_balance_schedule_interval = '1m' tenant = 'mysql';
+ob1.mysql alter system set balancer_idle_time = '10s' tenant = 'mysql';
+ob1.mysql alter system set partition_balance_schedule_interval = '0s' tenant = 'mysql';
+ob1.mysql alter system set _transfer_service_wakeup_interval = '5s' tenant = 'mysql';
+sleep 2;
+ob_connect(conn_mysql, ob1.z1.obs1, root@mysql, , test, , USE_MYSQL_CONNECTOR);
+connection conn_mysql;
+set recyclebin=off;
+let $count = 0;
+while ($count < 30) 
+{
+eval create table non_partition_$count(pk int primary key, c3 int, c4 int, c2 longtext);
+eval insert into non_partition_$count values(1, 1, 1, "xdrdgwrtqwrweqr");
+eval create index il_$count on non_partition_$count(c3) local;
+eval create index il1_$count on non_partition_$count(c3) global;
+
+inc $count;
+}
+create table partition_one(c1 int , c2 int, c3 longtext) partition by hash(c1) partitions 4;
+create index il_one on partition_one(c2) local;
+create index il_one1 on partition_one(c2) global;
+
+create table partition_two (c1 int, c2 int, c3 int, c4 longtext) partition by hash(c1) subpartition by list(c2) subpartition template(subpartition p0 values in (1,2,3), subpartition p1 values in (default)) partitions 3;
+create index il_two on partition_two(c2) local;
+create index il_two1 on partition_two(c3) global;
+
+#验证cancel
+connection conn_sys;
+--error 1235
+alter system cancel balance job;
+--error 1235
+alter system cancel transfer partition table_id = 1, object_id = 1;
+--error 1235
+alter system cancel transfer partition all;
+
+--error 5157
+alter system cancel balance job tenant = 'xxx';
+--error 5157
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'xxx';
+--error 5157
+alter system cancel transfer partition all tenant = 'xxx';
+
+--error 1235
+alter system cancel balance job tenant = 'sys';
+--error 1235
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'sys';
+--error 1235
+alter system cancel transfer partition all tenant = 'sys';
+
+
+--error 1235
+alter system cancel balance job tenant = 'META$1002';
+--error 1235
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'META$1002';
+--error 1235
+alter system cancel transfer partition all tenant = 'META$1002';
+
+
+connection conn_mysql;
+--error 4018
+alter system cancel balance job;
+--error 4018
+alter system cancel balance job tenant = 'mysql';
+connection conn_sys;
+eval CREATE RESOURCE POOL pool_2 UNIT = 'unit_1', UNIT_NUM = 1;
+eval CREATE TENANT oracle RESOURCE_POOL_LIST = ('pool_2'), primary_zone='z1' set ob_tcp_invited_nodes='%' , ob_compatibility_mode='oracle';
+
+connection conn_mysql;
+--error 1227
+alter system cancel balance job tenant = 'oracle';
+--error 1227
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'oracle';
+--error 1227
+alter system cancel transfer partition all tenant = 'oracle';
+connection conn_sys;
+
+ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_CREATE_LS wait_for signal';
+ALTER RESOURCE TENANT oracle UNIT_NUM = 2;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job, 1, 100;
+sleep 10;
+connection conn_sys;
+#验证出现锁冲突是可以等待结束的
+set ob_query_timeout = 30000000;
+send alter system cancel balance job tenant = 'oracle';
+ob1.mysql_p select status from oceanbase.__all_virtual_balance_job; 
+sleep 10;
+ob1.mysql set ob_global_debug_sync = 'now signal signal';
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job_history, 2, 100;
+ob1.mysql_p select status, comment from oceanbase.__all_virtual_balance_job_history order by job_id;
+ob_connect(conn_oracle, ob1.z1.obs1, SYS@oracle, , SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+--error 600
+alter system cancel balance job tenant = 'mysql';
+--error 600
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'mysql';
+--error 600
+alter system cancel transfer partition all tenant = 'mysql';
+
+#验证cancel balance_job
+#ob1.mysql set ob_global_debug_sync = 'BEFORE_PROCESS_BALANCE_TASK_ALTER_LS wait_for signal';
+connection conn_sys;
+ALTER RESOURCE TENANT mysql UNIT_NUM = 1;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where status = 'ALTER_LS', 1, 20;
+set ob_query_timeout = 30000000;
+alter system cancel balance job tenant = 'mysql';
+ob1.check_until_timeout select count(*) from __all_virtual_balance_job, 1, 100;
+ob1.check_until_timeout select count(*) from __all_virtual_balance_task where status = 'TRANSFER', 1, 120;
+alter system cancel balance job tenant = 'mysql';
+ob1.mysql_p select count(*) from oceanbase.__all_virtual_balance_job_history where tenant_id = 1002, 3, 100;
+ob1.mysql_p select status, comment from oceanbase.__all_virtual_balance_job_history where tenant_id = 1002 order by job_id;
+
+#验证cancel transfer partition
+connection conn_sys;
+--error 4018
+alter system cancel transfer partition table_id = 1, object_id = 1 tenant = 'mysql';
+alter system cancel transfer partition all tenant = 'mysql';

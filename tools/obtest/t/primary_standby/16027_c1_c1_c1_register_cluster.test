@@ -1,0 +1,81 @@
+# owner: msy164651
+# owner group: rs
+# description:register备库的处理 
+ob1=OBI(cluster=1, init_unit_cpu=0, proxy_num=0, ct_num=0);
+ob2=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob3=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob4=OBI(cluster=1, leaderob=ob1, init_unit_cpu=0, proxy_num=0);
+ob1.reboot;
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set merger_check_interval='10s';
+ob3.reboot;
+# 为了避免备库add cluster，备库不走reboot
+ob2.reset;
+ob2.deploy;
+ob2.bootstrap;
+
+ob4.reset;
+ob4.deploy;
+ob4.bootstrap;
+
+ob_connect(conn3, ob3.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn3;
+source include/standby_sync_ddl.inc;
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 60;
+let $case_index = 1;
+let $unit_num = 1;
+let $locality = 'f@z1';
+let $zone_list = 'z1';
+source include/create_tenant_1.inc;
+
+#视图中展示register的备库
+ob1.mysql_p select cluster_id, cluster_status, protection_level from oceanbase.__all_virtual_standby_status;
+
+#等待第三方备库同步，设置最大保护模式
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 200;
+let $cluster_name = deploy_get_value(ob3.select select info from oceanbase.__all_zone where name = 'cluster', info, 1);
+let $cluster_id = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+#设置restore为强同步
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id set redo_transport_options='SYNC'; 
+
+let $cluster_id = deploy_get_value(ob3.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+#设置restore为强同步
+ob1.mysql alter system modify cluster '$cluster_name' cluster_id $cluster_id set redo_transport_options='SYNC'; 
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PROTECTION;
+ob1.check_until_timeout select protection_level from oceanbase.__all_cluster where cluster_id = $cluster_id, MAXIMUM PROTECTION, 100;
+ob1.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PERFORMANCE;
+
+ob1.check_until_timeout select switchover_status from oceanbase.v\$ob_cluster, TO STANDBY, 100;
+ob1.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PROTECTION;
+ob1.check_until_timeout select protection_level from oceanbase.__all_cluster where cluster_id = $cluster_id, MAXIMUM PROTECTION, 100;
+#Register的备库可以删除
+ob_connect(conn2, ob2.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn2;
+let $cluster_id = query_get_value(select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+ob2.force_stop;
+ob1.mysql alter system remove cluster '$cluster_name' cluster_id = $cluster_id;
+
+#switchover 后，不影响register备库的加入
+ob1.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO STANDBY, 100;
+ob1.mysql alter system commit to switchover to physical standby;
+ob3.check_until_timeout select switchover_status from oceanbase.__all_virtual_cluster, TO PRIMARY, 100;
+ob3.mysql alter system commit to switchover to primary;
+
+
+let $cluster_id = deploy_get_value(ob3.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+ob_connect(conn4, ob4.z1.obs0, root@sys, ,oceanbase, , USE_OB_CONNECTOR);
+connection conn4;
+let $rs_list = deploy_get_value(ob3.select select concat(svr_ip,":",svr_port) addr from __all_server where with_rootserver =1, addr, 1);
+--disable_query_log
+eval alter system change cluster '$cluster_name' cluster_id $cluster_id set rootservice_list = '$rs_list';
+--enable_query_log
+let $cluster_id = query_get_value(select value from oceanbase.__all_virtual_sys_parameter_stat where name = 'cluster_id', value, 1);
+
+ob3.mysql alter system add cluster '$cluster_name' cluster_id = $cluster_id;
+
+ob3.mysql ALTER SYSTEM SET STANDBY CLUSTER TO MAXIMIZE PERFORMANCE;
+ob3.check_until_timeout select count(*) from oceanbase.__all_virtual_cluster where switchover_info like "SYNCED STANDBY CLUSTERS: %,%", 1, 60;
+

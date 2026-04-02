@@ -1,0 +1,110 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: sean.yyj
+#owner group: sql3
+#tags: ddl
+
+connect (sys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection sys;
+let $zone = query_get_value(select zone from oceanbase.dba_ob_zones, zone, 1);
+--disable_query_log
+--disable_warnings
+DROP TENANT IF EXISTS tenant_tde_mysql FORCE;
+DROP RESOURCE POOL IF EXISTS tde_mysql_pool;
+DROP RESOURCE UNIT IF EXISTS tde_mysql_uint;
+--enable_warnings
+eval CREATE RESOURCE UNIT tde_mysql_uint MAX_CPU=1, MEMORY_SIZE='2G';
+eval CREATE RESOURCE POOL tde_mysql_pool UNIT='tde_mysql_uint', UNIT_NUM=1, ZONE_LIST=('$zone');
+CREATE TENANT tenant_tde_mysql REPLICA_NUM = 1, RESOURCE_POOL_LIST = ('tde_mysql_pool'), collate = utf8mb4_bin set ob_tcp_invited_nodes='%', ob_compatibility_mode='mysql';
+
+let $__tenant_name__ = 'tenant_tde_mysql';
+--sleep 3
+--source mysql_test/include/get_tenant_server.inc
+connect (conn_tde_mysql, $TE_SERVER_IP, root@tenant_tde_mysql,,test, $TE_SERVER_PORT);
+connection conn_tde_mysql;
+
+create database db_tde;
+alter system set tde_method = 'internal';
+sleep 5;
+ALTER INSTANCE ROTATE INNODB MASTER KEY;
+sleep 15;
+
+create tablespace ts_1 encryption = 'y';
+create tablespace ts_2;
+
+--result_format 3
+use db_tde;
+create table t1(c1 int, c2 int);
+create index i2_t1 on t1(c2) local;
+--disable_query_log
+--replace_regex /__idx_[0-9]{1,16}_//g 
+select table_name, database_name, tablespace_name, encryption
+from (select table_name, database_name, encryption, tablespace_id
+      from oceanbase.__all_table tb, oceanbase.__all_database db
+      where tb.database_id = db.database_id and db.database_name = 'DB_TDE') A
+      left join oceanbase.__all_tenant_tablespace ts on A.tablespace_id = ts.tablespace_id;
+--enable_query_log
+
+alter table t1 tablespace ts_1;
+--disable_query_log
+--replace_regex /__idx_[0-9]{1,16}_//g 
+select table_name, database_name, tablespace_name, encryption
+from (select table_name, database_name, encryption, tablespace_id
+      from oceanbase.__all_table tb, oceanbase.__all_database db
+      where tb.database_id = db.database_id and db.database_name = 'DB_TDE') A
+      left join oceanbase.__all_tenant_tablespace ts on A.tablespace_id = ts.tablespace_id;
+--enable_query_log
+
+create index i1_t1 on t1(c1) global;
+alter table t1 add index i3_t1 (c1);
+create table t2(c1 int, c2 int, key i1_t2(c1) global, key i2_t2(c2) local) tablespace ts_1;
+--disable_query_log
+--replace_regex /__idx_[0-9]{1,16}_//g 
+select table_name, database_name, tablespace_name, encryption
+from (select table_name, database_name, encryption, tablespace_id
+      from oceanbase.__all_table tb, oceanbase.__all_database db
+      where tb.database_id = db.database_id and db.database_name = 'DB_TDE') A
+      left join oceanbase.__all_tenant_tablespace ts on A.tablespace_id = ts.tablespace_id;
+--enable_query_log
+
+alter table t2 tablespace ts_2;
+--disable_query_log
+--replace_regex /__idx_[0-9]{1,16}_//g 
+select table_name, database_name, tablespace_name, encryption
+from (select table_name, database_name, encryption, tablespace_id
+      from oceanbase.__all_table tb, oceanbase.__all_database db
+      where tb.database_id = db.database_id and db.database_name = 'DB_TDE') A
+      left join oceanbase.__all_tenant_tablespace ts on A.tablespace_id = ts.tablespace_id;
+--enable_query_log
+
+--error 1210
+alter tablespace ts_2 encryption = 'sm4';
+alter tablespace ts_2 encryption = 'sm4-cbc';
+alter tablespace ts_2 encryption = 'aes-128-gcm';
+alter tablespace ts_2 encryption = 'aes-192-gcm';
+alter tablespace ts_2 encryption = 'aes-256-gcm';
+alter tablespace ts_2 encryption = 'sm4-gcm';
+
+--disable_query_log
+--replace_regex /__idx_[0-9]{1,16}_//g 
+select table_name, database_name, tablespace_name, encryption
+from (select table_name, database_name, encryption, tablespace_id
+      from oceanbase.__all_table tb, oceanbase.__all_database db
+      where tb.database_id = db.database_id and db.database_name = 'DB_TDE') A
+      left join oceanbase.__all_tenant_tablespace ts on A.tablespace_id = ts.tablespace_id;
+--enable_query_log
+
+--echo # error test
+--error 1064
+create index i3_t2 on t2(c1) tablesapce ts_1;
+--error 1064
+alter index i1_t1 on t1 tablesapce ts_2;
+--error 1235
+alter table t1 tablespace ts_2, rename index i2 to i4;
+
+--result_format 1
+connection sys;
+drop tenant tenant_tde_mysql force;
+drop resource pool tde_mysql_pool;
+drop resource unit tde_mysql_uint;

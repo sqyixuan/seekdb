@@ -1,0 +1,108 @@
+# owner: yanmu.ztl
+# owner group: rs
+# description: 验证config_server的readonly_rs_list是否与inmemory_table的内容保持一致
+ob1=OBI(cluster=1:1:1:1:1, init_unit_cpu=0, proxy_num=0, ct_num=0, locality=hz:hz:sh:sh:sz);
+
+# disable 1 server
+ob1.z5.obs0.set status=disable;
+
+ob1.reboot;
+
+ob1.z5.add;
+ob1.z5.start_zone;
+ob1.z5.obs0.set status=enable;
+ob1.z5.obs0.start;
+ob1.z5.obs0.add;
+
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z5' and (start_service_time<=0 or status='inactive'),0,60;
+
+ob1.mysql alter system set enable_auto_leader_switch = 'true';
+ob1.mysql alter system set enable_rebalance = 'true';
+ob1.mysql alter system set enable_rereplication = 'true';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_permanent_offline_time = "20s";
+ob1.mysql alter system set replica_safe_remove_time = "1m";
+
+let $z5_ip = deploy_get_value(ob1.z5.obs0.ip);
+let $z5_port = deploy_get_value(ob1.z5.obs0.port);
+## 获取config_server的url
+let $config_url = deploy_get_value(ob1.select select value from oceanbase.__all_virtual_sys_parameter_stat where name = "obconfig_url", value, 1);
+
+## 检查inmemory_table内容
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = "$z5_ip" and svr_port = "$z5_port", 0, 120;
+echo "z5 not exist in inmemory_table";
+## 检查ObWebConfig的ReadonlyRsList
+let $config = deploy_get_value(ob1.sh_p wget -q -O - $config_url | sed s/^.*ReadonlyRsList/ReadonlyRsList/);
+let $exist = deploy_get_value(ob1.select select IF(LOCATE("$z5_ip:$z5_port", "\"$config") != 0, 1, 0) exist, exist, 1);
+if ($exist == 0)
+{
+  echo "z5 not exist in ReadonlyRsList";
+}
+########################################
+## case 1: __all_core_table增加只读副本
+########################################
+ob1.mysql CREATE RESOURCE POOL sys_pool_2 UNIT = 'sys_unit_config', UNIT_NUM = 1, ZONE_LIST = ('z5');
+ob1.mysql alter tenant sys resource_pool_list=('sys_pool', 'sys_pool_2'), primary_zone = 'z1;z2,z3,z4,z5', locality = 'F@z1,F@z2,F@z3,F@z4,R@z5';
+## 检查inmemory_table内容
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = "$z5_ip" and svr_port = "$z5_port", 1, 120;
+echo "z5 exist in inmemory_table";
+## 检查ObWebConfig的ReadonlyRsList
+let $config = deploy_get_value(ob1.sh_p wget -q -O - $config_url | sed s/^.*ReadonlyRsList/ReadonlyRsList/);
+let $exist = deploy_get_value(ob1.select select IF(LOCATE("$z5_ip:$z5_port", "\"$config") != 0, 1, 0) exist, exist, 1);
+if ($exist == 1)
+{
+  echo "z5 exist in ReadonlyRsList";
+}
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+########################################
+## case 2: __all_core_table删除只读副本
+########################################
+ob1.mysql alter tenant sys set locality = 'F@z1,F@z2,F@z3,F@z4';
+## 检查inmemory_table内容
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = "$z5_ip" and svr_port = "$z5_port", 0, 120;
+echo "z5 not exist in inmemory_table";
+## 检查ObWebConfig的ReadonlyRsList
+let $config = deploy_get_value(ob1.sh_p wget -q -O - $config_url | sed s/^.*ReadonlyRsList/ReadonlyRsList/);
+let $exist = deploy_get_value(ob1.select select IF(LOCATE("$z5_ip:$z5_port", "\"$config") != 0, 1, 0) exist, exist, 1);
+if ($exist == 0)
+{
+  echo "z5 not exist in ReadonlyRsList";
+}
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+########################################
+## case 3: 只读副本所在server宕机
+########################################
+ob1.mysql alter tenant sys set locality = 'F@z1,F@z2,F@z3,F@z4,R@z5';
+let $last_job_id = deploy_get_value(ob1.select select max(job_id) as job_id from oceanbase.__all_rootservice_job where job_type = "ALTER_TENANT_LOCALITY" group by job_type, job_id, 1);
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_rootservice_job where job_id = "$last_job_id" and job_type = "ALTER_TENANT_LOCALITY" and job_status = "SUCCESS", 1, 120;
+## z5宕机
+ob1.z5.obs0.force_stop;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z5' and (start_service_time<=0 or status='inactive'),1,60;
+## 检查inmemory_table内容
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = "$z5_ip" and svr_port = "$z5_port", 0, 120;
+echo "z5 not exist in inmemory_table";
+## 检查ObWebConfig的ReadonlyRsList
+let $config = deploy_get_value(ob1.sh_p wget -q -O - $config_url | sed s/^.*ReadonlyRsList/ReadonlyRsList/);
+let $exist = deploy_get_value(ob1.select select IF(LOCATE("$z5_ip:$z5_port", "\"$config") != 0, 1, 0) exist, exist, 1);
+if ($exist == 0)
+{
+  echo "z5 not exist in ReadonlyRsList";
+}
+########################################
+## case 4: 只读副本所在server重启
+########################################
+## z5重启
+ob1.z5.obs0.start;
+ob1.check_until_timeout select count(*) from oceanbase.__all_server where zone = 'z5' and (start_service_time<=0 or status='inactive'),0,60;
+## 检查inmemory_table内容
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_core_meta_table where svr_ip = "$z5_ip" and svr_port = "$z5_port", 1, 120;
+echo "z5 exist in inmemory_table";
+## 检查ObWebConfig的ReadonlyRsList
+let $config = deploy_get_value(ob1.sh_p wget -q -O - $config_url | sed s/^.*ReadonlyRsList/ReadonlyRsList/);
+let $exist = deploy_get_value(ob1.select select IF(LOCATE("$z5_ip:$z5_port", "\"$config") != 0, 1, 0) exist, exist, 1);
+if ($exist == 1)
+{
+  echo "z5 exist in ReadonlyRsList";
+}

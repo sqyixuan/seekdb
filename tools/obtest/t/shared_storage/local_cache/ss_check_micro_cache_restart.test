@@ -1,0 +1,116 @@
+# owner: donglou.zl
+# owner group: storage
+# test ss_micro_cache checkpoint and restart
+
+ob1=OBI(cluster=1, proxy_num=0, init_unit_cpu=2);
+ob1.reboot;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_meta;
+# disable major_merge launched by major_freeze_duty_time
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant sys;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_user;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant all_meta;
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# check micro_cache used disk/memory size, now only exist ss_super_block
+let $tenant_id=deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = 'obtest', tenant_id, 1);
+let $ori_used_disk_size=deploy_get_value(ob1.select select used_disk_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache', used_disk_size, 1);
+ob1.check_until_timeout select $ori_used_disk_size > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_mem_size = 0, 1, 60;
+
+# generage data
+create table t1(c1 int, c2 int, c3 varchar(40960), c4 varchar(40960)) compression= 'none';
+--disable_query_log
+let $cnt = 0;
+while($cnt < 500)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check micro_cache used_mem_size and used_disk_size
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_mem_size > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_disk_size > $ori_used_disk_size, 1, 60;
+
+# wait for ss_micro_cache checkpoint
+sleep 605;
+
+# restart observer
+ob1.obs0.restart;
+
+sleep 60;
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_meta;
+
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# after restart observer, will replay ss_micro_cache checkpoint
+let $cur_used_mem_size=deploy_get_value(ob1.select select used_mem_size from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache', used_mem_size, 1);
+ob1.check_until_timeout select $cur_used_mem_size > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_disk_size > $ori_used_disk_size, 1, 60;
+
+# generage data secondly
+--disable_query_log
+while($cnt < 500)
+{
+  eval insert into t1 values($cnt, $cnt, repeat('BatMan_NO1', 4096), repeat('SpiderMan', 4096));
+  inc $cnt;
+}
+--enable_query_log
+
+# launch and wait major freeze
+ob1.mysql alter system major freeze tenant = 'obtest';
+source include/compaction/wait_tenant_major_finish_on_ss.inc;
+
+# check used_mem_size
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_mem_size > $cur_used_mem_size, 1, 60;
+
+# wait for ss_micro_cache checkpoint
+sleep 605;
+
+# restart observer
+ob1.obs0.restart;
+
+sleep 60;
+
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant sys;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_user;
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant all_meta;
+ob1.mysql alter system set merger_check_interval = '10s' tenant sys;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_user;
+ob1.mysql alter system set merger_check_interval = '10s' tenant all_meta;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant sys;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_user;
+ob1.mysql alter system set _ss_major_compaction_prewarm_level = 0 tenant all_meta;
+
+connect(conn1, $proxy_ip, root@obtest,, test, $proxy_port);
+connection conn1;
+
+# after restart observer, will replay ss_micro_cache checkpoint
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_mem_size > 0, 1, 60;
+ob1.check_until_timeout select count(*) from oceanbase.__all_virtual_ss_local_cache_info where tenant_id = $tenant_id and cache_name = 'ss_micro_cache' and used_disk_size > $ori_used_disk_size, 1, 60;

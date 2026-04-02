@@ -1,0 +1,78 @@
+# owner: ouyanghongrong.oyh
+# owner group: storage
+# description: test minor merge scheduled when mini sstable cnt is unsafe when ls migrating
+# 
+
+ob1=OBI(cluster=1:1,proxy_num=0,init_unit_cpu=4);
+ob1.reboot;
+sleep 10;
+
+--echo ===============================================================
+--echo =================  Step 0: prepare env   ======================
+--echo ===============================================================
+
+ob1.mysql alter resource unit sys_unit_config memory_size='2G';
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set default_compress_func = 'none';
+ob1.mysql alter system set debug_sync_timeout = '100000s';
+
+let $proxy_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $proxy_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $proxy_ip, root@sys,,oceanbase, $proxy_port);
+
+--echo ===============================================================
+--echo =================  Step 1: create tenant   ====================
+--echo ===============================================================
+
+connection sys_conn;
+source include/get_user_config.inc;
+ob1.mysql create resource pool compaction_obtest_pool unit = "user_unit_config", unit_num = 1, zone_list = ('z1', 'z2');
+ob1.mysql create TENANT tenant1 resource_pool_list=('compaction_obtest_pool'), locality = "F@z1" set ob_tcp_invited_nodes='%';
+ob1.mysql alter system set ob_compaction_schedule_interval = '10s' tenant tenant1;
+ob1.mysql alter system set merger_check_interval = '10s' tenant tenant1;
+ob1.mysql alter system set major_freeze_duty_time = 'Disable' tenant tenant1;
+ob1.mysql alter system set _enable_adaptive_compaction = 'False' tenant tenant1;
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 1;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from oceanbase.__all_tenant where tenant_name = "tenant1", tenant_id, 1);
+let $resource_pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where tenant_id = $tenant_id, resource_pool_id, 1);
+
+--echo ===============================================================
+--echo ====  Step 2: create table and do 50 minor freeze   ===========
+--echo ===============================================================
+
+ob_connect(z1_obs0, ob1.z1.obs0, root@tenant1, , test, , USE_MYSQL_CONNECTOR);
+connection z1_obs0;
+
+create table t1 (k int primary key, v1 int, v2 int);
+create sequence seq cache 100000 noorder;
+
+connection sys_conn;
+let $tablet_id = deploy_get_value(ob1.select select tablet_id from oceanbase.__all_virtual_table where tenant_id = $tenant_id and table_name = 't1', tablet_id, 1);
+
+connection z1_obs0;
+let $freeze_cnt = 50;
+while ($freeze_cnt > 0)
+{
+  insert into t1 select seq.nextval, seq.nextval + 1, seq.nextval + 2 from table(generator(100));
+  alter system minor freeze;
+  ob1.check_until_timeout select count(1) from oceanbase.__all_virtual_table_mgr where tenant_id = $tenant_id and tablet_id = $tablet_id and table_type = 0, 0, 100;
+  dec $freeze_cnt;
+}
+
+connection sys_conn;
+ob1.check_until_timeout select count(1) from GV\$OB_SSTABLES where tenant_id = $tenant_id and tablet_id = $tablet_id and table_type = 'MINI', 50, 100;
+
+--echo ===============================================================
+--echo =================  Step 2: add F replcia   ====================
+--echo ===============================================================
+ob1.mysql alter tenant tenant1 set locality = "F{1}@z1,F{1}@z2";
+ob1.mysql alter system set_tp tp_name = "MIGRATION_WAIT_UPDATE_TABLET_HA_STATUS", error_code = $tablet_id, frequency = 1;
+ob1.mysql set ob_global_debug_sync = 'BEFORE_UPDATE_TABLET_HA_STATUS wait_for continue_signal execute 10000';
+ob1.z2.obs0.check_log_until_success -c "ERRSIM MIGRATION_WAIT_UPDATE_TABLET_HA_STATUS";
+ob1.mysql alter system set_tp tp_name = "ERRSIM_DISABLE_MINOR_MERGE", error_code = 4016, frequency = 0;
+ob1.z2.obs0.check_log_until_success -c "failed to get multi_version_start, use multi_version_start on tablet.*need_emergency_minor=true";
+ob1.check_until_timeout select count(1) from GV\$OB_SSTABLES where tenant_id = $tenant_id and tablet_id = $tablet_id and table_type = 'MINI', 0, 100;
+ob1.mysql set ob_global_debug_sync = 'now broadcast continue_signal';
+ob1.check_until_timeout select count(*) from (select * from oceanbase.DBA_OB_TENANT_JOBS where tenant_id = $tenant_id order by START_TIME desc limit 1) where job_status = "SUCCESS", 1, 100;

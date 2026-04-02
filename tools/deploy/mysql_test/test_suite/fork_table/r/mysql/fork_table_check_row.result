@@ -1,0 +1,228 @@
+drop database if exists db_fork_check_row;
+create database db_fork_check_row;
+use db_fork_check_row;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+# 启用debug sync
+alter system set debug_sync_timeout = '60s';
+set ob_global_debug_sync = 'reset';
+# 加速major freeze
+alter system set merger_check_interval = '10s' tenant sys;
+alter system set ob_compaction_schedule_interval = '3s' tenant sys;
+============================================
+1. 基本Fork Table功能测试
+============================================
+drop table if exists t_cross;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross'
+drop table if exists t_cross_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross_fork'
+create table t_cross (
+id int primary key,
+name varchar(50),
+v int
+);
+insert into t_cross values (1, 'S_A', 10), (2, 'S_B', 20), (3, 'S_C', 30);
+fork table t_cross to t_cross_fork;
+# Fork表：更新/删除/插入
+update t_cross_fork set name = 'F_A', v = 11 where id = 1;
+delete from t_cross_fork where id = 2;
+insert into t_cross_fork values (99, 'F_NEW', 99);
+# 源表：更新/删除/插入
+update t_cross set name = 'S_C_U', v = 31 where id = 3;
+delete from t_cross where id = 1;
+insert into t_cross values (88, 'S_NEW', 88);
+# 校验数量与数据隔离
+select count(*) as cnt from t_cross;
+cnt
+3
+select count(*) as cnt from t_cross_fork;
+cnt
+3
+select * from t_cross order by id;
+id	name	v
+2	S_B	20
+3	S_C_U	31
+88	S_NEW	88
+select * from t_cross_fork order by id;
+id	name	v
+1	F_A	11
+3	S_C	30
+99	F_NEW	99
+# 同ID分别写入不同内容
+insert into t_cross values (100, 'S_100', 100);
+insert into t_cross_fork values (100, 'F_100', 1000);
+select * from t_cross where id = 100;
+id	name	v
+100	S_100	100
+select * from t_cross_fork where id = 100;
+id	name	v
+100	F_100	1000
+# 同ID分别执行删除
+delete from t_cross where id = 3;
+delete from t_cross_fork where id = 3;
+select * from t_cross where id = 3;
+id	name	v
+select * from t_cross_fork where id = 3;
+id	name	v
+# 同ID分别执行更新
+update t_cross set name = 'S_100_U', v = 2000 where id = 100;
+update t_cross_fork set name = 'F_100_U', v = 2001 where id = 100;
+select * from t_cross where id = 100;
+id	name	v
+100	S_100_U	2000
+select * from t_cross_fork where id = 100;
+id	name	v
+100	F_100_U	2001
+============================================
+2. Case2: BUILD_DATA阶段 + mini sstable数据
+============================================
+drop table if exists t_cross2;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross2'
+drop table if exists t_cross2_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross2_fork'
+create table t_cross2 (
+id int primary key,
+name varchar(50),
+v int
+);
+# 准备初始数据并落盘到mini sstable
+insert into t_cross2 values (1, 'S_A', 10), (2, 'S_B', 20), (3, 'S_C', 30);
+alter system minor freeze;
+# 设置debug sync: fork卡在BUILD_DATA阶段
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for signal_case2 execute 10000';
+# 执行 fork（会卡在 BUILD_DATA）
+fork table t_cross2 to t_cross2_fork;
+# 等待进入BUILD_DATA阶段
+# Fork表：更新/删除/插入
+update t_cross2_fork set name = 'F_A', v = 11 where id = 1;
+delete from t_cross2_fork where id = 2;
+insert into t_cross2_fork values (99, 'F_NEW', 99);
+# 源表：更新/删除/插入
+update t_cross2 set name = 'S_C_U', v = 31 where id = 3;
+delete from t_cross2 where id = 1;
+insert into t_cross2 values (88, 'S_NEW', 88);
+# 校验数量与数据隔离
+select count(*) as cnt from t_cross2;
+cnt
+3
+select count(*) as cnt from t_cross2_fork;
+cnt
+3
+select * from t_cross2 order by id;
+id	name	v
+2	S_B	20
+3	S_C_U	31
+88	S_NEW	88
+select * from t_cross2_fork order by id;
+id	name	v
+1	F_A	11
+3	S_C	30
+99	F_NEW	99
+# 同ID分别写入不同内容
+insert into t_cross2 values (100, 'S_100', 100);
+alter system minor freeze;
+insert into t_cross2_fork values (100, 'F_100', 1000);
+select * from t_cross2 where id = 100;
+id	name	v
+100	S_100	100
+select * from t_cross2_fork where id = 100;
+id	name	v
+100	F_100	1000
+# 同ID分别执行删除
+delete from t_cross2 where id = 3;
+alter system minor freeze;
+delete from t_cross2_fork where id = 3;
+select * from t_cross2 where id = 3;
+id	name	v
+select * from t_cross2_fork where id = 3;
+id	name	v
+# 同ID分别执行更新
+update t_cross2 set name = 'S_100_U', v = 2000 where id = 100;
+alter system minor freeze;
+update t_cross2_fork set name = 'F_100_U', v = 2001 where id = 100;
+select * from t_cross2 where id = 100;
+id	name	v
+100	S_100_U	2000
+select * from t_cross2_fork where id = 100;
+id	name	v
+100	F_100_U	2001
+# 释放BUILD_DATA卡点并等待fork完成
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal signal_case2';
+============================================
+3. Case3: BUILD_DATA阶段 + major sstable数据
+============================================
+drop table if exists t_cross3;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross3'
+drop table if exists t_cross3_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_check_row.t_cross3_fork'
+create table t_cross3 (
+id int primary key,
+name varchar(50),
+v int
+);
+# 准备初始数据并落盘到major sstable
+insert into t_cross3 values (1, 'S_A', 10), (2, 'S_B', 20), (3, 'S_C', 30);
+alter system major freeze;
+# 设置debug sync: fork卡在BUILD_DATA阶段
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA wait_for signal_case3 execute 10000';
+# 执行 fork（会卡在 BUILD_DATA）
+fork table t_cross3 to t_cross3_fork;
+# 等待进入BUILD_DATA阶段
+# Fork表：更新/删除/插入
+update t_cross3_fork set name = 'F_A', v = 11 where id = 1;
+delete from t_cross3_fork where id = 2;
+insert into t_cross3_fork values (99, 'F_NEW', 99);
+# 源表：更新/删除/插入
+update t_cross3 set name = 'S_C_U', v = 31 where id = 3;
+delete from t_cross3 where id = 1;
+insert into t_cross3 values (88, 'S_NEW', 88);
+# 校验数量与数据隔离
+select count(*) as cnt from t_cross3;
+cnt
+3
+select count(*) as cnt from t_cross3_fork;
+cnt
+3
+select * from t_cross3 order by id;
+id	name	v
+2	S_B	20
+3	S_C_U	31
+88	S_NEW	88
+select * from t_cross3_fork order by id;
+id	name	v
+1	F_A	11
+3	S_C	30
+99	F_NEW	99
+# 同ID分别写入不同内容
+insert into t_cross3 values (100, 'S_100', 100);
+alter system major freeze;
+insert into t_cross3_fork values (100, 'F_100', 1000);
+select * from t_cross3 where id = 100;
+id	name	v
+100	S_100	100
+select * from t_cross3_fork where id = 100;
+id	name	v
+100	F_100	1000
+# 释放BUILD_DATA卡点并等待fork完成
+set ob_global_debug_sync = 'FORK_TABLE_BUILD_DATA clear';
+set ob_global_debug_sync = 'now signal signal_case3';
+============================================
+清理
+============================================
+# 重置debug sync
+set ob_global_debug_sync = 'reset';
+drop table if exists t_cross;
+drop table if exists t_cross_fork;
+drop table if exists t_cross2;
+drop table if exists t_cross2_fork;
+drop table if exists t_cross3;
+drop table if exists t_cross3_fork;
+drop database if exists db_fork_check_row;

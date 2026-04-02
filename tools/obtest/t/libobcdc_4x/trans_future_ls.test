@@ -1,0 +1,61 @@
+# owner: wenyue.zxl
+# owner group: libobcdc
+# test point: test libobcdc wait future ls when assembling TransCtx
+
+ob1=OBI(cluster=1:1:1, proxy_num=0);
+# ob1.force_stop;
+# ob2.clean_backup_dest;
+ob1.reboot;
+
+source include/liboblog/create_tenant_multiple_zone.inc;
+# let $mysql_tenant_name=oblog_tt;
+# let $origin_conn=oblog_conn_tt;
+# source include/liboblog/enable_mysql_archive.inc;
+
+create database obcdc_db;
+use obcdc_db;
+
+create table t1 (id int primary key) partition by range(id) (partition p1 values less than (10),partition p2 values less than (20),partition p3 values less than (30),partition p4 values less than (40),partition p5 values less than (50),partition p6 values less than (60),partition p7 values less than (70),partition p8 values less than (80),partition p9 values less than (90),partition p10 values less than MAXVALUE);
+
+let $start_tstamp_us = query_get_value(select time_to_usec(now(6)) as now, now, 1);
+
+insert into t1 values (1), (11), (21), (31), (41), (51), (61), (71), (81), (91);
+
+ob1.mysql alter tenant oblog_tt set primary_zone='RANDOM';
+
+sleep 1;
+
+let $oblog_tt_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name='oblog_tt', tenant_id, 1);
+
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_balance_job where tenant_id = $oblog_tt_id, 0, 100;
+ob1.check_until_timeout select count(*) as c from oceanbase.__all_virtual_balance_job_history where tenant_id = $oblog_tt_id, 1, 100;
+
+insert into t1 values (2), (12), (22), (32), (42), (52), (62), (72), (82), (92);
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* enable_output_trans_order_by_sql_operation=0 test_mode_on=1 test_mode_block_add_ls_sec=20 meta_data_refresh_mode=data_dict log_level=DEBUG;
+ob1.oblog.set_start_tstamp_usec $start_tstamp_us;
+ob1.oblog.restart;
+
+ob1.oblog.next;
+ob1.oblog.next;
+ob1.oblog.check_log "[INC_TRANS_COUNT] [FUTURE_LS] wait for future ls begin";
+ob1.oblog.check_log "[INC_TRANS_COUNT] [FUTURE_LS] wait for future ls end";
+ob1.oblog.stop;
+
+let $z1_svr_ip = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) svr_ip_port from __all_server where zone='z1', svr_ip_port, 1);
+let $z2_svr_ip = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) svr_ip_port from __all_server where zone='z2', svr_ip_port, 1);
+
+ob1.oblog.gen_conf tb_white_list=oblog_tt.*.* skip_ob_version_compat_check=1 server_blacklist=$z1_svr_ip|$z2_svr_ip;
+ob1.oblog.restart;
+ob1.oblog.checkRealTime;
+
+ob1.mysql alter tenant oblog_tt set locality='F@z1, F@z2';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_status != 'SUCCESS', 0, 240;
+
+sleep 10;
+
+ob1.mysql alter tenant oblog_tt set locality='F@z1, F@z2, F@z3';
+ob1.check_until_timeout select count(*) from __all_rootservice_job where job_status != 'SUCCESS', 0, 240;
+
+ob1.oblog.checkRealTime;
+ob1.oblog.stop;

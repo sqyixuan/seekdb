@@ -1,0 +1,122 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+# owner: zhenjiang.xzj
+# owner group: storage
+# description:
+#
+--disable_query_log
+--source mysql_test/include/index_quick_major.inc
+--real_sleep 1
+--disable_warnings
+drop table if exists t1_prog;
+--enable_warnings
+--enable_query_log
+
+
+create table t1_prog(id int primary key, name varchar(65535), age int, description varchar(65535)) progressive_merge_num=10 compression='none' row_format = redundant;
+--source mysql_test/include/drop_and_flashback_table.inc
+--source mysql_test/include/majorfreeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $tenant_id = query_get_value(select effective_tenant_id() as tenant_id, tenant_id, 1);
+let $database_id = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name = 'test' limit 1, database_id, 1);
+let $data_table_id = query_get_value(select * from oceanbase.__all_virtual_table where table_name = 't1_prog' and database_id = '$database_id', table_id, 1);
+disconnect obsys;
+connection default;
+
+
+# prepare data
+let $rand_str = `select repeat(rand(), 200) from dual`;
+--disable_query_log
+let $table_size = 0;
+let $pkey=0;
+let $i=0;
+while($i < 12000)
+{
+  --disable_query_log
+  eval insert into t1_prog values($pkey, '$rand_str', 0, '$rand_str'), ($pkey + 1, '$rand_str', 0, '$rand_str'), ($pkey + 2, '$rand_str', 0, '$rand_str'), ($pkey + 3, '$rand_str', 0, '$rand_str'), ($pkey + 4, '$rand_str', 0, '$rand_str'), ($pkey + 5, '$rand_str', 0, '$rand_str'), ($pkey + 6, '$rand_str', 0, '$rand_str'), ($pkey + 7, '$rand_str', 0, '$rand_str'), ($pkey + 8, '$rand_str', 0, '$rand_str'), ($pkey + 9, '$rand_str', 0, '$rand_str');
+  --enable_query_log
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $i;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+  inc $pkey;
+}
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+optimize table t1_prog;
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+--enable_query_log
+#change progressive merge num to small value
+alter table t1_prog set progressive_merge_num=5;
+optimize table t1_prog;
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+--real_sleep 1
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $version = query_get_value(select LAST_SCN from oceanbase.CDB_OB_ZONE_MAJOR_COMPACTION, LAST_SCN, 1);
+--disable_query_log
+let $data_table_id = query_get_value(select * from oceanbase.__all_virtual_table where table_name = 't1_prog' and database_id = '$database_id', table_id, 1);
+let $startup_mode =query_get_value(show parameters where name = 'ob_startup_mode', value, 1);
+if($startup_mode == "shared_storage")
+{
+# should specify the exec mode under share storage mode
+eval select (macro_block_count - multiplexed_macro_block_count)/macro_block_count < 1.0/4 as high_ratio, 
+(macro_block_count - multiplexed_macro_block_count)/macro_block_count > 1.0/7 as low_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id in (
+ select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = '$data_table_id') and compaction_scn='$version' and exec_mode = 'EXEC_MODE_OUTPUT' limit 1;
+}
+if ($startup_mode != "shared_storage")
+{
+eval select (macro_block_count - multiplexed_macro_block_count)/macro_block_count < 1.0/4 as high_ratio, 
+(macro_block_count - multiplexed_macro_block_count)/macro_block_count > 1.0/7 as low_ratio from oceanbase.__all_virtual_tablet_compaction_history where tablet_id in (
+ select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = '$data_table_id') and compaction_scn='$version' limit 1;
+}
+--enable_query_log
+disconnect obsys;
+connection default;
+
+#change progressive merge num to 1
+alter table t1_prog set progressive_merge_num=1;
+--source mysql_test/include/tenant_major_freeze.inc
+--source mysql_test/include/wait_daily_merge.inc
+--real_sleep 1
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+let $version = query_get_value(select LAST_SCN from oceanbase.CDB_OB_ZONE_MAJOR_COMPACTION, LAST_SCN, 1);
+--disable_query_log
+let $data_table_id = query_get_value(select * from oceanbase.__all_virtual_table where table_name = 't1_prog' and database_id = '$database_id', table_id, 1);
+if($startup_mode == "shared_storage")
+{
+# should specify the exec mode under share storage mode
+eval select multiplexed_macro_block_count as reuse_macro_block_cnt from oceanbase.__all_virtual_tablet_compaction_history where tablet_id in (
+ select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = '$data_table_id') and exec_mode = 'EXEC_MODE_OUTPUT' order by compaction_scn desc limit 1;
+}
+if ($startup_mode != "shared_storage")
+{
+eval select multiplexed_macro_block_count as reuse_macro_block_cnt from oceanbase.__all_virtual_tablet_compaction_history where tablet_id in (
+ select tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id = '$data_table_id') order by compaction_scn desc limit 1;
+}
+--enable_query_log
+disconnect obsys;
+connection default;
+
+drop table t1_prog;

@@ -1,0 +1,90 @@
+##########################
+#owner :  qianxi
+#owner group: liboblog
+#description:
+# 测试点：
+# 大小写database
+#
+
+##########################
+
+ob1=OBI(cluster=1,init_unit_cpu=2);
+ob1.reboot;
+
+ob1.mysql alter system set resource_hard_limit= 800;
+sleep 2;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+
+###create oracle tenant
+ob1.mysql create resource unit box1 max_cpu=2, memory_size='10G';
+ob1.mysql create resource pool pool1 unit = 'box1', unit_num = 1;
+ob1.mysql create tenant oracle replica_num = 1, resource_pool_list=('pool1') set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle';
+sleep 2;
+ob_connect(conn_oracle, ob1.z1.obs0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+
+create user obtest IDENTIFIED BY "obtest";
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+
+# 启动oblog
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+#ob1.oblog.gen_conf tb_white_list=oracle.*.* skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+# 大写db
+create user oblog_db identified by "passwd";
+ob1.oblog.next;
+# 小写db
+create user 'oblog_db' identified by "passwd";
+ob1.oblog.next;
+sleep 1;
+
+# sys-mysql租户获取当前时间
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+let $DML_CNT = 0;
+
+ob_connect(conn_oracle_obtest,ob1.z1.obs0,OBTEST@oracle,obtest,obtest,,USE_OB_CONNECTOR);
+alter session set current_schema = oblog_db;
+create table t1(c0 int primary key, c1 int);
+ob1.oblog.next;
+insert into t1 values(1, 1);
+ob1.oblog.next;
+inc $DML_CNT;
+create table "t1"(C0 int primary key, "c0" int);
+ob1.oblog.next;
+insert into "t1" values(1, 1);
+ob1.oblog.next;
+inc $DML_CNT;
+
+alter session set current_schema = "oblog_db";
+create table t2(c0 int primary key, c1 int);
+ob1.oblog.next;
+begin;
+update oblog_db.t1 set C1 = 10 where C0=1;
+insert into t2 values(1, 1);
+update oblog_db."t1" set "c0" = 16 where c0 = 1;
+commit;
+inc $DML_CNT;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;
+
+# 回拉历史
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=oracle.*.* log_level=DEBUG skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+while ($DML_CNT > 0)
+{
+  ob1.oblog.next_dml;
+  dec $DML_CNT;
+}
+
+drop user oblog_db cascade;
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

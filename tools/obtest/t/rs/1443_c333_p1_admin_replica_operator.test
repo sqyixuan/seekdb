@@ -1,0 +1,177 @@
+# owner: rongxuan.lc
+# description: 本case是为了测试alter system 对replica的操作
+
+ob1=OBI(cluster=3:3:3,  proxy_num=0, ct_num = 0, locality=hz:hz:hz);
+ob1.reboot;
+#ob1.mysql create table oceanbase.test(c1 int, c2 int);
+ob1.mysql alter system set resource_hard_limit=900;
+ob1.mysql alter system set resource_soft_limit=800;
+ob1.mysql alter system set enable_rebalance = 'false';
+ob1.mysql alter system set enable_rereplication = 'false';
+ob1.mysql alter system set balancer_idle_time = '10s';
+ob1.mysql alter system set server_data_copy_in_concurrency =30;
+ob1.mysql alter system set server_data_copy_out_concurrency = 30;
+ob1.mysql alter system set data_copy_concurrency = 100;
+
+let $cpu = 1;
+let $memory = 1073741824;
+let $min_memory = 1073741824;
+let $disk = 536870912;
+let $iops = 100000;
+let $session = 64;
+let $case_index = 1;
+
+
+ob1.mysql CREATE RESOURCE UNIT unit_$case_index MAX_CPU $cpu, MAX_MEMORY $memory, MAX_IOPS $iops, MAX_DISK_SIZE $disk, MAX_SESSION_NUM $session, MIN_CPU=1, MIN_MEMORY=$min_memory, MIN_IOPS=128;
+ob1.mysql CREATE RESOURCE POOL pool_$case_index UNIT = 'unit_$case_index', UNIT_NUM = 3, ZONE_LIST = ('z1', 'z2','z3');
+ob1.mysql CREATE TENANT tenant_$case_index RESOURCE_POOL_LIST = ('pool_$case_index'), locality='F@z1,L@z2,R@z2,F@z3,R@z3', primary_zone='z1;z2;z3' set ob_tcp_invited_nodes='%';
+
+sleep 3;
+ob1.create_client tenant=tenant_1,user=root,passwd=,database=test;
+create table tt(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+create table tt2(c1 int primary key, c2 int) partition by hash(c1) partitions 50;
+
+let $tenant_id = deploy_get_value(ob1.select select tenant_id from __all_tenant where tenant_name = 'tenant_1', tenant_id, 1);
+let $table_id = deploy_get_value(ob1.select select table_id from __all_virtual_table where tenant_id = $tenant_id and table_name = 'tt', table_id, 1);
+let $svr_ip = deploy_get_value(ob1.z1.obs0.ip);
+let $svr_port = deploy_get_value(ob1.z1.obs0.mysql_port);
+
+connect(sys_conn, $svr_ip, root@sys,,oceanbase, $svr_port);
+connection sys_conn;
+
+###迁移F；
+#####找到partition_id = 0在z3上的副本，进行迁移；
+let $partition_id = 0;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0, addr, 1);
+let $dest =deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3', addr, 1);
+
+--disable_query_log
+eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest';
+
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0 and concat(svr_ip,":",svr_port)='$dest', 1, 30;
+
+##异常迁移；删掉PT源端；F；
+#####找到partition_id = 1在z3上的副本，进行迁移；
+let $partition_id = 1;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0, addr, 1);
+##删掉源端
+alter system change tenant tenant_1;
+eval delete from oceanbase.__all_tenant_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0;
+let $dest =deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3', addr, 1);
+
+ob1.mysql  alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest';
+#eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest' force;
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0 and concat(svr_ip,":",svr_port)='$dest', 1, 30;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$dest%', 1, 10;
+
+##异常迁移；删掉PT源端；L；
+#####找到partition_id = 1在z2上的副本，进行迁移；
+let $partition_id = 2;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5, addr, 1);
+##删掉源端
+ob1.mysql delete from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5;
+let $dest =deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z2' except select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2', addr, 1);
+
+#--error 4018
+eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest';
+#eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest' force;
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5 and concat(svr_ip,":",svr_port)='$dest', 1, 30;
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$dest%', 1, 10;
+
+##迁移R;
+#####找到partition_id = 0在z3上的副本，进行迁移；
+let $partition_id = 3;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 16, addr, 1);
+let $dest =deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z3' except select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3', addr, 1);
+eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest';
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 16 and concat(svr_ip,":",svr_port)='$dest', 1, 30;
+
+
+##异常迁移R;删掉PT源端；
+#####找到partition_id = 1在z2上的副本，进行迁移；
+let $partition_id = 4;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5, addr, 1);
+##删掉源端
+ob1.mysql delete from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5;
+let $dest =deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_server where zone = 'z2' except select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2', addr, 1);
+
+#--error 4018
+eval alter system move replica partition_id='$partition_id%50@$table_id' source='$src' destination='$dest';
+
+
+##drop F;
+let $partition_id = 5;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0, addr, 1);
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$src%', 0, 30;
+
+
+##异常drop F; 删掉PT源端；
+let $partition_id = 6;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0, addr, 1);
+ob1.mysql delete from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone = 'z3' and replica_type = 0;
+#--error 4018
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+#eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src' force;
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$src%', 0, 30;
+
+
+##drop R;
+let $partition_id = 7;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 16, addr, 1);
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+##检查结果；
+ob1.check_until_timeout select count(*)  c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id, 4, 30;
+
+##异常dropR;删掉PT源端；
+let $partition_id = 8;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 16, addr, 1);
+ob1.mysql delete from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone = 'z3' and replica_type = 16;
+--error 4018
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+--error 4023 
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src' force;
+sleep 2;
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+##检查结果；
+ob1.check_until_timeout select count(*)  c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id, 4, 30;
+
+
+##DROP L;
+let $partition_id = 9;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5, addr, 1);
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$src%', 0, 30;
+
+
+###异常drop L;删掉PT源端；
+let $partition_id = 10;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z2' and replica_type = 5, addr, 1);
+ob1.mysql delete from oceanbase.__all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone = 'z3' and replica_type = 5;
+#--error 4018
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+#eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src' force;
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$src%', 0, 30;
+
+
+#####删除一个正常的paxos 副本；
+let $partition_id = 11;
+let $src = deploy_get_value(ob1.select select concat(svr_ip,":",svr_port) addr from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and zone='z3' and replica_type = 0, addr, 1);
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+##检查结果；
+ob1.check_until_timeout select count(*) c from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id and role = 1 and member_list like '%$src%', 0, 30;
+###再次删除，期待把sstable一起删掉；
+--error 1210 
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src';
+eval alter system drop replica partition_id='$partition_id%50@$table_id' server='$src' force;
+ob1.check_until_timeout select count(*) from __all_virtual_meta_table where table_id = $table_id and partition_id = $partition_id, 4, 30; 
+
+

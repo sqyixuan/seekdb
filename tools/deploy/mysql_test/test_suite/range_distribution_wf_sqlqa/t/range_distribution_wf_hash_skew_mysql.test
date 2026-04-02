@@ -1,0 +1,1650 @@
+#owner:bin.lb
+#owner group: SQL2
+#description: obmysql 
+#author: wb-lyq858317
+#tags:optimizer, px
+
+purge recyclebin;
+
+--disable_warnings
+drop database IF EXISTS lyq;
+--enable_warnings
+
+create database lyq  character set utf8;
+use lyq;
+
+--echo  mysql不支持并行执行，只是兼容parallel hint的语法。  obmysql模式支持并行
+
+set _windowfunc_optimization_settings = 0;
+
+--error 0,1051
+DROP TABLE lyq_test_fk;
+
+--error 0,1051
+DROP TABLE lyq_test;
+CREATE TABLE lyq_test(  
+  c1 int primary key,  
+  c2 float, 
+  c3 DECIMAL(5,2) DEFAULT null, 
+  c4 VARCHAR(100), 
+  c5 bit(16),
+  c6 datetime, 
+  c7 json NOT NULL,
+  c8 SET('a', 'b', 'c', 'd'),
+  c9 timestamp,
+  c10 varchar(100) GENERATED ALWAYS AS(c7) VIRTUAL COMMENT '生成列') 
+  #PARALLEL 5
+PARTITION BY HASH (c1) partitions 15;
+  
+--error 0,1305
+DROP PROCEDURE get_data1;
+
+DELIMITER //;
+CREATE  PROCEDURE get_data1(in j int)
+begin
+DECLARE i int;
+set i = 1;
+    while i <= j DO
+		insert into lyq_test(c1,c2,c3,c4,c5,c6,c7,c8,c9) values(i,i,CASE round(i/125, 0) WHEN 0 THEN null WHEN 1 THEN 6 WHEN 2 THEN 6 WHEN 3 THEN 6 WHEN 4 THEN 6 WHEN 5 THEN 6 WHEN 7 THEN 6 ELSE round(i/125, 0) END,
+		CASE WHEN round(i/43, 0)<21 THEN '这是aseriqon一个字符串@$$测试lnczlbga' ELSE substr('这是aseriqon一个字符串@$$测试lnczlbga!%&^这是aseriqon一个字符串@$$测试',round(i/43, 0)) END,
+		hex((CASE WHEN round(i/21, 0) = 0 THEN 1 WHEN round(i/42.5, 0) > 48 THEN 48 ELSE round(i/21, 0) END)),
+		ADDDATE('2018-12-22 22:22:22',(CASE WHEN round(i/200, 0) > 3 THEN 3  ELSE round(i/200, 0) END)*10000) ,
+		JSON_ARRAY(mod(i,5), "abc", NULL, TRUE, '{"a":100}'),
+		CASE mod(i,5) WHEN 0 THEN null WHEN 3 THEN 'a,b,c,d' ELSE 'b,d' END,
+		ADDDATE('2018-12-22 22:22:22', 1 ));
+	set i = i + 1;
+    end WHILE;
+end;
+//
+DELIMITER ;//
+
+call get_data1(2000);
+
+
+create table lyq_test_fk(
+c1 INT,
+c2 VARCHAR(100)) 
+#NOPARALLEL
+;
+
+--error 0,1305
+DROP PROCEDURE get_data2;
+
+DELIMITER //;
+CREATE  PROCEDURE get_data2(in j int)
+begin
+DECLARE i int;
+set i = 1;
+    while i <= j DO
+		insert into lyq_test_fk values(i,CASE mod(i,5) WHEN 0 THEN null ELSE mod(i,5) END);
+	set i = i + 1;
+    end WHILE;
+end;
+//
+DELIMITER ;//
+
+call get_data2(1800);
+
+--echo create-1-1 普通索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T1 ON lyq_test(c1);
+
+--echo create-1-3 组合索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T3 ON lyq_test(c3, c4,c5);
+
+--echo create-1-4 hash索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T4 USING HASH ON lyq_test(c6);
+
+--echo create-1-5 json 生成列索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T5 ON lyq_test(c10);
+
+--echo create-1-6 全局分区索引
+CREATE /*+ parallel(5) */ INDEX INDEX_lyq_test_T6 ON lyq_test(c1)
+   GLOBAL   PARTITION BY RANGE (c1)(
+PARTITION less_3 VALUES less than (2),
+PARTITION b_3_8 VALUES less than (5),
+PARTITION b_8_2000 VALUES less than (2000),
+PARTITION greater_2000 VALUES less than MAXVALUE);
+
+
+call dbms_stats.gather_table_stats('LYQ', 'lyq_test', method_opt=>'FOR ALL COLUMNS SIZE auto', granularity=>'ALL');
+
+--echo rank() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select rank() over (partition by c4 order by c1 ) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select rank() over (partition by c4 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3)  */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select rank() over (partition by c4 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select  rank() over (partition by c4 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , min(t) from 
+(select   c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , min(t) from 
+(select  c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo rank() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c1 order by c2 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c1 order by c2 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c2 order by c1 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c2 order by c1 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c4 order by c3 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c4 order by c3 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c5 order by c1 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c5 order by c1 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c7 order by c6 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c7 order by c6 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c8 order by c1) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c8 order by c1) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c10 order by c9) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c10 order by c9) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo rank() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c9,c3,c6 order by c8,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c9,c3,c6 order by c8,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c8,c3,c10 order by c1,c10 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c10,c4 order by c2,c3) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c10,c4 order by c2,c3) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c2,c6,c10 order by c2,c5,c6) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c2,c6,c10 order by c2,c5,c6) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo rank() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, rank() over (partition by c8,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, rank() over (partition by c8,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, rank() over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, rank() over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, rank() over (partition by c3,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, rank() over (partition by c3,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo rank() + 多个窗口函数 不满足 不满足 满足
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c2,c6,c10 order by c2,c5,c6) t ,
+rank() over (partition by c8,c3,c10 order by c1,c10) t1,
+rank() over (partition by c3 order by c2 ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c2,c6,c10 order by c2,c5,c6) t ,
+rank() over (partition by c8,c3,c10 order by c1,c10) t1,
+rank() over (partition by c3 order by c2 ) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+--echo 不满足 满足 不满足
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+rank() over (partition by c8 order by c10) t1,
+rank() over (partition by c10,c4 order by c2,c3) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+rank() over (partition by c8 order by c10) t1,
+rank() over (partition by c10,c4 order by c2,c3) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+rank() over (partition by c8,c3,c10 order by c1,c10 ) t2,
+rank() over (partition by c2,c6,c10 order by c2,c5,c6 ) t3,
+rank() over (partition by c6 order by c2,c5,c6 ) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+rank() over (partition by c8,c3,c10 order by c1,c10 ) t2,
+rank() over (partition by c2,c6,c10 order by c2,c5,c6 ) t3,
+rank() over (partition by c6 order by c2,c5,c6 ) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo rank() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, rank() over (partition by c5 order by c1 DESC) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, rank() over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, rank() over (partition by c3 order by c2 ) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, rank() over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, rank() over (partition by c10 order by c6 ASC) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, rank() over (partition by c10 order by c6 ASC) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ t , rank() over (partition by c4 order by c1 DESC) t
+from (select c1,c4, rank() over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ t , rank() over (partition by c4 order by c1 DESC) t
+from (select c1,c4, rank() over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo dense_rank() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3) */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , min(t) from 
+(select   c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , min(t) from 
+(select  c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo dense_rank() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c1 order by c2 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c1 order by c2 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2 order by c1 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2 order by c1 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c4 order by c3 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c4 order by c3 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5 order by c1 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5 order by c1 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c7 order by c6 ASC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c7 order by c6 ASC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8 order by c1) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8 order by c1) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c10 order by c9) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c10 order by c9) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo dense_rank() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c9,c3,c6 order by c8,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c9,c3,c6 order by c8,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c10,c4 order by c2,c3) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c10,c4 order by c2,c3) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo dense_rank() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, dense_rank() over (partition by c8,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, dense_rank() over (partition by c8,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, dense_rank() over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, dense_rank() over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, dense_rank() over (partition by c3,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, dense_rank() over (partition by c3,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo dense_rank() + 多个窗口函数
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t ,
+dense_rank() over (partition by c8,c3,c10 order by c1,c10) t1,
+dense_rank() over (partition by c3 order by c2 ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t ,
+dense_rank() over (partition by c8,c3,c10 order by c1,c10) t1,
+dense_rank() over (partition by c3 order by c2 ) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+dense_rank() over (partition by c8 order by c10) t1,
+dense_rank() over (partition by c10,c4 order by c2,c3) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+dense_rank() over (partition by c8 order by c10) t1,
+dense_rank() over (partition by c10,c4 order by c2,c3) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+dense_rank() over (partition by c8,c3,c10 order by c1,c10) t2,
+dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t3,
+dense_rank() over (partition by c6 order by c2,c5,c6) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, dense_rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+dense_rank() over (partition by c8,c3,c10 order by c1,c10) t2,
+dense_rank() over (partition by c2,c6,c10 order by c2,c5,c6) t3,
+dense_rank() over (partition by c6 order by c2,c5,c6) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo dense_rank() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, dense_rank() over (partition by c5 order by c1 DESC) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, dense_rank() over (partition by c5,c10 order by c8,c9,c10 DESC) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, dense_rank() over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, dense_rank() over (partition by c3 order by c2 ) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, dense_rank() over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, dense_rank() over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, dense_rank() over (partition by c10 order by c6 ASC) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, dense_rank() over (partition by c10 order by c6 ASC) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, dense_rank() over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  dense_rank() over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, dense_rank() over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ t , dense_rank() over (partition by c4 order by c1 DESC) t
+from (select c1,c4, dense_rank() over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ t , dense_rank() over (partition by c4 order by c1 DESC) t
+from (select c1,c4, dense_rank() over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo min() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select min(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select min(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3) */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, min(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , min(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, min(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2 ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select min(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select  min(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , min(t) from 
+(select  c1,c4, min(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , min(t) from 
+(select  c1,c4, min(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2 ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo min() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c3) over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c3) over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, min(c6) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c6) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo min() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c3) over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, min(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo min() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, min(c9) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, min(c9) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, min(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, min(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, min(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, min(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo min() + 多个窗口函数
+explain basic select /*+ parallel(3)  */ c1, min(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+min(c2) over (partition by c8,c3,c10 order by c1,c10) t1,
+min(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+min(c2) over (partition by c8,c3,c10 order by c1,c10 ) t1,
+min(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+min(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+min(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+min(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+min(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, min(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+min(c2) over (partition by c8,c3,c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+min(c3) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+min(c6) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, min(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+min(c2) over (partition by c8,c3,c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+min(c6) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+min(c9) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo min() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, min(c1) over (partition by c5 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, min(c2) over (partition by c5,c10 order by c8,c9,c10 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, min(e.c2) over (partition by e.c2 order by e.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, min(c6) over (partition by c3 order by c2 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, min(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, min(e.c1) over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, min(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, min(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, min(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, min(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, min(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, min(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, min(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, min(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select min(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select min(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, min(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , min(t) from (select c1,c4, min(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ t , min(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, min(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ t , min(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, min(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo max() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select max(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select max(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3) */ c1 , max(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, max(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t from lyq_test order by c1,c2 ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , max(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, max(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select max(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select max(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , max(t) from 
+(select  c1,c4, max(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , max(t) from 
+(select c1,c4, max(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo max() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c3) over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c3) over (partition by c9 order by c8) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, max(c6) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c6) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo max() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c3) over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, max(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo max() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, max(c9) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, max(c9) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, max(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, max(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, max(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, max(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo max() + 多个窗口函数
+explain basic select /*+ parallel(3)  */ c1, max(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+max(c2) over (partition by c8,c3,c10 order by c1,c10) t1,
+max(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+max(c2) over (partition by c8,c3,c10 order by c1,c10 ) t1,
+max(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+max(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+max(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+max(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+max(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, max(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+max(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+max(c3) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+max(c6) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, max(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+max(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+max(c6) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+max(c9) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo max() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, max(c1) over (partition by c5 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, max(c2) over (partition by c5,c10 order by c8,c9,c10 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, max(e.c2) over (partition by e.c2 order by e.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, max(c6) over (partition by c3 order by c2 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, max(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, max(e.c1) over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, max(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, max(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, max(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, max(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, max(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, max(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, max(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, max(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  max(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select max(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , max(t) from (select c1,c4, max(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , max(t) from (select c1,c4, max(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ t , max(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, max(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ t , max(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, max(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo count() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select count(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select  count(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3) */ c1 , count(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, count(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , count(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, count(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select count(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select count(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , count(t) from 
+(select   c1,c4, count(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , count(t) from 
+(select c1,c4, count(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo count() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, count(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c4) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c4) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c6) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c9) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c5) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c5) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c3) over (partition by c9 order by c1) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c3) over (partition by c9 order by c1) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, count(c7) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c7) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo count() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c9) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c6) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c3) over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, count(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c6) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo count() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, count(c8) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, count(c8) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, count(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, count(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, count(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, count(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo count() + 多个窗口函数
+explain basic select /*+ parallel(3)  */ c1, count(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+count(c2) over (partition by c8,c3,c10 order by c1,c10) t1,
+count(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+count(c2) over (partition by c8,c3,c10 order by c1,c10 ) t1,
+count(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, count(c1) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+count(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+count(c6) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, count(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+count(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+count(c3) over (partition by c6 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+count(c6) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, count(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+count(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+count(c6) over (partition by c6 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+count(c9) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo count() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, count(c1) over (partition by c5 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, count(c2) over (partition by c5,c10 order by c8,c9,c10 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, count(e.c2) over (partition by e.c2 order by e.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, count(c6) over (partition by c3 order by c2 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, count(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, count(e.c1) over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, count(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, count(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, count(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, count(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, count(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, count(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, count(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, count(t1.c6) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select count(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select count(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , count(t) from (select c1,c4, count(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , count(t) from (select c1,c4, count(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , count(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, count(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , count(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, count(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo sum() + hint
+--echo 全局hint
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select sum(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= all (select sum(c1) over (partition by c10 order by c1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo table hint
+explain basic select /*+ parallel(lyq_test 3) */ c1 , sum(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, sum(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(lyq_test 3) */ c1 , sum(t) from 
+(select /*+ parallel(lyq_test 4) */  c1,c4, sum(c2) over (partition by c6 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo alter session
+set _force_parallel_query_dop = 3;
+
+explain basic select c2 from lyq_test where  c2 <= all (select sum(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--disable_result_log 
+select c2 from lyq_test where  c2 <= all (select sum(c3) over (partition by c10 order by c1) t from lyq_test) order by c1;
+--enable_result_log
+
+--echo TABLE DOP
+
+explain basic select /*+parallel(t1 4) */ c1 , sum(t) from 
+(select  /*+ */  c1,c4, sum(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select   /*+ parallel(t1 4) */ c1 , sum(t) from 
+(select  /*+ */  c1,c4, sum(c4) over (partition by c6 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+
+--echo sum() + PQ_DISTRIBUTE_WINDOW  + 不同单列
+--echo c1 主键 会被改写不需要window function
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c1 order by c2 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c2  PBY NDV > DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c2 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c3 PBY NDV = 16  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c2) over (partition by c3 order by c2 ) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c4 PBY NDV = 48 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c5 PBY NDV = 49  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5 order by c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c6 PBY NDV =3  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c6 order by c5) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c7 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c7 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c8 PBY NDV = 1  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c9 PBY NDV = 1 DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c3) over (partition by c9 order by c1) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c9 order by c1) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo c10 PBY NDV = 5  DOP * WF_PBY_DOP_RADIO
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c10 order by c9 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo sum() + PQ_DISTRIBUTE_WINDOW  + 多列
+--echo PBY NDV = 1*16*3 = 48 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c9,c3,c6 order by c8,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*16*5 = DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c8,c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 5*48 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 0*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c2) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 1*3*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 DESC) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 49*5 > DOP * WF_PBY_DOP_RADIO 
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5,c10 order by c8,c9,c10 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo sum() + partition by  dop 
+--echo PBY NDV = 1*5 > DOP * WF_PBY_DOP_RADIO  1
+explain basic select /*+ parallel(1)  */ c1, sum(c1) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(1)  */ c1, sum(c1) over (partition by c8,c10 order by c2,c5,c6 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*5 = DOP * WF_PBY_DOP_RADIO  10
+explain basic select /*+ parallel(10)  */ c1, sum(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(10)  */ c1, sum(c1) over (partition by c3,c10 order by c1,c10) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo PBY NDV = 16*3*5 > DOP * WF_PBY_DOP_RADIO  100
+explain basic select /*+ parallel(100)  */ c1, sum(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(100)  */ c1, sum(c2) over (partition by c3,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo sum() + 多个窗口函数
+explain basic select /*+ parallel(3)  */ c1, sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+sum(c2) over (partition by c8,c3,c10 order by c1,c10) t1,
+sum(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW ) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+sum(c2) over (partition by c8,c3,c10 order by c1,c10 ) t1,
+sum(c1) over (partition by c3 order by c2 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+sum(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+sum(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t,
+sum(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+sum(c1) over (partition by c10,c4 order by c2,c3 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2 
+from lyq_test order by c1,c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+sum(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+sum(c1) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c1) over (partition by c5,c10 order by c8,c9,c10 DESC) t,
+sum(c2) over (partition by c8,c3,c10 order by c1,c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2,
+sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t3,
+sum(c1) over (partition by c6 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t4
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--echo sum() + 查询与子查询
+--echo with ... as
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3)  */ c1, c2, sum(c1) over (partition by c5 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, sum(c2) over (partition by c5,c10 order by c8,c9,c10 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, sum(e.c2) over (partition by e.c2 order by e.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--disable_result_log
+with
+     e as (select /*+ parallel(3) */ c1, c2, sum(c1) over (partition by c3 order by c2 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test where c4 like '%测试%' OR c2 is not null  order by c1,c2),
+     d as (select /*+ parallel(lyq_test 4)  */ c1, sum(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+	 from lyq_test where c2 >= all(select c2 from lyq_test where c1 = 3))
+select /*+ parallel(3)  */ e.c1, sum(e.c1) over (partition by e.c2 order by e.c1 DESC) t from e, d where e.c1 = d.c1 order by e.c1;
+--enable_result_log
+
+--echo  join
+explain basic select /*+ parallel(3) */ t1.c1,t2.c1, sum(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3) */ t1.c1,t2.c1, sum(t1.c1) over (partition by c10 order by c6 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1,lyq_test_fk t2 where t1.c1 = t2.c1 order by t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, sum(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, sum(t1.c2) over (partition by t1.c4 order by t1.c1 DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+right join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, sum(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, sum(t1.c3) over (partition by t1.c4 order by t1.c1 DESC) t from lyq_test t1 
+left join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+explain basic select /*+ parallel(3)  */ t1.c1, sum(t1.c1) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--disable_result_log 
+select /*+ parallel(3)  */ t1.c1, sum(t1.c1) over (partition by t1.c4 order by t1.c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test t1 
+full join lyq_test_fk t2 on t1.c1 = t2.c1 where t1.c4 like '%测试%' OR t1.c2 is not null order by  t1.c1,t1.c2;
+--enable_result_log
+
+--echo 嵌套子查询
+
+explain basic select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  sum(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--disable_result_log 
+select /*+ parallel(4) */ c2 from lyq_test where  c2 <= some (select  sum(c2) over (partition by c10 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t from lyq_test) order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ c1 , sum(t) from (select c1,c4, sum(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ c1 , sum(t) from (select c1,c4, sum(c3) over (partition by c6 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+explain basic select /*+ parallel(3) */ t , sum(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, sum(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--disable_result_log 
+select /*+ parallel(3) */ t , sum(c1) over (partition by c4 order by c1 DESC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t
+from (select c1,c4, sum(c1) over (partition by c3 order by c1 DESC) t from lyq_test order by c1,c2  ) t1 group by c1,c4 order by c1;
+--enable_result_log
+
+--echo  多个窗口函数混合
+--echo  不满足 + 满足 + 满足  混合
+explain basic select /*+ parallel(3)  */ c1, sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+min(c2) over (partition by c8,c3,c10 order by c1,c10) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, sum(c3) over (partition by c2,c6,c10 order by c2,c5,c6 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t ,
+count(c2) over (partition by c8 order by c1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t1,
+min(c2) over (partition by c8,c3,c10 order by c1,c10) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+--echo  满足 + 满足 + 满足  混合
+explain basic select /*+ parallel(3)  */ c1, rank() over (partition by c6 order by c5) t ,
+max(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t1,
+max(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--disable_result_log 
+select /*+ parallel(3)  */ c1, rank() over (partition by c6 order by c5) t ,
+max(c3) over (partition by c8,c6,c10 order by c2,c5,c6 DESC) t1,
+max(c3) over (partition by c4 order by c3 ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) t2
+from lyq_test order by c1,c2;
+--enable_result_log
+
+--error 0,1051
+DROP TABLE lyq_test_fk;
+--error 0,1051
+DROP TABLE lyq_test;
+--error 0,1305
+DROP PROCEDURE get_data1;
+--error 0,1305
+DROP PROCEDURE get_data2;
+
+purge recyclebin;

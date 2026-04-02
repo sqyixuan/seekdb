@@ -1,0 +1,154 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner: yibo.tyf
+#owner group: sql1
+# tags: optimizer
+
+connect (con, $OBMYSQL_MS0, admin, $OBMYSQL_PWD, test, $OBMYSQL_PORT);
+connection con;
+alter system set _enable_optimizer_qualify_filter = true tenant = sys;
+connection default;
+alter system flush sql audit;
+alter system flush plan cache;
+--disable_warnings
+drop table if exists wf_hash;
+--disable_warnings
+--result_format 4
+--echo ###test basic table
+create table wf_hash(c0 int, c1 int, c2 int);
+insert into wf_hash values(1,0,0), (1,0,1), (1,1,1), (1,0,2), (1,2,0), (1,2,2), (1,3,0), (1,3,3);
+insert into wf_hash values(2,0,0), (2,0,1), (2,1,1), (2,0,2), (2,2,0), (2,2,2), (2,3,0), (2,3,3);
+insert into wf_hash values(3,0,0), (3,0,1), (3,1,1), (3,0,2), (3,2,0), (3,2,2), (3,3,0), (3,3,3);
+insert into wf_hash values(4,0,0), (4,0,1), (4,1,1), (4,0,2), (4,2,0), (4,2,2), (4,3,0), (4,3,3);
+insert into wf_hash values(5,0,0), (5,0,1), (5,1,1), (5,0,2), (5,2,0), (5,2,2), (5,3,0), (5,3,3);
+insert into wf_hash select c0 + 5, c1, c2 from wf_hash;
+insert into wf_hash select * from wf_hash;
+insert into wf_hash select c0 + 10, c1, c2 from wf_hash;
+insert into wf_hash select c0 + 20, c1, c2 from wf_hash;
+insert into wf_hash select c0 + 40, c1, c2 from wf_hash;
+insert into wf_hash select c0 + 80, c1, c2 from wf_hash;
+insert into wf_hash select c0 + 160, c1, c2 from wf_hash;
+insert into wf_hash values(NULL,NULL,NULL), (1,NULL,NULL), (2,NULL,NULL), (1,0,NULL), (1,NULL,0);
+insert into wf_hash select * from wf_hash where c0 = 1;
+call dbms_stats.gather_table_stats('TEST', 'wf_hash', method_opt=>'for all columns size auto', estimate_percent=>100);
+--echo ###### test hint ###################
+select /*+NO_PRED_DEDUCE(@"SEL$2")*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1;
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT)*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash) tmp
+      where rk = 1;
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT WF_TOPN)*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1;
+
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE)*/ count(*)
+      from (select c1,c2,c0,rank() over (order by c0) rk from wf_hash)
+      where rk = 1;
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE WF_TOPN)*/ count(*)
+      from (select c1,c2,c0,rank() over (order by c0) rk from wf_hash)
+      where rk = 1;
+
+select /*+parallel(2) PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) HASH PARTITION_SORT)*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1 order by c1,c2;
+select /*+parallel(2) PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) HASH PARTITION_SORT WF_TOPN)*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1 order by c1,c2;
+
+#no valid plan using hint,generate a plan with no hint
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE WF_TOPN)*/count(*)
+      from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1;
+
+#test config
+alter system set _enable_optimizer_qualify_filter = false;
+select count(*) from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash)
+      where rk = 1;
+alter system set _enable_optimizer_qualify_filter = true;
+
+--source hash_based_topn_sort_basic.inc
+
+--echo #test index
+create index i1 on wf_hash(c1,c2);
+alter system flush plan cache;
+
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT WF_TOPN)*/ count(*) from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash) where rk = 3;
+select /*+NO_PRED_DEDUCE*/count(*) from (select c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash) where rk = 3;
+#use prefix sort instead of part topn
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT WF_TOPN) */ count(*) from (select /* +index(wf_hash i1)*/c1,c2,c0,rank() over (partition by c1,c2 order by c0) rk from wf_hash where c1 > 5) where rk = 2;
+
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT WF_TOPN)*/ count(*) from (select c1,c2,c0,row_number() over (partition by c1,c2 order by c0) rk from wf_hash) where rk = 3;
+select /*+NO_PRED_DEDUCE*/count(*) from (select c1,c2,c0,row_number() over (partition by c1,c2 order by c0) rk from wf_hash) where rk = 3;
+#use prefix sort instead of part topn
+select /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2" (0) NONE PARTITION_SORT WF_TOPN) */ count(*) from (select /* +index(wf_hash i1)*/c1,c2,c0,row_number() over (partition by c1,c2 order by c0) rk from wf_hash where c1 > 5) where rk = 2;
+
+#bugfix:https://aone.alibaba-inc.com/v2/project/81079/bug/53713658#
+--disable_warnings
+drop table if exists t0;
+--enable_warnings
+--explain_protocol 0
+CREATE TABLE IF NOT EXISTS t0(c0 FLOAT(30, 24) , c1 VARCHAR(500) , c2 TINYTEXT  COMMENT 'asdf' )  PARTITION BY KEY (c1) partitions 9;
+INSERT /*+NO_GATHER_OPTIMIZER_STATISTICS GATHER_OPTIMIZER_STATISTICS parallel(8) enable_parallel_dml */ INTO t0(c2) VALUES('O''*Y5Nw3~e|us><ZN('), (''), ('EtY*^6BhRdUrt>7|^dFg\\2v_D+I');
+INSERT /*+NO_GATHER_OPTIMIZER_STATISTICS GATHER_OPTIMIZER_STATISTICS */ INTO t0(c2) VALUES ROW("") ON DUPLICATE KEY UPDATE c1='f1>9JZhoznSQ4VVdm1sz_P7Eby>/';
+INSERT /*+parallel(4) enable_parallel_dml */ INTO t0(c2, c1, c0) VALUES('S ?uyKd', '(Pod', -92.40563077335922), ("'*v]l4t4z1bI%4IIA[u-r-a19&", '', 3.823226395071904), ("mNr?qD6?&zBH_kV41PZRIue|bvt]", "[", 34.83963961010326), ('(XYryqH*SPl&b!-t9K}*', "34548320", 121.8799083925519) ON DUPLICATE KEY UPDATE c2="-1631443671";
+REPLACE INTO t0(c0) select c0 from t0;
+
+--explain_protocol 2
+SELECT /*+ ORDERED  */ ALL concat(t0.c0,'') AS C0, t0.c1 AS C1, t0.c2 AS C2, ROW_NUMBER() over(partition by t0.c2, t0.c1, t0.c0 order by t0.c0, t0.c2, t0.c1 desc) AS WF0 FROM t0;
+SELECT ALL count(*) FROM (SELECT /*+ ORDERED  */ ALL concat(t0.c0,'') AS C0, t0.c1 AS C1, t0.c2 AS C2, ROW_NUMBER() over(partition by t0.c2, t0.c1, t0.c0 order by t0.c0, t0.c2, t0.c1 desc) AS WF0 FROM t0) L0 WHERE (("") <= ("e^dJ")) IN (WF0, NULL);
+SELECT ALL count(*) FROM (SELECT /*+ ORDERED  */ ALL concat(t0.c0,'') AS C0, t0.c1 AS C1, t0.c2 AS C2, ROW_NUMBER() over(partition by t0.c2, t0.c1, t0.c0 order by t0.c0, t0.c2, t0.c1 desc) AS WF0 FROM t0) L0 WHERE (NOT ((("") <= ("e^dJ")) IN (WF0, NULL)));
+SELECT ALL count(*) FROM (SELECT /*+ ORDERED  */ ALL concat(t0.c0,'') AS C0, t0.c1 AS C1, t0.c2 AS C2, ROW_NUMBER() over(partition by t0.c2, t0.c1, t0.c0 order by t0.c0, t0.c2, t0.c1 desc) AS WF0 FROM t0) L0 WHERE ((("") <= ("e^dJ")) IN (WF0, NULL)) IS UNKNOWN;
+
+#bugfix:https://aone.alibaba-inc.com/v2/project/81079/bug/53711525#
+--disable_warnings
+drop table if exists t0,t1;
+--enable_warnings
+--explain_protocol 0
+CREATE TABLE IF NOT EXISTS t0(c0 DATETIME  NULL COMMENT 'asdf' , c1 MEDIUMTEXT )  PARTITION BY KEY (c0) partitions 13;
+CREATE TABLE t1 LIKE t0;
+CREATE INDEX i750 USING BTREE ON t1(c0, c1(1)) ;
+--explain_protocol 2
+(SELECT * FROM (SELECT ALL t1.c0 AS C0, t1.c1 AS C1, DENSE_RANK() over(partition by t1.c1, t1.c0 order by t1.c1, t1.c0 asc) AS WF0, DENSE_RANK() over( order by t1.c0, t1.c1 desc) AS WF1 FROM t1) L0 WHERE ((-1,"1543498115") NOT IN ((WF1,C1))) || ((WF0) NOT IN ((FALSE))) ORDER BY C0 DESC) UNION ALL (SELECT ALL * FROM (SELECT /*+ index(t1 i750) */ ALL t1.c0 AS C0, t1.c1 AS C1, DENSE_RANK() over(partition by t1.c1, t1.c0 order by t1.c1, t1.c0 asc) AS WF0, DENSE_RANK() over( order by t1.c0, t1.c1 desc) AS WF1 FROM t1) L0 WHERE (NOT (((-1,"1543498115") NOT IN ((WF1,C1))) || ((WF0) NOT IN ((FALSE))))) ORDER BY C0 DESC);
+
+#bugfix:https://aone.alibaba-inc.com/v2/project/81079/bug/53781528
+--disable_warnings
+drop table if exists t0;
+--enable_warnings
+--explain_protocol 0
+CREATE TABLE t0(c0 TINYINT , c1 DECIMAL(17, 8) ZEROFILL )  AUTO_INCREMENT = 7229442621764617,  BLOCK_SIZE =  32768 , USE_BLOOM_FILTER =  FALSE  PARTITION BY RANGE (c0)(partition p0 VALUES LESS THAN(-1000000000), partition p1 VALUES LESS THAN(0), partition p2 VALUES LESS THAN(1000000000), partition p3 VALUES LESS THAN(maxvalue));
+REPLACE INTO t0(c1) VALUES(686948204.0367169);
+INSERT INTO t0(c0) VALUES(-4);
+SELECT  t0.c0 AS C0, concat(t0.c1,'') AS C1, RANK() over(partition by t0.c0, t0.c1 order by t0.c0, t0.c1 desc) AS WF0, RANK() over( order by t0.c0, t0.c1 asc) AS WF1 FROM t0;
+--explain_protocol 2
+SELECT ALL * FROM (SELECT  t0.c0 AS C0, concat(t0.c1,'') AS C1, RANK() over(partition by t0.c0, t0.c1 order by t0.c0, t0.c1 desc) AS WF0, RANK() over( order by t0.c0, t0.c1 asc) AS WF1 FROM t0) L0 WHERE ((-1,875.74909161) IN ((-1,concat(C1,'')))) || ((WF1) NOT IN ((-1))) ORDER BY WF0 DESC, WF1 DESC;
+SELECT ALL * FROM (SELECT  t0.c0 AS C0, concat(t0.c1,'') AS C1, RANK() over(partition by t0.c0, t0.c1 order by t0.c0, t0.c1 desc) AS WF0, RANK() over( order by t0.c0, t0.c1 asc) AS WF1 FROM t0) L0 WHERE (! (((-1,875.74909161) IN ((-1,concat(C1,'')))) || ((WF1) NOT IN ((-1))))) ORDER BY WF0 DESC, WF1 DESC;
+SELECT * FROM (SELECT  t0.c0 AS C0, concat(t0.c1,'') AS C1, RANK() over(partition by t0.c0, t0.c1 order by t0.c0, t0.c1 desc) AS WF0, RANK() over( order by t0.c0, t0.c1 asc) AS WF1 FROM t0) L0 WHERE (((-1,875.74909161) IN ((-1,concat(C1,'')))) || ((WF1) NOT IN ((-1)))) IS UNKNOWN ORDER BY WF0 DESC, WF1 DESC;
+drop table t0;
+
+#bugfix:https://aone.alibaba-inc.com/v2/project/81079/bug/53783669
+--explain_protocol 0
+--disable_warnings
+drop table if exists t0;
+--enable_warnings
+CREATE TABLE t0(c0 DATETIME , c1 DECIMAL(31, 29) ZEROFILL  COMMENT 'asdf'  NULL, c2 DOUBLE(13, 5) , c3 DATETIME  NULL) ;
+REPLACE INTO t0(c3) VALUES("2023-12-10 14:16:38");
+INSERT INTO t0(c2, c3) VALUES(888960.27187, '2023-12-10 14:16:38') ON DUPLICATE KEY UPDATE c3="2023-12-10 14:16:38";
+--explain_protocol 2
+SELECT /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2"  (0,1) NONE PARTITION_SORT WF_TOPN)*/ * FROM (SELECT t0.c0 AS C0, concat(t0.c1,'') AS C1, t0.c2 AS C2, t0.c3 AS C3, RANK() over(partition by t0.c3, t0.c1, t0.c0 order by t0.c2, t0.c3, t0.c1 desc) AS WF0, RANK() over(partition by t0.c0, t0.c3, t0.c1 order by t0.c3, t0.c1, t0.c0 asc) AS WF1 FROM t0 WHERE t0.c3) L0 WHERE (! (((4.388374973418145) <= (91.25251973330222)) NOT IN (WF1)));
+SELECT /*+PQ_DISTRIBUTE_WINDOW(@"SEL$2"  (0,1) NONE PARTITION_SORT WF_TOPN)*/ * FROM (SELECT t0.c0 AS C0, concat(t0.c1,'') AS C1, t0.c2 AS C2, t0.c3 AS C3, RANK() over(partition by t0.c3, t0.c1, t0.c0 order by t0.c2, t0.c3, t0.c1 desc) AS WF0, RANK() over(partition by t0.c0, t0.c3, t0.c1 order by t0.c3, t0.c1, t0.c0 asc) AS WF1 FROM t0 WHERE t0.c3) L0 WHERE (! (((4.388374973418145) <= (91.25251973330222)) NOT IN (WF0)));
+drop table t0;
+
+#bugfix:https://aone.alibaba-inc.com/v2/project/81079/bug/54800657#
+--explain_protocol 0
+--disable_warnings
+drop table if exists t0;
+--enable_warnings
+--explain_protocol 0
+CREATE TABLE IF NOT EXISTS t0(c0 VARCHAR(500) , c1 MEDIUMTEXT  COMMENT 'asdf'  NULL, c2 DOUBLE  COMMENT 'asdf' ) PARTITION BY KEY (c2, c0) partitions 12;
+REPLACE INTO t0(c1, c0) VALUES("&", 'C');
+REPLACE INTO t0(c1, c2, c0) VALUES("", 1, "&");
+--explain_protocol 2
+SELECT count(*) FROM (SELECT /*+  PARALLEL(5),enable_parallel_dml  */ RANK() over(partition by t0.c1, t0.c0, t0.c2 order by t0.c0, t0.c1, t0.c2 asc) AS WF1 FROM t0) L0 WHERE NOT (( 2 | -1 ) <= (WF1));
+drop table t0;

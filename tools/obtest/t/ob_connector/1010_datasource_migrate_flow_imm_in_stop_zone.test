@@ -1,0 +1,72 @@
+##############################
+#owner: luyun
+#owner group: java_client1.0
+#description: 验证stop zone之后，流量迁移到新leader
+###############################
+
+ob1=OBI(cluster=1:1:1,init_unit_cpu=8,proxy_num=0);
+ob1.reboot;
+
+ob1.set_ds_global_config serverStateRefreshInterval=1000;
+
+ob1.create_client tenant=sys,user=admin,passwd=admin,database=test;
+ob1.set_ds_global_config commonLoggerLevel=DEBUG;
+
+--disable_result_log
+drop table if exists t1;
+create table t1(id int primary key);
+insert into t1 values(1);
+select * from t1;
+--enable_result_log
+
+## 验证第一条sql发给leader
+let $leader = deploy_get_value(ob1.get_leader sys:test:t1);
+
+select * from t1;
+
+source include/get_ob_connector_last_query_addr.inc;
+
+if ($leader != $obs)
+{
+  -- echo leader is $leader, query_obs is $obs
+  --exit
+}
+
+let $leader_zone = deploy_get_value(ob1.get_leader_zone sys:test:t1);
+
+let $tenant_id = query_get_value(select tenant_id from oceanbase.__all_tenant where tenant_name = 'sys', tenant_id, 1);
+let $database_id = query_get_value(select database_id from oceanbase.__all_virtual_database where database_name='test' and tenant_id = $tenant_id, database_id, 1);
+let $t1_table_id = query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t1' and database_id=$database_id and tenant_id=$tenant_id,table_id,1);
+
+## stop leader zone
+ob1.mysql alter system stop zone '$leader_zone';
+sleep 15;
+ob1.check_until_timeout select info from __all_zone where zone='$leader_zone' and name='status',INACTIVE,20;
+ob1.mysql_p select zone,info from oceanbase.__all_zone where name='status' and zone= '$leader_zone';
+
+## confirm old leader has been follower
+let $ip = deploy_get_value($leader.ip);
+let $rpc_port = deploy_get_value($leader.port);
+
+ob1.check_until_timeout select role from __all_virtual_meta_table where table_id=$t1_table_id and svr_ip='$ip' and svr_port=$rpc_port,2,20;
+
+## send sql to new leader
+sleep 2;
+
+select * from t1;
+select * from t1;
+
+let $new_leader = deploy_get_value(ob1.get_leader sys:test:t1);
+
+source include/get_ob_connector_last_query_addr.inc;
+if ($obs != $new_leader)
+{
+  --echo new leader is $new_leader, but query obs is $obs
+  --exit
+}
+
+if ($new_leader == $leader)
+{
+  --echo leader must be changed, but former leader is $leader. current_leader is $new_leader;
+  --exit
+}

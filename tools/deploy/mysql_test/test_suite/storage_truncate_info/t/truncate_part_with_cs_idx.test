@@ -1,0 +1,77 @@
+# owner: lixia.yq
+# owner group: storage
+# description: 本case是为了测试有列存全局索引的truncate行为
+
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+
+connect (conn1,$OBMYSQL_MS0,$OBMYSQL_USR,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connect (conn0,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,oceanbase,$OBMYSQL_PORT);
+
+connection conn1;
+--disable_warnings
+drop table if exists t_list_int;
+--enable_warnings
+
+connection conn1;
+alter system set _ob_enable_truncate_partition_preserve_global_index = true;
+create table t_list_int(c1 int, c2 int, primary key(c1, c2)) partition by list(c2) (
+    partition p0 values in ((100)),
+    partition p1 values in ((200), (300)),
+    partition p2 values in ((400)),
+    partition p3 values in ((500), (700)),
+    partition p4 values in (DEFAULT));
+create unique index idx1 on t_list_int(c1) global partition by hash(c1) partitions 3;
+create index idx2 on t_list_int(c2) global with column group(all columns, each column);
+
+connection conn1;
+insert into t_list_int values(1, 1), (100, 100), (200, 200), (300, 300), (400, 400);
+
+connection conn0;
+let $__table_name__ = 't_list_int';
+let $__table_id__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where table_name = 't_list_int', table_id, 1);
+let $__index_id_1__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+let $__index_id_2__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx2%", table_id, 1);
+
+connection conn1;
+# only remain (100, 100)
+alter table t_list_int truncate partition p1,p2,p4;
+--echo ###print part info after truncate###
+
+connection conn0;
+let $__index_id_1_after__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+let $__index_id_2_after__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx2%", table_id, 1);
+
+if ($__index_id_1_after__ != $__index_id_1__)
+{
+--echo ERROR!!! should not rebuild row_store global index for t_list_int, $__index_id_1__, $__index_id_1_after__
+}
+if ($__index_id_2_after__ == $__index_id_2__)
+{
+--echo ERROR!!! should rebuild column_store global index for t_list_int, $__index_id_2__, $__index_id_2_after__
+}
+
+connection conn0;
+let $index_tablet_id=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ tablet_id from oceanbase.__all_virtual_tablet_to_ls where table_id=$__index_id_1_after__ limit 1, tablet_id, 1);
+#
+# __all_virtual_mds_node_stat may contain other mds records (e.g. tablet_status / direct_load) for the same tablet.
+# Here we only care about truncate_part infos for row store index.
+let $truncate_info_cnt=query_get_value('select count(*) as c from oceanbase.__all_virtual_mds_node_stat where tablet_id=$index_tablet_id and user_data like \"%truncate_part:%\"', c, 1);
+if ($truncate_info_cnt != 3)
+{
+--echo ERROR!!! should have 3 truncate info for row store index
+connection conn0;
+eval select * from oceanbase.__all_virtual_mds_node_stat where tablet_id=$index_tablet_id and user_data like \"%truncate_part:%\";
+}
+
+connection conn1;
+# change parameter
+alter system set _ob_enable_truncate_partition_preserve_global_index = false;
+alter table t_list_int truncate partition p3;
+let $__index_id_1_after_change_param__=query_get_value(select /*+QUERY_TIMEOUT(10000000)*/ table_id from oceanbase.__all_virtual_table where data_table_id=$__table_id__ and table_name like "%idx1%", table_id, 1);
+
+if ($__index_id_1_after__ == $__index_id_1_after_change_param__)
+{
+--echo ERROR!!! should rebuild row_store global index for t_list_int, $__index_id_1_after_change_param__, $__index_id_1_after__
+}

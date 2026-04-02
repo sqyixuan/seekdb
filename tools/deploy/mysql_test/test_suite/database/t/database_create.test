@@ -1,0 +1,149 @@
+--disable_query_log
+set @@session.explicit_defaults_for_timestamp=off;
+--enable_query_log
+#owner : dachuan.sdc
+#owner group : sql2
+#description:this case is use for
+#--disable_abort_on_error
+
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+
+--disable_warnings
+--disable_query_log
+#call oceanbase.drop_tenant_force('tenant1');
+#call oceanbase.create_mysql_tenant_mini('tenant1');
+--source mysql_test/include/check_tenant_sync.inc
+--enable_query_log
+--enable_warnings
+
+let $tenant_id = query_get_value(select 1 as tenant_id, tenant_id, 1);
+disconnect obsys;
+connection default;
+connect (conn1,$OBMYSQL_MS0,root,,*NO-ONE*,$OBMYSQL_PORT);
+select effective_tenant();
+
+## 1.创建正常的数据库,不带任何属性
+--disable_warnings
+drop database  if exists db_1;
+--enable_warnings
+create database db_1;
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_1;
+
+## 2.创建正常的数据库，带全部属性
+--disable_warnings
+drop database if exists db_2;
+--enable_warnings
+--echo create database db_2 with primary_zone
+--disable_query_log
+eval create database db_2
+  default character set = utf8
+  collate = utf8_bin
+  replica_num = 2;
+--enable_query_log
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_2;
+
+## 3.创建数据库已存在，带if not exists，数据定义一致，正确
+--echo create database db_2
+--disable_query_log
+eval create database if not exists db_2
+  default character set = utf8mb4
+  replica_num = 2;
+--enable_query_log
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_2;
+
+## 4.创建数据库已存在，带if not exists，数据定义不一致，正确
+create database if not exists db_2
+  default character set = utf8;
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_2;
+
+## 创建正常的数据库, database的primary zone与租户的primary zone不同，以database的zone为主
+--disable_warnings
+drop database if exists db_3;
+--enable_warnings
+--echo create database db_3 
+--disable_query_log
+eval create database db_3
+  default character set = utf8
+  collate = utf8_bin
+  replica_num = 2;
+--enable_query_log
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_3;
+
+## 5.创建数据已存在，不带if not exists, 报错
+--error 1007
+create database db_1 default character set = utf8 replica_num = 2;
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create database db_1;
+
+#show databases;
+
+## 6.语法错误
+--error 1064
+create database if not exist db_3;
+--error 1064
+create database if exists db_3;
+--error 1064
+create database db_3, db_4;
+--error 1064
+create database db_3 default character utf8 replica_num 3;
+--disable_result_log
+--enable_result_log
+
+#show databases;
+
+use db_1;
+create table t_1(c1 int primary key, c2 int, index i_1(c1, c2), unique key(c2));
+--source mysql_test/include/show_create_table_old_version.inc
+create index i_2 on t_1(c1);
+
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t_1;
+
+use db_2;
+create table t_1(c1 int primary key, c2 int, index i_1(c1, c2), unique key(c2));
+--source mysql_test/include/show_create_table_old_version_replica2.inc
+show create table t_1;
+create index i_2 on t_1(c1);
+show tables;
+show index from t_1;
+
+use db_3;
+create table  t_1(a int primary key);
+create table t_2 (a int primary key);
+
+connect (conn2,$OBMYSQL_MS0,root@sys,,*NO-ONE*,$OBMYSQL_PORT);
+connect (obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection obsys;
+## 验证primary_zone是partation leader
+let $database_id=query_get_value(select database_id from oceanbase.__all_virtual_database where database_name='db_3', database_id, 1);
+let $id_1=query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t_1' and database_id=$database_id, table_id, 1);
+let $id_2=query_get_value(select table_id from oceanbase.__all_virtual_table where table_name='t_2' and database_id=$database_id, table_id, 1);
+
+#--disable_query_log
+#eval select role, zone from oceanbase.__all_meta_table where table_id in($id_1, $id_2) and role=0;
+#--enable_query_log
+
+# 结果不稳定，先去掉
+# --disable_query_log
+# --echo select * from oceanbase.__all_virtual_database where in_recyclebin = 0 and (tenant_id = 1 or in tenant1)
+# --replace_column 1 gmt_create 2 gmt_modified 3 tenant_id 4 database_id 7 zone1;zone2 8 primary_zone
+# eval select * from oceanbase.__all_virtual_database where in_recyclebin = 0 and (tenant_id = 1 or tenant_id = $tenant_id) order by tenant_id, database_id;
+# --enable_query_log
+
+--disable_query_log
+#call oceanbase.drop_tenant_force('tenant1');
+--enable_query_log
+
+disconnect obsys;
+connection default;

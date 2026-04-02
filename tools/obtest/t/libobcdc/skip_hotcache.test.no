@@ -1,0 +1,84 @@
+#
+# owner:千溪
+# owner group:liboblog
+# description:
+# 测试点:
+# 测试external fetcher跳过hotcache直接读line cache的逻辑
+#
+##
+
+ob1=OBI(cluster=1);
+ob1.z1.obs0.set env=OB_LIBOBLOG_SKIP_HOTCACHE=true;
+ob1.reboot;
+ob1.create_client;
+
+# 准备环境
+source include/liboblog/create_tenant_1_4_x.inc;
+
+# 创建database
+create database oblog_db;
+use oblog_db;
+
+create table t_data(c1 int primary key, c2 int,  c3 varchar(4096));
+create table s_data(c1 int primary key, c2 int,  c3 varchar(4096));
+
+sleep 1;
+let $start_tstamp = query_get_value(select round(time_to_usec(now()) / 1000000) as now, now, 1);
+
+# 插入t_data数据
+let $idx= 2;
+while($idx > 0)
+{
+
+begin;
+eval insert into t_data values($idx, $idx, repeat("abc", 1024));
+eval update t_data set c1=$idx+1 where c1=$idx;
+commit;
+dec $idx;
+}
+
+# 插入s_data数据，让s_data数据充满日志文件最后一部分，避免后续取日志取到最后一部分
+let $idx= 30;
+while($idx > 0)
+{
+
+begin;
+eval insert into s_data values($idx, $idx, repeat("abc", 1024));
+eval update s_data set c1=$idx+1 where c1=$idx;
+commit;
+dec $idx;
+}
+
+
+# 启动liboblog，只要t_data数据
+#测试设置skip_hotcache后，直接从line cache中读取的逻辑
+ob1.oblog.set_extra_argument -m;
+ob1.oblog.set_start_tstamp $start_tstamp;
+ob1.oblog.gen_conf tb_white_list=sys.oblog*.*|oblog_tt.*.t_data skip_ob_version_compat_check=1;
+ob1.oblog.restart;
+
+let $idx=2;
+while($idx > 0)
+{
+# for insert
+ob1.oblog.next_dml;
+dec $idx;
+}
+
+connection oblog_conn_sys;
+set global max_allowed_packet=1073741824;
+connect (oblog_conn_sys,$ip,admin@sys,admin,oceanbase,$port);
+connection oblog_conn_sys;
+
+drop tenant oblog_tt;
+# Import data to Guarantee data"drop tenant oblog_tt" in shm to disk
+use test;
+create table t1(pk int primary key, tiny_text tinytext, tiny_blob tinyblob, text_type text, blob_type blob, medium_text mediumtext, medium_blob mediumblob, long_text longtext, long_blob longblob);
+insert into t1 values (1, "", "", "", "", "", "", repeat('c',11534336), repeat('d', 50331647));
+
+ob1.oblog.next;
+# drop tenant
+ob1.oblog.next;
+
+# stop liboblog
+ob1.oblog.stop;

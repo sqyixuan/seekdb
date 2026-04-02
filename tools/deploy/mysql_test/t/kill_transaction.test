@@ -1,0 +1,132 @@
+# owner: yuchen.wyc
+# owner group: SQL1
+# description: test for kill session or kill query in transaction
+connect (ki_obsys,$OBMYSQL_MS0,admin,$OBMYSQL_PWD,test,$OBMYSQL_PORT);
+connection default;
+--echo #################### create use kill_user  #####################
+
+--error 0,1396
+drop user kill_user;
+create user 'kill_user' identified by 'kill_user';
+GRANT ALL ON *.* TO 'kill_user';
+
+--echo #################### kill session in transaction #####################
+
+--source mysql_test/include/check_schema_sync.inc
+--echo ### create a new connection named by conn1 ###
+connect (conn1,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection ki_obsys;
+let $conn1_id=query_get_value(select id from oceanbase.__all_virtual_processlist  where info like '%select%',id,1);
+connection conn1;
+
+--echo ### create a new connection named by conn2 ###
+connect (conn2,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection ki_obsys;
+let $conn2_id=query_get_value(select id from oceanbase.__all_virtual_processlist  where info like '%select%',id,1);
+--echo ## expect 2 session ##
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+--disable_warnings
+connection conn2;
+drop table if exists t1;
+create table t1(c1 int);
+insert into t1 values(1);
+set session ob_trx_timeout=1000000000000;
+set session ob_query_timeout=1000000000000;
+begin;
+update t1 set c1 = 1;
+
+--echo ### conn1 connection ###
+connection conn1;
+let $conn1_id=query_get_value(select connection_id() as id,id,1);
+set session ob_trx_timeout=1000000000000;
+set session ob_query_timeout=1000000000000;
+begin;
+send update t1 set c1 = 1;
+
+--echo ### conn2 connection, kill conn1 ###
+connection ki_obsys;
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+connection conn2;
+--echo ### conn1 connection, session has been killed ###
+--disable_query_log
+eval kill query $conn1_id;
+--enable_query_log
+connection conn1;
+
+--echo #################### kill query in transaction #####################
+
+--echo ### create a new connection named by conn3 ###
+connect (conn3,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+let $conn3_id=query_get_value(select connection_id() as id,id,1);
+set session ob_trx_timeout=1000000000000;
+set session ob_query_timeout=1000000000000;
+begin;
+send update t1 set c1 = 1;
+
+--echo ### conn2 connection, kill conn3 query , expect 2 connection###
+connection conn2;
+connection ki_obsys;
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+connection conn2;
+--disable_query_log
+
+eval kill query $conn3_id;
+--enable_query_log
+connection ki_obsys;
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+connection conn2;
+
+## --echo ####################################### test for sfu ############################################
+connection conn2;
+commit;
+begin;
+# --error 5066
+select * from t1 where c1 = 1 for update;
+## --echo #################### kill session in transaction, expect 1 session  #####################
+connect (conn5,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection conn5;
+let $conn5_id=query_get_value(select connection_id() as id,id,1);
+set session ob_trx_timeout=1000000000000;
+set session ob_query_timeout=1000000000000;
+begin;
+send select * from t1 where c1 = 1 for update;
+
+connection conn2;
+--disable_query_log
+eval kill $conn5_id;
+--enable_query_log
+
+connection conn5;
+--error 5066,2013
+reap;
+
+connection ki_obsys;
+sleep 5;
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+connection conn2;
+
+## --echo #################### kill query in transaction, expect 1 session #####################
+connect (conn4,$OBMYSQL_MS0,kill_user,kill_user,test,$OBMYSQL_PORT);
+connection conn4;
+--disable_result_log
+select connection_id();
+--enable_result_log
+set session ob_trx_timeout=1000000000000;
+set session ob_query_timeout=1000000000000;
+let $conn4_id=query_get_value(select connection_id() as id,id,1);
+connection ki_obsys;
+sleep 5;
+select count(*) from oceanbase.__all_virtual_processlist where user = 'kill_user';
+connection conn4;
+begin;
+send select * from t1 where c1 = 1 for update;
+
+connection conn2;
+
+--disable_result_log
+select connection_id();
+--enable_result_log
+--disable_query_log
+eval kill query $conn4_id;
+--enable_query_log
+

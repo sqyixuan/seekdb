@@ -1,0 +1,1 @@
+./deploy.py ob1.mysqltest testset=count_distinct,derived,found_rows_select_stmt,func_in_none,greedy_search,idx_with_const_expr_22_alias_dilang,innodb_icp,join,join_dist_remote_bug_pushdown,join_outer2,order_by,plan_base_line,subquery_all,subquery_all2,subquery_mat,subquery_sj2,subquery_sj3,subselect_innodb,union1,found_rows_select_stmt,join disable-reboot

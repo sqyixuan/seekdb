@@ -1,0 +1,73 @@
+# owner: zhenjiang.xzj
+# owner group: storage
+# description: ob on ofs basic test
+#
+
+ob1=OBI(cluster=1:1:2,proxy_num=1,init_unit_cpu=2,init_unit_mem=805306368);
+source include/mini_ob_config.inc;
+ob1.z1.obs0.set extra_config=$mini_ob_config;
+ob1.z1.obs1.set extra_config=$mini_ob_config;
+ob1.z2.obs0.set extra_config=$mini_ob_config;
+ob1.z2.obs1.set extra_config=$mini_ob_config;
+ob1.reboot;
+sleep 5;
+ob1.mysql alter system set merger_switch_leader_duration_time = '10s';
+ob1.mysql alter system set resource_hard_limit= 1600;
+sleep 2;
+ob1.source include/merge.inc;
+ob1.source include/migrate.inc;
+ob_connect(conn_sys, ob1.proxy0, root@sys, , oceanbase, , USE_MYSQL_CONNECTOR);
+ob_connect(conn_obtest, ob1.proxy0, root@obtest, , test, , USE_MYSQL_CONNECTOR);
+connection conn_sys;
+###create oracle tenant
+set @@session.ob_query_timeout = 20000000;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_stat where start_service_time = 0, 0, 60;
+create resource unit box1 max_cpu 2, max_memory = '768M' , max_iops 100000, max_disk_size '5G', max_session_num 64, MIN_CPU=1, MIN_MEMORY='768M', MIN_IOPS=128;
+create resource pool pool1 unit = 'box1', unit_num = 1;
+create tenant oracle replica_num = 1, resource_pool_list=('pool1'), primary_zone="z1;z2" set ob_tcp_invited_nodes='%', ob_compatibility_mode='oracle', autocommit='on';
+set @@session.ob_query_timeout = 10000000;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 10;
+ob_connect(conn_oracle, ob1.proxy0, SYS@oracle, ,SYS, , USE_OB_CONNECTOR);
+connection conn_oracle;
+create user obtest IDENTIFIED BY obtest;
+grant all on *.* to obtest WITH GRANT OPTION;
+grant dba to obtest;
+ob1.check_until_timeout select count(*) as cnt from oceanbase.__all_virtual_server_schema_info as a join oceanbase.__all_virtual_server_schema_info as b on a.tenant_id = b.tenant_id  where a.refreshed_schema_version != b.refreshed_schema_version, 0, 10;
+ob_connect(conn_oracle_obtest,ob1.proxy0,OBTEST@oracle,obtest,OBTEST,,USE_OB_CONNECTOR);
+create table t1(pk int primary key, c1 number);
+insert into t1 values(1,1),(2,2);
+delete from t1 where pk=1;
+select * from t1;
+#####################
+
+# major freeze && minor
+
+ob1.mysql alter system minor freeze tenant = sys;
+ob1.mysql alter system minor freeze tenant = all_user;
+ob1.mysql alter system minor freeze tenant = all_meta;
+ob1.check_until_timeout select count(1) from __all_virtual_memstore_info where is_active=0, 0, 120;
+
+create table t2(pk int primary key, c1 number);
+insert into t2 values(1,1),(2,2);
+delete from t2 where pk=1;
+select * from t2;
+
+ob1.mysql alter system major freeze;
+sleep 60;
+ob1.check_until_timeout select count(*) from __all_zone where name = 'merge_status' and zone = '' and info = 'IDLE', 1, 480;
+
+select * from t1;
+select * from t2;
+
+#let $table_id = deploy_get_value(ob1.select select table_id from oceanbase.__all_virtual_table where table_name='t1', table_id, 1);
+#let $src = deploy_get_value(ob1.select select concat(svr_ip, ':', svr_port) as obs from oceanbase.__all_virtual_meta_table where table_id='$table_id' and zone='z3', obs, 1);
+#let $dst = deploy_get_value(ob1.get_another_obs_in_same_zone $src);
+#let $pkey = deploy_get_value(ob1.select select concat(tenant_id, ':', table_id, ':0') as pkey from oceanbase.__all_virtual_table where table_name='t1', pkey, 1);
+#$src.migrate_to $dst,oracle:obtest:t1;
+#ob1.wait_migrate_success $src,$dst,$pkey,30;
+#select * from t1;
+
+let $pool_id = deploy_get_value(ob1.select select resource_pool_id from oceanbase.__all_resource_pool where name = 'pool1', resource_pool_id, 1);
+let $unit_id = deploy_get_value(ob1.select select unit_id from oceanbase.__all_unit where zone='z3' and resource_pool_id=$pool_id, unit_id, 1);
+ob1.z3.migrate_unit $unit_id;
+ob1.check_no_migrate_unit 240;
