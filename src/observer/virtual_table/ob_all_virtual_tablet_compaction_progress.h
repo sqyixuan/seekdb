@@ -33,7 +33,6 @@ public:
     SVR_PORT,
     TENANT_ID,
     MERGE_TYPE,
-    LS_ID,
     TABLET_ID,
     MERGE_VERSION,
     TASK_ID,

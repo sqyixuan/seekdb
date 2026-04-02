@@ -106,10 +106,6 @@ int ObAllVirtualTabletCompactionHistory::process_curr_tenant(ObNewRow *&row)
     case TENANT_ID:
       cells[i].set_int(MTL_ID());
       break;
-    case LS_ID:
-      // index_id
-      cells[i].set_int(static_info.ls_id_.id());
-      break;
     case TABLET_ID:
       cells[i].set_int(static_info.tablet_id_.id());
       break;

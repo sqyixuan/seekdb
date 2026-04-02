@@ -49,7 +49,6 @@ class ObAllVirtualTabletSSTableMacroInfo : public common::ObVirtualTableScannerI
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    LS_ID,
     TABLET_ID,
     END_LOG_SCN,
     MACRO_IDX_IN_SSTABLE,
@@ -136,7 +135,6 @@ private:
   common::ObArenaAllocator tablet_allocator_;
   ObTabletHandle tablet_handle_;
   common::ObSEArray<ObColDesc, 16> cols_desc_;
-  int64_t ls_id_;
   char ip_buf_[common::OB_IP_STR_BUFF];
   char start_key_buf_[common::OB_MAX_ROW_KEY_LENGTH + 1]; // extra byte for '\0'
   char end_key_buf_[common::OB_MAX_ROW_KEY_LENGTH + 1]; // extra byte for '\0'

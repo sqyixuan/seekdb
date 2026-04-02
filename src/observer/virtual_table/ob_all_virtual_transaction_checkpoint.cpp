@@ -28,7 +28,6 @@ namespace observer
 ObAllVirtualTransCheckpointInfo::ObAllVirtualTransCheckpointInfo()
     : ObVirtualTableScannerIterator(),
       addr_(),
-      ls_id_(share::ObLSID::INVALID_LS_ID),
       ls_iter_guard_()
 {
 }
@@ -56,8 +55,6 @@ int ObAllVirtualTransCheckpointInfo::get_next_ls_(ObLS *&ls)
     if (OB_ITER_END != ret) {
       SERVER_LOG(WARN, "get_next_ls failed", K(ret));
     }
-  } else {
-    ls_id_ = ls->get_ls_id().id();
   }
 
   return ret;
@@ -114,8 +111,7 @@ int ObAllVirtualTransCheckpointInfo::get_next_(ObCommonCheckpointVTInfo &common_
     } else if (OB_FAIL(ob_common_checkpoint_iter_.get_next(common_checkpoint))) {
       if (OB_ITER_END == ret) {
         ob_common_checkpoint_iter_.reset();
-        SERVER_LOG(DEBUG, "iterate commoncheckpoint info iter in the ls end",
-                                                              K(ret), K(ls_id_));
+        SERVER_LOG(DEBUG, "iterate commoncheckpoint info iter in the ls end", K(ret));
         continue;
       } else {
         SERVER_LOG(WARN, "get next commoncheckpoint info error.", K(ret));
@@ -136,7 +132,6 @@ bool ObAllVirtualTransCheckpointInfo::is_need_process(uint64_t tenant_id)
 
 void ObAllVirtualTransCheckpointInfo::release_last_tenant()
 {
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
   ls_iter_guard_.reset();
   ob_common_checkpoint_iter_.reset();
 }
@@ -184,19 +179,15 @@ int ObAllVirtualTransCheckpointInfo::process_curr_tenant(ObNewRow *&row)
           // tenant_id
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
-        case OB_APP_MIN_COLUMN_ID + 3:
-          // ls_id
-          cur_row_.cells_[i].set_int(ls_id_);
-          break;
-        case OB_APP_MIN_COLUMN_ID + 4: {
+        case OB_APP_MIN_COLUMN_ID + 3: {
           cur_row_.cells_[i].set_int(common_checkpoint.tablet_id.id());
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 5: {
+        case OB_APP_MIN_COLUMN_ID + 4: {
           cur_row_.cells_[i].set_uint64((common_checkpoint.rec_scn.is_valid() ? common_checkpoint.rec_scn.get_val_for_inner_table_field() : 0));
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 6:
+        case OB_APP_MIN_COLUMN_ID + 5:
           if (OB_FAIL(common_checkpoint_type_to_string(ObCommonCheckpointType(common_checkpoint.checkpoint_type),
                                                        checkpoint_type_buf_,
                                                        sizeof(checkpoint_type_buf_)))) {
@@ -207,7 +198,7 @@ int ObAllVirtualTransCheckpointInfo::process_curr_tenant(ObNewRow *&row)
             cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           }
           break;
-        case OB_APP_MIN_COLUMN_ID + 7:
+        case OB_APP_MIN_COLUMN_ID + 6:
           cur_row_.cells_[i].set_int(common_checkpoint.is_flushing ? 1 : 0);
           break;
         default:

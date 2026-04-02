@@ -93,9 +93,6 @@ int ObAllVirtualCompactionDiagnoseInfo::fill_cells()
       cells[i].set_varchar(merge_type_to_str(diagnose_info_.merge_type_));
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
-    case LS_ID:
-      cells[i].set_int(diagnose_info_.ls_id_);
-      break;
     case TABLET_ID:
       cells[i].set_int(diagnose_info_.tablet_id_);
       break;

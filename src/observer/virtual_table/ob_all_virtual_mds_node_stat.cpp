@@ -70,11 +70,7 @@ struct ApplyOnLSOp {
   apply_on_tablet_op_(apply_on_tablet_op) {}
   int operator()(ObLS &ls) {
     int ret = OB_SUCCESS;
-    if (table_->judege_in_ranges(ls.get_ls_id(), table_->ls_ranges_)) {
-      (void) table_->get_tablet_info_(ls, apply_on_tablet_op_);
-    } else {
-      MDS_LOG(TRACE, "not in ranges", K(ls.get_ls_id()), K(ret), K(*table_));
-    }
+    (void) table_->get_tablet_info_(ls, apply_on_tablet_op_);
     return OB_SUCCESS;
   }
   ObAllVirtualMdsNodeStat *table_;
@@ -114,7 +110,7 @@ int ObAllVirtualMdsNodeStat::inner_get_next_row(common::ObNewRow *&row)
       MDS_LOG(WARN, "fail to get index scan ranges", KR(ret), K(MTL_ID()), K(*this));
     } else if (tablet_points_.empty()) {
       ret = OB_NOT_SUPPORTED;
-      MDS_LOG(WARN, "tenant_id/ls_id/tablet_id must be specified", KR(ret), K(MTL_ID()), K(*this));
+      MDS_LOG(WARN, "tenant_id/tablet_id must be specified", KR(ret), K(MTL_ID()), K(*this));
     } else {
       char *temp_buffer = nullptr;
       if (OB_ISNULL(temp_buffer = (char *)mtl_malloc(BUFFER_SIZE, "VirMdsStat"))) {
@@ -160,15 +156,11 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_int(MTL_ID());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 1: {// ls_id
-        cur_row_.cells_[i].set_int(node_info.ls_id_.id());
-        break;
-      }
-      case OB_APP_MIN_COLUMN_ID + 2: {// tablet_id
+      case OB_APP_MIN_COLUMN_ID + 1: {// tablet_id
         cur_row_.cells_[i].set_int(node_info.tablet_id_.id());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 3: {// svr_ip
+      case OB_APP_MIN_COLUMN_ID + 2: {// svr_ip
         if (false == (GCTX.self_addr().ip_to_string(ip_buffer_, IP_BUFFER_SIZE))) {
           ret = OB_ERR_UNEXPECTED;
           MDS_LOG(WARN, "ip_to_string failed", KR(ret), K(*this));
@@ -177,26 +169,22 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 4: {// svr_port
+      case OB_APP_MIN_COLUMN_ID + 3: {// svr_port
         cur_row_.cells_[i].set_int(GCTX.self_addr().get_port());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 5: {// unit_id
-        cur_row_.cells_[i].set_int(node_info.unit_id_);
-        break;
-      }
-      case OB_APP_MIN_COLUMN_ID + 6: {// user_key
+      case OB_APP_MIN_COLUMN_ID + 4: {// user_key
         int64_t write_n = node_info.user_key_.to_string(buffer, buffer_size);
         buffer += write_n;
         buffer_size -= write_n;
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(write_n, buffer - write_n));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 7: {// version_idx
+      case OB_APP_MIN_COLUMN_ID + 5: {// version_idx
         cur_row_.cells_[i].set_int(node_info.version_idx_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 8: {// writer_type
+      case OB_APP_MIN_COLUMN_ID + 6: {// writer_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.writer_.writer_type_));
         buffer += pos;
@@ -204,27 +192,27 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 9: {// writer_id
+      case OB_APP_MIN_COLUMN_ID + 7: {// writer_id
         cur_row_.cells_[i].set_int(node_info.writer_.writer_id_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 10: {// seq_no
+      case OB_APP_MIN_COLUMN_ID + 8: {// seq_no
         cur_row_.cells_[i].set_int(node_info.seq_no_.cast_to_int());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 11: {// redo_scn
+      case OB_APP_MIN_COLUMN_ID + 9: {// redo_scn
         cur_row_.cells_[i].set_uint64(node_info.redo_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 12: {// end_scn
+      case OB_APP_MIN_COLUMN_ID + 10: {// end_scn
         cur_row_.cells_[i].set_uint64(node_info.end_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 13: {// trans_version
+      case OB_APP_MIN_COLUMN_ID + 11: {// trans_version
         cur_row_.cells_[i].set_uint64(node_info.trans_version_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 14: {// node_type
+      case OB_APP_MIN_COLUMN_ID + 12: {// node_type
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.node_type_));
         buffer += pos;
@@ -232,7 +220,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 15: {// state
+      case OB_APP_MIN_COLUMN_ID + 13: {// state
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.state_));
         buffer += pos;
@@ -240,7 +228,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 16: {// position
+      case OB_APP_MIN_COLUMN_ID + 14: {// position
         int64_t pos = 0;
         databuff_printf(buffer, buffer_size, pos, "%s", mds::obj_to_string(node_info.position_));
         buffer += pos;
@@ -248,7 +236,7 @@ int ObAllVirtualMdsNodeStat::convert_node_info_to_row_(const storage::mds::MdsNo
         cur_row_.cells_[i].set_string(ObLongTextType, ObString(pos, buffer - pos));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 17: {// user_data
+      case OB_APP_MIN_COLUMN_ID + 15: {// user_data
         int64_t write_n = node_info.user_data_.to_string(buffer, buffer_size);
         buffer += write_n;
         buffer_size -= write_n;
@@ -266,8 +254,8 @@ int ObAllVirtualMdsNodeStat::get_primary_key_ranges_()
   if (key_ranges_.count() >= 1) {
     for (int64_t i = 0; OB_SUCC(ret) && i < key_ranges_.count(); i++) {
       ObNewRange &key_range = key_ranges_.at(i);
-      if (OB_UNLIKELY(key_range.get_start_key().get_obj_cnt() != 3
-                      || key_range.get_end_key().get_obj_cnt() != 3)) {
+      if (OB_UNLIKELY(key_range.get_start_key().get_obj_cnt() != 2
+                      || key_range.get_end_key().get_obj_cnt() != 2)) {
         ret = OB_ERR_UNEXPECTED;
         MDS_LOG(ERROR, "unexpected  # of rowkey columns",
                   K(ret),
@@ -276,22 +264,15 @@ int ObAllVirtualMdsNodeStat::get_primary_key_ranges_()
       } else {
         ObObj tenant_obj_low = (key_range.get_start_key().get_obj_ptr()[0]);
         ObObj tenant_obj_high = (key_range.get_end_key().get_obj_ptr()[0]);
-        ObObj ls_obj_low = (key_range.get_start_key().get_obj_ptr()[1]);
-        ObObj ls_obj_high = (key_range.get_end_key().get_obj_ptr()[1]);
-        ObObj tablet_obj_low = (key_range.get_start_key().get_obj_ptr()[2]);
-        ObObj tablet_obj_high = (key_range.get_end_key().get_obj_ptr()[2]);
+        ObObj tablet_obj_low = (key_range.get_start_key().get_obj_ptr()[1]);
+        ObObj tablet_obj_high = (key_range.get_end_key().get_obj_ptr()[1]);
 
         uint64_t tenant_low = tenant_obj_low.is_min_value() ? 0 : tenant_obj_low.get_uint64();
         uint64_t tenant_high = tenant_obj_high.is_max_value() ? UINT64_MAX : tenant_obj_high.get_uint64();
-        ObLSID ls_low = ls_obj_low.is_min_value() ? ObLSID(0) : ObLSID(ls_obj_low.get_int());
-        ObLSID ls_high = ls_obj_high.is_max_value() ? ObLSID(INT64_MAX) : ObLSID(ls_obj_high.get_int());
         ObTabletID tablet_low = tablet_obj_low.is_min_value() ? ObTabletID(0) : ObTabletID(tablet_obj_low.get_uint64());
         ObTabletID tablet_high = tablet_obj_high.is_max_value() ? ObTabletID(UINT64_MAX) : ObTabletID(tablet_obj_high.get_uint64());
 
         if (OB_FAIL(tenant_ranges_.push_back(ObTuple<uint64_t, uint64_t>(tenant_low, tenant_high)))) {
-          MDS_LOG(WARN, "fail to push back", KR(ret), K(*this));
-        } else if (OB_SUCCESS != (ret =
-        (ls_ranges_.push_back(ObTuple<share::ObLSID, share::ObLSID>(ls_low, ls_high))))) {
           MDS_LOG(WARN, "fail to push back", KR(ret), K(*this));
         } else {
           if (tablet_low == tablet_high) {

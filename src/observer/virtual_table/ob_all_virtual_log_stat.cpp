@@ -98,10 +98,6 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         break;
       }
       case OB_APP_MIN_COLUMN_ID + 1: {
-        cur_row_.cells_[i].set_int(palf_stat.palf_id_);
-        break;
-      }
-      case OB_APP_MIN_COLUMN_ID + 2: {
         if (false == palf_stat.self_.ip_to_string(ip_, common::OB_IP_PORT_STR_BUFF)) {
           ret = OB_ERR_UNEXPECTED;
           SERVER_LOG(WARN, "ip_to_string failed", K(ret), K(palf_stat));
@@ -112,11 +108,11 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 3: {
+      case OB_APP_MIN_COLUMN_ID + 2: {
         cur_row_.cells_[i].set_int(palf_stat.self_.get_port());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 4: {
+      case OB_APP_MIN_COLUMN_ID + 3: {
         if (OB_FAIL(role_to_string(palf_stat.role_, role_str_, sizeof(role_str_)))) {
           SERVER_LOG(WARN, "role_to_string failed", K(ret), K(palf_stat));
         } else {
@@ -126,13 +122,13 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 5: {
+      case OB_APP_MIN_COLUMN_ID + 4: {
         cur_row_.cells_[i].set_int(palf_stat.log_proposal_id_);
         cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(
                                               ObCharset::get_default_charset()));
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 6: {
+      case OB_APP_MIN_COLUMN_ID + 5: {
         if (0 >= palf_stat.config_version_.to_string(config_version_buf_,
               palf::LogConfigVersion::CONFIG_VERSION_LEN)) {
           SERVER_LOG(WARN, "config_version_ to_string failed", K(ret), K(palf_stat));
@@ -143,7 +139,7 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 7: {
+      case OB_APP_MIN_COLUMN_ID + 6: {
         if (OB_FAIL(palf::access_mode_to_string(palf_stat.access_mode_, access_mode_str_, sizeof(access_mode_str_)))) {
           SERVER_LOG(WARN, "access_mode_to_string failed", K(ret), K(palf_stat));
         } else {
@@ -153,7 +149,7 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 8: {
+      case OB_APP_MIN_COLUMN_ID + 7: {
         if (OB_FAIL(member_list_to_string_(palf_stat.paxos_member_list_))) {
           SERVER_LOG(WARN, "memberlist to_string failed", K(ret), K(palf_stat));
         } else {
@@ -163,44 +159,44 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 9: {
+      case OB_APP_MIN_COLUMN_ID + 8: {
         cur_row_.cells_[i].set_int(palf_stat.paxos_replica_num_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 10: {
+      case OB_APP_MIN_COLUMN_ID + 9: {
         const bool is_in_sync = log_stat.palf_stat_.is_in_sync_;
         cur_row_.cells_[i].set_bool(is_in_sync);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 11: {
+      case OB_APP_MIN_COLUMN_ID + 10: {
         cur_row_.cells_[i].set_uint64(palf_stat.base_lsn_.val_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 12: {
+      case OB_APP_MIN_COLUMN_ID + 11: {
         cur_row_.cells_[i].set_uint64(palf_stat.begin_lsn_.val_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 13: {
+      case OB_APP_MIN_COLUMN_ID + 12: {
         cur_row_.cells_[i].set_uint64(palf_stat.begin_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 14: {
+      case OB_APP_MIN_COLUMN_ID + 13: {
         cur_row_.cells_[i].set_uint64(palf_stat.end_lsn_.val_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 15: {
+      case OB_APP_MIN_COLUMN_ID + 14: {
         cur_row_.cells_[i].set_uint64(palf_stat.end_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 16: {
+      case OB_APP_MIN_COLUMN_ID + 15: {
         cur_row_.cells_[i].set_uint64(palf_stat.max_lsn_.val_);
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 17: {
+      case OB_APP_MIN_COLUMN_ID + 16: {
         cur_row_.cells_[i].set_uint64(palf_stat.max_scn_.get_val_for_inner_table_field());
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 18: {
+      case OB_APP_MIN_COLUMN_ID + 17: {
         const ObAddr arb_server = palf_stat.arbitration_member_.get_server();
         if (arb_server.is_valid()
             && OB_FAIL(arb_server.ip_port_to_string(arbitration_member_buf_, MAX_SINGLE_MEMBER_LENGTH))) {
@@ -215,7 +211,7 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 19: {
+      case OB_APP_MIN_COLUMN_ID + 18: {
         if (OB_FAIL(learner_list_to_string_(palf_stat.degraded_list_, degraded_list_buf_))) {
           SERVER_LOG(WARN, "learner list to_string failed", K(ret), K(palf_stat));
         } else {
@@ -225,7 +221,7 @@ int ObAllVirtualPalfStat::insert_log_stat_(const logservice::ObLogStat &log_stat
         }
         break;
       }
-      case OB_APP_MIN_COLUMN_ID + 20: {
+      case OB_APP_MIN_COLUMN_ID + 19: {
         if (OB_FAIL(learner_list_to_string_(palf_stat.learner_list_, learner_list_buf_))) {
           SERVER_LOG(WARN, "learner list to_string failed", K(ret), K(palf_stat));
         } else {
@@ -245,16 +241,17 @@ int ObAllVirtualPalfStat::member_list_to_string_(
     const common::ObMemberList &member_list)
 {
   int ret = OB_SUCCESS;
-  share::ObLSReplica::MemberList tmp_member_list;
-  if (OB_FAIL(share::ObLSReplica::transform_ob_member_list(
-      member_list,
-      tmp_member_list))) {
-    SERVER_LOG(WARN, "fail to transform member_list", KR(ret), K(member_list));
-  } else if (OB_FAIL(share::ObLSReplica::member_list2text(
-      tmp_member_list,
-      member_list_buf_))) {
-    SERVER_LOG(WARN, "member_list2text failed", KR(ret),
-               K(member_list), K(tmp_member_list), K(member_list_buf_));
+  char ip_port[MAX_IP_PORT_LENGTH];
+  common::ObMember member;
+  if (OB_UNLIKELY(1 != member_list.get_member_number())) {
+    ret = OB_INVALID_ARGUMENT;
+    SERVER_LOG(WARN, "invalid member list count", KR(ret));
+  } else if (OB_FAIL(member_list.get_member_by_index(0/*index*/, member))) {
+    SERVER_LOG(WARN, "fail to get member by index", KR(ret));
+  } else if (OB_FAIL(member.get_server().ip_port_to_string(ip_port, sizeof(ip_port)))) {
+    SERVER_LOG(WARN, "convert server to string failed", KR(ret), K(member));
+  } else if (OB_FAIL(member_list_buf_.append_fmt("%.*s:%ld", static_cast<int>(sizeof(ip_port)), ip_port, member.get_timestamp()))) {
+    SERVER_LOG(WARN, "failed to append ip_port to string", KR(ret), K(member));
   }
   return ret;
 }

@@ -191,10 +191,6 @@ int ObAllVirtualVectorIndexInfo::process_curr_tenant(ObNewRow *&row)
     case TENANT_ID:
       cells[i].set_int(MTL_ID());
       break;
-    case LS_ID:
-      // index_id
-      cells[i].set_int(info_.ls_id_);
-      break;
     case ROWKEY_VID_TABLE_ID:
       cells[i].set_int(info_.rowkey_vid_table_id_);
       break;

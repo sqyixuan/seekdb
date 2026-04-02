@@ -46,7 +46,6 @@ private:
     SVR_IP = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
-    LS_ID,
     TABLET_ID,
     ADDRESS,
     POINTER_REF,

@@ -264,18 +264,14 @@ int ObGVTxLockStat::process_curr_tenant(ObNewRow *&row)
         cur_row_.cells_[i].set_int(tx_lock_stat.get_addr().get_port());
         break;
       case OB_APP_MIN_COLUMN_ID + 4:
-        // ls_id
-        cur_row_.cells_[i].set_int(tx_lock_stat.get_ls_id().id());
-        break;
-      case OB_APP_MIN_COLUMN_ID + 5:
         // table_id
         cur_row_.cells_[i].set_int(0);
         break;
-      case OB_APP_MIN_COLUMN_ID + 6:
+      case OB_APP_MIN_COLUMN_ID + 5:
         // table_id
         cur_row_.cells_[i].set_int(tx_lock_stat.get_memtable_key_info().get_tablet_id().id());
         break;
-      case OB_APP_MIN_COLUMN_ID + 7:
+      case OB_APP_MIN_COLUMN_ID + 6:
         // rowkey
         snprintf(memtable_key_buffer_, OB_MEMTABLE_KEY_BUFFER_SIZE, "%s", tx_lock_stat.get_memtable_key_info().read_buf());
         if ('\0' == memtable_key_buffer_[0]) {
@@ -286,11 +282,11 @@ int ObGVTxLockStat::process_curr_tenant(ObNewRow *&row)
         }
         cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         break;
-      case OB_APP_MIN_COLUMN_ID + 8:
+      case OB_APP_MIN_COLUMN_ID + 7:
         // session_id
         cur_row_.cells_[i].set_int(tx_lock_stat.get_client_sid());
         break;
-      case OB_APP_MIN_COLUMN_ID + 9:
+      case OB_APP_MIN_COLUMN_ID + 8:
         // proxy_session_id
         if (tx_lock_stat.get_proxy_session_id() > 0) {
           ObAddr client_server;
@@ -309,18 +305,18 @@ int ObGVTxLockStat::process_curr_tenant(ObNewRow *&row)
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
         }
         break;
-      case OB_APP_MIN_COLUMN_ID + 10:
+      case OB_APP_MIN_COLUMN_ID + 9:
         // tx_ctx_create_time
         cur_row_.cells_[i].set_timestamp(tx_lock_stat.get_tx_ctx_create_time());
         break;
-      case OB_APP_MIN_COLUMN_ID + 11:
+      case OB_APP_MIN_COLUMN_ID + 10:
         // expired_time
         cur_row_.cells_[i].set_timestamp(tx_lock_stat.get_tx_expired_time());
         break;
-      case OB_APP_MIN_COLUMN_ID + 12:
+      case OB_APP_MIN_COLUMN_ID + 11:
         cur_row_.cells_[i].set_int(ObTimeUtility::current_time() - tx_lock_stat.get_tx_ctx_create_time());
         break;
-      case OB_APP_MIN_COLUMN_ID + 13:
+      case OB_APP_MIN_COLUMN_ID + 12:
         //row_lock_addr
         cur_row_.cells_[i].set_uint64(uint64_t(tx_lock_stat.get_memtable_key_info().get_row_lock()));
         break;

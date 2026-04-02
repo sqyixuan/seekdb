@@ -92,9 +92,6 @@ int ObAllVirtualCompactionSuggestion::fill_cells()
       cells[i].set_varchar(merge_type_to_str(suggestion_.merge_type_));
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
-    case LS_ID:
-      cells[i].set_int(suggestion_.ls_id_);
-      break;
     case TABLET_ID:
       cells[i].set_int(suggestion_.tablet_id_);
       break;

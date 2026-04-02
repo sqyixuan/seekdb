@@ -195,9 +195,6 @@ int ObGVTxStat::inner_get_next_row(ObNewRow *&row)
         case IS_DECIDED:
           cur_row_.cells_[i].set_bool(tx_stat.has_decided_);
           break;
-        case LS_ID:
-          cur_row_.cells_[i].set_int(tx_stat.ls_id_.id());
-          break;
         case PARTICIPANTS:
           // if participants' count is equal to 0, then its value is NULL
           if (0 < tx_stat.participants_.count()) {

@@ -27,7 +27,6 @@ namespace observer
 ObAllVirtualLSInfo::ObAllVirtualLSInfo()
     : ObVirtualTableScannerIterator(),
       addr_(),
-      ls_id_(share::ObLSID::INVALID_LS_ID),
       ls_iter_guard_()
 {
 }
@@ -47,7 +46,6 @@ void ObAllVirtualLSInfo::reset()
 
 void ObAllVirtualLSInfo::release_last_tenant()
 {
-  ls_id_ = share::ObLSID::INVALID_LS_ID;
   ls_iter_guard_.reset();
 }
 
@@ -83,7 +81,6 @@ int ObAllVirtualLSInfo::next_ls_info_(ObLSVTInfo &ls_info)
       SERVER_LOG(WARN, "ls shouldn't NULL here", K(ls));
       // try another ls
       ret = OB_EAGAIN;
-    } else if (FALSE_IT(ls_id_ = ls->get_ls_id().id())) {
     } else if (OB_FAIL(ls->get_ls_info(ls_info))) {
       SERVER_LOG(WARN, "get ls info failed", K(ret), KPC(ls));
       // try another ls
@@ -130,17 +127,13 @@ int ObAllVirtualLSInfo::process_curr_tenant(ObNewRow *&row)
           // tenant_id
           cur_row_.cells_[i].set_int(MTL_ID());
           break;
-        case OB_APP_MIN_COLUMN_ID + 3:
-          // ls_id
-          cur_row_.cells_[i].set_int(ls_id_);
-          break;
-        case OB_APP_MIN_COLUMN_ID + 4: {
+        case OB_APP_MIN_COLUMN_ID + 3: {
           // replica_type
           cur_row_.cells_[i].set_varchar(ObShareUtil::replica_type_to_string(ls_info.replica_type_));
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 5: {
+        case OB_APP_MIN_COLUMN_ID + 4: {
           // ls_state
           ObRole role;
           int64_t unused_proposal_id = 0;
@@ -155,60 +148,60 @@ int ObAllVirtualLSInfo::process_curr_tenant(ObNewRow *&row)
           }
           break;
         }
-        case OB_APP_MIN_COLUMN_ID + 6:
+        case OB_APP_MIN_COLUMN_ID + 5:
           // tablet_count
           cur_row_.cells_[i].set_int(ls_info.tablet_count_);
           break;
-        case OB_APP_MIN_COLUMN_ID + 7:
+        case OB_APP_MIN_COLUMN_ID + 6:
           // weak_read_timestamp
           cur_row_.cells_[i].set_uint64(ls_info.weak_read_scn_.get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 8:
+        case OB_APP_MIN_COLUMN_ID + 7:
           // need_rebuild
           cur_row_.cells_[i].set_varchar(ls_info.need_rebuild_ ? "YES" : "NO");
           cur_row_.cells_[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;
-        case OB_APP_MIN_COLUMN_ID + 9:
+        case OB_APP_MIN_COLUMN_ID + 8:
           // clog_checkpoint_ts
           cur_row_.cells_[i].set_uint64(!ls_info.checkpoint_scn_.is_valid() ? 0 : ls_info.checkpoint_scn_.get_val_for_tx());
           break;
-        case OB_APP_MIN_COLUMN_ID + 10:
+        case OB_APP_MIN_COLUMN_ID + 9:
           // clog_checkpoint_lsn
           cur_row_.cells_[i].set_uint64(ls_info.checkpoint_lsn_ < 0 ? 0 : ls_info.checkpoint_lsn_);
           break;
-        case OB_APP_MIN_COLUMN_ID + 11:
+        case OB_APP_MIN_COLUMN_ID + 10:
           // migrate_status
           cur_row_.cells_[i].set_int(ls_info.migrate_status_);
           break;
-        case OB_APP_MIN_COLUMN_ID + 12:
+        case OB_APP_MIN_COLUMN_ID + 11:
           // rebuild_seq
           cur_row_.cells_[i].set_int(ls_info.rebuild_seq_);
           break;
-        case OB_APP_MIN_COLUMN_ID + 13:
+        case OB_APP_MIN_COLUMN_ID + 12:
           // tablet_change_checkpoint_scn
           cur_row_.cells_[i].set_uint64(!ls_info.tablet_change_checkpoint_scn_.is_valid() ? 0 : ls_info.tablet_change_checkpoint_scn_.get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 14:
+        case OB_APP_MIN_COLUMN_ID + 13:
           // transfer_scn
           cur_row_.cells_[i].set_uint64(!ls_info.transfer_scn_.is_valid() ? 0 : ls_info.transfer_scn_.get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 15:
+        case OB_APP_MIN_COLUMN_ID + 14:
           // tx blocked
           cur_row_.cells_[i].set_int(ls_info.tx_blocked_);
           break;
-        case  OB_APP_MIN_COLUMN_ID + 16:
+        case  OB_APP_MIN_COLUMN_ID + 15:
           // required_data_disk_size
           cur_row_.cells_[i].set_int(ls_info.required_data_disk_size_);
           break;
-        case OB_APP_MIN_COLUMN_ID + 17:
+        case OB_APP_MIN_COLUMN_ID + 16:
           // mv_major_merge_scn
           cur_row_.cells_[i].set_uint64(!ls_info.mv_major_merge_scn_.is_valid() ? 0 : ls_info.mv_major_merge_scn_.get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 18:
+        case OB_APP_MIN_COLUMN_ID + 17:
           // mv_publish_scn
           cur_row_.cells_[i].set_uint64(!ls_info.mv_publish_scn_.is_valid() ? 0 : ls_info.mv_publish_scn_.get_val_for_inner_table_field());
           break;
-        case OB_APP_MIN_COLUMN_ID + 19:
+        case OB_APP_MIN_COLUMN_ID + 18:
           // mv_publish_scn
           cur_row_.cells_[i].set_uint64(!ls_info.mv_safe_scn_.is_valid() ? 0 : ls_info.mv_safe_scn_.get_val_for_inner_table_field());
           break;

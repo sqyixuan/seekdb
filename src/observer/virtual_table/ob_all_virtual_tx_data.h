@@ -53,7 +53,6 @@ class ObAllVirtualTxData : public common::ObVirtualTableScannerIterator {
 private:
   enum VirtualTxDataTableColumnID : uint64_t {
     TENANT_ID_COL = OB_APP_MIN_COLUMN_ID,
-    LS_ID_COL,
     TX_ID_COL,
     SVR_IP_COL,
     SVR_PORT_COL,
@@ -67,10 +66,10 @@ private:
 
 
 public:
-  ObAllVirtualTxData() : addr_(), tenant_id_(0), ls_id_(0), tx_id_(0) {}
+  ObAllVirtualTxData() : addr_(), tenant_id_(0), tx_id_(0) {}
   ~ObAllVirtualTxData() {}
 
-  TO_STRING_KV(K(MTL_ID()), K_(tenant_id), K_(ls_id), K_(tx_id));
+  TO_STRING_KV(K(MTL_ID()), K_(tenant_id), K_(tx_id));
 
 public:
   virtual int inner_get_next_row(common::ObNewRow *&row);
@@ -78,7 +77,6 @@ public:
   {
     addr_.reset();
     tenant_id_ = 0;
-    ls_id_.reset();
     tx_id_.reset();
     memset(ip_buf_, 0, sizeof(ip_buf_));
   }
@@ -96,7 +94,6 @@ private:
 private:
   common::ObAddr addr_;
   uint64_t tenant_id_;
-  share::ObLSID ls_id_;
   transaction::ObTransID tx_id_;
   char ip_buf_[common::OB_IP_STR_BUFF];
 

@@ -67,7 +67,6 @@ private:
     TRANS_ID,
     HOLDER_TRANS_ID,
     HOLDER_SESSION_ID,
-    LS_ID,
     ASSOC_SESS_ID,
     WAIT_TIMEOUT,
     TX_ACTIVE_TS,

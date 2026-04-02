@@ -237,7 +237,7 @@ int ObTabletChecksumOperator::load_tablet_checksum_items(
               LOG_WARN("fail to get next row", KR(ret), K(tenant_id));
             }
           } else {
-            int64_t ls_id = ObLSID::INVALID_LS_ID;
+            int64_t ls_id = ObLSID::SYS_LS_ID;
             int64_t tenant_id = -1;
             int64_t tablet_id = -1;
             uint64_t compaction_scn_val = 0;
@@ -245,7 +245,6 @@ int ObTabletChecksumOperator::load_tablet_checksum_items(
             EXTRACT_INT_FIELD_MYSQL(*result, "tenant_id", tenant_id, int64_t);
             EXTRACT_UINT_FIELD_MYSQL(*result, "compaction_scn", compaction_scn_val, uint64_t);
             EXTRACT_INT_FIELD_MYSQL(*result, "tablet_id", tablet_id, int64_t);
-            EXTRACT_INT_FIELD_MYSQL(*result, "ls_id", ls_id, int64_t);
             EXTRACT_INT_FIELD_MYSQL(*result, "data_checksum", item.data_checksum_, int64_t);
             EXTRACT_INT_FIELD_MYSQL(*result, "row_count", item.row_count_, int64_t);
             EXTRACT_VARCHAR_FIELD_MYSQL(*result, "column_checksums", column_meta_str);
@@ -337,7 +336,7 @@ int ObTabletChecksumOperator::construct_load_sql_str_(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(start_idx), K(end_idx), K(pairs_cnt));
   } else if (OB_FAIL(sql.append_fmt("SELECT * FROM %s WHERE tenant_id = '%lu' and compaction_scn = "
-      "%lu and (tablet_id, ls_id) IN (", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id,
+      "%lu and tablet_id IN (", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id,
       compaction_scn.get_val_for_inner_table_field()))) {
     LOG_WARN("fail to assign sql", KR(ret), K(tenant_id));
   } else {
@@ -347,9 +346,8 @@ int ObTabletChecksumOperator::construct_load_sql_str_(
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("invalid tablet_ls_pair", KR(ret), K(tenant_id), K(pair), K(idx));
       } else if (OB_FAIL(sql.append_fmt(
-          "(%ld,%ld)%s",
+          "%ld%s",
           pair.get_tablet_id().id(),
-          pair.get_ls_id().id(),
           ((idx == end_idx - 1) ? ")" : ", ")))) {
         LOG_WARN("fail to assign sql", KR(ret), K(tenant_id), K(pair));
       }
@@ -391,7 +389,7 @@ int ObTabletChecksumOperator::insert_or_update_tablet_checksum_items_(
     int64_t report_idx = 0;
     while (OB_SUCC(ret) && (remain_cnt > 0)) {
       sql.reuse();
-      if (OB_FAIL(sql.assign_fmt("INSERT INTO %s (tenant_id, compaction_scn, tablet_id, ls_id, data_checksum, "
+      if (OB_FAIL(sql.assign_fmt("INSERT INTO %s (tenant_id, compaction_scn, tablet_id, data_checksum, "
           "row_count, column_checksums, gmt_modified, gmt_create) VALUES", OB_ALL_TABLET_CHECKSUM_TNAME))) {
         LOG_WARN("fail to assign sql", KR(ret), K(tenant_id));
       } else {
@@ -408,8 +406,8 @@ int ObTabletChecksumOperator::insert_or_update_tablet_checksum_items_(
           if (OB_FAIL(MTL(ObTenantFreezeInfoMgr *)->get_lower_bound_freeze_info_before_snapshot_version(compaction_scn_val, freeze_info))) {
             LOG_WARN("failed to get freeze info", K(ret), K(compaction_scn_val));
           } else if (FALSE_IT(compaction_data_version = freeze_info.data_version_)) {
-          } else if (OB_FAIL(sql.append_fmt("('%lu', %lu, '%lu', %ld, %ld, %ld, ",
-              extract_tenant_id, compaction_scn_val, item.tablet_id_.id(), item.ls_id_.id(),
+          } else if (OB_FAIL(sql.append_fmt("('%lu', %lu, '%lu', %ld, %ld, ",
+              extract_tenant_id, compaction_scn_val, item.tablet_id_.id(),
               item.data_checksum_, item.row_count_))) {
             LOG_WARN("fail to assign sql", KR(ret), K(i), K(bias), K(item));
           } else if (OB_FAIL(item.column_meta_.get_hex_str(allocator, b_column_meta))) {
@@ -482,8 +480,8 @@ int ObTabletChecksumOperator::delete_tablet_checksum_items(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(gc_compaction_scn));
   } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = '%lu' AND compaction_scn <= %lu"
-    " AND NOT (tablet_id=%ld AND ls_id=%ld) limit %ld", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id, 
-    gc_scn_val, ObTabletID::MIN_VALID_TABLET_ID, ObLSID::SYS_LS_ID, limit_cnt))) {
+    " AND tablet_id != %ld limit %ld", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id,
+    gc_scn_val, ObTabletID::MIN_VALID_TABLET_ID, limit_cnt))) {
     LOG_WARN("fail to assign sql", KR(ret), K(tenant_id), K(gc_compaction_scn), K(limit_cnt));
   } else if (OB_FAIL(sql_client.write(tenant_id, sql.ptr(), affected_rows))) {
     LOG_WARN("fail to execute sql", KR(ret), K(sql));
@@ -508,8 +506,8 @@ int ObTabletChecksumOperator::delete_special_tablet_checksum_items(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(gc_compaction_scn));
   } else if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE tenant_id = '%lu' AND compaction_scn <= %lu"
-    " AND tablet_id=%ld AND ls_id=%ld", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id,
-    gc_scn_val, ObTabletID::MIN_VALID_TABLET_ID, ObLSID::SYS_LS_ID))) {
+    " AND tablet_id=%ld", OB_ALL_TABLET_CHECKSUM_TNAME, extract_tenant_id,
+    gc_scn_val, ObTabletID::MIN_VALID_TABLET_ID))) {
     LOG_WARN("fail to assign sql", KR(ret), K(tenant_id), K(gc_compaction_scn));
   } else if (OB_FAIL(sql_client.write(tenant_id, sql.ptr(), affected_rows))) {
     LOG_WARN("fail to execute sql", KR(ret), K(sql));
@@ -605,8 +603,8 @@ int ObTabletChecksumOperator::is_first_tablet_in_sys_ls_exist(
       ObMySQLResult *result = nullptr;
       uint64_t compaction_scn_val = compaction_scn.get_val_for_inner_table_field();
       if (OB_FAIL(sql.assign_fmt("SELECT COUNT(*) AS cnt FROM %s WHERE tenant_id = '%lu' AND "
-            "compaction_scn >= %lu AND tablet_id = %lu AND ls_id = %ld", OB_ALL_TABLET_CHECKSUM_TNAME,
-            extract_tenant_id, compaction_scn_val, ObTabletID::MIN_VALID_TABLET_ID, ObLSID::SYS_LS_ID))) {
+            "compaction_scn >= %lu AND tablet_id = %lu", OB_ALL_TABLET_CHECKSUM_TNAME,
+            extract_tenant_id, compaction_scn_val, ObTabletID::MIN_VALID_TABLET_ID))) {
         LOG_WARN("fail to append sql", KR(ret), K(tenant_id));
       } else if (OB_FAIL(sql_client.read(res, tenant_id, sql.ptr()))) {
         LOG_WARN("fail to execute sql", KR(ret), K(tenant_id), K(tenant_id), K(sql));

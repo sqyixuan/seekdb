@@ -21,19 +21,18 @@
 #include "share/ob_global_stat_proxy.h"
 #include "share/backup/ob_backup_data_table_operator.h"
 #include "observer/ob_inner_sql_connection.h"
-#include "share/ob_all_server_tracer.h"
 
 namespace oceanbase {
 namespace rootserver {
 
 #define QUERY_MAJOR_MV_MERGE_SCN_SQL "select mview_id,t2.data_table_id,last_refresh_scn,t3.tablet_id, \
-  t4.svr_ip,t4.svr_port,t4.ls_id,t4.end_log_scn, \
+  t4.svr_ip,t4.svr_port,t4.end_log_scn, \
   locate(concat(t4.svr_ip,\":\", t4.svr_port), t5.paxos_member_list) > 0 is_member, \
   locate(concat(t4.svr_ip,\":\", t4.svr_port), t5.learner_list) > 0 is_leaner from %s t1 \
   left join %s t2 on t1.mview_id = t2.table_id \
   left join %s t3 on t2.data_table_id = t3.table_id \
   left join %s t4 on t3.tablet_id = t4.tablet_id and t4.table_type = 10 \
-  left join %s t5 on t4.svr_ip = t5.svr_ip and t4.svr_port = t5.svr_port and t4.ls_id = t5.ls_id \
+  left join %s t5 on t4.svr_ip = t5.svr_ip and t4.svr_port = t5.svr_port \
   where t1.refresh_mode = %ld and t1.last_refresh_scn > 0 order by 1,2,3,4,5,6,7,8"
 
 
@@ -193,14 +192,12 @@ int ObMViewPushRefreshScnTask::check_major_mv_refresh_scn_safety(const uint64_t 
              }
           }
         }
-        bool alive = true;
         // ignore ret
-        SVR_TRACER.check_server_alive(merge_info.svr_addr_, alive);
         if (find_dest_merge_scn) {
         } else if (!merge_info.is_member_ || merge_info.is_learner_) {
-          LOG_WARN("major_mv_safety>>>>", K(merge_info), K(alive));
+          LOG_WARN("major_mv_safety>>>>", K(merge_info));
         } else {
-          LOG_ERROR("major_mv_safety>>>>", K(merge_info), K(alive));
+          LOG_ERROR("major_mv_safety>>>>", K(merge_info));
           is_safety = false;
         }
       }
@@ -285,7 +282,7 @@ int ObMViewPushRefreshScnTask::get_major_mv_merge_info_(const uint64_t tenant_id
           EXTRACT_INT_FIELD_MYSQL(*result, "tablet_id", merge_info.tablet_id_, int64_t);
           EXTRACT_STRBUF_FIELD_MYSQL(*result, "svr_ip", svr_ip, OB_IP_STR_BUFF, tmp_real_str_len);
           EXTRACT_INT_FIELD_MYSQL(*result, "svr_port", svr_port, int64_t);
-          EXTRACT_INT_FIELD_MYSQL(*result, "ls_id", merge_info.ls_id_, int64_t);
+          merge_info.ls_id_ = 1;
           EXTRACT_UINT_FIELD_MYSQL(*result, "end_log_scn", merge_info.end_log_scn_, uint64_t);
           EXTRACT_INT_FIELD_MYSQL(*result, "is_member", merge_info.is_member_, int64_t);
           EXTRACT_INT_FIELD_MYSQL(*result, "is_leaner", merge_info.is_learner_, int64_t);
