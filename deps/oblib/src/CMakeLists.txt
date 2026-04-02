@@ -17,14 +17,12 @@ target_include_directories(
   ${CMAKE_SOURCE_DIR}/src/objit/src
   ${DEP_DIR}/include
   ${DEP_DIR}/include/libxml2
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:${SYS_INCLUDE_DIR}>
   ${DEVTOOLS_DIR}
   ${DEVTOOLS_DIR}/include
   ${DEP_DIR}/include/apr-1/
   ${DEP_DIR}/include/icu
   ${DEP_DIR}/include/icu/common
   ${DEP_DIR}/include/apache-arrow
-  ${DEP_DIR}/include/apache-orc
   ${DEP_DIR}/include/fast_float
   ${USSL_INCLUDE_DIRS}
 )
@@ -133,47 +131,36 @@ endif()
 
 target_compile_features(oblib_base INTERFACE cxx_std_11)
 
-set(_LIB_PATH "${DEP_DIR}/lib64/")
-set(LIBAIO_LINK_OPTION "-laio")
-if(APPLE)
-  set(_LIB_PATH "${DEP_DIR}/lib/")
-  # macOS doesn't have libaio
-  set(LIBAIO_LINK_OPTION "")
-endif()
 set(OBLIB_ABSEIL_LIST   
-    ${_LIB_PATH}/libabsl_base.a
-    ${_LIB_PATH}/libabsl_city.a
-    ${_LIB_PATH}/libabsl_debugging_internal.a
-    ${_LIB_PATH}/libabsl_demangle_internal.a
-    ${_LIB_PATH}/libabsl_hash.a
-    ${_LIB_PATH}/libabsl_int128.a
-    ${_LIB_PATH}/libabsl_low_level_hash.a
-    ${_LIB_PATH}/libabsl_malloc_internal.a
-    ${_LIB_PATH}/libabsl_raw_hash_set.a
-    ${_LIB_PATH}/libabsl_raw_logging_internal.a
-    ${_LIB_PATH}/libabsl_spinlock_wait.a
-    ${_LIB_PATH}/libabsl_stacktrace.a
-    ${_LIB_PATH}/libabsl_str_format_internal.a
-    ${_LIB_PATH}/libabsl_strings.a
-    ${_LIB_PATH}/libabsl_strings_internal.a
-    ${_LIB_PATH}/libabsl_symbolize.a
-    ${_LIB_PATH}/libabsl_synchronization.a
-    ${_LIB_PATH}/libabsl_throw_delegate.a
-    ${_LIB_PATH}/libabsl_time.a
-    ${_LIB_PATH}/libabsl_time_zone.a)
+    ${DEP_DIR}/lib64/libabsl_base.a
+    ${DEP_DIR}/lib64/libabsl_city.a
+    ${DEP_DIR}/lib64/libabsl_debugging_internal.a
+    ${DEP_DIR}/lib64/libabsl_demangle_internal.a
+    ${DEP_DIR}/lib64/libabsl_hash.a
+    ${DEP_DIR}/lib64/libabsl_int128.a
+    ${DEP_DIR}/lib64/libabsl_low_level_hash.a
+    ${DEP_DIR}/lib64/libabsl_malloc_internal.a
+    ${DEP_DIR}/lib64/libabsl_raw_hash_set.a
+    ${DEP_DIR}/lib64/libabsl_raw_logging_internal.a
+    ${DEP_DIR}/lib64/libabsl_spinlock_wait.a
+    ${DEP_DIR}/lib64/libabsl_stacktrace.a
+    ${DEP_DIR}/lib64/libabsl_str_format_internal.a
+    ${DEP_DIR}/lib64/libabsl_strings.a
+    ${DEP_DIR}/lib64/libabsl_strings_internal.a
+    ${DEP_DIR}/lib64/libabsl_symbolize.a
+    ${DEP_DIR}/lib64/libabsl_synchronization.a
+    ${DEP_DIR}/lib64/libabsl_throw_delegate.a
+    ${DEP_DIR}/lib64/libabsl_time.a
+    ${DEP_DIR}/lib64/libabsl_time_zone.a)
 
 set(LGPL_DEPS "-L${DEP_DIR}/lib/mariadb -lmariadb")
 if (OB_STATIC_LINK_LGPL_DEPS)
-  if(APPLE)
-    # macOS doesn't support -l:libmariadbclient.a format, use direct path
-    set(LGPL_DEPS "-L${DEP_DIR}/lib/mariadb ${DEP_DIR}/lib/mariadb/libmariadbclient.a")
-  else()
-    set(LGPL_DEPS "-L${DEP_DIR}/lib/mariadb -l:libmariadbclient.a")
-  endif()
+  set(LGPL_DEPS "-L${DEP_DIR}/lib/mariadb -l:libmariadbclient.a")
 endif()
 
 # Check if system is Ubuntu >= 24 for dynamic linking libaio.so.1t64
-if(OB_AIO AND OB_AIO STREQUAL "libaio1t64" AND NOT APPLE)
+set(LIBAIO_LINK_OPTION "-laio")
+if(OB_AIO AND OB_AIO STREQUAL "libaio1t64")
   set(AIO_SEARCH_PATHS)
   if(ARCHITECTURE STREQUAL "x86_64")
     list(APPEND AIO_SEARCH_PATHS /usr/lib/x86_64-linux-gnu)
@@ -200,6 +187,7 @@ endif()
 target_link_libraries(oblib_base_without_pass
   INTERFACE
   -L${DEP_DIR}/lib
+  oss
   ${DEP_DIR}/lib/libcurl.a
   ${DEP_DIR}/lib/libssl.a
   ${DEP_DIR}/lib/libcrypto.a
@@ -208,27 +196,22 @@ target_link_libraries(oblib_base_without_pass
   ${DEP_DIR}/lib/libroaring.a
   ${LGPL_DEPS}
   $<$<STREQUAL:"${ARCHITECTURE}","x86_64">:${DEP_DIR}/lib/libunwind.a>
+  ${DEP_DIR}/lib/sqlite/libsqlite3.a
   ${DEP_DIR}/lib/libz.a
   ${DEP_DIR}/lib/libicui18n.a
   ${DEP_DIR}/lib/libicustubdata.a
   ${DEP_DIR}/lib/libicuuc.a
+  ${DEP_DIR}/lib64/libarrow.a
+  ${DEP_DIR}/lib64/libparquet.a
+  ${DEP_DIR}/lib64/libarrow_bundled_dependencies.a
   ${DEP_DIR}/lib/libprotobuf-c.a
-  ${_LIB_PATH}/libarrow.a
-  ${_LIB_PATH}/libparquet.a
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:${DEP_DIR}/lib64/libarrow_bundled_dependencies.a>
-  $<$<PLATFORM_ID:Darwin>:-L/opt/homebrew/lib -lutf8proc -lthrift -lre2 -lbrotlicommon -lbrotlienc -lbrotlidec -lbz2>
-  ${DEP_DIR}/lib64/liborc.a
-  ${DEP_DIR}/lib64/libsnappy.a
-  ${DEP_DIR}/lib64/libprotoc.a
-  ${DEP_DIR}/lib64/libprotobuf.a
-  ${DEP_DIR}/lib64/liblz4.a
-  ${DEP_DIR}/lib64/libzstd.a
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-L${DEP_DIR}/var/usr/lib64 -L${DEP_DIR}/var/usr/lib -L${DEP_3RD_DIR}/usr/lib -L${DEP_3RD_DIR}/usr/lib64>
-  ${LIBAIO_LINK_OPTION} -lpthread -ldl
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:-lrt>
-  $<$<PLATFORM_ID:Darwin>:-Wl,-framework,Security -Wl,-framework,CoreFoundation -Wl,-framework,SystemConfiguration -liconv>
+  -L${DEP_DIR}/var/usr/lib64
+  -L${DEP_DIR}/var/usr/lib
+  -L${DEP_3RD_DIR}/usr/lib
+  -L${DEP_3RD_DIR}/usr/lib64
+  ${LIBAIO_LINK_OPTION} -lpthread -ldl -lrt
   ${ARCH_LDFLAGS}
-  $<$<NOT:$<PLATFORM_ID:Darwin>>:${DEP_DIR}/lib/libisal.a>
+  ${DEP_DIR}/lib/libisal.a
  )
 target_link_libraries(oblib_base INTERFACE oblib_base_without_pass oblib_pass)
 
@@ -251,6 +234,7 @@ set(oblib_extra_objects "" CACHE INTERNAL oblib_extra_objects)
 add_subdirectory(lib)
 add_subdirectory(common)
 add_subdirectory(rpc)
+add_subdirectory(grpc)
 
 # Define static library which contains previous object libraries.
 message(STATUS "oblib_extra_objects ${oblib_extra_objects}")

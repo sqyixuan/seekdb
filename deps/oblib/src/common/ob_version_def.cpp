@@ -16,12 +16,18 @@
 
 #include "common/ob_version_def.h"
 
-namespace oceanbase 
+namespace oceanbase
 {
-namespace common 
+namespace common
 {
 
-int64_t VersionUtil::print_version_str(char *buf, const int64_t buf_len, uint64_t version) 
+bool VersionUtil::check_version_valid(const uint64_t version)
+{
+  bool bret = true;
+  return bret;
+}
+
+int64_t VersionUtil::print_version_str(char *buf, const int64_t buf_len, uint64_t version)
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;
@@ -29,9 +35,14 @@ int64_t VersionUtil::print_version_str(char *buf, const int64_t buf_len, uint64_
   const uint16_t minor = OB_VSN_MINOR(version);
   const uint8_t major_patch = OB_VSN_MAJOR_PATCH(version);
   const uint8_t minor_patch = OB_VSN_MINOR_PATCH(version);
-  if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%u.%u.%u.%u",
-              major, minor, major_patch, minor_patch))) {
-    COMMON_LOG(WARN, "fail to print version str", K(ret), K(version));
+  if (OB_UNLIKELY(!check_version_valid(version))) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(ERROR, "invalid cluster version", K(version), K(lbt()));
+  } else {
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%u.%u.%u.%u",
+                major, minor, major_patch, minor_patch))) {
+      COMMON_LOG(WARN, "fail to print version str", K(ret), K(version));
+    }
   }
   if (OB_FAIL(ret)) {
     pos = OB_INVALID_INDEX;

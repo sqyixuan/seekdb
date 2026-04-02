@@ -166,6 +166,10 @@ int ObAllVirtualSysParameterStat::inner_sys_get_next_row(ObNewRow *&row)
             cells[i].set_int(isdefault);
             break;
           }
+        case TENANT_ID: {
+            cells[i].set_int(OB_SYS_TENANT_ID);
+          break;
+        }
         default : {
             // TODO: Version compatibility, extra columns do not cause errors
             // ret = OB_ERR_UNEXPECTED;
