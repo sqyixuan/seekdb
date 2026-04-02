@@ -35,10 +35,9 @@ DEF_STR(redundancy_level, OB_CLUSTER_PARAMETER, "NORMAL",
         "EXTERNAL, NORMAL, HIGH");
 // background information about disk space configuration
 // ObServerUtils::get_data_disk_info_in_config()
-DEF_CAP(datafile_size, OB_CLUSTER_PARAMETER, "32M", "[0M,)", "size of the data file. Range: [0, +∞)",
+DEF_CAP(datafile_size, OB_CLUSTER_PARAMETER, "2G", "[0M,)", "size of the data file. Range: [0, +∞)",
         ObParameterAttr(Section::SSTABLE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_CAP(datafile_next, OB_CLUSTER_PARAMETER, "0M", "[0M,)", "the auto extend step. "
-        "0 means using adaptive extend step size. Range: [0, +∞)",
+DEF_CAP(datafile_next, OB_CLUSTER_PARAMETER, "2G", "[0M,)", "the auto extend step. Range: [0, +∞)",
         ObParameterAttr(Section::SSTABLE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_CAP(datafile_maxsize, OB_CLUSTER_PARAMETER, "1T", "[0M,)", "the auto extend max size. Range: [0, +∞)",
         ObParameterAttr(Section::SSTABLE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -88,10 +87,6 @@ DEF_INT(tenant_task_queue_size, OB_CLUSTER_PARAMETER, "16384", "[1024,]",
 _DEF_PARAMETER_SCOPE_CHECKER_EASY(private, Capacity, memory_limit, OB_CLUSTER_PARAMETER, "0M",
         common::ObConfigMemoryLimitChecker, "[0M,)",
         "the size of the memory reserved for internal use(for testing purpose), 0 means follow memory_limit_percentage. Range: 0, [1G,).",
-        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-_DEF_PARAMETER_SCOPE_CHECKER_EASY(private, Capacity, memory_hard_limit, OB_CLUSTER_PARAMETER, "0M",
-        common::ObConfigMemoryLimitChecker, "[0M,)",
-        "The max memory size can be used, 0 means use 90% of system memory. Range: 0, [1G,).",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 _DEF_PARAMETER_SCOPE_RANGE_EASY(private, Capacity, system_memory, OB_CLUSTER_PARAMETER, "0M", "[0M,)",
         "the memory reserved for internal use which cannot be allocated to any outer-tenant, "
@@ -207,7 +202,7 @@ DEF_INT(cluster_id, OB_CLUSTER_PARAMETER, "1", "[1,4294901759]", "ID of the clus
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_STR(obconfig_url, OB_CLUSTER_PARAMETER, "", "URL for OBConfig service",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_LOG_LEVEL(syslog_level, OB_CLUSTER_PARAMETER, ObLogger::get_level_str(DEFAULT_LOG_LEVEL), "specifies the current level of logging. There are DEBUG, TRACE, WDIAG, EDIAG, INFO, WARN, ERROR, seven different log levels.",
+DEF_LOG_LEVEL(syslog_level, OB_CLUSTER_PARAMETER, "WDIAG", "specifies the current level of logging. There are DEBUG, TRACE, WDIAG, EDIAG, INFO, WARN, ERROR, seven different log levels.",
               ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
              "DEBUG, TRACE, WDIAG, EDIAG, INFO, WARN, ERROR");
 DEF_STR_WITH_CHECKER(alert_log_level, OB_CLUSTER_PARAMETER, "INFO",
@@ -221,7 +216,7 @@ DEF_CAP(syslog_io_bandwidth_limit, OB_CLUSTER_PARAMETER, "5MB",
 DEF_INT(diag_syslog_per_error_limit, OB_CLUSTER_PARAMETER, "200", "[0,]",
         "DIAG syslog limitation for each error per second, exceeding syslog would be truncated",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT_WITH_CHECKER(max_syslog_file_count, OB_CLUSTER_PARAMETER, "2",
+DEF_INT_WITH_CHECKER(max_syslog_file_count, OB_CLUSTER_PARAMETER, "4",
                      common::ObConfigMaxSyslogFileCountChecker,
                      "specifies the maximum number of the log files "
                      "that can co-exist before the log file recycling kicks in. "
@@ -459,7 +454,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//[INTERNAL_URL]
+//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -642,9 +637,10 @@ DEF_TIME(tablet_meta_table_check_interval, OB_CLUSTER_PARAMETER, "30m", "[1m,)",
          "the time interval that observer compares tablet meta table with local ls replica info "
          "and make adjustments to ensure the correctness of tablet meta table. Range: [1m,+∞)",
          ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "1.2.0.0", "the min observer version",
+// TODO fixme after remove all other versions
+DEF_STR(min_observer_version, OB_CLUSTER_PARAMETER, "1.0.1.0", "the min observer version",
         ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_VERSION(compatible, OB_CLUSTER_PARAMETER, "1.2.0.0", "compatible version for persisted data",
+DEF_VERSION(compatible, OB_CLUSTER_PARAMETER, "1.0.1.0", "compatible version for persisted data",
             ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_BOOL(enable_ddl, OB_CLUSTER_PARAMETER, "True", "specifies whether DDL operation is turned on. "
          "Value:  True:turned on;  False: turned off",
@@ -673,7 +669,7 @@ DEF_MODE_WITH_PARSER(_parallel_ddl_control, OB_CLUSTER_PARAMETER, "",
         ObParameterAttr(Section::ROOT_SERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 // ========================= LogService Config Begin =====================
 
-DEF_CAP(log_disk_size, OB_CLUSTER_PARAMETER, "0M", "[0M,)",
+DEF_CAP(log_disk_size, OB_CLUSTER_PARAMETER, "10G", "[0M,)",
         "the size of disk space used by the log files. Range: [0, +∞)",
         ObParameterAttr(Section::LOGSERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
@@ -731,12 +727,11 @@ DEF_INT(log_disk_utilization_limit_threshold, OB_CLUSTER_PARAMETER, "95",
         "Range: [80, 100]",
         ObParameterAttr(Section::LOGSERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
-DEF_INT(log_disk_utilization_threshold, OB_CLUSTER_PARAMETER,"0",
-        "[0, 100)",
+DEF_INT(log_disk_utilization_threshold, OB_CLUSTER_PARAMETER,"80",
+        "[10, 100)",
         "log disk utilization threshold before reuse log files, "
         "should be smaller than log_disk_utilization_limit_threshold. "
-        "0 means recycle log files as soon as possible"
-        "Range: [0, 100)",
+        "Range: [10, 100)",
         ObParameterAttr(Section::LOGSERVICE, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
 DEF_INT(log_disk_throttling_percentage, OB_CLUSTER_PARAMETER, "60",
@@ -2594,7 +2589,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// [INTERNAL_URL]
+// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -2680,8 +2675,3 @@ DEF_INT(_parquet_filter_pushdown_level, OB_CLUSTER_PARAMETER, "4", "[0, 4]",
         "3, which means pushdown to Page level and 4, which means pushdown to Encoding level. "
         "The default value is 4.",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE))
-
-DEF_TIME(_advance_checkpoint_interval, OB_CLUSTER_PARAMETER, "10m", "[0m,12h]",
-         "The execution interval for the advance checkpoint task, 0m means disable this feature. "
-         "Range: [0m, 12h]",
-         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
