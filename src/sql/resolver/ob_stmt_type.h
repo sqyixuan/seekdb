@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifdef OB_STMT_TYPE_DEF
@@ -114,7 +110,6 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CREATE_DATABASE, get_create_database_stmt_need_pri
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_USE_DATABASE, no_priv_needed, 97)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ADMIN_SERVER, get_sys_tenant_alter_system_priv, 98)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ADMIN_ZONE, get_sys_tenant_alter_system_priv, 99)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SWITCH_REPLICA_ROLE, get_sys_tenant_alter_system_priv, 100)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RECYCLE_REPLICA, get_sys_tenant_alter_system_priv, 103)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ADMIN_MERGE, get_sys_tenant_alter_system_priv, 104)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ALTER_DATABASE, get_alter_database_stmt_need_privs, 105)
@@ -132,16 +127,13 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RELOAD_UNIT, get_sys_tenant_alter_system_priv, 116
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RELOAD_SERVER, get_sys_tenant_alter_system_priv, 117)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RELOAD_ZONE, get_sys_tenant_alter_system_priv, 118)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CLEAR_MERGE_ERROR, get_sys_tenant_alter_system_priv, 119)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_MIGRATE_UNIT, get_sys_tenant_alter_system_priv, 120)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_UPGRADE_VIRTUAL_SCHEMA, get_sys_tenant_alter_system_priv, 121)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RUN_JOB, get_sys_tenant_alter_system_priv, 122)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_EMPTY_QUERY, no_priv_needed, 123)
 OB_STMT_TYPE_DEF(T_CREATE_OUTLINE, get_create_outline_stmt_need_privs, 124, ACTION_TYPE_CREATE_OUTLINE)
 OB_STMT_TYPE_DEF(T_ALTER_OUTLINE, get_alter_outline_stmt_need_privs, 125, ACTION_TYPE_ALTER_OUTLINE)
 OB_STMT_TYPE_DEF(T_DROP_OUTLINE, get_drop_outline_stmt_need_privs, 126, ACTION_TYPE_DROP_OUTLINE)
-OB_STMT_TYPE_DEF(T_FORK_TABLE, get_fork_table_stmt_need_privs, 127, ACTION_TYPE_FORK_TABLE)
-OB_STMT_TYPE_DEF(T_FORK_DATABASE, get_fork_database_stmt_need_privs, 128, ACTION_TYPE_FORK_DATABASE)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SWITCH_RS_ROLE, get_sys_tenant_alter_system_priv, 129)
+// stmt type 127, 128 used by plan baseline, and is been delete
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_FLASHBACK_TENANT, get_flashback_tenant_stmt_need_privs, 130)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_FLASHBACK_DATABASE, get_flashback_database_stmt_need_privs, 131)
 OB_STMT_TYPE_DEF(T_FLASHBACK_TABLE_FROM_RECYCLEBIN, get_flashback_table_stmt_need_privs, 132, ACTION_TYPE_FLASHBACK_TABLE)
@@ -278,9 +270,6 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CHECKPOINT_SLOG, get_sys_tenant_alter_system_priv,
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_REFRESH_IO_CALIBRATION, get_sys_tenant_alter_system_priv, 276)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_PHYSICAL_RESTORE_STANDBY_TENANT, get_sys_tenant_alter_system_priv, 278)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RECOVER, get_sys_tenant_alter_system_priv, 279)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ADD_ARBITRATION_SERVICE, get_sys_tenant_alter_system_priv, 280)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_REMOVE_ARBITRATION_SERVICE, get_sys_tenant_alter_system_priv, 281)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_REPLACE_ARBITRATION_SERVICE, get_sys_tenant_alter_system_priv, 282)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SHOW_SEQUENCES, err_stmt_type_priv, 283)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_BACKUP_KEY, get_sys_tenant_alter_system_priv, 284)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CREATE_STANDBY_TENANT, get_sys_tenant_super_priv, 285)
@@ -288,11 +277,7 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CANCEL_RESTORE, get_sys_tenant_alter_system_priv, 
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_TABLE_TTL, get_sys_tenant_alter_system_priv, 287)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RECOVER_TABLE, get_sys_tenant_alter_system_priv, 288)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CANCEL_RECOVER_TABLE, get_sys_tenant_alter_system_priv, 289)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CREATE_TENANT_SNAPSHOT, get_sys_tenant_alter_system_priv, 290)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_DROP_TENANT_SNAPSHOT, get_sys_tenant_alter_system_priv, 291)
 OB_STMT_TYPE_DEF(T_ALTER_SYSTEM_RESET_PARAMETER, get_sys_tenant_alter_system_priv, 292, ACTION_TYPE_ALTER_SYSTEM)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CLONE_TENANT, get_sys_tenant_alter_system_priv, 293)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CANCEL_CLONE, get_sys_tenant_alter_system_priv, 294)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CREATE_MLOG, get_create_mlog_stmt_need_privs, 295)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_DROP_MLOG, get_drop_mlog_stmt_need_privs, 296)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_TRANSFER_PARTITION, get_sys_tenant_alter_system_priv, 297)
@@ -385,14 +370,6 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_DROP_CCL_RULE, get_drop_ccl_priv, 381)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_FLUSH_TABLE_MOCK, no_priv_needed, 382)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_TRIGGER_STORAGE_CACHE, get_sys_tenant_alter_system_priv, 383)
 OB_STMT_TYPE_DEF(T_SYS_DISPATCH_CALL, no_priv_needed, 384, ACTION_TYPE_EXECUTE_PROCEDURE)
-
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_CREATE_LOCATION, get_location_privs, 385)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ALTER_LOCATION, get_location_privs, 386)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_DROP_LOCATION, get_location_privs, 387)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SHOW_LOCATIONS, no_priv_needed, 388)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SHOW_CREATE_LOCATION, no_priv_needed, 389)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_LOCATION_UTILS_LIST, no_priv_needed, 390)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_LOCATION_UTILS, get_location_util_privs, 391)
 
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_MAX, err_stmt_type_priv, 500)
 #endif

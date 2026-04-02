@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_OB_LOG_SERVICE_
@@ -27,11 +23,7 @@
 #include "palf/log_define.h"
 #include "rcservice/ob_role_change_service.h"
 #include "replayservice/ob_log_replay_service.h"
-#ifndef OB_BUILD_ARBITRATION
 #include "ob_net_keepalive_adapter.h"
-#else
-#include "logservice/ob_arbitration_service.h"
-#endif
 #include "ob_reporter_adapter.h"
 #include "ob_ls_adapter.h"
 #include "ob_locality_adapter.h"
@@ -217,9 +209,6 @@ public:
   int diagnose_role_change(RCDiagnoseInfo &diagnose_info);
   int diagnose_replay(const share::ObLSID &id, ReplayDiagnoseInfo &diagnose_info);
   int diagnose_apply(const share::ObLSID &id, ApplyDiagnoseInfo &diagnose_info);
-#ifdef OB_BUILD_ARBITRATION
-  int diagnose_arb_srv(const share::ObLSID &id, LogArbSrvDiagnoseInfo &diagnose_info);
-#endif
   int get_io_start_time(int64_t &last_working_time);
   int check_disk_space_enough(bool &is_disk_enough);
 
@@ -231,10 +220,6 @@ public:
   ObSharedLogService *get_shared_log_service() {return &shared_log_service_;}
 #endif
   ObLogApplyService *get_log_apply_service()  { return &apply_service_; }
-#ifdef OB_BUILD_ARBITRATION
-  ObArbitrationService *get_arbitration_service() { return &arb_service_; }
-
-#endif
   obrpc::ObLogServiceRpcProxy *get_rpc_proxy() { return &rpc_proxy_; }
   ObLogFlashbackService *get_flashback_service() { return &flashback_service_; }
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -279,9 +264,6 @@ private:
   // ========================== shared log start =================================
   ObSharedLogService shared_log_service_;
   // ========================== shared log end ===================================
-#endif
-#ifdef OB_BUILD_ARBITRATION
-  ObArbitrationService arb_service_;
 #endif
   ObLogFlashbackService flashback_service_;
   ObLogMonitor monitor_;

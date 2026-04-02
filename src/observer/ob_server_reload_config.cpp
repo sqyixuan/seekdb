@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -91,7 +87,6 @@ int ObServerReloadConfig::operator()()
 {
   int tmp_ret = OB_SUCCESS;
   int ret = tmp_ret;
-  const bool is_arbitration_mode = OBSERVER.is_arbitration_mode();
 
   if (!gctx_.is_inited()) {
     ret = tmp_ret = OB_INNER_STAT_ERROR;
@@ -142,12 +137,15 @@ int ObServerReloadConfig::operator()()
 #endif
     enable_malloc_v2(GCONF._enable_malloc_v2);
     GMEMCONF.reload_config(GCONF);
+    const int64_t limit_memory = GMEMCONF.get_server_memory_limit();
     OB_LOGGER.set_info_as_wdiag(false);
     // reload log config again after get MIN_CLUSTER_VERSION
     if (OB_TMP_FAIL(ObReloadConfig::operator()())) {
       LOG_WARN("ObReloadConfig operator() failed", K(tmp_ret));
     }
     const int64_t reserved_memory = GCONF.cache_wash_threshold;
+    LOG_INFO("set limit memory", K(limit_memory));
+    set_memory_limit(limit_memory);
     LOG_INFO("set reserved memory", K(reserved_memory));
     ob_set_reserved_memory(reserved_memory);
 #ifdef OB_USE_ASAN
@@ -156,7 +154,6 @@ int ObServerReloadConfig::operator()()
     ObMallocSampleLimiter::set_interval(GCONF._max_malloc_sample_interval,
                                      GCONF._min_malloc_sample_interval);
     enable_memleak_light_backtrace(GCONF._enable_memleak_light_backtrace);
-    if (!is_arbitration_mode) {
       ObIOConfig io_config;
       int64_t cpu_cnt = GCONF.cpu_count;
       if (cpu_cnt <= 0) {
@@ -169,8 +166,7 @@ int ObServerReloadConfig::operator()()
       io_config.data_storage_io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
       io_config.data_storage_warning_tolerance_time_ = GCONF.data_storage_warning_tolerance_time;
       io_config.data_storage_error_tolerance_time_ = GCONF.data_storage_error_tolerance_time;
-      if (!is_arbitration_mode
-          && OB_TMP_FAIL(ObIOManager::get_instance().set_io_config(io_config))) {
+      if (OB_TMP_FAIL(ObIOManager::get_instance().set_io_config(io_config))) {
         LOG_WARN("reload io manager config fail, ", K(tmp_ret));
       }
 
@@ -179,7 +175,6 @@ int ObServerReloadConfig::operator()()
 
       reload_tenant_freezer_config_();
       reload_tenant_scheduler_config_();
-    }
   }
   {
     ObMallocAllocator *malloc_allocator = ObMallocAllocator::get_instance();
@@ -199,13 +194,11 @@ int ObServerReloadConfig::operator()()
   }
   lib::AChunkMgr::instance().set_max_chunk_cache_size(cache_size, use_large_chunk_cache);
 
-  if (!is_arbitration_mode) {
     // Refresh cluster_name_hash for non arbitration mode
     if (FAILEDx(set_cluster_name_hash(GCONF.cluster.str()))) {
       LOG_WARN("failed to set_cluster_name_hash", KR(ret), "cluster_name", GCONF.cluster.str(),
                                                 "cluster_name_len", strlen(GCONF.cluster.str()));
     }
-  }
 
   // reset mem leak
   {
@@ -268,14 +261,12 @@ int ObServerReloadConfig::operator()()
     obrpc::set_rpc_checksum_check_level(new_level);
   }
 
-  if (!is_arbitration_mode) {
     auto new_upgrade_stage = obrpc::get_upgrade_stage(GCONF._upgrade_stage.str());
     auto orig_upgrade_stage = GCTX.get_upgrade_stage();
     if (new_upgrade_stage != orig_upgrade_stage) {
       LOG_INFO("_upgrade_stage changed", K(new_upgrade_stage), K(orig_upgrade_stage));
     }
     (void)GCTX.set_upgrade_stage(new_upgrade_stage);
-  }
 
   // syslog bandwidth limitation
   share::ObTaskController::get().set_log_rate_limit(
@@ -285,9 +276,7 @@ int ObServerReloadConfig::operator()()
 
   lib::g_runtime_enabled = true;
 
-  if (!is_arbitration_mode) {
     common::ObKVGlobalCache::get_instance().reload_wash_interval();
-    int tmp_ret = OB_SUCCESS;
     int64_t data_disk_size = 0;
     int64_t data_disk_percentage = 0;
     int64_t reserved_size = 0;
@@ -297,13 +286,10 @@ int ObServerReloadConfig::operator()()
     } else if (OB_TMP_FAIL(SERVER_STORAGE_META_SERVICE.get_reserved_size(reserved_size))) {
       LOG_WARN("fail to get reserved size", KR(tmp_ret), K(reserved_size));
     } else if (OB_TMP_FAIL(OB_STORAGE_OBJECT_MGR.resize_local_device(
-        OB_STORAGE_OBJECT_MGR.get_total_macro_block_count()
-            * OB_STORAGE_OBJECT_MGR.get_macro_block_size(),
         data_disk_size, data_disk_percentage, reserved_size))) {
       LOG_WARN("fail to resize file", KR(tmp_ret),
           K(data_disk_size), K(data_disk_percentage), K(reserved_size));
     }
-  }
 
   {
     ObSysVariables::set_value("datadir", GCONF.data_dir);

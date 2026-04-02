@@ -51,13 +51,13 @@ function(ob_offline_observer case case_file)
     ${CMAKE_SOURCE_DIR}/unittest ${CMAKE_SOURCE_DIR}/mittest)
   target_link_libraries(${case}
     PRIVATE
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group>
+    -Wl,--start-group
     oceanbase_static
     ob_sql_static
     ob_storage_static
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libgcc>
-    $<$<NOT:$<PLATFORM_ID:Darwin>>:-static-libstdc++>
+    -Wl,--end-group
+    -static-libgcc
+    -static-libstdc++
     gtest
     gmock)
 endfunction()
@@ -103,7 +103,6 @@ ob_unittest_observer(test_mds_recover test_mds_recover.cpp)
 ob_unittest_observer(test_keep_alive_min_start_scn test_keep_alive_min_start_scn.cpp)
 ob_unittest_observer(test_tablet_autoinc_mgr test_tablet_autoinc_mgr.cpp)
 ob_unittest_observer(test_tablet_memtable_mit test_tablet_memtable_mit.cpp)
-ob_unittest_observer(test_tenant_snapshot_service test_tenant_snapshot_service.cpp)
 ob_unittest_observer(test_callbacks_with_reverse_order test_callbacks_with_reverse_order.cpp)
 ob_unittest_observer(test_memtable_new_safe_to_destroy test_memtable_new_safe_to_destroy.cpp)
 ob_unittest_observer(test_tablet_to_ls_cache test_tablet_to_ls_cache.cpp)
@@ -123,19 +122,11 @@ ob_ha_unittest_observer(test_mds_transaction test_mds_transaction.cpp)
 ob_farm_observer(test_collect_mv_farm mv/test_collect_mv.cpp)
 
 ###### rootservice case #########
-ob_unittest_observer(test_add_remove_replace_arbitration_service rootservice/test_add_remove_replace_arbitration_service.cpp)
 ob_unittest_observer(test_all_virtual_proxy_partition_info_default_value rootservice/test_all_virtual_proxy_partition_info_default_value.cpp)
-ob_unittest_observer(test_arbitration_service_replica_task_table_operator rootservice/test_arbitration_service_replica_task_table_operator.cpp)
-ob_unittest_observer(test_arbitration_service_rpc rootservice/test_arbitration_service_rpc.cpp)
-ob_unittest_observer(test_arbitration_service_table_operator rootservice/test_arbitration_service_table_operator.cpp)
-ob_unittest_observer(test_change_arb_service_status rootservice/test_change_arb_service_status.cpp)
-ob_unittest_observer(test_create_clone_tenant_resource_pool rootservice/test_create_clone_tenant_resource_pool.cpp)
-ob_unittest_observer(test_create_tenant_with_arbitration_service rootservice/test_create_tenant_with_arbitration_service.cpp)
 ob_unittest_observer(test_get_stopped_zone_list rootservice/test_get_stopped_zone_list.cpp)
 ob_unittest_observer(test_location_service rootservice/test_location_service.cpp)
 ob_unittest_observer(test_ls_recovery_stat rootservice/test_ls_recovery_stat.cpp)
 ob_unittest_observer(test_ls_replica rootservice/test_ls_replica.cpp)
-ob_unittest_observer(test_ob_admin_arg rootservice/test_ob_admin_arg.cpp)
 ob_unittest_observer(test_ob_tablet_to_ls_operator rootservice/test_ob_tablet_to_ls_operator.cpp)
 ob_unittest_observer(test_schema_service_sql_impl rootservice/test_schema_service_sql_impl.cpp)
 ob_unittest_observer(test_standby_balance rootservice/test_standby_balance_ls_group.cpp)

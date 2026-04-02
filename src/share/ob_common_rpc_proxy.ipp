@@ -39,8 +39,6 @@
   RPC_S(PRD drop_table, obrpc::OB_DROP_TABLE, (ObDropTableArg), ObDDLRes);
   RPC_S(PRD parallel_drop_table, obrpc::OB_PARALLEL_DROP_TABLE, (ObDropTableArg), ObDropTableRes);
   RPC_S(PRD rename_table, obrpc::OB_RENAME_TABLE, (ObRenameTableArg));
-  RPC_S(PRD fork_table, obrpc::OB_FORK_TABLE, (ObForkTableArg), ObDDLRes);
-  RPC_S(PRD fork_database, obrpc::OB_FORK_DATABASE, (ObForkDatabaseArg), ObDDLRes);
   RPC_S(PRD truncate_table, obrpc::OB_TRUNCATE_TABLE, (ObTruncateTableArg), ObDDLRes);
   RPC_S(PRD truncate_table_v2, obrpc::OB_TRUNCATE_TABLE_V2, (ObTruncateTableArg), ObDDLRes);
   RPC_S(PRD create_aux_index, obrpc::OB_CREATE_AUX_INDEX, (obrpc::ObCreateAuxIndexArg), obrpc::ObCreateAuxIndexRes);
@@ -132,7 +130,6 @@
   RPC_S(PR5 create_resource_unit, obrpc::OB_CREATE_RESOURCE_UNIT, (ObCreateResourceUnitArg));
   RPC_S(PR5 alter_resource_unit, obrpc::OB_ALTER_RESOURCE_UNIT, (ObAlterResourceUnitArg));
   RPC_S(PR5 drop_resource_unit, obrpc::OB_DROP_RESOURCE_UNIT, (ObDropResourceUnitArg));
-  RPC_S(PRD clone_resource_pool, obrpc::OB_CLONE_RESOURCE_POOL, (ObCloneResourcePoolArg));
   RPC_S(PRD create_resource_pool, obrpc::OB_CREATE_RESOURCE_POOL, (ObCreateResourcePoolArg));
   RPC_S(PRD alter_resource_pool, obrpc::OB_ALTER_RESOURCE_POOL, (ObAlterResourcePoolArg));
   RPC_S(PRD drop_resource_pool, obrpc::OB_DROP_RESOURCE_POOL, (ObDropResourcePoolArg));
@@ -146,11 +143,6 @@
 
   // define system admin rpc (alter system ...)
   RPC_S(PR5 root_minor_freeze, obrpc::OB_ROOT_MINOR_FREEZE, (ObRootMinorFreezeArg));
-  RPC_S(PR5 admin_switch_replica_role, obrpc::OB_ADMIN_SWITCH_REPLICA_ROLE, (ObAdminSwitchReplicaRoleArg));
-  RPC_S(PR5 admin_switch_rs_role, obrpc::OB_ADMIN_SWITCH_RS_ROLE, (ObAdminSwitchRSRoleArg));
-  RPC_S(PR5 admin_drop_replica, obrpc::OB_ADMIN_DROP_REPLICA, (ObAdminDropReplicaArg));
-  RPC_S(PR5 admin_change_replica, obrpc::OB_ADMIN_CHANGE_REPLICA, (ObAdminChangeReplicaArg));
-  RPC_S(PR5 admin_migrate_replica, obrpc::OB_ADMIN_MIGRATE_REPLICA, (ObAdminMigrateReplicaArg));
   RPC_S(PR5 admin_report_replica, obrpc::OB_ADMIN_REPORT_REPLICA, (ObAdminReportReplicaArg));
   RPC_S(PR5 admin_recycle_replica, obrpc::OB_ADMIN_RECYCLE_REPLICA, (ObAdminRecycleReplicaArg));
   RPC_S(PR5 admin_merge, obrpc::OB_ADMIN_MERGE, (ObAdminMergeArg));
@@ -166,7 +158,6 @@
   RPC_S(PR5 admin_reload_server, obrpc::OB_ADMIN_RELOAD_SERVER);
   RPC_S(PR5 admin_reload_zone, obrpc::OB_ADMIN_RELOAD_ZONE);
   RPC_S(PR5 admin_clear_merge_error, obrpc::OB_ADMIN_CLEAR_MERGE_ERROR, (ObAdminMergeArg));
-  RPC_S(PR5 admin_alter_ls_replica, obrpc::OB_ADMIN_ALTER_LS_REPLICA, (ObAdminAlterLSReplicaArg));
   RPC_S(PRD admin_upgrade_virtual_schema, obrpc::OB_ADMIN_UPGRADE_VIRTUAL_SCHEMA);
   RPC_S(PRD run_job, obrpc::OB_RUN_JOB, (ObRunJobArg));
   RPC_S(PRD run_upgrade_job, obrpc::OB_RUN_UPGRADE_JOB, (ObUpgradeJobArg));
@@ -202,7 +193,6 @@
 
   RPC_S(PR5 backup_compl_log_res, obrpc::OB_BACKUP_COMPL_LOG_RES, (ObBackupTaskRes));
 
-  RPC_S(PRD commit_alter_tenant_locality, OB_COMMIT_ALTER_TENANT_LOCALITY, (rootserver::ObCommitAlterTenantLocalityArg));
   RPC_S(PR5 update_stat_cache, OB_RS_UPDATE_STAT_CACHE, (ObUpdateStatCacheArg));
 
 
@@ -227,7 +217,6 @@
   //          (ObDDLNopOpreatorArg)); // use ddl thread
   RPC_S(PR5 check_backup_scheduler_working, obrpc::OB_CHECK_BACKUP_SCHEDULER_WORKING, Bool);
   RPC_S(PR5 send_physical_restore_result, obrpc::OB_PHYSICAL_RESTORE_RES, (obrpc::ObPhysicalRestoreResult));
-  RPC_S(PRD clone_tenant, obrpc::OB_CLONE_TENANT, (ObCloneTenantArg), ObCloneTenantRes);
 
   // auto part ddl
   RPC_S(PRD create_restore_point, obrpc::OB_CREATE_RESTORE_POINT, (ObCreateRestorePointArg));
@@ -248,13 +237,6 @@
   RPC_S(PR5 admin_sync_rewrite_rules, obrpc::OB_ADMIN_SYNC_REWRITE_RULES, (ObSyncRewriteRuleArg));
   //----End of Definitions for sync rewrite rules----
 
-#ifdef OB_BUILD_ARBITRATION
-  RPC_S(PR5 admin_add_arbitration_service, obrpc::OB_ADMIN_ADD_ARBITRATION_SERVICE, (ObAdminAddArbitrationServiceArg));
-  RPC_S(PR5 admin_remove_arbitration_service, obrpc::OB_ADMIN_REMOVE_ARBITRATION_SERVICE, (ObAdminRemoveArbitrationServiceArg));
-  RPC_S(PR5 admin_replace_arbitration_service, obrpc::OB_ADMIN_REPLACE_ARBITRATION_SERVICE, (ObAdminReplaceArbitrationServiceArg));
-  RPC_S(PR5 remove_cluster_info_from_arb_server, obrpc::OB_REMOVE_CLUSTER_INFO_FROM_ARB_SERVER, (ObRemoveClusterInfoFromArbServerArg));
-#endif
-
   RPC_S(PRD recompile_all_views_batch, obrpc::OB_RECOMPILE_ALL_VIEWS_BATCH, (ObRecompileAllViewsBatchArg));
   RPC_S(PRD try_add_dep_infos_for_synonym_batch, obrpc::OB_TRY_ADD_DEP_INFOS_FOR_SYNONYM_BATCH, (ObTryAddDepInofsForSynonymBatchArg));
   //----Definitions for managing catalog----
@@ -271,10 +253,3 @@
   RPC_S(PRD create_ai_model, obrpc::OB_CREATE_AI_MODEL, (ObCreateAiModelArg));
   RPC_S(PRD drop_ai_model, obrpc::OB_DROP_AI_MODEL, (ObDropAiModelArg));
   //----End of functions for managing ai model----
-
-  //----Definitions for location object----
-  RPC_S(PRD create_location, obrpc::OB_CREATE_LOCATION, (ObCreateLocationArg));
-  RPC_S(PRD drop_location, obrpc::OB_DROP_LOCATION, (ObDropLocationArg));
-  //----End of definitions for location object----
-
-  RPC_S(PRD revoke_object, obrpc::OB_REVOKE_OBJECT, (ObRevokeObjMysqlArg));

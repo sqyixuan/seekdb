@@ -1,29 +1,19 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_ls_creator.h"
 #include "share/ls/ob_ls_table_operator.h"
 #include "share/ls/ob_ls_life_manager.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "share/arbitration_service/ob_arbitration_service_info.h" // for ObArbitrationServiceInfo
-#include "share/arbitration_service/ob_arbitration_service_table_operator.h" // for ObArbitrationServiceTableOperator
-#endif
-#include "share/tenant_snapshot/ob_tenant_snapshot_table_operator.h"
-#include "share/restore/ob_tenant_clone_table_operator.h"
 #include "share/ob_global_stat_proxy.h" // for ObGlobalStatProxy
 
 using namespace oceanbase::common;
@@ -141,8 +131,7 @@ int ObLSCreator::create_user_ls(
     const SCN &create_scn,
     const common::ObCompatibilityMode &compat_mode,
     const bool create_with_palf,
-    const palf::PalfBaseInfo &palf_base_info,
-    const uint64_t source_tenant_id)
+    const palf::PalfBaseInfo &palf_base_info)
 {
   int ret = OB_SUCCESS;
   const int64_t start_time = ObTimeUtility::current_time(); 
@@ -168,13 +157,6 @@ int ObLSCreator::create_user_ls(
     share::ObLSStatusOperator ls_operator;
     ObMember arbitration_service;
     common::GlobalLearnerList learner_list;
-    if (OB_INVALID_TENANT_ID != source_tenant_id) {
-      // for clone tenant
-      if (OB_FAIL(construct_clone_tenant_ls_addrs_(source_tenant_id, addr))) {
-        LOG_WARN("fail to construct locations for clone tenant log stream", KR(ret),
-                                          K(source_tenant_id), K_(tenant_id), K_(id));
-      }
-    } else {
       if (status_info.is_duplicate_ls()) {
         if (OB_FAIL(alloc_duplicate_ls_addr_(tenant_id_, zone_locality, addr))) {
           LOG_WARN("failed to alloc duplicate ls addr", KR(ret), K_(tenant_id));
@@ -185,7 +167,6 @@ int ObLSCreator::create_user_ls(
                                              zone_locality, addr))) {
         LOG_WARN("failed to alloc user ls addr", KR(ret), K(tenant_id_), K(status_info));
       }
-    }
 
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(ls_operator.get_ls_init_member_list(tenant_id_, id_, member_list,
@@ -245,7 +226,6 @@ int ObLSCreator::create_tenant_sys_ls(
     const ObString &zone_priority,
     const bool create_with_palf,
     const palf::PalfBaseInfo &palf_base_info,
-    const uint64_t source_tenant_id,
     const ObAllTenantInfo &tenant_info)
 {
   int ret = OB_SUCCESS;
@@ -275,11 +255,6 @@ int ObLSCreator::create_tenant_sys_ls(
                                    primary_zone, flag))) {
       LOG_WARN("failed to init ls info", KR(ret), K(id_), K(primary_zone),
           K(tenant_id_), K(flag));
-    } else if (OB_INVALID_TENANT_ID != source_tenant_id) {
-      if (OB_FAIL(construct_clone_tenant_ls_addrs_(source_tenant_id, addr))) {
-        LOG_WARN("failed to alloc clone tenant ls addr", KR(ret),
-                      K(source_tenant_id), K(tenant_id_), K(addr), K(source_tenant_id));
-      }
     } else if (OB_FAIL(alloc_sys_ls_addr(tenant_id_, pool_list,
             zone_locality, addr))) {
       LOG_WARN("failed to alloc user ls addr", KR(ret), K(tenant_id_), K(pool_list));
@@ -312,56 +287,6 @@ int ObLSCreator::create_tenant_sys_ls(
   const int64_t cost = ObTimeUtility::current_time() - start_time;
   LOG_INFO("finish to create log stream", KR(ret), K_(id), K_(tenant_id), K(cost));
   LS_EVENT_ADD(tenant_id_, id_, "create_ls_finish", ret, paxos_replica_num, "", K(cost));
-  return ret;
-}
-
-int ObLSCreator::construct_clone_tenant_ls_addrs_(const uint64_t source_tenant_id,
-                                                  ObLSAddr &ls_addrs)
-{
-  int ret = OB_SUCCESS;
-  ls_addrs.reset();
-  ObLSReplicaAddr replica_addr;
-  const common::ObReplicaType replica_type = ObReplicaType::REPLICA_TYPE_FULL;
-  ObTenantCloneTableOperator clone_op;
-  ObTenantSnapshotTableOperator snap_op;
-  ObCloneJob clone_job;
-  ObArray<ObTenantSnapLSReplicaSimpleItem> simple_items;
-
-  if (OB_UNLIKELY(!is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K_(tenant_id), K_(id));
-  } else {
-    MTL_SWITCH(OB_SYS_TENANT_ID) {
-      if (OB_FAIL(clone_op.init(OB_SYS_TENANT_ID, proxy_))) {
-        LOG_WARN("fail to init clone op", KR(ret), K(tenant_id_));
-      } else if (OB_FAIL(clone_op.get_clone_job_by_clone_tenant_id(tenant_id_, clone_job))) {
-        LOG_WARN("fail to get clone job", KR(ret), K(tenant_id_));
-      } else if (OB_UNLIKELY(!clone_job.is_valid())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("clone job is not valid", KR(ret), K(clone_job), K(source_tenant_id));
-      } else if (OB_FAIL(snap_op.init(source_tenant_id, proxy_))) {
-        LOG_WARN("failed to init snap op", KR(ret), K(source_tenant_id));
-      } else if (OB_FAIL(snap_op.get_tenant_snap_ls_replica_simple_items(
-              clone_job.get_tenant_snapshot_id(), id_, ObLSSnapStatus::NORMAL, simple_items))) {
-        LOG_WARN("failed to get ls replica simple items", KR(ret), K(clone_job), K(id_));
-      } else if (OB_UNLIKELY(simple_items.empty())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("simple_items is empty", KR(ret), K(simple_items), K(clone_job), K(id_));
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    ARRAY_FOREACH_N(simple_items, i, cnt) {
-      replica_addr.reset();
-      const ObAddr &addr = simple_items.at(i).get_addr();
-      if (OB_FAIL(replica_addr.init(addr, replica_type))) {
-        LOG_WARN("fail to construct replica addr", KR(ret), K(addr), K(replica_type));
-      } else if (OB_FAIL(ls_addrs.push_back(replica_addr))) {
-        LOG_WARN("fail to add PbLSReplicaAddr to array", KR(ret), K(replica_addr));
-      }
-    }
-  }
   return ret;
 }
 
@@ -483,29 +408,6 @@ int ObLSCreator::create_ls_(const ObILSAddr &addrs,
               K(arg), K(tenant_id_));
         }
       }
-#ifdef OB_BUILD_ARBITRATION
-      // try to create A-replica if needed
-      // (1) ignore any erros
-      //     arb replica task will generated by back groud process later to add A-replica
-      ObAddr arbitration_service_addr;
-      if (OB_FAIL(ret)) {
-      } else if (OB_SUCCESS != (tmp_ret = check_need_create_arb_replica_(
-                                              need_create_arb_replica,
-                                              arbitration_service_addr))) {
-        LOG_WARN("fail to check need create arb replica", KR(tmp_ret));
-      } else if (!need_create_arb_replica) {
-        // do nothing
-        LOG_INFO("no need to create A-replica for this log stream", K_(tenant_id), K_(id));
-      } else if (OB_SUCCESS != (tmp_ret = try_create_arbitration_service_replica_(
-                                              tenant_info.get_tenant_role(),
-                                              arbitration_service_addr))) {
-        LOG_WARN("fail to create arbitration service replica", KR(tmp_ret), K(tenant_info));
-      } else {
-        int64_t timestamp = 1;
-        arbitration_service = ObMember(arbitration_service_addr, timestamp);
-        arb_replica_count = 1;
-      }
-#endif
       //wait all
       if (OB_TMP_FAIL(create_ls_proxy_.wait_all(return_code_array))) {
         ret = OB_SUCC(ret) ? tmp_ret : ret;
@@ -520,103 +422,6 @@ int ObLSCreator::create_ls_(const ObILSAddr &addrs,
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int ObLSCreator::check_need_create_arb_replica_(
-    bool &need_create_arb_replica,
-    ObAddr &arbitration_service)
-{
-  int ret = OB_SUCCESS;
-  need_create_arb_replica = false;
-  ObSqlString sql;
-  const uint64_t sql_tenant_id = OB_SYS_TENANT_ID;
-  const ObString arbitration_service_key = "default";
-  const bool lock_line = false;
-  ObArbitrationServiceInfo arbitration_service_info;
-  ObArbitrationServiceTableOperator arbitration_service_table_operator;
-  if (OB_UNLIKELY(!is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K_(tenant_id), K_(id));
-  } else if (OB_ISNULL(proxy_)
-             || OB_ISNULL(GCTX.sql_proxy_)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), KP(proxy_), KP(GCTX.sql_proxy_));
-  } else if (OB_FAIL(sql.assign_fmt("SELECT arbitration_service_status IN ('ENABLING', 'ENABLED') AS is_enabling "
-                                    "FROM %s WHERE tenant_id = %ld",
-                                    OB_ALL_TENANT_TNAME, tenant_id_))) {
-    LOG_WARN("fail to assign sql", KR(ret), K_(tenant_id));
-  } else {
-    int64_t is_enabling = 0;
-    SMART_VAR(ObISQLClient::ReadResult, result) {
-      if (OB_FAIL(GCTX.sql_proxy_->read(result, sql_tenant_id, sql.ptr()))) {
-        LOG_WARN("execute sql failed", KR(ret), K(sql_tenant_id), "sql", sql.ptr());
-      } else if (OB_ISNULL(result.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get sql result failed", KR(ret), "sql", sql.ptr());
-      } else if (OB_FAIL(result.get_result()->next())) {
-        if (OB_ITER_END == ret) {
-          ret = OB_TENANT_NOT_EXIST;
-        }
-        LOG_WARN("get result next failed", KR(ret), "sql", sql.ptr());
-      } else if (OB_FAIL(result.get_result()->get_int(0L, is_enabling))) {
-        if (OB_ERR_COLUMN_NOT_FOUND != ret) {
-          LOG_WARN("get arbitration status failed", KR(ret), "sql", sql.ptr());
-        } else {
-          // ignore column not found
-          ret = OB_SUCCESS;
-        }
-      } else {
-        need_create_arb_replica = (1 == is_enabling);
-      }
-    }
-  }
-
-  // no need to lock __all_arbitration_service line because:
-  // (1) ls status is setted in creating status BEFORE get arbitration status from __all_tenant
-  // (2) there is no ls in creating status BEFORE arbitration service is removed
-  // after get a enabling status in __all_tenant means
-  // any remove operations later could see ls in creating status in __all_ls_status, thus disallowing remove it
-  if (OB_FAIL(ret) || !need_create_arb_replica) {
-  } else if (OB_FAIL(arbitration_service_table_operator.get(
-                         *proxy_,
-                         arbitration_service_key,
-                         lock_line,
-                         arbitration_service_info))) {
-    LOG_WARN("fail to get arbitration service info", KR(ret), K(arbitration_service_key), K(lock_line));
-  } else if (OB_FAIL(arbitration_service_info.get_arbitration_service_addr(arbitration_service))) {
-    LOG_WARN("fail to get arbitration service addr", KR(ret), K(arbitration_service_info));
-  }
-  return ret;
-}
-
-int ObLSCreator::try_create_arbitration_service_replica_(
-    const ObTenantRole &tenant_role,
-    const ObAddr &arbitration_service)
-{
-  int ret = OB_SUCCESS;
-  ObCreateArbArg create_arb_arg;
-  ObCreateArbResult result;
-  ObTimeoutCtx ctx;
-  if (OB_UNLIKELY(!is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret));
-  } else if (!tenant_role.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("tenant role is invalid", KR(ret), K_(tenant_id), K_(id), K(tenant_role));
-  } else if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.rpc_timeout))) {
-    LOG_WARN("fail to set timeout ctx", KR(ret));
-  } else if (OB_ISNULL(GCTX.srv_rpc_proxy_)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret));
-  } else if (OB_FAIL(create_arb_arg.init(tenant_id_, id_, tenant_role))) {
-    LOG_WARN("fail to init ObCreateArbArg", KR(ret), K_(tenant_id), K_(id), K(tenant_role));
-  } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(arbitration_service).timeout(ctx.get_timeout()).create_arb(create_arb_arg, result))) {
-    // do nothing, let arb service add replica
-    LOG_WARN("fail to create arbitration service replica", KR(ret), K(arbitration_service), "timeout", ctx.get_timeout(), K(create_arb_arg));
-  }
-  return ret;
-}
-#endif
 
 int ObLSCreator::check_create_ls_result_(
     const int64_t paxos_replica_num,
@@ -853,23 +658,6 @@ int ObLSCreator::construct_paxos_replica_number_to_persist_(
     if (member_list.get_member_number() >= rootserver::majority(paxos_replica_num)) {
       // good, majority of F-replica created successfully, set paxos_replica_num equal to locality
       paxos_replica_number_to_persist = paxos_replica_num;
-#ifdef OB_BUILD_ARBITRATION
-    } else if (member_list.get_member_number() + arb_replica_num >= rootserver::majority(paxos_replica_num)) {
-      // check majority with arb-replica for user log stream
-      if (OB_UNLIKELY(1 != arb_replica_num)) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("arb replica number must equals to 1 after check of majority with arb_replica_num",
-                 KR(ret), K(paxos_replica_num), K(arb_replica_num), K(member_list));
-      } else if (paxos_replica_num != 2 && paxos_replica_num != 4) {
-        // with arb-replica, paxos_replica_number in locality should be 2F1A or 4F1A
-        ret = OB_STATE_NOT_MATCH;
-        LOG_WARN("tenant with arbitration service should has paxos_replica_num is 2 or 4", KR(ret), K(paxos_replica_num));
-      } else {
-        // when tenant's locality is 2F1A, but only 1F1A created successfully, paxos_replica_number should set 1
-        // when tenant's locality is 4F1A, but only 2F1A created successfully, paxos_replica_number should set 3
-        paxos_replica_number_to_persist = paxos_replica_num - 1;
-      }
-#endif
     } else {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("majority is not satisfied", KR(ret), K_(tenant_id), K_(id),

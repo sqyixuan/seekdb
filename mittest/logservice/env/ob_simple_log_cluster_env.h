@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "logservice/palf_handle_guard.h"
@@ -103,21 +99,6 @@ struct PalfHandleImplGuard
 private:
   DISALLOW_COPY_AND_ASSIGN(PalfHandleImplGuard);
 };
-struct PalfHandleLiteGuard
-{
-  PalfHandleLiteGuard();
-  ~PalfHandleLiteGuard();
-  bool is_valid() const;
-  palflite::PalfHandleLite *get_palf_handle_impl() const { return palf_handle_lite_; }
-  void reset();
-  TO_STRING_KV(K_(palf_id), KP_(palf_handle_lite), KP_(palf_env_lite));
-
-  int64_t palf_id_;
-  palflite::PalfHandleLite *palf_handle_lite_;
-  palflite::PalfEnvLite *palf_env_lite_;
-private:
-  DISALLOW_COPY_AND_ASSIGN(PalfHandleLiteGuard);
-};
 class MockLocCB : public palf::PalfLocationCacheCb
 {
 public:
@@ -205,7 +186,6 @@ public:
   virtual int get_log_pool(const int64_t leader_idx, logservice::ObServerLogBlockMgr *&pool);
   virtual int get_leader(const int64_t id, PalfHandleImplGuard &leader, int64_t &leader_idx);
   virtual int get_cluster_palf_handle_guard(const int64_t palf_id, std::vector<PalfHandleImplGuard*> &palf_list);
-  virtual int get_arb_member_guard(const int64_t palf_id, PalfHandleLiteGuard &guard);
   virtual int revert_cluster_palf_handle_guard(std::vector<PalfHandleImplGuard*> &palf_list);
   virtual int get_palf_handle_guard(const std::vector<PalfHandleImplGuard*> &palf_list, const common::ObAddr &server, PalfHandleImplGuard &palf_handle);
   virtual int switch_leader(const int64_t id, const int64_t new_leader_idx, PalfHandleImplGuard &leader);

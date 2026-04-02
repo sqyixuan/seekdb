@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_LOGSERVICE_OB_LOG_RPC_REQ_H_
@@ -34,10 +30,6 @@ enum LogConfigChangeCmdType {
   CHANGE_REPLICA_NUM_CMD,
   ADD_MEMBER_CMD,
   REMOVE_MEMBER_CMD,
-#ifdef OB_BUILD_ARBITRATION
-  ADD_ARB_MEMBER_CMD,
-  REMOVE_ARB_MEMBER_CMD,
-#endif
   REPLACE_MEMBER_CMD,
   ADD_LEARNER_CMD,
   REMOVE_LEARNER_CMD,
@@ -59,10 +51,6 @@ inline const char *log_config_change_cmd2str(const LogConfigChangeCmdType state)
   {
     CHECK_CMD_TYPE_STR(ADD_MEMBER_CMD);
     CHECK_CMD_TYPE_STR(REMOVE_MEMBER_CMD);
-#ifdef OB_BUILD_ARBITRATION
-    CHECK_CMD_TYPE_STR(ADD_ARB_MEMBER_CMD);
-    CHECK_CMD_TYPE_STR(REMOVE_ARB_MEMBER_CMD);
-#endif
     CHECK_CMD_TYPE_STR(REPLACE_MEMBER_CMD);
     CHECK_CMD_TYPE_STR(ADD_LEARNER_CMD);
     CHECK_CMD_TYPE_STR(REMOVE_LEARNER_CMD);
@@ -189,26 +177,6 @@ enum LogServerProbeType
   PROBE_RESP,
 };
 
-struct LogServerProbeMsg {
-  OB_UNIS_VERSION(1);
-public:
-  LogServerProbeMsg();
-  LogServerProbeMsg(const common::ObAddr &src,
-                    const int64_t palf_id,
-                    const int64_t req_id,
-                    const LogServerProbeType msg_type,
-                    const int64_t status);
-  ~LogServerProbeMsg();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(src), K_(palf_id), K_(req_id), K_(msg_type), K_(server_status));
-  common::ObAddr src_;
-  int64_t palf_id_;
-  int64_t req_id_;
-  LogServerProbeType msg_type_;
-  int64_t server_status_;
-};
-
 struct LogChangeAccessModeCmd {
   OB_UNIS_VERSION(1);
 public:
@@ -257,34 +225,6 @@ public:
   int64_t mode_version_;
   share::SCN flashback_scn_;
   bool is_flashback_req_;
-};
-
-struct LogProbeRsReq
-{
-  OB_UNIS_VERSION(1);
-public:
-  LogProbeRsReq();
-  LogProbeRsReq(const common::ObAddr src);
-  ~LogProbeRsReq() {
-    reset();
-  }
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(src));
-  common::ObAddr src_;
-};
-
-struct LogProbeRsResp
-{
-  OB_UNIS_VERSION(1);
-public:
-  LogProbeRsResp();
-  ~LogProbeRsResp() {
-    reset();
-  }
-  void reset();
-  TO_STRING_KV(K_(ret));
-  int ret_;
 };
 
 struct LogGetCkptReq {

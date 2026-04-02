@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include <gtest/gtest.h>
@@ -114,42 +110,6 @@ public:
   unittest::MockObLocalityManager *mock_locality_cb_;
   LogMemberRegionMap region_map_;
 };
-
-TEST_F(TestLogConfigMgr, test_set_initial_member_list)
-{
-  LogConfigInfoV2 default_config_info;
-  common::ObMemberList init_member_list;
-  GlobalLearnerList learner_list;
-  LogConfigVersion init_config_version;
-  init_config_version.generate(1, 1);
-  init_member_list.add_server(addr1);
-  init_member_list.add_server(addr2);
-  EXPECT_EQ(OB_SUCCESS, default_config_info.generate(init_member_list, 3, learner_list, init_config_version));
-
-  {
-    LogConfigMgr cm;
-    LogConfigVersion config_version;
-    init_test_log_config_env(addr1, default_config_info, cm);
-    // arb_member is self
-    EXPECT_EQ(OB_NOT_SUPPORTED, cm.set_initial_member_list(init_member_list, ObMember(addr1, 0), 2, learner_list, 1, config_version));
-    // arb_member overlaps with member_list
-    EXPECT_EQ(OB_INVALID_ARGUMENT, cm.set_initial_member_list(init_member_list, ObMember(addr2, 0), 2, learner_list, 1, config_version));
-    // arb_member overlaps with learners
-    learner_list.add_learner(ObMember(addr4, 0));
-    EXPECT_EQ(OB_INVALID_ARGUMENT, cm.set_initial_member_list(init_member_list, ObMember(addr4, 0), 2, learner_list, 1, config_version));
-    // do not reach majority
-    EXPECT_EQ(OB_INVALID_ARGUMENT, cm.set_initial_member_list(init_member_list, ObMember(addr5, 0), 4, learner_list, 1, config_version));
-    // learners overlap with member_list
-    init_member_list.add_server(addr4);
-    EXPECT_EQ(OB_INVALID_ARGUMENT, cm.set_initial_member_list(init_member_list, ObMember(addr5, 0), 4, learner_list, 1, config_version));
-
-    init_member_list.add_server(addr3);
-    learner_list.reset();
-    // do not reach majority
-    EXPECT_EQ(OB_INVALID_ARGUMENT, cm.set_initial_member_list(init_member_list, ObMember(addr5, 0), 2, learner_list, 1, config_version));
-    EXPECT_EQ(OB_SUCCESS, cm.set_initial_member_list(init_member_list, ObMember(addr5, 0), 4, learner_list, 1, config_version));
-  }
-}
 
 TEST_F(TestLogConfigMgr, test_remove_child_is_not_learner)
 {
@@ -525,33 +485,6 @@ TEST_F(TestLogConfigMgr, test_apply_config_meta)
   expect_ret_list.push_back(OB_INVALID_ARGUMENT);
   expect_finished_list.push_back(false);
   expect_member_list.push_back(init_member_list);
-  // 15. 3F, add_arb_member, replica_num 3
-  config_info_list.push_back(default_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr4, -1), 3, palf::ADD_ARB_MEMBER));
-  expect_ret_list.push_back(OB_SUCCESS);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(init_member_list);
-  expect_member_list.back().add_member(ObMember(addr4, -1));
-  // 16. 3F, add_arb_member, replica_num 4
-  config_info_list.push_back(default_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr4, -1), 4, palf::ADD_ARB_MEMBER));
-  expect_ret_list.push_back(OB_SUCCESS);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(init_member_list);
-  expect_member_list.back().add_member(ObMember(addr4, -1));
-  // 17. 2F1A, add_arb_member again
-  config_info_list.push_back(two_f_one_a_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr4, -1), 4, palf::ADD_ARB_MEMBER));
-  expect_ret_list.push_back(OB_INVALID_ARGUMENT);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(two_f_member_list);
-  expect_member_list.back().add_member(ObMember(addr3, -1));
-  // 18. 2F1A, remove arb member
-  config_info_list.push_back(two_f_one_a_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr3, -1), 0, palf::REMOVE_ARB_MEMBER));
-  expect_ret_list.push_back(OB_SUCCESS);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(two_f_member_list);
   // 19. 3F, degrade
   config_info_list.push_back(default_config_info);
   arg_list.push_back(LogConfigChangeArgs(ObMember(addr3, -1), 0, palf::DEGRADE_ACCEPTOR_TO_LEARNER));
@@ -688,20 +621,6 @@ TEST_F(TestLogConfigMgr, test_apply_config_meta)
   expect_ret_list.push_back(OB_INVALID_ARGUMENT);
   expect_finished_list.push_back(false);
   expect_member_list.push_back(init_member_list);
-  // 36. add_arb_member based on 2F
-  config_info_list.push_back(two_f_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr3, -1), 2, palf::ADD_ARB_MEMBER));
-  expect_ret_list.push_back(OB_SUCCESS);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(two_f_member_list);
-  expect_member_list.back().add_member(ObMember(addr3, -1));
-  // 37. add_arb_member based on 4F
-  config_info_list.push_back(four_f_config_info);
-  arg_list.push_back(LogConfigChangeArgs(ObMember(addr5, -1), 4, palf::ADD_ARB_MEMBER));
-  expect_ret_list.push_back(OB_SUCCESS);
-  expect_finished_list.push_back(false);
-  expect_member_list.push_back(four_f_member_list);
-  expect_member_list.back().add_member(ObMember(addr5, -1));
   // 38. 2F1A - abc, degrade b, migrate b to d: add d.
   config_info_list.push_back(one_f_one_a_config_info);
   config_info_list.back().config_.degraded_learnerlist_.add_learner(ObMember(addr3, -1));

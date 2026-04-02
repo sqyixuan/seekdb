@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "ob_failure_detector.h"
@@ -163,10 +159,6 @@ void ObFailureDetector::detect_failure()
     // data disk full check
     detect_data_disk_full_();
   }
-#ifdef OB_BUILD_ARBITRATION
-  // election silent check
-  detect_election_silent_();
-#endif 
 }
 
 int ObFailureDetector::add_failure_event(const FailureEvent &event)
@@ -323,8 +315,9 @@ void ObFailureDetector::detect_palf_hang_failure_()
       COORDINATOR_LOG(ERROR, "add_failure_event failed", K(ret), K(clog_disk_hang_event));
     } else {
       ATOMIC_SET(&has_add_clog_hang_event_, true);
-      COORDINATOR_LOG(WARN, "clog disk may be hang, add failure event", K(clog_disk_hang_event),
-                    K(clog_disk_last_working_time), "hang time", now - clog_disk_last_working_time);
+      LOG_DBA_ERROR(OB_DISK_HUNG, "msg", "clog disk may be hung, add failure event", K(clog_disk_hang_event),
+                    K(clog_disk_last_working_time), "hung time", now - clog_disk_last_working_time);
+      LOG_DBA_ERROR_V2(OB_FAILURE_LOG_DISK_HUNG, OB_DISK_HUNG, "clog disk may be hung, add failure event");
     }
   } else {
     if (is_clog_disk_hang) {
@@ -483,53 +476,6 @@ void ObFailureDetector::detect_data_disk_full_()
     }
   }
 }
-
-#ifdef OB_BUILD_ARBITRATION
-void ObFailureDetector::detect_election_silent_()
-{
-  LC_TIME_GUARD(1_s);
-  int ret = OB_SUCCESS;
-
-  logservice::ObLogService *log_service = MTL(logservice::ObLogService*);
-  if (OB_ISNULL(log_service)) {
-    ret = OB_ERR_UNEXPECTED;
-    COORDINATOR_LOG(ERROR, "ptr is null, unexpected error", K(ret));
-  } else {
-    bool is_election_silent = false;
-    FailureEvent election_silent_event(FailureType::ENTER_ELECTION_SILENT, FailureModule::LOG, FailureLevel::FATAL);
-    GetElectionSilentFunctor functor(is_election_silent);
-    PalfEnv *palf_env = log_service->get_palf_env();
-    if (OB_ISNULL(palf_env)) {
-      ret = OB_ERR_UNEXPECTED;
-      COORDINATOR_LOG(ERROR, "palf_env is null, unexpected error", K(ret));
-    } else if (OB_FAIL(palf_env->for_each(functor))){
-      COORDINATOR_LOG(WARN, "GetElectionSilentFunctor failed", K(ret));
-    } else {
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (false == ATOMIC_LOAD(&has_election_silent_event_)) {
-      if (false == is_election_silent) {
-        // no need to add failure event
-      } else if (OB_FAIL(add_failure_event(election_silent_event))) {
-        COORDINATOR_LOG(ERROR, "add_failure_event failed", K(ret), K(election_silent_event));
-      } else {
-        ATOMIC_SET(&has_election_silent_event_, true);
-        COORDINATOR_LOG(INFO, "add election silent failure event", K(ret), K(election_silent_event));
-      }
-    } else {
-      if (true == is_election_silent) {
-        // still in silent state, can't remove
-      } else if (OB_FAIL(remove_failure_event(election_silent_event))) {
-        COORDINATOR_LOG(ERROR, "remove_failure_event failed", K(ret), K(election_silent_event));
-      } else {
-        ATOMIC_SET(&has_election_silent_event_, false);
-        COORDINATOR_LOG(INFO, "remove election silent failure event", K(ret), K(election_silent_event));
-      }
-    }
-  }
-}
-#endif
 
 int ObFailureDetector::FailureEventWithRecoverOp::init(const FailureEvent &event,
                                                        const ObFunction<bool()> &recover_detect_operation)

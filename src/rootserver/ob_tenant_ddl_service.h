@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef _OCEANBASE_ROOTSERVER_OB_TENANT_DDL_SERVICE_H_
@@ -105,7 +101,6 @@ public:
   virtual int create_sys_tenant(const obrpc::ObCreateTenantArg &arg,
                                 share::schema::ObTenantSchema &tenant_schema);
   virtual int create_tenant_end(const uint64_t tenant_id);
-  virtual int commit_alter_tenant_locality(const rootserver::ObCommitAlterTenantLocalityArg &arg);
   virtual int drop_tenant(const obrpc::ObDropTenantArg &arg);
   virtual int flashback_tenant(const obrpc::ObFlashBackTenantArg &arg);
   virtual int purge_tenant(const obrpc::ObPurgeTenantArg &arg);
@@ -222,11 +217,10 @@ private:
   int init_tenant_sys_stats_(const uint64_t tenant_id,
       common::ObMySQLTransaction &trans);
 
-  int insert_restore_or_clone_tenant_job_(
+  int insert_restore_tenant_job_(
       const uint64_t tenant_id,
       const ObString &tenant_name,
       const share::ObTenantRole &tenant_role,
-      const uint64_t source_tenant_id,
       ObMySQLTransaction &trans);
 
   int set_log_restore_source_(
@@ -455,11 +449,6 @@ private:
       const common::ObIArray<share::ObResourcePoolName> &long_pool_name_list,
       const common::ObIArray<share::ObResourcePoolName> &short_pool_name_list,
       common::ObIArray<share::ObResourcePoolName> &diff_pools);
-  int record_tenant_locality_event_history(
-      const AlterLocalityOp &alter_locality_op,
-      const obrpc::ObModifyTenantArg &arg,
-      const share::schema::ObTenantSchema &tenant_schema,
-      ObMySQLTransaction &trans);
 
   // try_alter_meta_tenant_schema: modify meta tenant options
   // @param [in] ddl_operator, operator to do ddl
@@ -494,13 +483,6 @@ private:
       ObString &object_name,
       common::ObIAllocator *allocator,
       const bool is_flashback);
-#ifdef OB_BUILD_ARBITRATION
-  int check_tenant_arbitration_service_status_(
-      ObMySQLTransaction &trans,
-      const uint64_t tenant_id,
-      const share::ObArbitrationServiceStatus &old_status,
-      const share::ObArbitrationServiceStatus &new_status);
-#endif
   int modify_and_cal_resource_pool_diff(
       common::ObMySQLTransaction &trans,
       common::ObIArray<uint64_t> &new_ug_id_array,

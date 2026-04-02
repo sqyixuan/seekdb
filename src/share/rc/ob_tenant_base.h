@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OB_TENANT_BASE_H_
@@ -96,7 +92,6 @@ class ObTenantMdsService;
   class ObLobManager;
   class ObTenantRestoreInfoMgr;
   class ObTableScanIterator;
-  class ObTenantSnapshotService;
   class ObTenantCGReadInfoMgr;
   class ObDDLMergeBucketLock;
   class ObTenantDirectLoadMgr;
@@ -194,11 +189,8 @@ namespace rootserver
   class ObBackupDataService;
   class ObBackupCleanService;
   class ObArchiveSchedulerService;
-  class ObArbitrationService;
   class ObDBMSSchedService;
   class ObStandbySchemaRefreshTrigger;
-  class ObTenantSnapshotScheduler;
-  class ObCloneScheduler;
   class ObMViewMaintenanceService;
   class ObDDLScheduler;
   class ObDDLServiceLauncher;
@@ -253,12 +245,6 @@ namespace detector
 {
   class ObDeadLockDetectorMgr;
 }
-
-#ifndef OB_BUILD_ARBITRATION
-#define ArbMTLMember
-#else
-#define ArbMTLMember rootserver::ObArbitrationService*,
-#endif
 
 #ifdef ERRSIM
 #define TenantErrsimModule share::ObTenantErrsimModuleMgr*,
@@ -392,7 +378,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       storage::ObAccessService*,                     \
       rootserver::ObTenantTransferService*,          \
       datadict::ObDataDictService*,                  \
-      ArbMTLMember                                   \
       observer::ObTableLoadService*,                 \
       observer::ObTableLoadResourceService*,         \
       concurrency_control::ObMultiVersionGarbageCollector*, \
@@ -409,9 +394,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
       table::ObHTableLockMgr*,                      \
       table::ObTTLService*,                         \
       table::ObTableObjectPoolMgr*,                \
-      rootserver::ObTenantSnapshotScheduler*,       \
-      storage::ObTenantSnapshotService*,            \
-      rootserver::ObCloneScheduler*,                \
       share::ObIndexUsageInfoMgr*,                  \
       storage::ObTabletMemtableMgrPool*,            \
       rootserver::ObMViewMaintenanceService*,       \
@@ -450,8 +432,6 @@ using ObTableScanIteratorObjPool = common::ObServerObjectPool<oceanbase::storage
 #define MTL_TENANT_ROLE_CACHE_IS_INVALID() share::ObTenantEnv::get_tenant()->is_invalid_tenant()
 // Is the tenant in the process of recovery
 #define MTL_TENANT_ROLE_CACHE_IS_RESTORE() share::ObTenantEnv::get_tenant()->is_restore_tenant()
-// Is the tenant in the cloning process
-#define MTL_TENANT_ROLE_CACHE_IS_CLONE() share::ObTenantEnv::get_tenant()->is_clone_tenant()
 // Update tenant role
 #define MTL_SET_TENANT_ROLE_CACHE(tenant_role) share::ObTenantEnv::get_tenant()->set_tenant_role(tenant_role)
 // get tenant role
@@ -662,11 +642,6 @@ public:
   bool is_restore_tenant()
   {
     return share::is_restore_tenant(ATOMIC_LOAD(&tenant_role_value_));
-  }
-
-  bool is_clone_tenant()
-  {
-    return share::is_clone_tenant(ATOMIC_LOAD(&tenant_role_value_));
   }
 
   bool is_invalid_tenant()

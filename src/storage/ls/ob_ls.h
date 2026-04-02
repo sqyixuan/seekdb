@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEABASE_STORAGE_OB_LS_
@@ -47,9 +43,6 @@
 #include "logservice/replayservice/ob_replay_status.h"
 #include "logservice/rcservice/ob_role_change_handler.h"
 #include "logservice/ob_log_handler.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "logservice/ob_arbitration_service.h"
-#endif
 #include "storage/ls/ob_ls_meta_package.h"
 #include "storage/ls/ob_ls_get_mod.h"
 #include "storage/tablelock/ob_lock_table.h"
@@ -139,9 +132,6 @@ struct DiagnoseInfo
   logservice::ApplyDiagnoseInfo apply_diagnose_info_;
   logservice::ReplayDiagnoseInfo replay_diagnose_info_;
   checkpoint::CheckpointDiagnoseInfo checkpoint_diagnose_info_;
-#ifdef OB_BUILD_ARBITRATION
-  logservice::LogArbSrvDiagnoseInfo arb_srv_diagnose_info_;
-#endif
   char read_only_tx_info_[1024];
   TO_STRING_KV(K(ls_id_),
                K(log_handler_diagnose_info_),
@@ -149,11 +139,8 @@ struct DiagnoseInfo
                K(rc_diagnose_info_),
                K(apply_diagnose_info_),
                K(replay_diagnose_info_),
-               K(checkpoint_diagnose_info_)
-#ifdef OB_BUILD_ARBITRATION
-               ,K(arb_srv_diagnose_info_)
-#endif
-               ,K(read_only_tx_info_));
+               K(checkpoint_diagnose_info_),
+               K(read_only_tx_info_));
   void reset() {
     ls_id_ = -1;
     log_handler_diagnose_info_.reset();
@@ -162,9 +149,6 @@ struct DiagnoseInfo
     apply_diagnose_info_.reset();
     replay_diagnose_info_.reset();
     checkpoint_diagnose_info_.reset();
-#ifdef OB_BUILD_ARBITRATION
-    arb_srv_diagnose_info_.reset();
-#endif
     read_only_tx_info_[0] = '\0';
   }
 };
@@ -299,7 +283,6 @@ public:
   int finish_create_ls();
 
   bool is_restore_first_step() const;
-  bool is_clone_first_step() const;
   // is current ls replica a column store replica
   bool is_cs_replica() const;
   // is current ls replica set contains a column store replica
@@ -721,10 +704,6 @@ public:
   DELEGATE_WITH_RET(log_handler_, disable_vote, int);
   DELEGATE_WITH_RET(log_handler_, remove_member, int);
   DELEGATE_WITH_RET(log_handler_, remove_learner, int);
-#ifdef OB_BUILD_ARBITRATION
-  DELEGATE_WITH_RET(log_handler_, add_arbitration_member, int);
-  DELEGATE_WITH_RET(log_handler_, remove_arbitration_member, int);
-#endif
   DELEGATE_WITH_RET(log_handler_, is_in_sync, int);
   DELEGATE_WITH_RET(log_handler_, get_end_scn, int);
   DELEGATE_WITH_RET(log_handler_, disable_sync, int);

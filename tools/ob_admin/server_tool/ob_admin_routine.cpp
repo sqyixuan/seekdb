@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #include "ob_admin_routine.h"
@@ -319,7 +315,7 @@ DEF_COMMAND(TRANS, set_tenant_config, 1, "tenant_id config_item1=config_value1,c
           ret = OB_SIZE_OVERFLOW;
           COMMON_LOG(WARN, "invalid config str length", K(ret), "str", arg_str.c_str());
         } else {
-          arg.config_str_.assign_ptr(config_str.c_str(), static_cast<int64_t>(config_str.length()));
+          arg.config_str_.assign_ptr(config_str.c_str(), config_str.length());
         }
       }
     }
@@ -466,7 +462,7 @@ DEF_COMMAND(SERVER, force_set_locality, 1, "tenant_id locality # force set local
           ret = OB_SIZE_OVERFLOW;
           COMMON_LOG(WARN, "invalid locality str length", K(ret), "str", arg_str.c_str());
         } else {
-          arg.locality_.assign_ptr(locality_str.c_str(), static_cast<int64_t>(locality_str.length()));
+          arg.locality_.assign_ptr(locality_str.c_str(), locality_str.length());
         }
       }
     }
@@ -734,119 +730,6 @@ DEF_COMMAND(TRANS, update_lock, 1, "tenant_id ls_id obj_type obj_id lock_mode ow
   COMMON_LOG(INFO, "update_lock", K(ret), K(arg));
   return ret;
 }
-
-
-// remove_ls_replica
-// @params [in]  tenant_id, which tenant to modify
-// @params [in]  ls_id, which log stream to modify
-// @params [in]  server, the server address of the replica to remove
-// @params [in]  replica_type, what type of replica to remove
-// @params [in]  orig_paxos_number, paxos replica number before this deletion
-// @params [in]  new_paxos_number, paxos replica number after this deletion
-// @params [in]  leader, leader replica's address
-// ATTENTION:
-//    Please make sure tenant_id and ls_id are specified.
-//    Other parameters are optional, if not specified, it will be automatically caculated
-DEF_COMMAND(TRANS, remove_ls_replica, 1, "tenant_id=xxx,ls_id=xxx[server=xxx,replica_type=xxx,orig_paxos_replica_number=xxx,new_paxos_replica_number=xxx,leader=xxx] # remove_ls_replica")
-{
-  int ret = OB_SUCCESS;
-  string arg_str;
-  ObAdminCommandArg arg;
-  const ObAdminDRTaskType task_type(ObAdminDRTaskType::REMOVE_REPLICA);
-  if (cmd_ == action_name_) {
-    ret = OB_INVALID_ARGUMENT;
-    ADMIN_WARN("should provide tenant_id, ls_id at least");
-  } else {
-    arg_str = cmd_.substr(action_name_.length() + 1);
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(client_)) {
-    ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "invalid client", K(ret));
-  } else if (OB_FAIL(arg.init(arg_str.c_str(), task_type))) {
-    COMMON_LOG(WARN, "fail to construct admin command arg", K(ret), K(arg_str.c_str()), K(task_type));
-  } else if (OB_FAIL(client_->ob_exec_drtask_obadmin_command(arg))) {
-    COMMON_LOG(ERROR, "send req fail", K(ret), K(arg));
-  }
-  COMMON_LOG(INFO, "remove_ls_replica", K(arg));
-  return ret;
-}
-
-// add_ls_replica
-// @params [in]  tenant_id, which tenant to modify
-// @params [in]  ls_id, which log stream to modify
-// @params [in]  server, the server address of the replica to add
-// @params [in]  replica_type, what type of replica to add
-// @params [in]  data_source, data source replica server
-// @params [in]  orig_paxos_number, paxos replica number before this deletion
-// @params [in]  new_paxos_number, paxos replica number after this deletion
-// ATTENTION:
-//    Please make sure tenant_id, ls_id are specified.
-//    Other parameters are optional, if not specified, it will be automatically caculated
-DEF_COMMAND(TRANS, add_ls_replica, 1, "tenant_id=xxx,ls_id=xxx[,replica_type=xxx,server=xxx,data_source=xxx,orig_paxos_replica_number=xxx,new_paxos_replica_number=xxx] # add_ls_replica")
-{
-  int ret = OB_SUCCESS;
-  string arg_str;
-  ObAdminCommandArg arg;
-  const ObAdminDRTaskType task_type(ObAdminDRTaskType::ADD_REPLICA);
-  if (cmd_ == action_name_) {
-    ret = OB_INVALID_ARGUMENT;
-    ADMIN_WARN("should provide tenant_id, ls_id at least");
-  } else {
-    arg_str = cmd_.substr(action_name_.length() + 1);
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (OB_ISNULL(client_)) {
-    ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "invalid client", K(ret));
-  } else if (OB_FAIL(arg.init(arg_str.c_str(), task_type))) {
-    COMMON_LOG(WARN, "fail to construct admin command arg", K(ret), K(arg_str.c_str()), K(task_type));
-  } else if (OB_FAIL(client_->ob_exec_drtask_obadmin_command(arg))) {
-    COMMON_LOG(ERROR, "send req fail", K(ret), K(arg));
-  }
-  COMMON_LOG(INFO, "add_ls_replica", K(arg));
-  return ret;
-}
-
-#ifdef OB_BUILD_ARBITRATION
-// force_clear_arb_cluster_info
-// @params [in]  cluster_id, which cluster to modify
-// @params [in]  svr_ip, the arbitration server IP
-// @params [in]  svr_port, the arbitration server IP 
-// ATTENTION:
-//    Please make sure let log stream's leader to execute this command
-//    For permanant offline, orig_paxos_number should equals to new_paxos_number
-DEF_COMMAND(TRANS, force_clear_arb_cluster_info, 1, "cluster_id # force_clear_arb_cluster_info")
-{
-  int ret = OB_SUCCESS;
-  string arg_str;
-  int64_t cluster_id_to_clean = OB_INVALID_TENANT_ID;
-
-  if (cmd_ == action_name_) {
-    ret = OB_INVALID_ARGUMENT;
-    ADMIN_WARN("should provide cluster_id arb_svr_ip arb_svr_port");
-  } else {
-    arg_str = cmd_.substr(action_name_.length() + 1);
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (1 != sscanf(arg_str.c_str(), "%ld", &cluster_id_to_clean)) {
-    ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "invalid arg", K(ret), K(arg_str.c_str()), K(cmd_.c_str()), K(cluster_id_to_clean));
-  } else if (false == is_valid_cluster_id(cluster_id_to_clean)) {
-    COMMON_LOG(WARN, "invalid cluster_id", K(ret), K(cluster_id_to_clean));
-  } else {
-    ObForceClearArbClusterInfoArg arg(cluster_id_to_clean);
-    if (OB_FAIL(client_->force_clear_arb_cluster_info(arg))) {
-      COMMON_LOG(ERROR, "send req fail", K(ret));
-    }
-  }
-  COMMON_LOG(INFO, "force_clear_arb_cluster_info", K(cluster_id_to_clean));
-  return ret;
-}
-#endif
 
 DEF_COMMAND(SERVER, force_set_sys_tenant_log_disk, 1, "log_disk_size=xx# set sys log disk")
 {

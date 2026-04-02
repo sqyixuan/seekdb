@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #define USING_LOG_PREFIX PALF
@@ -370,17 +366,6 @@ int ObLogHandler::set_initial_member_list(const common::ObMemberList &member_lis
   RLockGuard guard(lock_);
   return palf_handle_.set_initial_member_list(member_list, paxos_replica_num, learner_list);
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int ObLogHandler::set_initial_member_list(const common::ObMemberList &member_list,
-                                          const common::ObMember &arb_member,
-                                          const int64_t paxos_replica_num,
-                                          const common::GlobalLearnerList &learner_list)
-{
-  RLockGuard guard(lock_);
-  return palf_handle_.set_initial_member_list(member_list, arb_member, paxos_replica_num, learner_list);
-}
-#endif
 
 int ObLogHandler::set_election_priority(palf::election::ElectionPriority *priority)
 {
@@ -1095,188 +1080,6 @@ int ObLogHandler::switch_acceptor_to_learner(const common::ObMember &member,
   }
   return ret;
 }
-
-#ifdef OB_BUILD_ARBITRATION
-int ObLogHandler::create_arb_member_(const common::ObMember &arb_member,
-                                     const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  const int64_t conn_timeout_us = MIN(timeout_us, MIN_CONN_TIMEOUT_US);
-  int64_t mode_version = -1;
-  AccessMode access_mode = AccessMode::INVALID_ACCESS_MODE;
-  if (OB_FAIL(get_access_mode(mode_version, access_mode))) {
-    CLOG_LOG(WARN, "get_access_mode failed", KR(ret), K_(id), K(access_mode));
-  } else if (AccessMode::INVALID_ACCESS_MODE == access_mode) {
-    ret = OB_ERR_UNEXPECTED;
-    CLOG_LOG(WARN, "invalid access_mode", KR(ret), K_(id), K(access_mode));
-  } else {
-    share::ObTenantRole::Role role = share::ObTenantRole::Role::PRIMARY_TENANT;
-    if (AccessMode::APPEND != access_mode) {
-      role = share::ObTenantRole::Role::STANDBY_TENANT;
-    }
-    share::ObTenantRole tenant_role(role);
-    share::ObLSID ls_id(id_);
-    obrpc::ObCreateArbArg req;
-    obrpc::ObCreateArbResult resp;
-    if (OB_FAIL(req.init(MTL_ID(), ls_id, tenant_role))) {
-      CLOG_LOG(WARN, "ObCreateArbArg init failed", KR(ret), K_(id), K(arb_member), K(timeout_us));
-    } else if (OB_FAIL(rpc_proxy_->to(arb_member.get_server()).timeout(conn_timeout_us).trace_time(true).
-                 max_process_handler_time(timeout_us).by(MTL_ID()).create_arb(req, resp))) {
-      CLOG_LOG(WARN, "create_arb failed", KR(ret), K_(id), K(arb_member), K(timeout_us));
-    } else {
-      CLOG_LOG(INFO, "create_arb success", KR(ret), K_(id), K(arb_member), K(timeout_us));
-    }
-  }
-  return ret;
-}
-
-int ObLogHandler::delete_arb_member_(const common::ObMember &arb_member,
-                                     const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  const int64_t conn_timeout_us = MIN(timeout_us, MIN_CONN_TIMEOUT_US);
-  obrpc::ObDeleteArbArg req;
-  obrpc::ObDeleteArbResult resp;
-  share::ObLSID ls_id(id_);
-  if (OB_FAIL(req.init(MTL_ID(), ls_id))) {
-    CLOG_LOG(WARN, "ObDeleteArbArg init failed", KR(ret), K_(id), K(arb_member), K(timeout_us));
-  } else if (OB_FAIL(rpc_proxy_->to(arb_member.get_server()).timeout(conn_timeout_us).trace_time(true).
-               max_process_handler_time(timeout_us).by(MTL_ID()).delete_arb(req, resp))) {
-    CLOG_LOG(WARN, "delete arb member failed", KR(ret), K_(id), K(arb_member), K(timeout_us));
-  }
-  return ret;
-}
-
-// @desc: add_arbitration_member interface
-//        | 1.add_arbitration_member()
-//        V
-//  [any_member]  ----> [2. Sync create_arb_member]
-//                                |
-//                  [3. Sync LogConfigChangeCmd] ------->  [leader]
-//                                                             |
-//  [any_member]  <----[5. Sync LogConfigChangeCmdResp] <----  | 4. one_stage_config_change_(ADD_ARB_MEMBER)
-int ObLogHandler::add_arbitration_member(const common::ObMember &added_member,
-                                         const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  const int64_t begin_ts = ObTimeUtility::current_time();
-  int64_t current_timeout_us = timeout_us;
-  RLockGuard deps_guard(deps_lock_);
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else if (is_in_stop_state_) {
-    ret = OB_NOT_RUNNING;
-  } else if (!added_member.is_valid() || timeout_us <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(WARN, "invalid argument", KR(ret), K_(id), K(added_member), K(timeout_us));
-  } else if (OB_FAIL(create_arb_member_(added_member, current_timeout_us))) {
-    CLOG_LOG(WARN, "create_arb_member_ failed", KR(ret), K_(id), K(added_member), K(current_timeout_us));
-  } else if (FALSE_IT(current_timeout_us -= (ObTimeUtility::current_time() - begin_ts))) {
-  } else if (current_timeout_us <= 0) {
-    ret = OB_TIMEOUT;
-    CLOG_LOG(WARN, "add_arbitration_member tiemout", KR(ret), K_(id), K(added_member), K(timeout_us));
-  } else {
-    common::ObMember dummy_member;
-    LogConfigChangeCmd req(self_, id_, added_member, dummy_member, 0, ADD_ARB_MEMBER_CMD, current_timeout_us);
-    if (OB_FAIL(submit_config_change_cmd_(req))) {
-      CLOG_LOG(WARN, " submit_config_change_cmd failed", KR(ret), K_(id), K(req), K(timeout_us), K(current_timeout_us));
-    } else {
-      CLOG_LOG(INFO, "add_arbitration_member success", KR(ret), K_(id), K(added_member));
-    }
-  }
-  return ret;
-}
-
-// @desc: remove_arbitration_member interface
-//        | 1. remove_arbitration_member()
-//        V
-//  [any_member]  -----[2. Sync LogConfigChangeCmd]---->  [leader]
-//                                                               |
-//  [4. Sync LogConfigChangeCmdResp] ---- | 3. one_stage_config_change_(REMOVE_ARB_MEMBER)
-//                |
-//  [5. Sync delete_arb_member]  ----> [any_member]
-int ObLogHandler::remove_arbitration_member(const common::ObMember &removed_member,
-                                            const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  int64_t current_timeout_us = timeout_us;
-  const int64_t begin_ts = ObTimeUtility::current_time();
-  RLockGuard deps_guard(deps_lock_);
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else if (is_in_stop_state_) {
-    ret = OB_NOT_RUNNING;
-  } else if (!removed_member.is_valid() || timeout_us <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(WARN, "invalid argument", KR(ret), K_(id), K(removed_member), K(timeout_us));
-  } else {
-    common::ObMember dummy_member;
-    LogConfigChangeCmd req(self_, id_, dummy_member, removed_member, 0, REMOVE_ARB_MEMBER_CMD, current_timeout_us);
-    if (OB_FAIL(submit_config_change_cmd_(req))) {
-      CLOG_LOG(WARN, " submit_config_change_cmd failed", KR(ret), K_(id), K(req), K(current_timeout_us));
-    } else if (FALSE_IT(current_timeout_us -= (ObTimeUtility::current_time() - begin_ts))) {
-    } else if (current_timeout_us <= 0) {
-      ret = OB_TIMEOUT;
-      CLOG_LOG(WARN, "add_arbitration_member tiemout", KR(ret), K_(id), K(removed_member), K(timeout_us));
-    } else if (OB_FAIL(delete_arb_member_(removed_member, current_timeout_us))) {
-      CLOG_LOG(WARN, "delete_arb_member_ failed", KR(ret), K_(id), K(removed_member), K(current_timeout_us));
-    } else {
-      CLOG_LOG(INFO, "remove_arbitration_member success", KR(ret), K_(id), K(removed_member));
-    }
-  }
-  return ret;
-}
-
-// @desc: degrade_acceptor_to_learner interface
-//        | 1.degrade_acceptor_to_learner()
-//        V
-//     [leader]
-int ObLogHandler::degrade_acceptor_to_learner(const palf::LogMemberAckInfoList &degrade_servers,
-                                              const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  RLockGuard deps_guard(deps_lock_);
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else if (is_in_stop_state_) {
-    ret = OB_NOT_RUNNING;
-  } else if (0 == degrade_servers.count() ||
-             timeout_us <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(WARN, "invalid argument", KR(ret), K_(id), K(degrade_servers), K(timeout_us));
-  } else if (OB_FAIL(palf_handle_.degrade_acceptor_to_learner(degrade_servers, timeout_us))) {
-    CLOG_LOG(WARN, "degrade_acceptor_to_learner failed", KR(ret), K_(id), K(degrade_servers), K(timeout_us));
-  } else {
-    CLOG_LOG(INFO, "degrade_acceptor_to_learner success", KR(ret), K_(id), K(degrade_servers));
-  }
-  return ret;
-}
-
-// @desc: upgrade_learner_to_acceptor interface
-//        | 1.upgrade_learner_to_acceptor()
-//        V
-//     [leader]
-int ObLogHandler::upgrade_learner_to_acceptor(const palf::LogMemberAckInfoList &upgrade_servers,
-                                              const int64_t timeout_us)
-{
-  int ret = OB_SUCCESS;
-  RLockGuard deps_guard(deps_lock_);
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-  } else if (is_in_stop_state_) {
-    ret = OB_NOT_RUNNING;
-  } else if (0 == upgrade_servers.count() ||
-             timeout_us <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    CLOG_LOG(WARN, "invalid argument", KR(ret), K_(id), K(upgrade_servers), K(timeout_us));
-  } else if (OB_FAIL(palf_handle_.upgrade_learner_to_acceptor(upgrade_servers, timeout_us))) {
-    CLOG_LOG(WARN, "upgrade_learner_to_acceptor failed", KR(ret), K_(id), K(upgrade_servers), K(timeout_us));
-  } else {
-    CLOG_LOG(INFO, "upgrade_learner_to_acceptor success", KR(ret), K_(id), K(upgrade_servers));
-  }
-  return ret;
-}
-#endif
 
 int ObLogHandler::try_lock_config_change(const int64_t lock_owner, const int64_t timeout_us)
 

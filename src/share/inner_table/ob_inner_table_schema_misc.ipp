@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifdef AGENT_VIRTUAL_TABLE_LOCATION_SWITCH
@@ -131,8 +127,6 @@ case OB_ALL_VIRTUAL_BACKUP_TASK_TID:
 case OB_ALL_VIRTUAL_BACKUP_TASK_HISTORY_TID:
 case OB_ALL_VIRTUAL_BALANCE_GROUP_LS_STAT_TID:
 case OB_ALL_VIRTUAL_BALANCE_TASK_HELPER_TID:
-case OB_ALL_VIRTUAL_CLONE_JOB_TID:
-case OB_ALL_VIRTUAL_CLONE_JOB_HISTORY_TID:
 case OB_ALL_VIRTUAL_COLUMN_CHECKSUM_ERROR_INFO_TID:
 case OB_ALL_VIRTUAL_DEADLOCK_EVENT_HISTORY_TID:
 case OB_ALL_VIRTUAL_GLOBAL_CONTEXT_VALUE_TID:
@@ -148,14 +142,10 @@ case OB_ALL_VIRTUAL_LOG_ARCHIVE_HISTORY_TID:
 case OB_ALL_VIRTUAL_LOG_ARCHIVE_PIECE_FILES_TID:
 case OB_ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS_TID:
 case OB_ALL_VIRTUAL_LOG_RESTORE_SOURCE_TID:
-case OB_ALL_VIRTUAL_LS_ARB_REPLICA_TASK_TID:
-case OB_ALL_VIRTUAL_LS_ARB_REPLICA_TASK_HISTORY_TID:
 case OB_ALL_VIRTUAL_LS_ELECTION_REFERENCE_INFO_TID:
 case OB_ALL_VIRTUAL_LS_LOG_ARCHIVE_PROGRESS_TID:
 case OB_ALL_VIRTUAL_LS_META_TABLE_TID:
 case OB_ALL_VIRTUAL_LS_RECOVERY_STAT_TID:
-case OB_ALL_VIRTUAL_LS_REPLICA_TASK_TID:
-case OB_ALL_VIRTUAL_LS_REPLICA_TASK_HISTORY_TID:
 case OB_ALL_VIRTUAL_LS_RESTORE_HISTORY_TID:
 case OB_ALL_VIRTUAL_LS_RESTORE_PROGRESS_TID:
 case OB_ALL_VIRTUAL_LS_STATUS_TID:
@@ -176,11 +166,6 @@ case OB_ALL_VIRTUAL_TASK_OPT_STAT_GATHER_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_EVENT_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_INFO_TID:
 case OB_ALL_VIRTUAL_TENANT_PARAMETER_TID:
-case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_TID:
-case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_JOB_TID:
-case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_TID:
-case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_REPLICA_TID:
-case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_USER_FAILED_LOGIN_STAT_TID:
 case OB_ALL_VIRTUAL_WR_ACTIVE_SESSION_HISTORY_TID:
 case OB_ALL_VIRTUAL_WR_CONTROL_TID:
@@ -604,38 +589,6 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       break;
     }
 
-    case OB_ALL_VIRTUAL_CLONE_JOB_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_CLONE_JOB_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_CLONE_JOB_HISTORY_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_CLONE_JOB_HISTORY_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
     case OB_ALL_VIRTUAL_COLUMN_CHECKSUM_ERROR_INFO_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = false;
@@ -843,9 +796,7 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_LOG_ARCHIVE_PROGRESS_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = false;
@@ -877,39 +828,9 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-    case OB_ALL_VIRTUAL_LS_ARB_REPLICA_TASK_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_LS_ARB_REPLICA_TASK_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_LS_ARB_REPLICA_TASK_HISTORY_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_LS_ARB_REPLICA_TASK_HISTORY_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_LS_ELECTION_REFERENCE_INFO_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = true;
@@ -964,38 +885,6 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
         SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
       } else if (OB_FAIL(iter->init(OB_ALL_LS_RECOVERY_STAT_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_LS_REPLICA_TASK_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_LS_REPLICA_TASK_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_LS_REPLICA_TASK_HISTORY_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_LS_REPLICA_TASK_HISTORY_TID, meta_record_in_sys, index_schema, params))) {
         SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
         iter->~ObIteratePrivateVirtualTable();
         allocator.free(iter);
@@ -1165,9 +1054,7 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_SERVICE_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = false;
@@ -1263,7 +1150,9 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_TASK_OPT_STAT_GATHER_HISTORY_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = false;
@@ -1318,86 +1207,6 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
         SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
       } else if (OB_FAIL(iter->init(OB_TENANT_PARAMETER_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_SNAPSHOT_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_JOB_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_SNAPSHOT_JOB_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_SNAPSHOT_LS_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_REPLICA_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_TID, meta_record_in_sys, index_schema, params))) {
-        SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
-        iter->~ObIteratePrivateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_TID: {
-      ObIteratePrivateVirtualTable *iter = NULL;
-      const bool meta_record_in_sys = false;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIteratePrivateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create iterate private virtual table iterator failed", KR(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_TID, meta_record_in_sys, index_schema, params))) {
         SERVER_LOG(WARN, "iterate private virtual table iter init failed", KR(ret));
         iter->~ObIteratePrivateVirtualTable();
         allocator.free(iter);
@@ -1487,9 +1296,7 @@ case OB_ALL_VIRTUAL_ZONE_MERGE_INFO_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_WR_SNAPSHOT_TID: {
       ObIteratePrivateVirtualTable *iter = NULL;
       const bool meta_record_in_sys = false;
@@ -1719,8 +1526,6 @@ case OB_ALL_VIRTUAL_MVIEW_REFRESH_STMT_STATS_TID:
 case OB_ALL_VIRTUAL_NCOMP_DLL_V2_TID:
 case OB_ALL_VIRTUAL_OBJAUTH_TID:
 case OB_ALL_VIRTUAL_OBJAUTH_HISTORY_TID:
-case OB_ALL_VIRTUAL_OBJAUTH_MYSQL_TID:
-case OB_ALL_VIRTUAL_OBJAUTH_MYSQL_HISTORY_TID:
 case OB_ALL_VIRTUAL_OPTSTAT_GLOBAL_PREFS_TID:
 case OB_ALL_VIRTUAL_OPTSTAT_USER_PREFS_TID:
 case OB_ALL_VIRTUAL_ORI_SCHEMA_VERSION_TID:
@@ -1773,8 +1578,6 @@ case OB_ALL_VIRTUAL_TENANT_CONTEXT_TID:
 case OB_ALL_VIRTUAL_TENANT_CONTEXT_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_DIRECTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_DIRECTORY_HISTORY_TID:
-case OB_ALL_VIRTUAL_TENANT_LOCATION_TID:
-case OB_ALL_VIRTUAL_TENANT_LOCATION_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_ROLE_GRANTEE_MAP_TID:
 case OB_ALL_VIRTUAL_TENANT_ROLE_GRANTEE_MAP_HISTORY_TID:
 case OB_ALL_VIRTUAL_TENANT_SCHEDULER_JOB_TID:
@@ -2994,38 +2797,6 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       break;
     }
 
-    case OB_ALL_VIRTUAL_OBJAUTH_MYSQL_TID: {
-      ObIterateVirtualTable *iter = NULL;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create virtual table iterator failed", K(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_OBJAUTH_MYSQL_TID, index_schema, params))) {
-        SERVER_LOG(WARN, "virtual table iter init failed", K(ret));
-        iter->~ObIterateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
-
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
-    case OB_ALL_VIRTUAL_OBJAUTH_MYSQL_HISTORY_TID: {
-      ObIterateVirtualTable *iter = NULL;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create virtual table iterator failed", K(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_OBJAUTH_MYSQL_HISTORY_TID, index_schema, params))) {
-        SERVER_LOG(WARN, "virtual table iter init failed", K(ret));
-        iter->~ObIterateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
     case OB_ALL_VIRTUAL_OPTSTAT_GLOBAL_PREFS_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3040,7 +2811,9 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_OPTSTAT_USER_PREFS_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3310,9 +3083,7 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_ROUTINE_HISTORY_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3342,7 +3113,9 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_ROUTINE_PARAM_HISTORY_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3612,9 +3385,7 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_TABLE_PRIVILEGE_HISTORY_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3644,7 +3415,9 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_TABLE_STAT_HISTORY_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3810,36 +3583,6 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       break;
     }
 
-    case OB_ALL_VIRTUAL_TENANT_LOCATION_TID: {
-      ObIterateVirtualTable *iter = NULL;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create virtual table iterator failed", K(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_LOCATION_TID, index_schema, params))) {
-        SERVER_LOG(WARN, "virtual table iter init failed", K(ret));
-        iter->~ObIterateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
-    case OB_ALL_VIRTUAL_TENANT_LOCATION_HISTORY_TID: {
-      ObIterateVirtualTable *iter = NULL;
-      if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
-        SERVER_LOG(WARN, "create virtual table iterator failed", K(ret));
-      } else if (OB_FAIL(iter->init(OB_ALL_TENANT_LOCATION_HISTORY_TID, index_schema, params))) {
-        SERVER_LOG(WARN, "virtual table iter init failed", K(ret));
-        iter->~ObIterateVirtualTable();
-        allocator.free(iter);
-        iter = NULL;
-      } else {
-       vt_iter = iter;
-      }
-      break;
-    }
-
     case OB_ALL_VIRTUAL_TENANT_ROLE_GRANTEE_MAP_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3914,9 +3657,7 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
-  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
-  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_TENANT_SCHEDULER_PROGRAM_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -3976,7 +3717,9 @@ case OB_ALL_VIRTUAL_VECTOR_INDEX_TASK_HISTORY_TID:
       }
       break;
     }
+  END_CREATE_VT_ITER_SWITCH_LAMBDA
 
+  BEGIN_CREATE_VT_ITER_SWITCH_LAMBDA
     case OB_ALL_VIRTUAL_TIME_ZONE_TRANSITION_TID: {
       ObIterateVirtualTable *iter = NULL;
       if (OB_FAIL(NEW_VIRTUAL_TABLE(ObIterateVirtualTable, iter))) {
@@ -4241,12 +3984,6 @@ case OB_ALL_BALANCE_GROUP_LS_STAT_AUX_LOB_PIECE_TID:
 case OB_ALL_BALANCE_TASK_HELPER_TID:
 case OB_ALL_BALANCE_TASK_HELPER_AUX_LOB_META_TID:
 case OB_ALL_BALANCE_TASK_HELPER_AUX_LOB_PIECE_TID:
-case OB_ALL_CLONE_JOB_TID:
-case OB_ALL_CLONE_JOB_AUX_LOB_META_TID:
-case OB_ALL_CLONE_JOB_AUX_LOB_PIECE_TID:
-case OB_ALL_CLONE_JOB_HISTORY_TID:
-case OB_ALL_CLONE_JOB_HISTORY_AUX_LOB_META_TID:
-case OB_ALL_CLONE_JOB_HISTORY_AUX_LOB_PIECE_TID:
 case OB_ALL_COLUMN_CHECKSUM_ERROR_INFO_TID:
 case OB_ALL_COLUMN_CHECKSUM_ERROR_INFO_AUX_LOB_META_TID:
 case OB_ALL_COLUMN_CHECKSUM_ERROR_INFO_AUX_LOB_PIECE_TID:
@@ -4292,12 +4029,6 @@ case OB_ALL_LOG_ARCHIVE_PROGRESS_AUX_LOB_PIECE_TID:
 case OB_ALL_LOG_RESTORE_SOURCE_TID:
 case OB_ALL_LOG_RESTORE_SOURCE_AUX_LOB_META_TID:
 case OB_ALL_LOG_RESTORE_SOURCE_AUX_LOB_PIECE_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_AUX_LOB_META_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_AUX_LOB_PIECE_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_HISTORY_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_HISTORY_AUX_LOB_META_TID:
-case OB_ALL_LS_ARB_REPLICA_TASK_HISTORY_AUX_LOB_PIECE_TID:
 case OB_ALL_LS_ELECTION_REFERENCE_INFO_TID:
 case OB_ALL_LS_ELECTION_REFERENCE_INFO_AUX_LOB_META_TID:
 case OB_ALL_LS_ELECTION_REFERENCE_INFO_AUX_LOB_PIECE_TID:
@@ -4310,12 +4041,6 @@ case OB_ALL_LS_META_TABLE_AUX_LOB_PIECE_TID:
 case OB_ALL_LS_RECOVERY_STAT_TID:
 case OB_ALL_LS_RECOVERY_STAT_AUX_LOB_META_TID:
 case OB_ALL_LS_RECOVERY_STAT_AUX_LOB_PIECE_TID:
-case OB_ALL_LS_REPLICA_TASK_TID:
-case OB_ALL_LS_REPLICA_TASK_AUX_LOB_META_TID:
-case OB_ALL_LS_REPLICA_TASK_AUX_LOB_PIECE_TID:
-case OB_ALL_LS_REPLICA_TASK_HISTORY_TID:
-case OB_ALL_LS_REPLICA_TASK_HISTORY_AUX_LOB_META_TID:
-case OB_ALL_LS_REPLICA_TASK_HISTORY_AUX_LOB_PIECE_TID:
 case OB_ALL_LS_RESTORE_HISTORY_TID:
 case OB_ALL_LS_RESTORE_HISTORY_AUX_LOB_META_TID:
 case OB_ALL_LS_RESTORE_HISTORY_AUX_LOB_PIECE_TID:
@@ -4386,22 +4111,6 @@ case OB_ALL_TENANT_GLOBAL_TRANSACTION_AUX_LOB_PIECE_TID:
 case OB_ALL_TENANT_INFO_TID:
 case OB_ALL_TENANT_INFO_AUX_LOB_META_TID:
 case OB_ALL_TENANT_INFO_AUX_LOB_PIECE_TID:
-case OB_ALL_TENANT_SNAPSHOT_TID:
-case OB_ALL_TENANT_SNAPSHOT_IDX_TENANT_SNAPSHOT_NAME_TID:
-case OB_ALL_TENANT_SNAPSHOT_AUX_LOB_META_TID:
-case OB_ALL_TENANT_SNAPSHOT_AUX_LOB_PIECE_TID:
-case OB_ALL_TENANT_SNAPSHOT_JOB_TID:
-case OB_ALL_TENANT_SNAPSHOT_JOB_AUX_LOB_META_TID:
-case OB_ALL_TENANT_SNAPSHOT_JOB_AUX_LOB_PIECE_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_AUX_LOB_META_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_AUX_LOB_PIECE_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_AUX_LOB_META_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_AUX_LOB_PIECE_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_AUX_LOB_META_TID:
-case OB_ALL_TENANT_SNAPSHOT_LS_REPLICA_HISTORY_AUX_LOB_PIECE_TID:
 case OB_ALL_TENANT_USER_FAILED_LOGIN_STAT_TID:
 case OB_ALL_TENANT_USER_FAILED_LOGIN_STAT_AUX_LOB_META_TID:
 case OB_ALL_TENANT_USER_FAILED_LOGIN_STAT_AUX_LOB_PIECE_TID:
@@ -4521,7 +4230,6 @@ case OB_ALL_RECYCLEBIN_IDX_RECYCLEBIN_ORI_NAME_TID:
 case OB_ALL_TABLE_PRIVILEGE_IDX_TB_PRIV_DB_NAME_TID:
 case OB_ALL_TABLE_PRIVILEGE_IDX_TB_PRIV_TB_NAME_TID:
 case OB_ALL_DATABASE_PRIVILEGE_IDX_DB_PRIV_DB_NAME_TID:
-case OB_ALL_TENANT_SNAPSHOT_IDX_TENANT_SNAPSHOT_NAME_TID:
 case OB_ALL_DBMS_LOCK_ALLOCATED_IDX_DBMS_LOCK_ALLOCATED_LOCKHANDLE_TID:
 case OB_ALL_DBMS_LOCK_ALLOCATED_IDX_DBMS_LOCK_ALLOCATED_EXPIRATION_TID:
 case OB_ALL_TABLET_REORGANIZE_HISTORY_IDX_TABLET_HIS_TABLE_ID_SRC_TID:
@@ -4546,9 +4254,6 @@ case OB_ALL_CATALOG_PRIVILEGE_IDX_CATALOG_PRIV_CATALOG_NAME_TID:
 case OB_ALL_CCL_RULE_IDX_CCL_RULE_ID_TID:
 case OB_ALL_AI_MODEL_ENDPOINT_IDX_ENDPOINT_NAME_TID:
 case OB_ALL_AI_MODEL_ENDPOINT_IDX_AI_MODEL_NAME_TID:
-case OB_ALL_TENANT_LOCATION_IDX_LOCATION_NAME_TID:
-case OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_USER_ID_TID:
-case OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_OBJ_NAME_TID:
 case OB_ALL_TABLET_REORGANIZE_HISTORY_IDX_TABLET_HIS_TABLE_ID_DEST_TID:
 
 #endif
@@ -4577,7 +4282,6 @@ case OB_ALL_ROUTINE_PARAM_TID:
 case OB_ALL_DATABASE_PRIVILEGE_TID:
 case OB_ALL_DDL_ERROR_MESSAGE_TID:
 case OB_ALL_PKG_COLL_TYPE_TID:
-case OB_ALL_TENANT_LOCATION_TID:
 case OB_ALL_SCHEDULER_JOB_RUN_DETAIL_V2_TID:
 case OB_ALL_CCL_RULE_TID:
 case OB_ALL_COLUMN_TID:
@@ -4610,8 +4314,6 @@ case OB_ALL_TRANSFER_PARTITION_TASK_TID:
 case OB_ALL_SUB_PART_TID:
 case OB_ALL_ROUTINE_TID:
 case OB_ALL_TENANT_DIRECTORY_TID:
-case OB_ALL_TENANT_OBJAUTH_MYSQL_TID:
-case OB_ALL_TENANT_SNAPSHOT_TID:
 case OB_ALL_TENANT_TRIGGER_HISTORY_TID:
 case OB_ALL_CONSTRAINT_TID:
 case OB_ALL_TENANT_ROLE_GRANTEE_MAP_TID:
@@ -4786,12 +4488,6 @@ case OB_ALL_PKG_COLL_TYPE_TID: {
     LOG_WARN("fail to push back index tid", KR(ret));
   }
   if (FAILEDx(index_tids.push_back(OB_ALL_PKG_COLL_TYPE_IDX_PKG_COLL_NAME_ID_TID))) {
-    LOG_WARN("fail to push back index tid", KR(ret));
-  }
-  break;
-}
-case OB_ALL_TENANT_LOCATION_TID: {
-  if (FAILEDx(index_tids.push_back(OB_ALL_TENANT_LOCATION_IDX_LOCATION_NAME_TID))) {
     LOG_WARN("fail to push back index tid", KR(ret));
   }
   break;
@@ -5020,21 +4716,6 @@ case OB_ALL_ROUTINE_TID: {
 }
 case OB_ALL_TENANT_DIRECTORY_TID: {
   if (FAILEDx(index_tids.push_back(OB_ALL_TENANT_DIRECTORY_IDX_DIRECTORY_NAME_TID))) {
-    LOG_WARN("fail to push back index tid", KR(ret));
-  }
-  break;
-}
-case OB_ALL_TENANT_OBJAUTH_MYSQL_TID: {
-  if (FAILEDx(index_tids.push_back(OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_USER_ID_TID))) {
-    LOG_WARN("fail to push back index tid", KR(ret));
-  }
-  if (FAILEDx(index_tids.push_back(OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_OBJ_NAME_TID))) {
-    LOG_WARN("fail to push back index tid", KR(ret));
-  }
-  break;
-}
-case OB_ALL_TENANT_SNAPSHOT_TID: {
-  if (FAILEDx(index_tids.push_back(OB_ALL_TENANT_SNAPSHOT_IDX_TENANT_SNAPSHOT_NAME_TID))) {
     LOG_WARN("fail to push back index tid", KR(ret));
   }
   break;
@@ -5369,15 +5050,6 @@ case OB_ALL_PKG_COLL_TYPE_TID: {
   }
   index_schema.reset();
   if (FAILEDx(ObInnerTableSchema::all_pkg_coll_type_idx_pkg_coll_name_id_schema(index_schema))) {
-    LOG_WARN("fail to create index schema", KR(ret), K(tenant_id), K(data_table_id));
-  } else if (OB_FAIL(append_table_(tenant_id, index_schema, tables))) {
-    LOG_WARN("fail to append", KR(ret), K(tenant_id), K(data_table_id));
-  }
-  break;
-}
-case OB_ALL_TENANT_LOCATION_TID: {
-  index_schema.reset();
-  if (FAILEDx(ObInnerTableSchema::all_tenant_location_idx_location_name_schema(index_schema))) {
     LOG_WARN("fail to create index schema", KR(ret), K(tenant_id), K(data_table_id));
   } else if (OB_FAIL(append_table_(tenant_id, index_schema, tables))) {
     LOG_WARN("fail to append", KR(ret), K(tenant_id), K(data_table_id));
@@ -5744,30 +5416,6 @@ case OB_ALL_TENANT_DIRECTORY_TID: {
   }
   break;
 }
-case OB_ALL_TENANT_OBJAUTH_MYSQL_TID: {
-  index_schema.reset();
-  if (FAILEDx(ObInnerTableSchema::all_tenant_objauth_mysql_idx_objauth_mysql_user_id_schema(index_schema))) {
-    LOG_WARN("fail to create index schema", KR(ret), K(tenant_id), K(data_table_id));
-  } else if (OB_FAIL(append_table_(tenant_id, index_schema, tables))) {
-    LOG_WARN("fail to append", KR(ret), K(tenant_id), K(data_table_id));
-  }
-  index_schema.reset();
-  if (FAILEDx(ObInnerTableSchema::all_tenant_objauth_mysql_idx_objauth_mysql_obj_name_schema(index_schema))) {
-    LOG_WARN("fail to create index schema", KR(ret), K(tenant_id), K(data_table_id));
-  } else if (OB_FAIL(append_table_(tenant_id, index_schema, tables))) {
-    LOG_WARN("fail to append", KR(ret), K(tenant_id), K(data_table_id));
-  }
-  break;
-}
-case OB_ALL_TENANT_SNAPSHOT_TID: {
-  index_schema.reset();
-  if (FAILEDx(ObInnerTableSchema::all_tenant_snapshot_idx_tenant_snapshot_name_schema(index_schema))) {
-    LOG_WARN("fail to create index schema", KR(ret), K(tenant_id), K(data_table_id));
-  } else if (OB_FAIL(append_table_(tenant_id, index_schema, tables))) {
-    LOG_WARN("fail to append", KR(ret), K(tenant_id), K(data_table_id));
-  }
-  break;
-}
 case OB_ALL_TENANT_TRIGGER_HISTORY_TID: {
   index_schema.reset();
   if (FAILEDx(ObInnerTableSchema::all_tenant_trigger_history_idx_trigger_his_base_obj_id_schema(index_schema))) {
@@ -6012,8 +5660,6 @@ case OB_ALL_FOREIGN_KEY_TID: {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_DATABASE_PRIVILEGE_IDX_DB_PRIV_DB_NAME_TID))) {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(table_ids.push_back(OB_ALL_TENANT_SNAPSHOT_IDX_TENANT_SNAPSHOT_NAME_TID))) {
-    LOG_WARN("add index id failed", KR(ret), K(tenant_id));
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_DBMS_LOCK_ALLOCATED_IDX_DBMS_LOCK_ALLOCATED_LOCKHANDLE_TID))) {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_DBMS_LOCK_ALLOCATED_IDX_DBMS_LOCK_ALLOCATED_EXPIRATION_TID))) {
@@ -6061,12 +5707,6 @@ case OB_ALL_FOREIGN_KEY_TID: {
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_AI_MODEL_ENDPOINT_IDX_ENDPOINT_NAME_TID))) {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_AI_MODEL_ENDPOINT_IDX_AI_MODEL_NAME_TID))) {
-    LOG_WARN("add index id failed", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(table_ids.push_back(OB_ALL_TENANT_LOCATION_IDX_LOCATION_NAME_TID))) {
-    LOG_WARN("add index id failed", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(table_ids.push_back(OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_USER_ID_TID))) {
-    LOG_WARN("add index id failed", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(table_ids.push_back(OB_ALL_TENANT_OBJAUTH_MYSQL_IDX_OBJAUTH_MYSQL_OBJ_NAME_TID))) {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));
   } else if (OB_FAIL(table_ids.push_back(OB_ALL_TABLET_REORGANIZE_HISTORY_IDX_TABLET_HIS_TABLE_ID_DEST_TID))) {
     LOG_WARN("add index id failed", KR(ret), K(tenant_id));

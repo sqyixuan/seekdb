@@ -1,26 +1,19 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_STORAGE_OB_LOCALITY_MANAGER_H_
 #define OCEANBASE_STORAGE_OB_LOCALITY_MANAGER_H_
 
 #include "lib/mysqlclient/ob_mysql_proxy.h"
-#ifdef OB_BUILD_ARBITRATION
-#include "share/arbitration_service/ob_arbitration_service_table_operator.h"
-#endif
 #include "share/ob_locality_info.h"
 #include "share/ob_locality_table_operator.h"
 #include "common/ob_zone_type.h"
@@ -58,10 +51,6 @@ public:
   virtual int get_server_zone_type(const common::ObAddr &server, common::ObZoneType &zone_type) const;
   virtual int get_server_region(const common::ObAddr &server, common::ObRegion &region) const;
   virtual int get_server_idc(const common::ObAddr &server, common::ObIDC &idc) const;
-#ifdef OB_BUILD_ARBITRATION
-  int load_arb_service_info();
-  int get_arb_service_addr(common::ObAddr &arb_service_addr) const;
-#endif
   int get_server_zone(const common::ObAddr &server, common::ObZone &zone) const;
   virtual int is_local_zone_read_only(bool &is_readonly);
   virtual int is_local_server(const common::ObAddr &server, bool &is_local);
@@ -106,10 +95,6 @@ private:
   share::ObLocalityTableOperator locality_operator_;
   common::ObDedupQueue refresh_locality_task_queue_;
   ReloadLocalityTask reload_locality_task_;
-#ifdef OB_BUILD_ARBITRATION
-  common::ObAddr arb_service_addr_;
-  share::ObArbitrationServiceTableOperator arbitration_service_table_operator_;
-#endif
   char *ssl_invited_nodes_buf_;//common::OB_MAX_CONFIG_VALUE_LEN, use new
   bool is_loaded_;
   static const int64_t FAIL_TO_LOAD_LOCALITY_CACHE_TIMEOUT = 60L * 1000L * 1000L;

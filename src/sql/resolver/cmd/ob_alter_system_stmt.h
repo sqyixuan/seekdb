@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_RESOLVER_CMD_OB_ALTER_SYSTEM_STMT_
@@ -290,32 +286,6 @@ private:
   obrpc::ObAdminStorageArg arg_;
 };
 
-class ObSwitchReplicaRoleStmt : public ObSystemCmdStmt
-{
-public:
-  ObSwitchReplicaRoleStmt() : ObSystemCmdStmt(stmt::T_SWITCH_REPLICA_ROLE) {}
-  virtual ~ObSwitchReplicaRoleStmt() {}
-
-  obrpc::ObAdminSwitchReplicaRoleArg &get_rpc_arg() { return rpc_arg_; }
-
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminSwitchReplicaRoleArg rpc_arg_;
-};
-
-class ObSwitchRSRoleStmt : public ObSystemCmdStmt
-{
-public:
-  ObSwitchRSRoleStmt() : ObSystemCmdStmt(stmt::T_SWITCH_RS_ROLE) {}
-  virtual ~ObSwitchRSRoleStmt() {}
-
-  obrpc::ObAdminSwitchRSRoleArg &get_rpc_arg() { return rpc_arg_; }
-
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminSwitchRSRoleArg rpc_arg_;
-};
-
 class ObReportReplicaStmt : public ObSystemCmdStmt
 {
 public:
@@ -470,63 +440,6 @@ public:
   TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
 private:
   obrpc::ObAdminSetTPArg rpc_arg_;
-};
-
-class ObAlterLSReplicaStmt : public ObSystemCmdStmt
-{
-public:
-  ObAlterLSReplicaStmt() : ObSystemCmdStmt(stmt::T_ALTER_LS_REPLICA) {}
-  virtual ~ObAlterLSReplicaStmt() {}
-
-  obrpc::ObAdminAlterLSReplicaArg &get_rpc_arg() { return rpc_arg_; }
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminAlterLSReplicaArg rpc_arg_;
-};
-
-class ObAddArbitrationServiceStmt : public ObSystemCmdStmt
-{
-public:
-  ObAddArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_ADD_ARBITRATION_SERVICE) {}
-  virtual ~ObAddArbitrationServiceStmt() {}
-#ifndef OB_BUILD_ARBITRATION
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
-#else
-  obrpc::ObAdminAddArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminAddArbitrationServiceArg rpc_arg_;
-#endif
-};
-
-class ObRemoveArbitrationServiceStmt : public ObSystemCmdStmt
-{
-public:
-  ObRemoveArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_REMOVE_ARBITRATION_SERVICE) {}
-  virtual ~ObRemoveArbitrationServiceStmt() {}
-#ifndef OB_BUILD_ARBITRATION
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
-#else
-  obrpc::ObAdminRemoveArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminRemoveArbitrationServiceArg rpc_arg_;
-#endif
-};
-
-class ObReplaceArbitrationServiceStmt : public ObSystemCmdStmt
-{
-public:
-  ObReplaceArbitrationServiceStmt() : ObSystemCmdStmt(stmt::T_REPLACE_ARBITRATION_SERVICE) {}
-  virtual ~ObReplaceArbitrationServiceStmt() {}
-#ifndef OB_BUILD_ARBITRATION
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_));
-#else
-  obrpc::ObAdminReplaceArbitrationServiceArg &get_rpc_arg() { return rpc_arg_; }
-  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
-private:
-  obrpc::ObAdminReplaceArbitrationServiceArg rpc_arg_;
-#endif
 };
 
 class ObClearLocationCacheStmt : public ObSystemCmdStmt
@@ -1405,19 +1318,6 @@ private:
   obrpc::ObAdminSetConfigArg rpc_arg_;
 };
 
-class ObCancelCloneStmt : public ObSystemCmdStmt
-{
-public:
-  ObCancelCloneStmt() 
-    : ObSystemCmdStmt(stmt::T_CANCEL_CLONE),
-      clone_tenant_name_() {}
-  virtual ~ObCancelCloneStmt() {}
-  int set_clone_tenant_name(const ObString &tenant_name) { return clone_tenant_name_.assign(tenant_name); }
-  const ObString get_clone_tenant_name() { return clone_tenant_name_.str(); }
-	TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(clone_tenant_name));
-private:
-  common::ObFixedLengthString<common::OB_MAX_TENANT_NAME_LENGTH + 1> clone_tenant_name_;
-};
 class ObTransferPartitionStmt : public ObSystemCmdStmt
 {
 public:

@@ -1,17 +1,13 @@
-/*
- * Copyright (c) 2025 OceanBase.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+/**
+ * Copyright (c) 2021 OceanBase
+ * OceanBase CE is licensed under Mulan PubL v2.
+ * You can use this software according to the terms and conditions of the Mulan PubL v2.
+ * You may obtain a copy of Mulan PubL v2 at:
+ *          http://license.coscl.org.cn/MulanPubL-2.0
+ * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+ * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+ * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+ * See the Mulan PubL v2 for more details.
  */
 
 #ifndef OCEANBASE_SQL_OB_TENANT_RESOLVER_RESOLVER_
@@ -157,16 +153,6 @@ int ObTenantResolver<T>::resolve_tenant_option(T *stmt, ParseNode *node,
             ret = OB_NOT_SUPPORTED;
             SQL_LOG(WARN, "tenant can't change collation", K(ret));
             LOG_USER_ERROR(OB_NOT_SUPPORTED, "tenant change collation");
-          }
-        }
-        break;
-      }
-      case T_ENABLE_ARBITRATION_SERVICE: {
-        const bool enable_arbitration_service = option_node->children_[0]->value_ ? true : false;
-        stmt->set_enable_arbitration_service(enable_arbitration_service);
-        if (stmt->get_stmt_type() == stmt::T_MODIFY_TENANT) {
-          if (OB_FAIL(alter_option_bitset_.add_member(obrpc::ObModifyTenantArg::ENABLE_ARBITRATION_SERVICE))) {
-            SQL_LOG(WARN, "failed to add member to bitset!", K(ret));
           }
         }
         break;
@@ -418,9 +404,6 @@ int ObTenantResolver<T>::check_support_option(const T *stmt, const ParseNode *no
         }
         case T_COLLATION: {
           CHECK_SUPPORT_OPTION_USER_ERROR("collation");
-        }
-        case T_ENABLE_ARBITRATION_SERVICE: {
-          CHECK_SUPPORT_OPTION_USER_ERROR("enable_arbitration_service");
         }
         case T_ZONE_LIST: {
           CHECK_SUPPORT_OPTION_USER_ERROR("zone_list");
