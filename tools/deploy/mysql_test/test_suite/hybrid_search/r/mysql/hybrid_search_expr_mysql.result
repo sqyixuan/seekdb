@@ -1,0 +1,840 @@
+# ----------------------------------------------------------------------
+# Test of hybrid_search expression function.
+# ----------------------------------------------------------------------
+alter system set ob_vector_memory_limit_percentage = 44;
+drop table if exists test_table, test_table_new, t1;
+create table test_table(
+id int, 
+title varchar(255), 
+content text, 
+vector_col vector(4),
+vector index idx_vector(vector_col) with (distance=l2, type=hnsw, lib=vsag), 
+fulltext index idx_title(title),
+fulltext index idx_content(content)
+);
+insert into test_table values
+(1, 'Machine Learning Basics', 'Introduction to machine learning algorithms and techniques', '[0.1,0.2,0.3,0.4]'),
+(2, 'Deep Learning Tutorial', 'Comprehensive guide to deep neural networks and applications', '[0.5,0.6,0.7,0.8]'),
+(3, 'Data Science Handbook', 'Complete reference for data analysis and visualization', '[0.9,0.1,0.2,0.3]'),
+(4, 'Python Programming', 'Learn Python programming from beginner to advanced', '[0.4,0.5,0.6,0.7]'),
+(5, 'Artificial Intelligence', 'AI concepts, algorithms, and real-world applications', '[0.8,0.9,0.1,0.2]'),
+(6, 'Database Systems', 'Relational database design and SQL optimization', '[0.2,0.3,0.4,0.5]'),
+(7, 'Web Development', 'Modern web development with HTML, CSS, and JavaScript', '[0.6,0.7,0.8,0.9]'),
+(8, 'Cloud Computing', 'Introduction to cloud platforms and services', '[0.3,0.4,0.5,0.6]'),
+(9, 'Cybersecurity', 'Network security and data protection strategies', '[0.7,0.8,0.9,0.1]'),
+(10, 'Mobile App Development', 'iOS and Android app development fundamentals', '[0.1,0.9,0.3,0.7]');
+# Basic hybrid_search expression with match query and knn
+set @basic_query = '{
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"title": "machine learning"}},
+        {"match": {"content": "algorithms"}}
+      ]
+    }
+  },
+  "knn": {
+    "field": "vector_col",
+    "k": 3,
+    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "boost": 0.8
+  },
+  "_source": ["title", "content", "_keyword_score", "_semantic_score"]
+}';
+select json_pretty(dbms_hybrid_search.search('test_table', @basic_query));
+json_pretty(dbms_hybrid_search.search('test_table', @basic_query))
+[
+  {
+    "title": "Machine Learning Basics",
+    "_score": 6.564563047343657,
+    "content": "Introduction to machine learning algorithms and techniques",
+    "_keyword_score": 5.764563047343657,
+    "_semantic_score": 0.8
+  },
+  {
+    "title": "Database Systems",
+    "_score": 0.6666666640000001,
+    "content": "Relational database design and SQL optimization",
+    "_keyword_score": null,
+    "_semantic_score": 0.6666666640000001
+  },
+  {
+    "title": "Cloud Computing",
+    "_score": 0.571428568,
+    "content": "Introduction to cloud platforms and services",
+    "_keyword_score": null,
+    "_semantic_score": 0.571428568
+  }
+]
+select dbms_hybrid_search.get_sql('test_table', @basic_query);
+dbms_hybrid_search.get_sql('test_table', @basic_query)
+SELECT ifnull(_fts.title, _vs.title) as title, ifnull(_fts.content, _vs.content) as content, _keyword_score, _semantic_score, (ifnull(_fts._keyword_score, 0) + ifnull(_vs._semantic_score, 0)) as _score FROM ((SELECT /*+ opt_param('hidden_column_visible', 'true') union_merge( test_table idx_title idx_content)*/__pk_increment, title, content, (match(title) against('machine learning' in natural language mode) + match(content) against('algorithms' in natural language mode)) as _keyword_score FROM test.test_table WHERE match(title) against('machine learning' in natural language mode) AND match(content) against('algorithms' in natural language mode) ORDER BY _keyword_score DESC LIMIT 200) _fts full join (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(vector_col, '[0.1, 0.2, 0.3, 0.4]') as _distance, __pk_increment, title, content, (round(1 / (1 + l2_distance(vector_col, '[0.1, 0.2, 0.3, 0.4]')), 8) * 0.8) as _semantic_score FROM test.test_table ORDER BY _distance APPROXIMATE LIMIT 3) _vs on _fts.__pk_increment = _vs.__pk_increment) ORDER BY _score DESC, ifnull(_vs.__pk_increment, _fts.__pk_increment) LIMIT 10
+select * from (SELECT title, content, _keyword_score, _semantic_score, (ifnull(_fts._keyword_score, 0) + ifnull(_vs._semantic_score, 0)) as _score FROM ((SELECT /*+ opt_param('hidden_column_visible', 'true') union_merge( test_table idx_title idx_content)*/__pk_increment, (match(title) against('machine learning' in boolean mode) + match(content) against('algorithms' in boolean mode)) as _keyword_score FROM test.test_table WHERE match(title) against('machine learning' in boolean mode) AND match(content) against('algorithms' in boolean mode) ORDER BY _keyword_score DESC) _fts right join (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(vector_col, '[0.1, 0.2, 0.3, 0.4]') as _distance, __pk_increment, title, content, (round((1 / (1 + l2_distance(vector_col, '[0.1, 0.2, 0.3, 0.4]'))), 8) * 0.8) as _semantic_score FROM test.test_table ORDER BY _distance APPROXIMATE LIMIT 3) _vs on (_fts.__pk_increment = _vs.__pk_increment)) ORDER BY _score DESC);
+title	content	_keyword_score	_semantic_score	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query);
+title	content	_keyword_score	_semantic_score	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select a.* from hybrid_search('test_table', @basic_query) as a;
+title	content	_keyword_score	_semantic_score	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select a.* from hybrid_search('test_table', @basic_query) a;
+title	content	_keyword_score	_semantic_score	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', '{
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"title": "machine learning"}},
+        {"match": {"content": "algorithms"}}
+      ]
+    }
+  },
+  "knn": {
+    "field": "vector_col",
+    "k": 3,
+    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "boost": 0.8
+  },
+  "_source": ["title", "content", "_keyword_score", "_semantic_score"]
+}');
+title	content	_keyword_score	_semantic_score	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select t.title, t._score, t._keyword_score, t._semantic_score 
+from hybrid_search('test_table', @basic_query) t 
+where t._score > 1;
+title	_score	_keyword_score	_semantic_score
+Machine Learning Basics	6.564563047343657	5.764563047343657	0.80000000
+select t.title, t._score, t._keyword_score, t._semantic_score 
+from hybrid_search('test_table', @basic_query) as t;
+title	_score	_keyword_score	_semantic_score
+Machine Learning Basics	6.564563047343657	5.764563047343657	0.80000000
+Database Systems	0.6666666640000001	NULL	0.66666666
+Cloud Computing	0.571428568	NULL	0.57142857
+# plan
+explain select * from hybrid_search('test_table', @basic_query);
+Query Plan
+===============================================================================
+|ID|OPERATOR                     |NAME                  |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |SUBPLAN SCAN                 |ANONYMOUS_VIEW1       |10      |739         |
+|1 |└─TOP-N SORT                 |                      |10      |739         |
+|2 |  └─HASH FULL OUTER JOIN     |                      |10      |732         |
+|3 |    ├─SUBPLAN SCAN           |_fts                  |2       |456         |
+|4 |    │ └─TOP-N SORT           |                      |2       |456         |
+|5 |    │   └─TEXT RETRIEVAL SCAN|test_table(idx_title) |2       |455         |
+|6 |    └─SUBPLAN SCAN           |_vs                   |10      |274         |
+|7 |      └─VECTOR INDEX SCAN    |test_table(idx_vector)|10      |274         |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([ANONYMOUS_VIEW1.title], [ANONYMOUS_VIEW1.content], [ANONYMOUS_VIEW1._keyword_score], [ANONYMOUS_VIEW1._semantic_score], [ANONYMOUS_VIEW1._score]), filter(nil), rowset=16
+      access([ANONYMOUS_VIEW1.title], [ANONYMOUS_VIEW1.content], [ANONYMOUS_VIEW1._keyword_score], [ANONYMOUS_VIEW1._semantic_score], [ANONYMOUS_VIEW1._score])
+  1 - output([ifnull(_fts.title, _vs.title)], [ifnull(cast(_fts.content, LONGTEXT(536870911)), cast(_vs.content, LONGTEXT(536870911)))], [_fts._keyword_score],
+       [_vs._semantic_score], [ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8)))]), filter(nil), rowset=16
+      sort_keys([ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8))), DESC], [ifnull(_vs.__pk_increment,
+       _fts.__pk_increment), ASC]), topn(10)
+  2 - output([_fts._keyword_score], [_vs._semantic_score], [_fts.__pk_increment], [_vs.__pk_increment], [_fts.title], [_fts.content], [_vs.title], [_vs.content]), filter(nil), rowset=16
+      equal_conds([_fts.__pk_increment = _vs.__pk_increment]), other_conds(nil)
+  3 - output([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score]), filter(nil), rowset=16
+      access([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score])
+  4 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter(nil), rowset=16
+      sort_keys([MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) AGAINST('algorithms'), DESC]), topn(200)
+  5 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning')], [MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter([MATCH(test_table.content) AGAINST('algorithms')]), rowset=16
+      access([test_table.__pk_increment], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      calc_relevance=true, match_expr(MATCH(test_table.title) AGAINST('machine learning')), 
+      pushdown_match_filter(MATCH(test_table.title) AGAINST('machine learning')), has_functional_lookup=true
+  6 - output([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score]), filter(nil), rowset=16
+      access([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score])
+  7 - output([l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1)))], [test_table.__pk_increment], [test_table.title], [test_table.content],
+       [round(cast(1, DOUBLE(-1, -1)) / cast(1, DOUBLE(-1, -1)) + l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1))), 8) * cast(0.8,
+       DOUBLE(2, 1))]), filter(nil), rowset=16
+      access([test_table.__pk_increment], [test_table.vector_col], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([test_table.__pk_increment], [test_table.__type_XXXX_XXXXXXXXXXXX]), range(MIN,MIN ; MAX,MAX)always true
+explain select a.* from hybrid_search('test_table', @basic_query) as a;
+Query Plan
+===============================================================================
+|ID|OPERATOR                     |NAME                  |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |SUBPLAN SCAN                 |a                     |10      |739         |
+|1 |└─TOP-N SORT                 |                      |10      |739         |
+|2 |  └─HASH FULL OUTER JOIN     |                      |10      |732         |
+|3 |    ├─SUBPLAN SCAN           |_fts                  |2       |456         |
+|4 |    │ └─TOP-N SORT           |                      |2       |456         |
+|5 |    │   └─TEXT RETRIEVAL SCAN|test_table(idx_title) |2       |455         |
+|6 |    └─SUBPLAN SCAN           |_vs                   |10      |274         |
+|7 |      └─VECTOR INDEX SCAN    |test_table(idx_vector)|10      |274         |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([a.title], [a.content], [a._keyword_score], [a._semantic_score], [a._score]), filter(nil), rowset=16
+      access([a.title], [a.content], [a._keyword_score], [a._semantic_score], [a._score])
+  1 - output([ifnull(_fts.title, _vs.title)], [ifnull(cast(_fts.content, LONGTEXT(536870911)), cast(_vs.content, LONGTEXT(536870911)))], [_fts._keyword_score],
+       [_vs._semantic_score], [ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8)))]), filter(nil), rowset=16
+      sort_keys([ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8))), DESC], [ifnull(_vs.__pk_increment,
+       _fts.__pk_increment), ASC]), topn(10)
+  2 - output([_fts._keyword_score], [_vs._semantic_score], [_fts.__pk_increment], [_vs.__pk_increment], [_fts.title], [_fts.content], [_vs.title], [_vs.content]), filter(nil), rowset=16
+      equal_conds([_fts.__pk_increment = _vs.__pk_increment]), other_conds(nil)
+  3 - output([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score]), filter(nil), rowset=16
+      access([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score])
+  4 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter(nil), rowset=16
+      sort_keys([MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) AGAINST('algorithms'), DESC]), topn(200)
+  5 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning')], [MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter([MATCH(test_table.content) AGAINST('algorithms')]), rowset=16
+      access([test_table.__pk_increment], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      calc_relevance=true, match_expr(MATCH(test_table.title) AGAINST('machine learning')), 
+      pushdown_match_filter(MATCH(test_table.title) AGAINST('machine learning')), has_functional_lookup=true
+  6 - output([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score]), filter(nil), rowset=16
+      access([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score])
+  7 - output([l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1)))], [test_table.__pk_increment], [test_table.title], [test_table.content],
+       [round(cast(1, DOUBLE(-1, -1)) / cast(1, DOUBLE(-1, -1)) + l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1))), 8) * cast(0.8,
+       DOUBLE(2, 1))]), filter(nil), rowset=16
+      access([test_table.__pk_increment], [test_table.vector_col], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([test_table.__pk_increment], [test_table.__type_XXXX_XXXXXXXXXXXX]), range(MIN,MIN ; MAX,MAX)always true
+explain select a.* from hybrid_search('test_table', @basic_query) a;
+Query Plan
+===============================================================================
+|ID|OPERATOR                     |NAME                  |EST.ROWS|EST.TIME(us)|
+-------------------------------------------------------------------------------
+|0 |SUBPLAN SCAN                 |a                     |10      |739         |
+|1 |└─TOP-N SORT                 |                      |10      |739         |
+|2 |  └─HASH FULL OUTER JOIN     |                      |10      |732         |
+|3 |    ├─SUBPLAN SCAN           |_fts                  |2       |456         |
+|4 |    │ └─TOP-N SORT           |                      |2       |456         |
+|5 |    │   └─TEXT RETRIEVAL SCAN|test_table(idx_title) |2       |455         |
+|6 |    └─SUBPLAN SCAN           |_vs                   |10      |274         |
+|7 |      └─VECTOR INDEX SCAN    |test_table(idx_vector)|10      |274         |
+===============================================================================
+Outputs & filters:
+-------------------------------------
+  0 - output([a.title], [a.content], [a._keyword_score], [a._semantic_score], [a._score]), filter(nil), rowset=16
+      access([a.title], [a.content], [a._keyword_score], [a._semantic_score], [a._score])
+  1 - output([ifnull(_fts.title, _vs.title)], [ifnull(cast(_fts.content, LONGTEXT(536870911)), cast(_vs.content, LONGTEXT(536870911)))], [_fts._keyword_score],
+       [_vs._semantic_score], [ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8)))]), filter(nil), rowset=16
+      sort_keys([ifnull(_fts._keyword_score, cast(0, DOUBLE(-1, -1))) + ifnull(_vs._semantic_score, cast(0, DOUBLE(25, 8))), DESC], [ifnull(_vs.__pk_increment,
+       _fts.__pk_increment), ASC]), topn(10)
+  2 - output([_fts._keyword_score], [_vs._semantic_score], [_fts.__pk_increment], [_vs.__pk_increment], [_fts.title], [_fts.content], [_vs.title], [_vs.content]), filter(nil), rowset=16
+      equal_conds([_fts.__pk_increment = _vs.__pk_increment]), other_conds(nil)
+  3 - output([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score]), filter(nil), rowset=16
+      access([_fts.__pk_increment], [_fts.title], [_fts.content], [_fts._keyword_score])
+  4 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter(nil), rowset=16
+      sort_keys([MATCH(test_table.title) AGAINST('machine learning') + MATCH(test_table.content) AGAINST('algorithms'), DESC]), topn(200)
+  5 - output([test_table.__pk_increment], [test_table.title], [test_table.content], [MATCH(test_table.title) AGAINST('machine learning')], [MATCH(test_table.content) 
+      AGAINST('algorithms')]), filter([MATCH(test_table.content) AGAINST('algorithms')]), rowset=16
+      access([test_table.__pk_increment], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, filter_before_indexback[false], 
+      calc_relevance=true, match_expr(MATCH(test_table.title) AGAINST('machine learning')), 
+      pushdown_match_filter(MATCH(test_table.title) AGAINST('machine learning')), has_functional_lookup=true
+  6 - output([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score]), filter(nil), rowset=16
+      access([_vs.__pk_increment], [_vs.title], [_vs.content], [_vs._semantic_score])
+  7 - output([l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1)))], [test_table.__pk_increment], [test_table.title], [test_table.content],
+       [round(cast(1, DOUBLE(-1, -1)) / cast(1, DOUBLE(-1, -1)) + l2_distance(test_table.vector_col, cast('[0.1, 0.2, 0.3, 0.4]', ARRAY(18, -1))), 8) * cast(0.8,
+       DOUBLE(2, 1))]), filter(nil), rowset=16
+      access([test_table.__pk_increment], [test_table.vector_col], [test_table.title], [test_table.content]), partitions(p0)
+      is_index_back=true, is_global_index=false, 
+      range_key([test_table.__pk_increment], [test_table.__type_XXXX_XXXXXXXXXXXX]), range(MIN,MIN ; MAX,MAX)always true
+# change table
+create table test_table_new(
+id int, 
+title varchar(255), 
+content text, 
+vector_col vector(4),
+vector index idx_vector(vector_col) with (distance=l2, type=hnsw, lib=vsag), 
+fulltext index idx_title(title),
+fulltext index idx_content(content)
+);
+insert into test_table_new values
+(1, 'Advanced Machine Learning', 'Deep dive into machine learning algorithms and neural networks', '[0.15,0.25,0.35,0.45]'),
+(2, 'Neural Networks Guide', 'Comprehensive tutorial on deep learning and neural network architectures', '[0.55,0.65,0.75,0.85]'),
+(3, 'Big Data Analytics', 'Complete handbook for data science and statistical analysis', '[0.95,0.15,0.25,0.35]'),
+(4, 'Java Programming', 'Master Java programming from fundamentals to enterprise applications', '[0.45,0.55,0.65,0.75]'),
+(5, 'Machine Intelligence', 'AI fundamentals, machine learning algorithms, and practical implementations', '[0.85,0.95,0.15,0.25]'),
+(6, 'NoSQL Databases', 'Document database design and performance optimization techniques', '[0.25,0.35,0.45,0.55]'),
+(7, 'Frontend Development', 'Modern frontend development with React, Vue, and Angular frameworks', '[0.65,0.75,0.85,0.95]'),
+(8, 'Serverless Computing', 'Introduction to serverless platforms and microservices architecture', '[0.35,0.45,0.55,0.65]'),
+(9, 'Information Security', 'Cybersecurity fundamentals and threat protection methodologies', '[0.75,0.85,0.95,0.15]'),
+(10, 'Cross-Platform Development', 'Flutter and React Native for mobile and desktop applications', '[0.15,0.95,0.35,0.75]');
+select * from hybrid_search('test_table_new', @basic_query);
+title	content	_keyword_score	_semantic_score	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	5.577327675825128	0.72727274	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504	NULL	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	NULL	0.61538462	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	NULL	0.53333334	0.533333344
+select a.* from hybrid_search('test_table_new', @basic_query) as a;
+title	content	_keyword_score	_semantic_score	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	5.577327675825128	0.72727274	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504	NULL	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	NULL	0.61538462	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	NULL	0.53333334	0.533333344
+select a.* from hybrid_search('test_table_new', @basic_query) a;
+title	content	_keyword_score	_semantic_score	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	5.577327675825128	0.72727274	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504	NULL	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	NULL	0.61538462	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	NULL	0.53333334	0.533333344
+# change user variable define
+set @basic_query = '{
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"title": "machine learning"}},
+        {"match": {"content": "algorithms"}}
+      ]
+    }
+  },
+  "knn": {
+    "field": "vector_col",
+    "k": 3,
+    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "boost": 0.8
+  },
+  "_source": ["title", "content"]
+}';
+select * from hybrid_search('test_table', @basic_query);
+title	content	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657
+Database Systems	Relational database design and SQL optimization	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	0.571428568
+select a.* from hybrid_search('test_table', @basic_query) as a;
+title	content	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657
+Database Systems	Relational database design and SQL optimization	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	0.571428568
+select a.* from hybrid_search('test_table', @basic_query) a;
+title	content	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657
+Database Systems	Relational database design and SQL optimization	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	0.571428568
+select * from hybrid_search('test_table_new', @basic_query);
+title	content	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	0.533333344
+select a.* from hybrid_search('test_table_new', @basic_query) as a;
+title	content	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	0.533333344
+select a.* from hybrid_search('test_table_new', @basic_query) a;
+title	content	_score
+Advanced Machine Learning	Deep dive into machine learning algorithms and neural networks	6.3046004118251275
+Machine Intelligence	AI fundamentals, machine learning algorithms, and practical implementations	3.2141028175427504
+NoSQL Databases	Document database design and performance optimization techniques	0.615384624
+Serverless Computing	Introduction to serverless platforms and microservices architecture	0.533333344
+# input params
+select * from hybrid_search('test_table');
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near ')' at line 1
+set @table_name = 'test_table';
+select * from hybrid_search(@table_name, @basic_query);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '@table_name, @basic_query)' at line 1
+select * from hybrid_search('', @basic_query);
+ERROR HY000: Invalid argument
+select * from hybrid_search(NULL, @basic_query);
+ERROR HY000: Invalid argument
+select * from hybrid_search('中文', @basic_query);
+ERROR 42S02: Table 'test.中文' doesn't exist
+select * from hybrid_search('non_existent_table', @basic_query);
+ERROR 42S02: Table 'test.non_existent_table' doesn't exist
+select * from hybrid_search(concat('tast_','table'), @basic_query);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'concat('tast_','table'), @basic_query)' at line 1
+select * from hybrid_search(1.1, @basic_query);
+ERROR 42S02: Table '1.1' doesn't exist
+select * from hybrid_search(1, @basic_query);
+ERROR 42S02: Table 'test.1' doesn't exist
+select * from hybrid_search('test_table', '');
+ERROR HY000: Invalid argument
+select * from hybrid_search('test_table', NULL);
+ERROR HY000: Invalid argument
+select * from hybrid_search('test_table', 'abc');
+ERROR 22032: Invalid JSON text.
+select * from hybrid_search('test_table', '中文');
+ERROR 22032: Invalid JSON text.
+select * from hybrid_search('test_table', concat('ocean','base'));
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'concat('ocean','base'))' at line 1
+set @num_query = 1;
+select * from hybrid_search('test_table', @num_query);
+ERROR HY000: Invalid argument
+set @num_query = 1.1;
+select * from hybrid_search('test_table', @num_query);
+ERROR 22032: Invalid JSON text.
+set @null_query = NULL;
+select * from hybrid_search('test_table', @null_query);
+ERROR HY000: Invalid argument
+select * from hybrid_search('test_table', @basic_query) as;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'as' at line 1
+select * from hybrid_search('test_table', @basic_query) '';
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '''' at line 1
+select * from hybrid_search('test_table', @basic_query) '';
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '''' at line 1
+select * from hybrid_search('test_table', @basic_query) as NULL;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 'NULL' at line 1
+select * from hybrid_search('test_table', @basic_query) as 3;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '3' at line 1
+select non_existent_col from hybrid_search('test_table', @basic_query);
+ERROR 42S22: Unknown column 'non_existent_col' in 'field list'
+set @invalid_query = '{
+  "unknown": {
+    "match": {"title": "test"}
+  }
+}';
+select * from hybrid_search('test_table', @invalid_query);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use
+create table t1 (id int, c1 int);
+insert into t1 values (1,100), (2, 200);
+select * from hybrid_search('test_table', @basic_query) t_hs, t1;
+title	content	_score	id	c1
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657	1	100
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657	2	200
+Database Systems	Relational database design and SQL optimization	0.6666666640000001	1	100
+Database Systems	Relational database design and SQL optimization	0.6666666640000001	2	200
+Cloud Computing	Introduction to cloud platforms and services	0.571428568	1	100
+Cloud Computing	Introduction to cloud platforms and services	0.571428568	2	200
+select * from t1, hybrid_search(t1.c1, @basic_query);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 't1.c1, @basic_query)' at line 1
+select * from t1, hybrid_search('test_table', t1.c1);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near 't1.c1)' at line 1
+select * from t1, hybrid_search('test_table', [1,2,3]);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '[1,2,3])' at line 1
+select * from hybrid_search('test.test_table', @basic_query);
+title	content	_score
+Machine Learning Basics	Introduction to machine learning algorithms and techniques	6.564563047343657
+Database Systems	Relational database design and SQL optimization	0.6666666640000001
+Cloud Computing	Introduction to cloud platforms and services	0.571428568
+select hybrid_search('test_table', @basic_query);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use near '('test_table', @basic_query)' at line 1
+# sql应用场景
+set @basic_query = '{
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"title": "machine learning"}},
+        {"match": {"content": "algorithms"}}
+      ]
+    }
+  },
+  "knn": {
+    "field": "vector_col",
+    "k": 3,
+    "query_vector": [0.1, 0.2, 0.3, 0.4],
+    "boost": 0.8
+  },
+  "_source": ["id", "title", "content", "_keyword_score", "_semantic_score"]
+}';
+# 1.1 比较运算符 (=, <, <=, >=, <>, !=)
+select * from hybrid_search('test_table', @basic_query) where id = 1;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where id < 5;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where id <= 3;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where id >= 7;
+id	title	content	_keyword_score	_semantic_score	_score
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where id <> 1;
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where id != 2;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where title = 'Database Systems';
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+# 1.2 逻辑运算符 (AND, OR)
+select * from hybrid_search('test_table', @basic_query) where id > 2 and id < 8;
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+select * from hybrid_search('test_table', @basic_query) where id = 1 or id = 5;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where (id > 3 and id < 7) or id = 1;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+# 1.3 BETWEEN AND
+select * from hybrid_search('test_table', @basic_query) where id between 3 and 7;
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+select * from hybrid_search('test_table', @basic_query) where _score between 0.5 and 2.0;
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+# 1.4 LIKE, NOT LIKE
+select * from hybrid_search('test_table', @basic_query) where title like '%Learning%';
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where title not like '%Python%';
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where content like 'Introduction%';
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+# 1.5 EXISTS, ANY, ALL, IN
+select * from hybrid_search('test_table', @basic_query) where id in (1, 3, 5, 7);
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where id not in (2, 4, 6);
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where id = any(select id from test_table_new where id > 5);
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) where id < all(select id from test_table_new);
+id	title	content	_keyword_score	_semantic_score	_score
+# 1.6 IS, IS NOT (FALSE, TRUE, NULL)
+select * from hybrid_search('test_table', @basic_query) where _keyword_score is not null;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) where _semantic_score is null or _semantic_score > 0;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+# 2. 嵌套SELECT测试
+select * from (
+select * from hybrid_search('test_table', @basic_query) 
+where _score > 0.5
+) t where t.id > 3;
+id	title	content	_keyword_score	_semantic_score	_score
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) 
+where id in (
+select id from test_table_new 
+where title like '%Machine%'
+);
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from (
+select id, title, _score from hybrid_search('test_table', @basic_query)
+union
+select id, title, 0 as _score from test_table_new where id > 5
+) combined order by _score desc;
+id	title	_score
+1	Machine Learning Basics	6.564563047343657
+6	Database Systems	0.6666666640000001
+8	Cloud Computing	0.571428568
+6	NoSQL Databases	0
+7	Frontend Development	0
+8	Serverless Computing	0
+9	Information Security	0
+10	Cross-Platform Development	0
+# 3. 多表查询测试
+# 3.1 Self-Join
+select t1.title, t1._score, t2.title as other_title
+from hybrid_search('test_table', @basic_query) t1
+join hybrid_search('test_table', @basic_query) t2 on t1.id != t2.id
+where t1._score > t2._score;
+title	_score	other_title
+Machine Learning Basics	6.564563047343657	Database Systems
+Machine Learning Basics	6.564563047343657	Cloud Computing
+Database Systems	0.6666666640000001	Cloud Computing
+# 3.2 INNER JOIN
+select hs.title, hs._score, tn.title as new_title
+from hybrid_search('test_table', @basic_query) hs
+inner join test_table_new tn on hs.id = tn.id;
+title	_score	new_title
+Machine Learning Basics	6.564563047343657	Advanced Machine Learning
+Database Systems	0.6666666640000001	NoSQL Databases
+Cloud Computing	0.571428568	Serverless Computing
+# 3.3 LEFT JOIN
+select hs.title, hs._score, tn.title as new_title
+from hybrid_search('test_table', @basic_query) hs
+left join test_table_new tn on hs.id != tn.id;
+title	_score	new_title
+Machine Learning Basics	6.564563047343657	Neural Networks Guide
+Machine Learning Basics	6.564563047343657	Big Data Analytics
+Machine Learning Basics	6.564563047343657	Java Programming
+Machine Learning Basics	6.564563047343657	Machine Intelligence
+Machine Learning Basics	6.564563047343657	NoSQL Databases
+Machine Learning Basics	6.564563047343657	Frontend Development
+Machine Learning Basics	6.564563047343657	Serverless Computing
+Machine Learning Basics	6.564563047343657	Information Security
+Machine Learning Basics	6.564563047343657	Cross-Platform Development
+Database Systems	0.6666666640000001	Advanced Machine Learning
+Database Systems	0.6666666640000001	Neural Networks Guide
+Database Systems	0.6666666640000001	Big Data Analytics
+Database Systems	0.6666666640000001	Java Programming
+Database Systems	0.6666666640000001	Machine Intelligence
+Database Systems	0.6666666640000001	Frontend Development
+Database Systems	0.6666666640000001	Serverless Computing
+Database Systems	0.6666666640000001	Information Security
+Database Systems	0.6666666640000001	Cross-Platform Development
+Cloud Computing	0.571428568	Advanced Machine Learning
+Cloud Computing	0.571428568	Neural Networks Guide
+Cloud Computing	0.571428568	Big Data Analytics
+Cloud Computing	0.571428568	Java Programming
+Cloud Computing	0.571428568	Machine Intelligence
+Cloud Computing	0.571428568	NoSQL Databases
+Cloud Computing	0.571428568	Frontend Development
+Cloud Computing	0.571428568	Information Security
+Cloud Computing	0.571428568	Cross-Platform Development
+# 3.4 RIGHT JOIN
+select hs.title, hs._score, tn.title as new_title
+from hybrid_search('test_table', @basic_query) hs
+right join test_table_new tn on hs.id = tn.id limit 3;
+title	_score	new_title
+Machine Learning Basics	6.564563047343657	Advanced Machine Learning
+Database Systems	0.6666666640000001	NoSQL Databases
+Cloud Computing	0.571428568	Serverless Computing
+# 3.5 UNION
+select id, title, _score from hybrid_search('test_table', @basic_query)
+union
+select id, title, 0 as _score from test_table_new
+order by _score desc;
+id	title	_score
+1	Machine Learning Basics	6.564563047343657
+6	Database Systems	0.6666666640000001
+8	Cloud Computing	0.571428568
+1	Advanced Machine Learning	0
+2	Neural Networks Guide	0
+3	Big Data Analytics	0
+4	Java Programming	0
+5	Machine Intelligence	0
+6	NoSQL Databases	0
+7	Frontend Development	0
+8	Serverless Computing	0
+9	Information Security	0
+10	Cross-Platform Development	0
+# 3.6 UNION ALL
+select (
+(select count(*) from hybrid_search('test_table', @basic_query)) +
+(select count(*) from hybrid_search('test_table_new', @basic_query))
+) - (
+select count(*) from (
+select 1 as tag from hybrid_search('test_table', @basic_query)
+union all
+select 2 as tag from hybrid_search('test_table_new', @basic_query)
+) u2
+) as diff;
+diff
+0
+# 3.6 等值连接和不等值连接
+select hs1.title, hs1._score, hs2.title as other_title
+from hybrid_search('test_table', @basic_query) hs1
+join hybrid_search('test_table', @basic_query) hs2 on hs1.id = hs2.id + 1;
+title	_score	other_title
+select hs1.title, hs1._score, hs2.title as other_title
+from hybrid_search('test_table', @basic_query) hs1
+join hybrid_search('test_table', @basic_query) hs2 on hs1.id < hs2.id;
+title	_score	other_title
+Machine Learning Basics	6.564563047343657	Database Systems
+Machine Learning Basics	6.564563047343657	Cloud Computing
+Database Systems	0.6666666640000001	Cloud Computing
+# 4. ORDER BY测试
+select * from hybrid_search('test_table', @basic_query) order by _score desc;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) order by id asc, _score desc;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) order by title;
+id	title	content	_keyword_score	_semantic_score	_score
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+# 5. GROUP BY / GROUP BY HAVING测试
+select count(*) as cnt, avg(_score) as avg_score
+from hybrid_search('test_table', @basic_query)
+group by substring(title, 1, 1);
+cnt	avg_score
+1	6.564563047343657
+1	0.6666666640000001
+1	0.571428568
+select substring(title, 1, 1) as first_char, count(*) as cnt, avg(_score) as avg_score
+from hybrid_search('test_table', @basic_query)
+group by substring(title, 1, 1)
+having count(*) = 1;
+first_char	cnt	avg_score
+M	1	6.564563047343657
+D	1	0.6666666640000001
+C	1	0.571428568
+# 6. 运算符测试
+select id, title, _score, _score * 2 as double_score
+from hybrid_search('test_table', @basic_query);
+id	title	_score	double_score
+1	Machine Learning Basics	6.564563047343657	13.129126094687313
+6	Database Systems	0.6666666640000001	1.3333333280000002
+8	Cloud Computing	0.571428568	1.142857136
+select id, title, _score, _score + _keyword_score as total_score
+from hybrid_search('test_table', @basic_query);
+id	title	_score	total_score
+1	Machine Learning Basics	6.564563047343657	12.329126094687314
+6	Database Systems	0.6666666640000001	NULL
+8	Cloud Computing	0.571428568	NULL
+# 7. CAST测试
+select id, title, cast(_score as decimal(10,2)) as score_decimal
+from hybrid_search('test_table', @basic_query);
+id	title	score_decimal
+1	Machine Learning Basics	6.56
+6	Database Systems	0.67
+8	Cloud Computing	0.57
+select id, title, cast(_score as char(10)) as score_char
+from hybrid_search('test_table', @basic_query);
+id	title	score_char
+1	Machine Learning Basics	6.56456304
+6	Database Systems	0.66666666
+8	Cloud Computing	0.57142856
+# 8. DISTINCT测试
+select distinct substring(title, 1, 1) as first_char
+from hybrid_search('test_table', @basic_query);
+first_char
+M
+D
+C
+# 9. WITH AS测试
+with high_score_results as (
+select * from hybrid_search('test_table', @basic_query) 
+where _score > 0.6
+)
+select * from high_score_results order by _score desc;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+with score_stats as (
+select avg(_score) as avg_score, max(_score) as max_score
+from hybrid_search('test_table', @basic_query)
+)
+select hs.*, ss.avg_score, ss.max_score
+from hybrid_search('test_table', @basic_query) hs
+cross join score_stats ss
+where hs._score > ss.avg_score;
+id	title	content	_keyword_score	_semantic_score	_score	avg_score	max_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657	2.600886093114552	6.564563047343657
+# 10. CASE WHEN测试
+select id, title, _score,
+case 
+when _score > 2.0 then 'High'
+        when _score > 1.0 then 'Medium'
+        else 'Low'
+    end as score_level
+from hybrid_search('test_table', @basic_query);
+id	title	_score	score_level
+1	Machine Learning Basics	6.564563047343657	High
+6	Database Systems	0.6666666640000001	Low
+8	Cloud Computing	0.571428568	Low
+select id, title, _score,
+case _score
+when 0 then 'Zero'
+        when 1 then 'One'
+        else 'Other'
+    end as score_category
+from hybrid_search('test_table', @basic_query);
+id	title	_score	score_category
+1	Machine Learning Basics	6.564563047343657	Other
+6	Database Systems	0.6666666640000001	Other
+8	Cloud Computing	0.571428568	Other
+# 11. LIMIT测试
+select * from hybrid_search('test_table', @basic_query) limit 3;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+8	Cloud Computing	Introduction to cloud platforms and services	NULL	0.57142857	0.571428568
+select * from hybrid_search('test_table', @basic_query) order by _score desc limit 2;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+6	Database Systems	Relational database design and SQL optimization	NULL	0.66666666	0.6666666640000001
+# 12. FOR UPDATE测试
+select * from hybrid_search('test_table', @basic_query) where id = 1 for update;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+# 13. 虚拟列作为过滤条件测试
+select * from hybrid_search('test_table', @basic_query) 
+where _keyword_score > 0 and _semantic_score > 0;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+select * from hybrid_search('test_table', @basic_query) 
+where (_keyword_score + _semantic_score) > 1.5;
+id	title	content	_keyword_score	_semantic_score	_score
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	5.764563047343657	0.80000000	6.564563047343657
+# 14. 聚合函数测试
+select count(*) as total_count,
+avg(_score) as avg_score,
+max(_score) as max_score,
+min(_score) as min_score,
+sum(_score) as total_score
+from hybrid_search('test_table', @basic_query);
+total_count	avg_score	max_score	min_score	total_score
+3	2.600886093114552	6.564563047343657	0.571428568	7.802658279343657
+# 15. 窗口函数测试
+select id, title, _score,
+row_number() over (order by _score desc) as rank_num,
+dense_rank() over (order by _score desc) as dense_rank_num,
+rank() over (order by _score desc) as rank_val,
+lag(_score, 1) over (order by _score desc) as prev_score,
+lead(_score, 1) over (order by _score desc) as next_score
+from hybrid_search('test_table', @basic_query);
+id	title	_score	rank_num	dense_rank_num	rank_val	prev_score	next_score
+1	Machine Learning Basics	6.564563047343657	1	1	1	NULL	0.6666666640000001
+6	Database Systems	0.6666666640000001	2	2	2	6.564563047343657	0.571428568
+8	Cloud Computing	0.571428568	3	3	3	0.6666666640000001	NULL
+select id, title, _score,
+sum(_score) over (order by _score desc rows between unbounded preceding and current row) as running_total,
+avg(_score) over (order by _score desc rows between 1 preceding and 1 following) as moving_avg
+from hybrid_search('test_table', @basic_query);
+id	title	_score	running_total	moving_avg
+1	Machine Learning Basics	6.564563047343657	6.564563047343657	3.6156148556718284
+6	Database Systems	0.6666666640000001	7.231229711343657	2.600886093114552
+8	Cloud Computing	0.571428568	7.802658279343657	0.619047616
+# 16. 其他函数测试
+select id, title, _score,
+length(title) as title_length,
+upper(title) as title_upper,
+lower(title) as title_lower,
+concat(title, ' - Score: ', _score) as title_with_score
+from hybrid_search('test_table', @basic_query);
+id	title	_score	title_length	title_upper	title_lower	title_with_score
+1	Machine Learning Basics	6.564563047343657	23	MACHINE LEARNING BASICS	machine learning basics	Machine Learning Basics - Score: 6.564563047343657
+6	Database Systems	0.6666666640000001	16	DATABASE SYSTEMS	database systems	Database Systems - Score: 0.6666666640000001
+8	Cloud Computing	0.571428568	15	CLOUD COMPUTING	cloud computing	Cloud Computing - Score: 0.571428568
+select id, title, _score,
+substring(title, 1, 10) as title_short,
+replace(title, 'Learning', 'Study') as title_replaced
+from hybrid_search('test_table', @basic_query);
+id	title	_score	title_short	title_replaced
+1	Machine Learning Basics	6.564563047343657	Machine Le	Machine Study Basics
+6	Database Systems	0.6666666640000001	Database S	Database Systems
+8	Cloud Computing	0.571428568	Cloud Comp	Cloud Computing
+# 17. IN子查询
+select * from test_table where title in (select title from hybrid_search('test_table', @basic_query));
+id	title	content	vector_col
+1	Machine Learning Basics	Introduction to machine learning algorithms and techniques	[0.1,0.2,0.3,0.4]
+6	Database Systems	Relational database design and SQL optimization	[0.2,0.3,0.4,0.5]
+8	Cloud Computing	Introduction to cloud platforms and services	[0.3,0.4,0.5,0.6]
+# Cleanup
+drop table if exists test_table，test_table_new, t1;
+alter system set ob_vector_memory_limit_percentage = 0;
