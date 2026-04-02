@@ -1,14 +1,12 @@
 # Install toolchain
 
-To build OceanBase seekdb from source code, you need to install the C++ toolchain in your development environment first. If the C++ toolchain is not installed yet, you can follow the instructions in this document for installation.
+To build OceanBase SeekDB from source code, you need to install the C++ toolchain in your development environment first. If the C++ toolchain is not installed yet, you can follow the instructions in this document for installation.
 
 ## Supported OS
 
-OceanBase makes strong assumption on the underlying operating systems. Not all the operating systems are supported; especially, Windows is not supported yet.
+OceanBase makes strong assumption on the underlying operating systems. Not all the operating systems are supported; especially, Windows and Mac OS X are not supported yet.
 
 Below is the OS compatibility list:
-
-### Linux
 
  | Alibaba Cloud Linux | 3                     | x86_64 / aarch64 | Yes        | Yes                | Yes                        | Yes              |
  | CentOS              | 7 / 8 / 9             | x86_64 / aarch64 | Yes        | Yes                | Yes                        | Yes              |
@@ -24,19 +22,9 @@ Below is the OS compatibility list:
  | Ubuntu              | 20.04 / 22.04 / 24.04 | x86_84 / aarch64 | Yes        | Yes                | Yes                        | Yes              |
  | UOS                 | 20                    | x86_84 / aarch64 | Yes        | Yes                | Yes                        | Yes              |
 
-### macOS
-
-| OS      | Version | Architecture       | Supported |
-| ------- | ------- | ------------------ | --------- |
-| macOS   | 13+     | Apple Silicon (M-series) | Yes       |
-
 > **Note**:
 >
-> - macOS support is limited to **macOS 13 (Ventura) or later** with **Apple Silicon (M1/M2/M3/M4) chips only**. Intel-based Macs are not supported.
-
-> **Note**:
->
-> Other Linux distributions _may_ work. If you verify that OceanBase seekdb can compile and deploy on a distribution except ones listed above, feel free to submit a pull request to add it.
+> Other Linux distributions _may_ work. If you verify that OceanBase SeekDB can compile and deploy on a distribution except ones listed above, feel free to submit a pull request to add it.
 
 ## Installation
 
@@ -47,7 +35,7 @@ The installation instructions vary among the operating systems and package manag
 This includes CentOS, Fedora, OpenAnolis, RedHat, UOS, etc.
 
 ```shell
-yum install git wget rpm* cpio make glibc-devel glibc-headers binutils m4 libtool libaio python3
+yum install git wget rpm* cpio make glibc-devel glibc-headers binutils m4 libtool libaio
 ```
 
 ### Debian based
@@ -55,7 +43,7 @@ yum install git wget rpm* cpio make glibc-devel glibc-headers binutils m4 libtoo
 This includes Debian, Ubuntu, etc.
 
 ```shell
-apt-get install git wget rpm rpm2cpio cpio make build-essential binutils m4 file python3
+apt-get install git wget rpm rpm2cpio cpio make build-essential binutils m4 file
 ```
 
 > **Note**: If you are using Ubuntu 24.04 or later, or Debian 13 or later, you also need to install `libaio1t64`:
@@ -69,16 +57,5 @@ apt-get install git wget rpm rpm2cpio cpio make build-essential binutils m4 file
 This includes SUSE, openSUSE, etc.
 
 ```shell
-zypper install git wget rpm cpio make glibc-devel binutils m4 python3
+zypper install git wget rpm cpio make glibc-devel binutils m4
 ```
-
-### macOS (Apple Silicon)
-
-> **Note**: Only macOS 13+ with M-series chips (M1/M2/M3/M4) is supported.
-
-```shell
-brew install git cmake pkg-config openssl@3 ncurses googletest
-brew install zstd utf8proc thrift re2 brotli
-```
-
-> **Tip**: If Homebrew downloads are slow, see [Homebrew Optimization](homebrew.md) for mirror configuration.
