@@ -1959,7 +1959,6 @@ stmt::StmtType ObResolverUtils::get_stmt_type_by_item_type(const ObItemType item
       SET_STMT_TYPE(T_RENAME_TABLE);
       SET_STMT_TYPE(T_TRUNCATE_TABLE);
       SET_STMT_TYPE(T_CREATE_TABLE_LIKE);
-      SET_STMT_TYPE(T_FORK_TABLE);
       SET_STMT_TYPE(T_ALTER_TABLE);
       SET_STMT_TYPE(T_OPTIMIZE_TABLE);
       SET_STMT_TYPE(T_OPTIMIZE_TENANT);
@@ -6001,8 +6000,8 @@ int ObResolverUtils::foreign_key_column_match_index_column(const ObTableSchema &
     // check_partial_match_columns: allow matching a prefix, such as (a, b) matching (a, b, c)
     if (OB_FAIL(check_partial_match_columns(parent_columns, pk_columns, tmp_is_match))) {
       LOG_WARN("Failed to check_partial_match_columns", K(ret));
-    }
-
+    } 
+ 
     if (OB_FAIL(ret)) {
       // do nothing
     } else if (tmp_is_match) {
