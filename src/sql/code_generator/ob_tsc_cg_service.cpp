@@ -1978,8 +1978,8 @@ int ObTscCgService::generate_vec_aux_idx_tbl_ctdef(const ObLogTableScan &op,
     ObTSCIRScanType second_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_IDX_ID_SCAN : OB_VEC_IVF_CID_VEC_SCAN;
     ObTSCIRScanType third_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_SNAPSHOT_SCAN : OB_VEC_IVF_ROWKEY_CID_SCAN;
     ObTSCIRScanType forth_ir_scan_type = vc_info.is_hnsw_vec_scan() ? OB_VEC_ROWKEY_VID_SCAN : OB_VEC_IVF_SPECIAL_AUX_SCAN;
-    bool need_fifth_table = vc_info.is_hnsw_vec_scan() && vc_info.is_hybrid_index;
-    ObTSCIRScanType fifth_ir_scan_type = OB_VEC_EMBEDDED_SCAN;
+    bool need_fifth_table = vc_info.is_hnsw_vec_scan() && vc_info.is_hybrid_index; 
+    ObTSCIRScanType fifth_ir_scan_type = OB_VEC_EMBEDDED_SCAN; 
     ObVectorAuxTableIdx hybrid_embedded_tbl_idx = op.need_skip_rowkey_vid() ? VEC_FOURTH_AUX_TBL_IDX : VEC_SIXTH_AUX_TBL_IDX;
     if (OB_FAIL(generate_vec_aux_table_ctdef(op, first_ir_scan_type, vc_info.get_aux_table_id(ObVectorAuxTableIdx::VEC_FIRST_AUX_TBL_IDX), first_aux_ctdef,
                                             pushdown_flag, true))) {
@@ -1995,7 +1995,7 @@ int ObTscCgService::generate_vec_aux_idx_tbl_ctdef(const ObLogTableScan &op,
                OB_FAIL(generate_vec_aux_table_ctdef(op, forth_ir_scan_type, vc_info.get_aux_table_id(ObVectorAuxTableIdx::VEC_FOURTH_AUX_TBL_IDX), forth_aux_ctdef,
                                                                                   pushdown_flag, vc_info.is_hnsw_vec_scan()))) {
       LOG_WARN("failed to generate vec aux idx tbl ctdef", K(ret), K(forth_ir_scan_type));
-    } else if (need_fifth_table && OB_FAIL(generate_vec_aux_table_ctdef(op, fifth_ir_scan_type, vc_info.get_aux_table_id(hybrid_embedded_tbl_idx), fifth_aux_ctdef,
+    } else if (need_fifth_table && OB_FAIL(generate_vec_aux_table_ctdef(op, fifth_ir_scan_type, vc_info.get_aux_table_id(hybrid_embedded_tbl_idx), fifth_aux_ctdef, 
                                                     pushdown_flag, true))) {
       LOG_WARN("failed to generate vec aux idx tbl ctdef", K(ret), K(fifth_ir_scan_type));
     }
@@ -2172,6 +2172,14 @@ int ObTscCgService::generate_vec_idx_ctdef(const ObLogTableScan &op,
       }
       vec_scan_ctdef->is_hybrid_ = vc_info.is_hybrid_index;
       vec_scan_ctdef->use_rowkey_vid_tbl_ = !op.need_skip_rowkey_vid();
+      // HNSW + heap table + sync_mode=async: delta_buffer not have data, skip in scan
+      if (vc_info.is_hnsw_vec_scan() && OB_NOT_NULL(data_table_schema)) {
+        bool is_heap_table = data_table_schema->is_heap_organized_table();
+        bool is_sync_mode_async = vc_info.get_vector_index_param().sync_mode_async_;
+        vec_scan_ctdef->skip_delta_buffer_ = is_heap_table && is_sync_mode_async;
+      } else {
+        vec_scan_ctdef->skip_delta_buffer_ = false;
+      }
 
       if (OB_ISNULL(vec_scan_ctdef->children_ = OB_NEW_ARRAY(ObDASBaseCtDef*, &ctdef_alloc, vec_child_task_cnt))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -3377,7 +3385,7 @@ int ObTscCgService::extract_vector_das_output_column_ids(const ObTableSchema &in
         }
         break;
       }
-      case ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN:
+      case ObTSCIRScanType::OB_VEC_EMBEDDED_SCAN: 
       case ObTSCIRScanType::OB_VEC_COM_AUX_SCAN: {
         if (OB_FAIL(output_cids.push_back(
             static_cast<ObColumnRefRawExpr *>(vec_info.target_vec_column_)->get_column_id()))) {
@@ -4042,7 +4050,7 @@ int ObTscCgService::generate_text_avg_doc_len_est_ctdef(const ObTextRetrievalInf
   const ObColumnSchemaV2 *col_schema = nullptr;
   ObSqlSchemaGuard *schema_guard = cg_.opt_ctx_->get_sql_schema_guard();
   uint64_t column_id = OB_INVALID_ID;
-  // reuse inv idx scan ctdef here, since we only need to access skip index of sum(token_cnt) on basline major sstable
+  // reuse inv idx scan ctdef here, since we only need to access skip index of sum(token_cnt) on basline major sstable 
   const ObDASScanCtDef *inv_idx_scan_ctdef = text_ir_scan_ctdef.get_inv_idx_scan_ctdef();
   if (OB_ISNULL(tr_info.avg_doc_token_cnt_) || OB_ISNULL(tr_info.token_cnt_column_) || OB_ISNULL(inv_idx_scan_ctdef)) {
     ret = OB_ERR_UNEXPECTED;

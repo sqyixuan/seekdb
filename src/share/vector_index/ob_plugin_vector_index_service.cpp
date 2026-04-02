@@ -310,6 +310,15 @@ int ObPluginVectorIndexMgr::create_partial_adapter(ObTabletID idx_tablet_id,
       LOG_WARN("failed to set index table id", K(idx_tablet_id), K(type), K(index_table_id), KR(ret));
     } else {
       tmp_vec_idx_adpt->set_create_type(ObPluginVectorIndexUtils::index_type_to_create_type(type));
+      // Initialize vsag for index_id_table (type 4) partial adaptor
+      if (schema::is_vec_index_id_type(type)) {
+        if (OB_FAIL(tmp_vec_idx_adpt->try_init_mem_data(VIRT_INC))) {
+          LOG_WARN("failed to init mem data for index_id partial adapter", K(ret), K(type), K(idx_tablet_id));
+        } else {
+          LOG_INFO("Successfully initialized vsag for index_id partial adapter", 
+                   K(idx_tablet_id), K(type), K(index_table_id));
+        }
+      }
     }
     if (OB_SUCC(ret)) {
       WLockGuard lock_guard(adapter_map_rwlock_);
@@ -536,7 +545,7 @@ int ObPluginVectorIndexMgr::get_adapter_inst_by_ctx(ObVectorIndexAcquireCtx &ctx
                                                       vec_index_param,
                                                       dim,
                                                       allocator))) {
-      LOG_WARN("failed to get vector index adapter", K(ctx.embedded_tablet_id_), KR(ret));
+      LOG_WARN("failed to get vector index adapter", K(ctx.embedded_tablet_id_), KR(ret));    
     } else if (FALSE_IT(adapter = candidate.embedded_adatper_guard_.get_adatper())) {
     } else if (adapter->get_create_type() == CreateTypeFullPartial
                || adapter->get_create_type() == CreateTypeComplete) {
