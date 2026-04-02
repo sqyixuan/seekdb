@@ -1,0 +1,837 @@
+alter system set ob_vector_memory_limit_percentage = 34;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL(
+'ob_embed', '{
+    "type": "dense_embedding",
+    "model_name": "qwen3-embedding"
+  }');
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop table if exists tbl_46;
+drop table if exists tbl_291;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate));
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100));
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=immediate))
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated partition document' where id = 150;
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+99
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate))PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'PRIMARY'
+create table t3 (id int primary key, doc varchar(100));
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2,type=hnsw,dim=1024,model=ob_embed,sync_mode=immediate));
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, 'Document with parallel test 100') on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate));
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+);
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+);
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+2	Document two	science
+3	Document three - Reference three - Description for doc three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+3	Document three - Reference three - Description for doc three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one - updated	tech
+3	Document three - Reference three - Description for doc three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+);
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags - high priority	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf8;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+) DEFAULT CHARSET = utf16;
+INSERT INTO vector_charset_table VALUES (1, 'abc');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'abc-after change')
+WHERE id = 1;
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcabc-after change
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=immediate)
+);
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+DROP TABLE vector_null_table;
+=== 基础DML ===
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists t3;
+drop procedure if exists process;
+create table t1 (id int AUTO_INCREMENT PRIMARY KEY, doc varchar(100),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual));
+insert into t1 (doc) values('Document 1');
+insert into t1 (doc) values('Document 2');
+insert into t1 (id, doc) values(10, 'Document with specific id') on duplicate key update doc = 'Updated document';
+insert ignore into t1 (id, doc) values(11, 'Document eleven');
+create table t2 (id int PRIMARY KEY, doc varchar(100));
+insert into t2 values(100, 'Document from table t2');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated document content' where id = 100;
+update t1 set doc = concat(doc, ' - modified') where id > 5;
+delete from t1 where id <= 5;
+select distinct id from t1;
+id
+10
+11
+100
+drop table t1, t2;
+=== 分区表DML ===
+CREATE TABLE t1(id int not null auto_increment, doc varchar(100),
+primary key(id),
+VECTOR INDEX idx1(doc) WITH (distance=L2,
+type=hnsw, dim=1024,
+model=ob_embed,
+sync_mode=manual))
+PARTITION BY RANGE COLUMNS(id)
+(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 (doc) values('Partition document 1');
+insert into t1 (id, doc) values(150, 'Document in partition p1');
+insert into t1 (id, doc) values(250, 'Document in partition p2');
+insert into t1 (id, doc) values(5000, 'Document in partition p3');
+insert into t1 (id, doc) values(10, 'Duplicate id test') on duplicate key update doc = 'Updated in partition';
+insert ignore into t1 (id, doc) values(11, 'Ignore test document');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(99, 'Document from t2 in p0');
+insert into t2 values(150, 'Document from t2 in p1');
+insert into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - merged from t2');
+update t1 set doc = 'Updated partition document' where id = 150;
+update t1 set doc = concat(doc, ' - partition modified') where id > 100;
+delete from t1 where id <= 10;
+select distinct id from t1;
+id
+11
+99
+150
+250
+5000
+drop table t1, t2;
+CREATE TABLE t1(id int not null, doc varchar(100),primary key(id),VECTOR INDEX idx1(doc) WITH (distance=L2,type=hnsw, dim=1024,model=ob_embed,sync_mode=manual))PARTITION BY RANGE COLUMNS(id)(
+PARTITION p0 VALUES LESS THAN(100),
+PARTITION p1 VALUES LESS THAN(200),
+PARTITION p2 VALUES LESS THAN(300),
+PARTITION p3 VALUES LESS THAN(10000),
+PARTITION p4 VALUES LESS THAN MAXVALUE
+);
+insert into t1 values(1, 'Document one');
+insert into t1 values(50, 'Document fifty');
+insert into t1 values(99, 'Document ninety-nine');
+insert into t1 values(150, 'Document one-fifty');
+insert into t1 values(200, 'Document two-hundred');
+create table t2 (id int primary key, doc varchar(100));
+insert into t2 values(50, 'Document from t2');
+insert into t2 values(99, 'Another document from t2');
+alter system set direct_load_allow_fallback=TRUE;
+insert /*+ direct(true, 0) enable_parallel_dml parallel(2) */ into t1 select * from t2 on duplicate key update doc = concat(t1.doc, ' - direct merged');
+insert into t2 values(500, 'Document five hundred');
+insert /*+ direct(true, 100, 'inc_replace') enable_parallel_dml parallel(2) */ into t1 select * from t2;
+ERROR 23000: Duplicate entry '50' for key 'PRIMARY'
+create table t3 (id int primary key, doc varchar(100));
+insert into t3 values(500, 'Document from t3');
+insert into t3 values(501, 'Another document from t3');
+insert into t1(id, doc)
+select t2.id, t3.doc
+from t2
+join t3 on t2.id = t3.id
+where t2.id = 500
+on duplicate key update doc = concat(t1.doc, ' - complex joined');
+update t1
+join t2 on t1.id = t2.id
+set t1.doc = concat(t2.doc, ' - joined')
+where t2.id < 5;
+update t1
+set doc = case
+when id = 201 then concat(doc, ' - case 201')
+when id = 401 then concat(doc, ' - case 401')
+else doc
+end
+where id < 500;
+delete t1
+from t1
+join t2 on t1.id = t2.id
+where t2.id <= 3;
+=== 事务 ===
+START TRANSACTION;
+delete from t1
+where t1.id in (
+select id from t2
+);
+insert into t1 values(30, 'Transaction document');
+COMMIT;
+=== 存储过程 ===
+create procedure process(IN inc1 INT, IN inc2 INT)
+begin
+DECLARE t2id INT;
+select id into t2id
+from t2
+where id = inc1;
+if t2id = inc2 then
+update t1
+set doc = concat(doc, ' - procedure')
+where id > 10000;
+else
+insert into t1 select * from t2 where t2.id >= 505 on duplicate key update doc = concat(t1.doc, ' - procedure merged');
+end if;
+end;
+//
+CALL process(500, 500);
+CALL process(500, 501);
+drop procedure process;
+drop table t1, t2, t3;
+=== 并发DML ===
+bugfix 2025011500107001921 parallel dml
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual));
+insert into t1 values(1, 1, 'Document with parallel test 1') on duplicate key update doc = concat(t1.doc, ' - parallel test 1');
+insert into t1 values(2, 2, 'Document with parallel test 2');
+insert into t1 values(3, 3, 'Document with parallel test 3');
+insert into t1 values(100, 100, null) on duplicate key update doc = concat(t1.doc, ' - parallel test 100');
+update /*+enable_parallel_dml parallel(2)*/t1 set category=(select id from t1 limit 1) where category is null;
+update /*+enable_parallel_dml parallel(2)*/t1 set doc=(select doc from t1 limit 1) where category is not null;
+update t1 set category=(select /*+enable_parallel_dml parallel(2)*/id from t1 limit 1);
+=== 辅助表数据验证 ===
+drop table if exists t1;
+create table t1(id int, category int, doc varchar(100), primary key(id), 
+vector index idx3(doc) with (distance=l2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual));
+INSERT INTO t1 (id, doc) VALUES (1, 'aa');
+INSERT INTO t1 (id, doc) VALUES (2, 'bb');
+INSERT INTO t1 (id, doc) VALUES (3, 'cc');
+UPDATE t1 set doc = concat(doc, ' - modified') where id >= 2;
+delete from t1 where id = 1;
+drop table t1;
+=== 多表 JOIN UPDATE ===
+DROP TABLE IF EXISTS vector_join_t1;
+DROP TABLE IF EXISTS vector_join_t2;
+DROP TABLE IF EXISTS vector_join_t3;
+CREATE TABLE vector_join_t1 (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+CREATE TABLE vector_join_t2 (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+ref_id INT
+);
+CREATE TABLE vector_join_t3 (
+id INT PRIMARY KEY,
+description TEXT,
+ref_id INT
+);
+INSERT INTO vector_join_t1 VALUES 
+(1, 'Document one', 'tech'),
+(2, 'Document two', 'science'),
+(3, 'Document three', 'tech');
+INSERT INTO vector_join_t2 VALUES 
+(1, 'Reference one', 1),
+(2, 'Reference two', 2),
+(3, 'Reference three', 3);
+INSERT INTO vector_join_t3 VALUES 
+(1, 'Description for doc one', 1),
+(2, 'Description for doc two', 2),
+(3, 'Description for doc three', 3);
+UPDATE vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+JOIN vector_join_t3 t3 ON t1.id = t3.ref_id
+SET t1.doc = CONCAT(t1.doc, ' - ', t2.name, ' - ', t3.description)
+WHERE t1.category = 'tech';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+2	Document two	science
+3	Document three - Reference three - Description for doc three	tech
+=== 多表 JOIN DELETE ===
+DELETE t1 FROM vector_join_t1 t1
+JOIN vector_join_t2 t2 ON t1.id = t2.ref_id
+WHERE t2.name LIKE '%two%';
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one	tech
+3	Document three - Reference three - Description for doc three	tech
+=== 子查询 UPDATE ===
+UPDATE vector_join_t1 
+SET doc = CONCAT(doc, ' - updated')
+WHERE id IN (SELECT ref_id FROM vector_join_t2 WHERE name LIKE '%one%');
+SELECT * FROM vector_join_t1 ORDER BY id;
+id	doc	category
+1	Document one - Reference one - Description for doc one - updated	tech
+3	Document three - Reference three - Description for doc three	tech
+DROP TABLE vector_join_t1, vector_join_t2, vector_join_t3;
+========== 视图上的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_view_base;
+DROP VIEW IF EXISTS vector_view;
+CREATE TABLE vector_view_base (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+category VARCHAR(50),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+CREATE VIEW vector_view AS 
+SELECT id, doc, category FROM vector_view_base WHERE category = 'tech';
+INSERT INTO vector_view_base VALUES 
+(1, 'Tech document one', 'tech'),
+(2, 'Science document', 'science'),
+(3, 'Tech document two', 'tech');
+INSERT INTO vector_view (id, doc, category) VALUES (4, 'New tech doc', 'tech');
+UPDATE vector_view SET doc = CONCAT(doc, ' - updated') WHERE id = 1;
+DELETE FROM vector_view WHERE id = 3;
+SELECT * FROM vector_view_base ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+2	Science document	science
+4	New tech doc	tech
+SELECT * FROM vector_view ORDER BY id;
+id	doc	category
+1	Tech document one - updated	tech
+4	New tech doc	tech
+DROP VIEW vector_view;
+DROP TABLE vector_view_base;
+========== JSON 字段的 DML 操作 ==========
+DROP TABLE IF EXISTS vector_json_table;
+CREATE TABLE vector_json_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+metadata JSON,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual),
+INDEX metadata_idx ((CAST(json_extract(metadata, '$.tags') AS CHAR(100) ARRAY)))
+);
+INSERT INTO vector_json_table VALUES 
+(1, 'Document with tags', '{"tags": ["tech", "ai"], "priority": "high"}'),
+(2, 'Another document', '{"tags": ["science", "research"], "priority": "medium"}');
+UPDATE vector_json_table 
+SET metadata = JSON_SET(metadata, '$.tags', JSON_ARRAY('tech', 'ai', 'machine_learning'))
+WHERE id = 1;
+UPDATE vector_json_table 
+SET doc = CONCAT(doc, ' - high priority')
+WHERE JSON_EXTRACT(metadata, '$.priority') = 'high';
+SELECT * FROM vector_json_table ORDER BY id;
+id	doc	metadata
+1	Document with tags - high priority	{"tags": ["tech", "ai", "machine_learning"], "priority": "high"}
+2	Another document	{"tags": ["science", "research"], "priority": "medium"}
+DROP TABLE vector_json_table;
+========== 字符集相关的 DML ==========
+DROP TABLE IF EXISTS vector_charset_table;
+=== utf8 字符集 ===
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf8;
+INSERT INTO vector_charset_table VALUES 
+(1, 'abc英文空格 中文分号；英文分号;全角空格　全角逗号，等');
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abc英文空格 中文分号；英文分号;全角空格　全角逗号，等
+=== utf16 字符集 ===
+DROP TABLE vector_charset_table;
+CREATE TABLE vector_charset_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+) DEFAULT CHARSET = utf16;
+INSERT INTO vector_charset_table VALUES (1, 'abc');
+UPDATE vector_charset_table 
+SET doc = CONCAT(doc, 'abc-after change')
+WHERE id = 1;
+SELECT * FROM vector_charset_table WHERE id = 1;
+id	doc
+1	abcabc-after change
+DROP TABLE vector_charset_table;
+========== 空值和边界值处理 ==========
+DROP TABLE IF EXISTS vector_null_table;
+CREATE TABLE vector_null_table (
+id INT PRIMARY KEY,
+doc VARCHAR(100),
+content TEXT,
+VECTOR INDEX idx1(doc) WITH (distance=L2, type=hnsw, dim=1024, model=ob_embed, sync_mode=manual)
+);
+INSERT INTO vector_null_table VALUES 
+(1, '', 'Empty string'),
+(2, NULL, 'NULL value'),
+(3, '   ', 'Whitespace only'),
+(4, 'Normal content', 'Normal document');
+UPDATE vector_null_table 
+SET doc = NULL 
+WHERE id = 4;
+UPDATE vector_null_table 
+SET doc = '' 
+WHERE id = 3;
+DELETE FROM vector_null_table 
+WHERE doc IS NULL OR doc = '';
+SELECT * FROM vector_null_table ORDER BY id;
+id	doc	content
+DROP TABLE vector_null_table;
+create TABLE tbl_46 ( col_646 varchar ( 462 )    default 'kCp!' ,col_647 enum ( 'Alice','Bob','Charlie','David' ) ,col_648 bit ( 4 )   not null ,col_649 blob ( 500 ) ,col_650 binary ( 249 )   not null ,col_651 longblob ,col_652 text ( 437 )   not null ,col_653 year   not null default '2023' ,col_654 double   not null ,col_655 int  unsigned not null ,col_656 bit ( 60 )   not null ,col_657 time   not null default '17:13:39.00' ,col_658 bigint ,col_659 smallint   not null ,col_660 longtext   not null ,col_661 set ( 'Alice','Bob','Charlie','David' ) ,col_662 bigint   not null default 8644628108849129865 ,col_663 enum ( 'Alice','Bob','Charlie','David' ) ,col_664 text ( 295 ) ,col_665 boolean    default 1 ,col_666 varchar ( 227 )    default 'T(8onPj0SYnni' ,col_667 char ( 4 )   not null default 'M骰F' ,col_668 varchar ( 272 )   not null ,col_669 tinyint   not null ,col_670 tinytext   not null , vector index vector_idx_108 ( col_666 ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=manual ) ,vector index vector_idx_109 ( col_668 ( 4 ) ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=manual ) ,vector index vector_idx_110 ( col_646 ) WITH ( distance=l2, type=hnsw, model=ob_embed, dim=1024, sync_mode=async, sync_interval=2h ) ) DEFAULT CHARSET= gbk ROW_FORMAT = COMPRESSED COMPRESSION = 'zstd_1.0' partition by range ( col_669 ) ( partition p0 values less than (-95), partition p1 values less than (-1), partition p2 values less than (maxvalue) );
+alter table tbl_46 rename index vector_idx_108 to idx_108_1;
+truncate table tbl_46;
+drop index vector_idx_110 on tbl_46;
+alter table tbl_46 set ROW_FORMAT = CONDENSED COMPRESSION = 'lz4_1.9.1';
+alter table tbl_46 drop column col_660;
+insert  into tbl_46  values ( 'fZRy','Alice',2,'#)yBXRSfWJ_v','JxVR2','n5eAA^','B!uqWHzd5exB5+sdtMb','2024',6672.807434091138,980726813,266082156818237428,'02:15:45.00',-8093275117344223487,-16121,'Alice',6644531357963517697,'Bob','k@DiaP4M#X',0,null,'摂40','蠘!',4,'' ) ,( '!b*y@d~%','Alice',7,'6pX!$ANS_l=7Uu','9%Im^D*$b','~lJAjW!','-OMP7','2036',3096.3010366290077,3356524365,492138548247993161,'12:31:44.00',-5017908614882002635,-26417,'David',5368424492428074319,'Charlie','+)PW#=_n',1,'5(r!keD','D5L','纺逥匈p',-78,'+' ) ,( 'G1dflP3','David',3,'RVi&nUnPKAVQ+&R','Lo-Z5*=g','qbB','yhF!0!#QZz','2006',1395.384855924456,3283423794,690014623954080390,'23:00:59.00',-6489689200642591539,3580,'Bob',-4430271066222756645,null,'pQ',1,'T~^4T#Y%2D#=084RjB_','杔I','d1s嵏@V蕸B諲fx杸',26,'Od4H757x2RRe' ) ,( 'B)','David',14,'z&7bs!9k=YL%','692%F8qSlX(qp','','','1971',5557.241713559218,3119523311,1089391141525224200,'04:39:37.00',3743710813273974127,25156,'Charlie',9062918716947740025,'Charlie','tUNk0mVK0q-^^8',0,'dTvFYp6','衴','dyESQ7$睻DtON桨SVY-X',-32,'Joy3#+)(q' ) ,( 'A)2ZK_kZ@$&r','Charlie',11,'*4OG1h*TnV~PRN(0nT','XBl7EQ+_','*ax5CpVoX%2i+rP5y','UtPQW5tG','2013',8467.15926968857,2559957284,56202426643912812,'18:52:47.00',-7014851381943226122,-15150,'Bob',264314407062262414,'Bob','u4F4',0,'U','FR','苩0絼诃Z昣r雹肎氵FX',27,'U5(' ) ,( '2GQ90sXcRVfASf~','Bob',3,'WCcs9YZmJYY8D6MK','BjK','+CK@','bBO+iC5','2011',78.14276898137665,2506173281,51364718423708042,'18:25:28.00',-5534830941212105395,2884,'Bob',5588099744237423496,'Alice','_ZkKY%~T',1,'yNWA','','丙42唁蕈F^D+I1',74,'ixK@vowqyM' ) ,( 'Dxbd$wd%YXtloq','Alice',0,'X','2KSzvGv','cz2Sxo','Nqc@@!9t-nIP=$3*+','1988',4540.670196322264,956368222,216058180724963594,'11:10:46.00',-5599117684903493263,-7825,'David',-5707447266532251032,'David','nCAwPg%an5+A+PQR',0,'%o2K&FC1ud','KE父','矿4^鄸l@乢PkU惜',-123,'wlKHw' ) ,( 'Eouz','Charlie',2,'ik6*7@oOXy#0','yfHsE-1','i!tO','wX#Bp6-6+%#Gjv5De','2008',1159.0640280510668,3696952218,114358184698814703,'10:16:19.00',4568152892366874724,31026,'David',4563708391077524856,'Charlie','e59ghl3&Aq9CSi2',0,null,'岔','楻繐dpm)',83,'JJ2ww&cs((OK' ) ,( 'hgag1AyVw','Bob',13,'MlF7u4Zuk8pYsEynl','M2@Ge(','ma','Ct3Ga','1993',118.18565323057231,3387382540,839882996869052777,'00:40:57.00',-6945871779951378593,-6180,'David',-95090142205086639,'Charlie','3',0,'=g1Jdl#on','5幅宪','膫lU粥',39,'gPt31cWr8Evft+*U' ) ,( '','Charlie',8,'7@%8Qg$aV)D0j-kGb','%+Vm#XwAcpIfpf^vP','Ka&N','ic4*ti','1975',5277.152384857315,957936300,402850682083964020,'00:21:04.00',-3321119239225536050,29978,'Alice',2703955770834333435,'Charlie','RVC@f7voDH',0,'hsbsIJxjHY7va+f4p','8Z','躛w=j=*7惥澱o',-119,'e9k!FrX#8+ZC' ) ,( 'u3sM3oz8fO5iOccbOpT','Bob',5,'-nyr#QWFPsPN18','jqgg(7(gQRwE','LC','#jyFqf1hL-0A','2013',5582.478697470839,3801282628,320572407544648336,'10:58:35.00',8140900655371018436,-17281,'Charlie',7867151342706165763,'David','zAG6UHOEDU4)MQ*SJM',0,'Qktd6*2$HdT','t禷J','d澣t苞拶否謎L怽~zU硳-9溘',95,'CEvnzm2nEX+iGx5' ) ,( 'XbsluTAeEP','Bob',7,'SiEz+~Jx1cMPk1#39','9#cT8QX%J4&$Q(7','4VZZ$H-EBvzHB*8!!=T','k=arQjSBgKu^tD51*es','1973',4304.382688243738,414761765,684565016044053674,'20:19:18.00',-840259487994344013,17214,'Charlie',1940881590674197665,'Alice','Gmwd#yDhUGX',null,'K5@rh54b','2綅','睟&惏w泦泎柠K豍役栾g+ori',64,'ZXnTu' ) ,( '~1fl+','Bob',15,'g(Fesw_R#c-y%@ipK','2MIq_*V3-','qE2-eX!9v_0)M+','+','2035',2517.1250843564085,1667434564,682473723014898509,'05:35:34.00',298573661304085018,6046,'Bob',2180022651077252420,'Bob','nI8Ee!49VHAEJP2=ES',0,'Sl9rFnIpz','','b炻鼮3腹忨齠J+O崵z@$6赈',110,'MbzM' ) ,( 'Fd1Sl20&QP@((Vk','Alice',0,'N!z=x','gW1hr&)OJIpNM#','Jg','rXQ','1982',86.37427492969734,1730703760,533521429622041309,'13:35:51.00',3744138957240581814,28572,'David',7754163179497643754,'Bob','',0,'h^8iR0ypXd','鏏嚼謞','yC侮vcH',60,'+zSl2v_2hruRhKL~KL*' ) ,( 'uad',null,13,null,'_AXtRbpj!Fnryu','oMiOB_t00GJ','dy~CB','2032',949.8424699943179,1828195758,364287744207168545,'23:31:45.00',-3020852781168988935,8457,'David',5708745542035091149,'Bob','MP',1,'RAYMx2!j)NS','X=','皑!!vZ诙誝H襢3*奻vxs0z喒臖',-21,'E0(' ) ,( 'p','Alice',11,')z476EucVWn','lK6dH+','FIpq4_Ui6~MAK~','','2023',3451.76632031042,2655533674,528868582381171415,'08:45:58.00',-4728969488883521900,-24312,'Charlie',2526034231885204601,'Bob','XuaE9',1,'sms)JUCb','磒','I皋^Z笜gn@吡褊I',18,'Ja^wMy7_-on3jWV=bX' ) ,( null,'David',0,'g(qY','TZ+kx0M15Dpu7Mm','EVjq6(FA','zS','1981',1760.341058712137,2107054036,416914485021809978,'23:46:25.00',4812711122916375548,-9012,'David',3306542868267147042,'Alice','Yz',null,'Ppd','Q','y-禥迪ZNp',51,'rKlf0_vMLzB' ) ,( ')w6M-Tc','David',3,'ylNoU_MM','5FL&Jt1KSGw@71dB','7k=8B#D$!rvqvS)t','owHD','1987',4652.940734795152,3913210164,972435137976537367,'06:04:29.00',367861644763781611,27613,'Alice',7174475964837662623,'David','',1,'^AOpe9vgSm6_','J','煩虩LY蚗iTgDG(荰桉S5',106,'!RV%5W3(' ) ,( 'yMyS0gm','David',9,'FMB','1~s8p%W8J$s','x+@%U90','tvsjVfX38Gih#v_D','2013',9732.545376204263,991520794,487932272034526394,'08:16:08.00',-3952868353342776562,27150,'Charlie',74741384450510125,'Bob','R8xsmvvIp%T',1,null,'a%','売l賄990C菋p曳pL',80,'78ZY2XULCj7$-AOtE9~' ) ,( 'CIxP+f','Bob',14,'BUuWSpuKZO2nTA','','ZzH#lh1(n88Nr(s','!MUtH#$sZpCcRH$','2007',3363.129640249069,3426808039,221984768404580844,'17:21:12.00',6531566292947321525,-23597,'Alice',323218662886301861,'Charlie','C2',1,'6','F沿','%D蜼俀eT0睃j',-31,'Dhfd77!S#7_cd+zZMU' ) ,( '-Yc','Alice',15,'g6DpcC^E)Q','','(G1@XxTRNag4dUY$','u$Otlhq4mU&','1995',3105.3825315802087,3539296163,659889376179232792,'22:04:12.00',-1618918945156346848,22182,'Bob',9059413861756202319,'Alice','YPUX',0,null,'n','',-61,'OXySxkVMBHuNmXgAPH' ) ,( 'I(slxV','Alice',15,'e$w)LYP','WD%%FVc_R2','gavRnbr-VqY0l','sgV#jIb$~w0idN6+NKA','1989',3655.693977930668,4169090247,440032975420116430,'05:39:58.00',-3218337023361848463,3599,'David',-3786807248524236719,'Bob','%$L8y!)S',1,'mo(dyR','^','',-44,'18RjBWjFW^P9' ) ,( '_i&D','Charlie',2,'P5#$y4lLcKZ9SzX','ACFJY24eb#9u7Ywd','1_0=Fo#RlK@Wo0@7','Lzvdq~--ecZS','2035',6375.921888868117,769270089,829449532952685108,'04:37:56.00',8069571006349075583,-17908,'Bob',-3744433582199192007,'David','cl9MZq@Jyc87%-',0,'Su$SFXPW5*Nv6V9r3@','攉M','y綒o礘$詚Ol簇',79,'!q_' ) ,( 'Ku+@x!','Bob',1,'7etpLk@kXrtl&W7','7zwN','','tywP!hU4L$Wz1H&','2030',5182.056796927293,3920490628,580853657534052095,'15:09:52.00',3462351556800242674,7572,'Charlie',-1053721255595973604,'Bob','-q3v$rd8',0,'','I','胸刵G赵潙3rV鐊cK遲oP忄z蟆练',-108,'4E@Tz#@GS0s_r)m&' ) ,( 'IHkZ$JI4~e@','Bob',13,'ar','WBZ*y%p2+W7RPE1^dQ','k9#0(5A)$o4YC99','BhTjm8@Ei~OY8','2029',2214.0403931611077,1730064764,620435139047740936,'01:58:17.00',-7613915693824265521,-19474,'Bob',-613045404709165091,'Charlie','e',1,'MpwX#masDD_UiKtwz','H','bG~~&B嫖q侵4',70,'opJ8zd*Qc!46^Z' ) ,( 'GYKKIez','Bob',10,'jhppq~w&#$e-taur42R','6iS^gm9pk@NZ5L5oD','b#VJKRPTY*l7=I','Rb6iFDEB+205W','1995',2461.6433171673657,301108429,651852163257382360,'20:40:52.00',7091280140675883690,-30209,'David',2436156244733329691,'David','~T9^W+T5t1o9sC',0,'Q6kLXZadT','哐a','B墽lw$a墂祯fj7忪咒',92,'-m+r-5HO' ) ,( '2kqW-8yn','Alice',8,null,'I!0E','','oTZa','2027',7367.145247243801,1686241858,910962266446974647,'04:11:12.00',4972115024374434017,24995,'Alice',-4787301012787011512,'Bob','wW*m0~E2QcZcbCqO&s',1,'5@FVERdp*DHg-u','','=謃砾EY呡銞^iKg蕟',71,'7' ) ,( 'o','Alice',13,'Hu','S0Fp&naC','=c^=RE5','IWn)DR)','1973',6432.071581940534,3732043502,942836372876804743,'17:16:37.00',-4973726377686407027,-21734,'Bob',-5831217963558481686,'Bob','6-',1,'X','Z9','K朄_=#蚧',-61,'!OlCV98~b' ) ,( '+)b-ukC%n','David',3,'KQ*$','iK+$A34vp!W7%V','Do','(-pNL4#We-zl^=n!qho','2030',7973.5887724663635,711607478,404272594976485013,'18:35:11.00',-8017032712920681603,27732,'Alice',8240697450446633129,'David','2Jec2ee-iYi#',0,'-QDo7t8mi','K','HGR',99,'cUd1zj%Y~L2)gRJ5Fv2' ) ,( null,'Charlie',15,'+1q_35O&M*xzBb6EP#0','P)7','1H1GAuFbVY@39J_','^I4xEX-^u!RQo!mgSb','2006',7276.76229177749,3094803741,946325255061150251,'06:16:57.00',1401030160479108205,26687,'David',6043316143818850512,'Alice','mD6lDpT3GMLE~',1,'8x_qpHi5@@EVt-&','I敜a','婞絊B*W淚瘪DW杗條omj=',101,'$%HDR%5KCUpbk#za)' ) ,( 'f7trSqlN_P',null,1,'1BW~&g8d!G*tbf-0^@x','=zxof2d5XYa99iPfr','Fj','p','2010',6574.103025253405,2537367590,659654240946418720,'00:29:55.00',-170645979345912608,26803,'Bob',-6337308043944769131,'Charlie','^tMsS1(gAJ$^vOol(U',1,'Y2Kv@CSyBCAwRZgHJ(=','','烤MaN寂=昲i0Ut籤X郛友',-70,'Ux@SSv#' ) ,( 'wJ2C5g!a@@e=Y','David',1,'Ah)cKv^xtp&','E6wBFZGAJE_','0fUTR)tWgWsc1t)1K_','XTrqzyb','1987',8321.750075099799,4172824324,298545829620514648,'16:48:28.00',-1367331967979694870,-22491,'David',-4079882375127321411,'David','5#iw6nmkR',1,'s#0aVfuGh','2洠','=8+PqaZS郸',-69,'fs~r0IgNL+0Qt_TC7' ) ,( 'ZGr~Lh&a^G8B9aZk','Bob',8,'H$kjO+15pZe','8hsG','Q%BJ&s7Fprmr&n','%FvAFzG)ZNRu)','2022',9941.048550449706,903346923,413103524452677173,'19:33:07.00',-4286509004575532085,27723,'Charlie',-8666447574722230940,'Charlie','yL2o&CtYv)Ba&j',1,'a9okaTt$~','瀶彧','qu+z蟅m垠BT2榝O嬀',122,'k$Tup%huY' ) ;
+update tbl_46 set tbl_46.col_651 = 's-3V^%og7#bf' ,tbl_46.col_661 = 'David' where not( IsNull( tbl_46.col_646 ) ) ;
+create TABLE tbl_291 ( col_4706 enum ( 'Alice','Bob','Charlie','David' )    default 'Alice' ,col_4707 tinyint  unsigned  default 29 ,col_4708 bit ( 2 )   not null ,col_4709 mediumblob   not null ,col_4710 set ( 'Alice','Bob','Charlie','David' )   not null ,col_4711 boolean    default 1 ,col_4712 year ,col_4713 binary ( 171 )   not null ,col_4714 numeric ( 45 , 20 ) ,col_4715 tinytext   not null ,col_4716 set ( 'Alice','Bob','Charlie','David' ) ,col_4717 text ( 330 ) ,col_4718 boolean    default 0 ,col_4719 datetime    default '2003-01-13' ,col_4720 double    default 9958.34573026972 ,col_4721 mediumint  unsigned  default 14598539 ,col_4722 enum ( 'Alice','Bob','Charlie','David' )    default 'Alice' ,col_4723 timestamp   not null ,col_4724 tinytext   not null ,col_4725 bigint   not null ,col_4726 longtext ,col_4727 mediumint  unsigned not null default 3799373 ,col_4728 varchar ( 334 ) , vector index vector_idx_916 ( col_4728 ( 5 ) ) WITH ( distance=l2, type=hnsw_bq, model=ob_embed, dim=1024, sync_mode=immediate ) ) DEFAULT CHARSET= gb18030 ROW_FORMAT = COMPRESSED COMPRESSION = 'lz4_1.9.1';
+update tbl_46 set tbl_46.col_646 = '~M' where not exists ( select col_4716 from tbl_291 where tbl_46.col_668 between 'i毸O4afJN艂5oN' and 'YkDFP1a' );
+drop table if exists t1;
+CREATE TABLE t1 (`pk_id` varchar(20) NOT NULL, `doc_data` varchar(100) DEFAULT NULL,
+PRIMARY KEY (`pk_id`),
+VECTOR KEY `hybrid_idx` (`pk_id`) WITH (DISTANCE = L2, LIB = VSAG, TYPE = HNSW, MODEL = OB_EMBED, DIM = 1024, SYNC_MODE = ASYNC, 
+SYNC_INTERVAL = 10S, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384
+) ORGANIZATION=HEAP;
+INSERT INTO t1 (pk_id, doc_data) VALUES ('ID001', 'Data for item 1'),('ID002', 'Data for item 2'), ('ID003', 'Data for item 3');
+UPDATE t1 SET pk_id = 'ID001_new' WHERE pk_id = 'ID001';
+ERROR 23000: Duplicate entry '1-I' for key 'hybrid_idx'
+UPDATE /*+ ENABLE_PARALLEL_DML parallel(2) */ t1 SET pk_id = 'ID001_new_2' WHERE pk_id = 'ID001_new';
+drop table t1;
+CREATE TABLE t1 (`pk_id` varchar(20) NOT NULL, `pk_id2` varchar(20) NOT NULL, `doc_data` varchar(100) DEFAULT NULL,
+PRIMARY KEY (`pk_id`),
+VECTOR KEY `hybrid_idx` (`pk_id2`) WITH (DISTANCE = L2, LIB = VSAG, TYPE = HNSW, MODEL = OB_EMBED, DIM = 1024, SYNC_MODE = ASYNC,
+SYNC_INTERVAL = 10S, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64)
+) ORGANIZATION=HEAP;
+INSERT INTO t1 (pk_id, pk_id2, doc_data) VALUES ('ID001', 'ID001', 'Data for item 1'), ('ID002', 'ID002', 'Data for item 2'), ('ID003', 'ID003', 'Data for item 3');
+UPDATE t1 SET pk_id2 = 'ID001_new' WHERE pk_id2 = 'ID001';
+ERROR 23000: Duplicate entry '1-I' for key 'hybrid_idx'
+UPDATE /*+ ENABLE_PARALLEL_DML parallel(2) */ t1 SET pk_id2 = 'ID001_new_2' WHERE pk_id2 = 'ID001_new';
+drop table t1;
+create table demo1(col1 int primary key, col2 int, col3 varchar(1024));
+insert into demo1 values(1, 1, "hello");
+create vector index vector_idx on demo1(col3) with (distance= l2, lib=vsag, type= hnsw_bq, model=ob_embed, dim=1024, sync_mode=async, sync_interval=5s) ;
+insert into demo1 values(1, 2, 'world') on duplicate key update col2 = 3;
+insert into demo1 values(1, 2, 'world') on duplicate key update col2 = 3;
+drop table demo1;
+DROP TABLE /*! IF EXISTS*/ B;
+CREATE TABLE B (
+pk bigint,
+col_varchar_200_key varchar(200),
+col_int_index int,
+col_int int,
+col_varchar_200 varchar(200),
+/*Indices*/
+primary key (pk) ,
+key idx8(pk, col_varchar_200_key),
+index idx1(pk, col_int_index)
+);
+DROP TABLE /*! IF EXISTS*/ U;
+CREATE TABLE U (
+pk bigint,
+col_varchar_200_key varchar(200),
+col_int_index int,
+col_int int,
+col_varchar_200 varchar(200),
+/*Indices*/
+primary key (pk),
+key idx8(pk, col_varchar_200_key),
+index idx1(pk, col_int_index)
+);
+DROP TABLE /*! IF EXISTS*/ A;
+CREATE TABLE A (
+pk bigint,
+col_varchar_200_key varchar(200),
+col_int_index int,
+col_int int,
+col_varchar_200 varchar(200),
+/*Indices*/
+primary key (pk),
+key idx8(pk, col_varchar_200_key),
+index idx1(pk, col_int_index )
+);
+create vector index vector_idx on B(col_varchar_200) with (distance= cosine, lib=vsag, type= hnsw, model=ob_embed, dim=1024, sync_mode=manual);
+update  B A,  U B SET A . col_varchar_200_key = B . col_varchar_200_key where A . pk = B . pk and A . `col_int_index` = B . `col_int_index` and A . col_varchar_200_key in ( 'w', 'l' ) or B . `pk` in ( SELECT `col_int` FROM u WHERE pk is not NULL );
+========== 存在需转义字符串 ==========
+DROP TABLE /*! IF EXISTS*/ t1;
+CREATE TABLE t1 (id int PRIMARY KEY, `doc` varchar(100) DEFAULT NULL,
+VECTOR KEY `hybrid_idx` (`doc`) WITH (DISTANCE = L2, LIB = VSAG, TYPE = HNSW, MODEL = OB_EMBED, DIM = 1024, SYNC_MODE = manual, 
+SYNC_INTERVAL = 10S, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384
+);
+insert into t1 values(1, 'He said "hello" to me');
+insert into t1 values(2, '{"key": "value"}');
+insert into t1 values(3, 'Path: C:\\Users\\test\\file.txt');
+call dbms_vector.refresh_index('hybrid_idx','t1','doc', 0);
+DROP TABLE t1;
+DROP TABLE /*! IF EXISTS*/ ddlkitty_1762832438865147;
+CREATE TABLE `ddlkitty_1762832438865147` (
+`v1` VECTOR(3) DEFAULT NULL,
+`hybrid_vector_doc` varchar(100) DEFAULT NULL,
+`col0` geometry NOT NULL,
+`col1` bigint(20) NOT NULL,
+`col2` int(11) DEFAULT NULL,
+`col3` tinytext DEFAULT NULL,
+`col4` char(7) NOT NULL,
+`col5` text DEFAULT NULL,
+`col6` tinytext DEFAULT NULL,
+VECTOR KEY `idx1` (`v1`) WITH (DISTANCE=L2,TYPE=HNSW_SQ, LIB=VSAG, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384,
+VECTOR KEY `hybrid_vector_idx` (`hybrid_vector_doc`) WITH (DISTANCE=COSINE,LIB=VSAG,TYPE=HNSW,MODEL=OB_EMBED,DIM=1024,SYNC_MODE=IMMEDIATE, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64, SYNC_INTERVAL=10s) BLOCK_SIZE 16384
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = REDUNDANT COMPRESSION = 'lz4_1.9.1' REPLICA_NUM = 3 BLOCK_SIZE = 464048 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0;
+INSERT INTO `ddlkitty_1762832438865147` VALUES
+('[6.53,9.83,3.13]', 'doc_1', ST_GeomFromText('POINT(1 1)'), 6243, 62, 'tinytext_1', 'char001', 'long_text_sample_1', 'tiny_end_1'),
+('[2.86,7.53,4.21]', 'doc_2', ST_GeomFromText('POINT(2 2)'), 3595, 19, 'tinytext_2', 'char002', 'long_text_sample_2', 'tiny_end_2'),
+('[7.37,2.17,8.29]', 'doc_3', ST_GeomFromText('POINT(3 3)'), 1770, 60, 'tinytext_3', 'char003', 'long_text_sample_3', 'tiny_end_3'),
+('[5.10,7.21,7.95]', 'doc_4', ST_GeomFromText('POINT(4 4)'), 2832, 41, 'tinytext_4', 'char004', 'long_text_sample_4', 'tiny_end_4'),
+('[0.26,0.19,8.70]', 'doc_5', ST_GeomFromText('POINT(5 5)'), 3644, 68, 'tinytext_5', 'char005', 'long_text_sample_5', 'tiny_end_5'),
+('[5.90,0.58,2.40]', 'doc_6', ST_GeomFromText('POINT(6 6)'), 5704, 91, 'tinytext_6', 'char006', 'long_text_sample_6', 'tiny_end_6'),
+('[1.99,8.36,8.72]', 'doc_7', ST_GeomFromText('POINT(7 7)'), 6837, 76, 'tinytext_7', 'char007', 'long_text_sample_7', 'tiny_end_7'),
+('[9.72,4.67,1.34]', 'doc_8', ST_GeomFromText('POINT(8 8)'), 3415, 79, 'tinytext_8', 'char008', 'long_text_sample_8', 'tiny_end_8'),
+('[0.53,9.50,3.43]', 'doc_9', ST_GeomFromText('POINT(9 9)'), 6249, 35, 'tinytext_9', 'char009', 'long_text_sample_9', 'tiny_end_9'),
+('[9.63,4.62,8.32]', 'doc_10', ST_GeomFromText('POINT(10 10)'), 7529, 89, 'tinytext_10', 'char010', 'long_text_sample_10', 'tiny_end_10'),
+('[2.82,5.18,9.20]', 'doc_11', ST_GeomFromText('POINT(11 11)'), 8459, 47, 'tinytext_11', 'char011', 'long_text_sample_11', 'tiny_end_11'),
+('[6.75,1.12,6.87]', 'doc_12', ST_GeomFromText('POINT(12 12)'), 9443, 93, 'tinytext_12', 'char012', 'long_text_sample_12', 'tiny_end_12'),
+('[5.84,9.98,1.04]', 'doc_13', ST_GeomFromText('POINT(13 13)'), 8553, 73, 'tinytext_13', 'char013', 'long_text_sample_13', 'tiny_end_13'),
+('[2.43,5.28,1.25]', 'doc_14', ST_GeomFromText('POINT(14 14)'), 5631, 81, 'tinytext_14', 'char014', 'long_text_sample_14', 'tiny_end_14'),
+('[8.22,4.94,8.65]', 'doc_15', ST_GeomFromText('POINT(15 15)'), 6423, 30, 'tinytext_15', 'char015', 'long_text_sample_15', 'tiny_end_15'),
+('[5.73,1.87,6.41]', 'doc_16', ST_GeomFromText('POINT(16 16)'), 5501, 66, 'tinytext_16', 'char016', 'long_text_sample_16', 'tiny_end_16'),
+('[2.27,7.69,9.84]', 'doc_17', ST_GeomFromText('POINT(17 17)'), 7366, 82, 'tinytext_17', 'char017', 'long_text_sample_17', 'tiny_end_17');
+delete from test.ddlkitty_1762832438865147 where test.ddlkitty_1762832438865147.col1 not  in ( cast(coalesce(54, 42) as DECIMAL),  test.ddlkitty_1762832438865147.col2,  test.ddlkitty_1762832438865147.col1);
+show parameters like '%defensive%';
+zone	svr_type	svr_ip	svr_port	name	data_type	value	info	section	scope	source	edit_level	default_value	isdefault
+alter system set _enable_defensive_check=2;
+drop table if exists ddlkitty_1762917603700860;
+drop table if exists ddlkitty_1762917779973866;
+CREATE TABLE `ddlkitty_1762917603700860` (
+`seed` int(11) NOT NULL,
+`v1` VECTOR(1024) DEFAULT NULL,
+`hybrid_vector_doc` varchar(100) DEFAULT NULL,
+`norm_idx_col_1762917603700840` bigint(20) DEFAULT NULL,
+`fulltext_idx_col_1762917603700840` tinytext DEFAULT NULL,
+`col0` mediumtext NOT NULL,
+`col1` char(58) DEFAULT NULL,
+`col2` longtext DEFAULT NULL,
+`col3` char(52) DEFAULT NULL,
+`col4` int(11) NOT NULL,
+VECTOR KEY `idx1` (`v1`) WITH (DISTANCE=L2,TYPE=HNSW_SQ, LIB=VSAG, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384,
+VECTOR KEY `hybrid_vector_idx` (`hybrid_vector_doc`) WITH (DISTANCE=COSINE,LIB=VSAG,TYPE=HNSW,MODEL=OB_EMBED,DIM=1024,SYNC_MODE=ASYNC,SYNC_INTERVAL=58H, M=16, EF_CONSTRUCTION=200, EF_SEARCH=64) BLOCK_SIZE 16384,
+KEY `normal_idx_1762917603700840` (`norm_idx_col_1762917603700840`) BLOCK_SIZE 16384 GLOBAL
+,
+FULLTEXT KEY `fulltext_idx_1762917603700840` (`fulltext_idx_col_1762917603700840`) WITH PARSER beng PARSER_PROPERTIES=(min_token_size=3,max_token_size=84) BLOCK_SIZE 16384
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = COMPRESSED COMPRESSION = 'zstd_1.0' REPLICA_NUM = 3 BLOCK_SIZE = 512986 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0
+partition by range(`col4`)
+(partition `p0` values less than (-2113473106),
+partition `p1` values less than (-2080456646),
+partition `p2` values less than (2147483648));
+CREATE TABLE `ddlkitty_1762917779973866` (
+`seed` int(11) NOT NULL,
+`v1` VECTOR(128) DEFAULT NULL,
+`hybrid_vector_doc` varchar(100) DEFAULT NULL,
+`col0` mediumtext DEFAULT NULL,
+`col1` mediumtext DEFAULT NULL
+) ORGANIZATION INDEX DEFAULT CHARSET = utf8mb4 ROW_FORMAT = DYNAMIC COMPRESSION = 'zstd_1.3.8' REPLICA_NUM = 3 BLOCK_SIZE = 16384 USE_BLOOM_FILTER = FALSE ENABLE_MACRO_BLOCK_BLOOM_FILTER = FALSE TABLET_SIZE = 134217728 PCTFREE = 0;
+INSERT INTO `ddlkitty_1762917603700860` (
+`seed`, `v1`, `hybrid_vector_doc`,
+`norm_idx_col_1762917603700840`,
+`fulltext_idx_col_1762917603700840`,
+`col0`,
+`col1`,
+`col2`,
+`col3`,
+`col4`
+) VALUES
+(
+1,
+'[0.8981,0.1932,0.7607,0.4764,0.8930,0.2242,0.0257,0.4028,0.2574,0.0226,0.5070,0.8605,0.7722,0.7624,0.1513,0.0674,0.9657,0.7629,0.4944,0.4686,0.2375,0.9088,0.9676,0.5488,0.7241,0.4443,0.3803,0.6665,0.2720,0.3484,0.5824,0.0497,0.6313,0.0413,0.6850,0.6719,0.7646,0.1441,0.6267,0.2064,0.6906,0.5158,0.5221,0.4103,0.0757,0.7241,0.8999,0.0671,0.6525,0.9203,0.7739,0.0594,0.0795,0.0807,0.7695,0.5877,0.7477,0.5609,0.8404,0.5239,0.4340,0.2902,0.7916,0.4782,0.8456,0.5057,0.9504,0.0350,0.2980,0.4292,0.5630,0.8866,0.2938,0.8959,0.9208,0.9318,0.5481,0.0292,0.2800,0.9808,0.0221,0.6437,0.6745,0.8250,0.5305,0.3372,0.2664,0.6977,0.1106,0.6739,0.5801,0.5525,0.9414,0.0991,0.0433,0.4621,0.3739,0.7244,0.6946,0.4040,0.5803,0.5319,0.9827,0.8649,0.0944,0.5434,0.6269,0.8932,0.4627,0.3650,0.0018,0.0012,0.1183,0.8444,0.3295,0.2736,0.9589,0.1447,0.2001,0.3388,0.4992,0.8015,0.3942,0.8124,0.8249,0.4206,0.0125,0.1749,0.5142,0.9286,0.2901,0.5855,0.0113,0.2288,0.7084,0.0203,0.3011,0.5505,0.8722,0.2950,0.4143,0.6135,0.9657,0.6739,0.5477,0.7164,0.9845,0.0926,0.6494,0.0764,0.6191,0.7758,0.5747,0.0915,0.1889,0.2605,0.4151,0.7521,0.0854,0.7820,0.1128,0.4759,0.9247,0.3821,0.8702,0.1068,0.0981,0.8487,0.9032,0.3732,0.3586,0.3022,0.3797,0.8435,0.6613,0.8210,0.6965,0.6985,0.5445,0.7946,0.7391,0.4114,0.9052,0.2152,0.6183,0.9403,0.4644,0.3277,0.7091,0.5597,0.7693,0.0348,0.5963,0.9058,0.7644,0.4638,0.8623,0.0381,0.4274,0.9597,0.8702,0.0719,0.3416,0.1432,0.2038,0.2388,0.1305,0.5221,0.2620,0.9470,0.0562,0.9166,0.2316,0.2989,0.8613,0.5847,0.1887,0.0904,0.7265,0.4386,0.3698,0.6881,0.1232,0.6339,0.2774,0.2140,0.9590,0.2892,0.8858,0.0980,0.2471,0.5769,0.8216,0.9533,0.4238,0.2136,0.0992,0.3842,0.8347,0.2429,0.2628,0.5206,0.7376,0.6777,0.7168,0.1811,0.4116,0.6457,0.0527,0.0119,0.9536,0.7619,0.5999,0.5729,0.9864,0.9470,0.1629,0.5896,0.2402,0.7311,0.7078,0.9075,0.2877,0.7251,0.7364,0.3912,0.5837,0.2054,0.4969,0.9249,0.5412,0.1856,0.2883,0.1590,0.5579,0.2584,0.6526,0.6043,0.0586,0.8041,0.0265,0.6095,0.6413,0.5349,0.9811,0.1473,0.3427,0.5257,0.5827,0.0954,0.7696,0.3289,0.6454,0.0787,0.7134,0.1917,0.6241,0.7877,0.0558,0.8779,0.0897,0.2079,0.3686,0.2762,0.0062,0.7693,0.8591,0.0654,0.2523,0.3918,0.4196,0.4519,0.3668,0.7174,0.7472,0.8847,0.7651,0.5977,0.7363,0.7107,0.3325,0.6071,0.1959,0.0885,0.8571,0.4840,0.3554,0.0873,0.1052,0.4320,0.1528,0.7760,0.3017,0.6348,0.5038,0.7450,0.1791,0.2979,0.7375,0.9415,0.1675,0.0256,0.4316,0.3960,0.2093,0.3956,0.5184,0.0285,0.4553,0.4410,0.2843,0.2255,0.2102,0.3054,0.5185,0.4052,0.4554,0.0587,0.0641,0.2124,0.7304,0.2693,0.0943,0.8920,0.6733,0.6444,0.1756,0.2678,0.9551,0.6998,0.3027,0.8852,0.1664,0.3205,0.9358,0.7626,0.9858,0.4746,0.3698,0.8882,0.3370,0.3208,0.1947,0.9097,0.4905,0.8227,0.2523,0.6718,0.7551,0.9968,0.4509,0.3397,0.6868,0.9301,0.4109,0.7835,0.6214,0.4123,0.9790,0.6087,0.3410,0.3959,0.2285,0.7939,0.5657,0.7005,0.9810,0.1405,0.1098,0.0875,0.7690,0.3667,0.0893,0.2004,0.7922,0.7840,0.8037,0.8923,0.0664,0.8608,0.9725,0.9907,0.5542,0.2813,0.3653,0.5051,0.4026,0.8509,0.1055,0.9875,0.1845,0.9091,0.7978,0.0017,0.8194,0.1673,0.1345,0.5193,0.1451,0.2387,0.6791,0.2304,0.0919,0.7868,0.3452,0.1110,0.1328,0.0997,0.3792,0.5769,0.9911,0.7774,0.3669,0.7641,0.7242,0.2711,0.0891,0.1098,0.1132,0.9673,0.6079,0.0530,0.9674,0.9471,0.3262,0.6850,0.2627,0.6641,0.6403,0.3434,0.0935,0.6216,0.3688,0.5164,0.3504,0.9642,0.6008,0.2820,0.7190,0.6229,0.2141,0.4050,0.5128,0.1639,0.6441,0.0971,0.1921,0.6541,0.9451,0.0245,0.7278,0.7102,0.6107,0.2989,0.3120,0.6193,0.6699,0.2137,0.1975,0.6573,0.1333,0.4763,0.9048,0.7662,0.7436,0.0091,0.5103,0.9266,0.6235,0.6717,0.7949,0.1839,0.6315,0.6580,0.5036,0.2787,0.8593,0.5008,0.4821,0.0166,0.0911,0.5916,0.4103,0.0644,0.4826,0.8289,0.1083,0.8883,0.7307,0.5273,0.1675,0.9001,0.9486,0.0652,0.2352,0.0753,0.6441,0.1903,0.0412,0.9224,0.1661,0.3285,0.3321,0.8827,0.9201,0.8897,0.8619,0.3236,0.9949,0.9817,0.1399,0.2220,0.4313,0.0504,0.4003,0.7213,0.7829,0.5874,0.3054,0.2059,0.3534,0.6607,0.2210,0.3526,0.4659,0.7614,0.4842,0.8434,0.8592,0.0948,0.8017,0.1766,0.0076,0.1914,0.6972,0.0662,0.3699,0.4056,0.5073,0.6021,0.5811,0.2780,0.6433,0.3795,0.0796,0.3804,0.7181,0.0697,0.9029,0.8532,0.6645,0.6535,0.2276,0.9444,0.2756,0.4118,0.5647,0.1498,0.3806,0.4920,0.3206,0.6830,0.8127,0.8948,0.0048,0.8392,0.2531,0.3783,0.6587,0.8588,0.6698,0.3190,0.0279,0.9648,0.2704,0.6539,0.4990,0.2693,0.9526,0.9391,0.1451,0.4158,0.1328,0.3753,0.4833,0.6479,0.0528,0.1705,0.5971,0.5653,0.4049,0.8896,0.1754,0.0200,0.3836,0.7560,0.3564,0.6304,0.5156,0.6780,0.8389,0.5615,0.7640,0.3647,0.4855,0.9167,0.5776,0.5638,0.8507,0.6466,0.2269,0.6542,0.9116,0.9130,0.6850,0.8720,0.9394,0.0156,0.7447,0.0767,0.6923,0.5248,0.2528,0.6282,0.4523,0.8893,0.4899,0.6402,0.5388,0.4023,0.7118,0.9582,0.4902,0.2452,0.2258,0.4180,0.2047,0.5413,0.4744,0.6891,0.8225,0.8115,0.8157,0.2016,0.8985,0.2589,0.4399,0.8004,0.0621,0.3997,0.7093,0.4792,0.8121,0.2119,0.5758,0.8096,0.9859,0.7099,0.3066,0.9707,0.0254,0.0580,0.3725,0.4923,0.3792,0.5915,0.2662,0.0545,0.6048,0.5889,0.5926,0.4026,0.6041,0.3104,0.9052,0.4839,0.5735,0.4829,0.7621,0.5900,0.9425,0.1460,0.5433,0.2055,0.6003,0.2865,0.9762,0.3019,0.8516,0.5259,0.9986,0.7857,0.8334,0.8298,0.3476,0.4650,0.8470,0.7332,0.1916,0.8042,0.9437,0.9835,0.6503,0.5678,0.3565,0.7808,0.8287,0.4694,0.6175,0.2573,0.0981,0.4924,0.3451,0.5807,0.8515,0.4447,0.9483,0.3550,0.9557,0.2504,0.9757,0.0059,0.0924,0.2234,0.4108,0.7859,0.0805,0.9341,0.8917,0.4563,0.0140,0.3515,0.8967,0.3950,0.6125,0.5084,0.8265,0.0678,0.4495,0.4882,0.7241,0.3040,0.2148,0.6405,0.4344,0.0874,0.3108,0.8597,0.5972,0.0758,0.1067,0.6528,0.2618,0.9286,0.6940,0.7862,0.2649,0.5962,0.5876,0.0454,0.3233,0.7361,0.2728,0.3755,0.2507,0.7575,0.1901,0.7969,0.5634,0.4014,0.3131,0.2400,0.6581,0.0117,0.6612,0.4188,0.5355,0.2102,0.5741,0.5396,0.5960,0.0639,0.6491,0.1393,0.5387,0.5462,0.2566,0.0947,0.8919,0.9782,0.9963,0.1685,0.1877,0.3567,0.1334,0.9680,0.4277,0.4071,0.2377,0.8512,0.6541,0.4005,0.9431,0.2788,0.5417,0.9046,0.5562,0.7169,0.4127,0.3567,0.8938,0.7186,0.8315,0.2634,0.6189,0.0816,0.0821,0.3662,0.8638,0.7127,0.1445,0.2920,0.0415,0.1752,0.8291,0.4435,0.6007,0.7142,0.3826,0.9488,0.9229,0.2060,0.2768,0.4539,0.5672,0.4870,0.7164,0.1561,0.0227,0.4052,0.8390,0.4963,0.7858,0.2236,0.9158,0.9161,0.4698,0.1073,0.9887,0.5877,0.1950,0.2847,0.6071,0.5062,0.8826,0.2291,0.9664,0.1061,0.8588,0.6923,0.3483,0.0839,0.6002,0.7962,0.4960,0.1294,0.9856,0.4212,0.4143,0.3075,0.4162,0.2426,0.6796,0.6991,0.8649,0.0585,0.5022,0.6416,0.2038,0.9909,0.7727,0.6122,0.4423,0.4284,0.4035,0.4139,0.2045,0.0204,0.8937,0.1058,0.3831,0.2572,0.9013,0.2134,0.6061,0.5330,0.6001,0.1441,0.5076,0.0897,0.3282,0.2091,0.1801,0.6249,0.2565,0.9926,0.5493,0.1635,0.6964,0.1994,0.9671,0.3521,0.2438,0.8160,0.9318,0.2395,0.9347,0.4824,0.3136,0.7387,0.7809,0.7979,0.0464,0.4511,0.6831,0.5513,0.7308,0.5542,0.9015,0.5312,0.4318,0.1403,0.0997,0.2550,0.8350,0.1922,0.6211,0.0478,0.3395,0.4922,0.6215,0.1092,0.1570,0.4928,0.4745,0.1929,0.9984,0.6438,0.5644,0.1884,0.4319,0.3283,0.0145,0.1646,0.1953,0.2573,0.5839,0.6510,0.5676,0.6283,0.8376,0.3097,0.8367,0.3506,0.4063,0.8989,0.8841,0.0193,0.0819,0.5908,0.1359,0.6123,0.2863,0.2380,0.9066,0.1285,0.3920,0.0924,0.4651,0.1126,0.7802,0.8172,0.7262,0.2403]',
+'doc_1',
+-6312987749010924330,
+'FT content #1 word71 word10 word48 word37 word10 word32',
+'medium content #1 k748 k658 k848 k644 k204 k897 k482 k790 k301 k139',
+'c1_key_1_680ab8981fef5153537b9463c35f10e4897df5ea81c6445ae',
+'LT#1_13 LT#1_660 LT#1_546 LT#1_271 LT#1_913 LT#1_404 LT#1_757 LT#1_365 LT#1_308 LT#1_976 LT#1_468 LT#1_37 LT#1_203 LT#1_383 LT#1_796 LT#1_651 LT#1_718 LT#1_378 LT#1_584 LT#1_260 LT#1_155 LT#1_954 LT#1_20 LT#1_531 LT#1_387 LT#1_916 LT#1_570 LT#1_625 LT#1_469 LT#1_549 LT#1_948 LT#1_806 LT#1_239 LT#1_757 LT#1_107 LT#1_225 LT#1_458 LT#1_679 LT#1_50 LT#1_673 LT#1_586 LT#1_72 LT#1_737 LT#1_553 LT#1_554 LT#1_386 LT#1_146 LT#1_3 LT#1_354 LT#1_811',
+'c3_key_1_9818407098dcc2e4dac4008ea063d0d747605370081',
+604039841
+),
+(
+2,
+'[0.1108,0.8883,0.2720,0.3987,0.9125,0.3674,0.1757,0.3450,0.3723,0.2546,0.0420,0.4431,0.8896,0.2571,0.6029,0.9802,0.1750,0.5557,0.4863,0.4587,0.3541,0.5883,0.7582,0.2062,0.0072,0.3164,0.2079,0.0966,0.4563,0.8582,0.2031,0.3965,0.7534,0.0017,0.7765,0.8640,0.3243,0.7608,0.1509,0.6081,0.9989,0.5466,0.2974,0.0200,0.2832,0.7573,0.0601,0.4682,0.7399,0.5026,0.0147,0.4168,0.9199,0.9191,0.7993,0.4452,0.7390,0.0743,0.2596,0.0650,0.7101,0.6287,0.4795,0.5919,0.5933,0.5832,0.8281,0.7701,0.4313,0.5602,0.7416,0.4218,0.9230,0.5107,0.0110,0.5564,0.3277,0.8678,0.2138,0.0904,0.7906,0.9614,0.0389,0.9514,0.3191,0.9676,0.8911,0.8453,0.6590,0.3304,0.9072,0.0742,0.3166,0.6048,0.5990,0.7496,0.5458,0.5113,0.5197,0.1776,0.7409,0.3020,0.5825,0.0029,0.9077,0.5547,0.6577,0.5092,0.6088,0.6558,0.1236,0.8093,0.3143,0.6420,0.7731,0.8084,0.8036,0.9538,0.3323,0.5884,0.6048,0.0635,0.4502,0.5435,0.8499,0.8042,0.4827,0.8534,0.2453,0.5025,0.4349,0.6186,0.8261,0.5331,0.2753,0.4157,0.3939,0.0609,0.2125,0.1313,0.1872,0.9846,0.2637,0.8876,0.6518,0.3953,0.2697,0.8771,0.9764,0.6967,0.8561,0.3632,0.6841,0.5341,0.6092,0.5943,0.4622,0.5665,0.6378,0.6647,0.8920,0.7736,0.2623,0.5847,0.1335,0.4738,0.0395,0.1320,0.7393,0.1300,0.0498,0.2067,0.9935,0.7064,0.4778,0.3267,0.0855,0.1979,0.8442,0.4748,0.7089,0.9325,0.3831,0.8020,0.1199,0.5389,0.3129,0.9108,0.1540,0.4454,0.7076,0.1182,0.3322,0.6097,0.6083,0.2283,0.4796,0.6992,0.0042,0.8041,0.3271,0.1637,0.9624,0.4664,0.1834,0.2093,0.8277,0.4812,0.4393,0.6069,0.8052,0.7849,0.5212,0.8583,0.4787,0.2415,0.3931,0.7571,0.4364,0.8392,0.3699,0.8579,0.6407,0.2506,0.3862,0.3306,0.5193,0.9868,0.6099,0.3963,0.8936,0.3028,0.9629,0.5256,0.5312,0.9483,0.7119,0.6338,0.2231,0.1885,0.2980,0.0708,0.4575,0.0841,0.8201,0.4101,0.2269,0.2557,0.8553,0.4311,0.4026,0.1092,0.7055,0.7669,0.7342,0.7784,0.5782,0.3223,0.9118,0.6328,0.8079,0.0340,0.5634,0.3024,0.3613,0.0255,0.6090,0.7374,0.2071,0.1763,0.0967,0.8735,0.4446,0.5658,0.0463,0.0953,0.6105,0.3293,0.4022,0.7580,0.5736,0.5949,0.9317,0.0782,0.9707,0.1639,0.8850,0.3595,0.9389,0.4080,0.2489,0.7191,0.1150,0.3311,0.9980,0.8822,0.1422,0.3572,0.7532,0.9299,0.6471,0.3966,0.7178,0.1758,0.9495,0.3516,0.7400,0.7648,0.0668,0.5678,0.1734,0.2944,0.5348,0.6501,0.9907,0.4976,0.4174,0.0840,0.9015,0.4466,0.1607,0.5448,0.4110,0.9087,0.2017,0.9249,0.8710,0.7003,0.0633,0.4621,0.8963,0.8999,0.2102,0.6786,0.5153,0.3458,0.1167,0.0862,0.4607,0.5837,0.5035,0.4974,0.2814,0.4572,0.4697,0.2159,0.6737,0.2278,0.2898,0.0029,0.3025,0.6690,0.2322,0.8020,0.3022,0.3853,0.0646,0.6400,0.1713,0.9944,0.0428,0.7569,0.5424,0.5230,0.6824,0.2156,0.4586,0.5600,0.2925,0.0894,0.3517,0.3006,0.6320,0.7555,0.6847,0.4141,0.3475,0.6961,0.0922,0.4358,0.8271,0.0733,0.6419,0.0683,0.9794,0.7967,0.3921,0.5044,0.0583,0.1518,0.3786,0.0917,0.1632,0.8503,0.1639,0.9356,0.8327,0.2573,0.0062,0.6658,0.1803,0.3317,0.5098,0.9044,0.6579,0.2330,0.4455,0.6216,0.7681,0.9734,0.9875,0.5332,0.5811,0.0009,0.7289,0.0363,0.3220,0.2833,0.2533,0.9007,0.4057,0.9060,0.2271,0.9702,0.1321,0.2379,0.7746,0.2379,0.9082,0.1575,0.0783,0.2195,0.0886,0.2949,0.2140,0.5033,0.5967,0.8688,0.5193,0.7645,0.0251,0.1235,0.5534,0.7994,0.2651,0.6438,0.1747,0.1144,0.8661,0.6113,0.9283,0.0300,0.8818,0.0323,0.2198,0.0070,0.9938,0.6941,0.8712,0.4205,0.0184,0.4365,0.9247,0.1370,0.7531,0.6761,0.8447,0.6308,0.0482,0.8396,0.8716,0.4194,0.6877,0.9918,0.2322,0.4663,0.3429,0.2684,0.4610,0.2622,0.0688,0.3831,0.9272,0.9819,0.8472,0.1604,0.5245,0.8250,0.6166,0.5910,0.6595,0.8805,0.4958,0.5118,0.7727,0.1999,0.1851,0.1432,0.3331,0.9758,0.9756,0.0359,0.3974,0.9630,0.8038,0.5868,0.1819,0.2325,0.5282,0.5117,0.9860,0.0456,0.7124,0.9524,0.0076,0.4646,0.9361,0.8199,0.5428,0.1458,0.7820,0.7178,0.0282,0.5112,0.2887,0.4494,0.5780,0.3005,0.6733,0.2005,0.7327,0.7997,0.0644,0.2689,0.8084,0.5900,0.2151,0.7082,0.6437,0.0568,0.8555,0.6554,0.8256,0.2294,0.6971,0.8815,0.6083,0.6147,0.3791,0.6513,0.4359,0.0078,0.2100,0.4706,0.3822,0.3663,0.6813,0.2912,0.3368,0.8669,0.2534,0.8618,0.1383,0.7384,0.1154,0.4632,0.6209,0.9791,0.1950,0.2917,0.4433,0.7773,0.8017,0.3590,0.9603,0.1946,0.7963,0.8049,0.8538,0.7088,0.8655,0.0963,0.1522,0.4369,0.9699,0.0981,0.0313,0.7753,0.8634,0.7236,0.3951,0.8336,0.7145,0.6799,0.1472,0.5216,0.5508,0.5033,0.0229,0.7997,0.1835,0.9705,0.4537,0.8374,0.3665,0.1211,0.6736,0.5703,0.6788,0.6314,0.0441,0.3216,0.1136,0.6619,0.6183,0.7933,0.8758,0.6049,0.2262,0.5970,0.7539,0.9501,0.9324,0.2973,0.8095,0.6616,0.9132,0.5812,0.1392,0.3600,0.2722,0.9122,0.0830,0.6829,0.4741,0.6883,0.3047,0.6660,0.2382,0.6675,0.6936,0.4348,0.9410,0.2478,0.8324,0.8711,0.8032,0.5864,0.7312,0.0840,0.6526,0.1062,0.6714,0.7006,0.3479,0.2779,0.0928,0.5317,0.3663,0.0428,0.0909,0.5107,0.5735,0.0464,0.3789,0.2754,0.2651,0.3243,0.1189,0.5740,0.8313,0.5039,0.1921,0.9024,0.1251,0.8769,0.7273,0.8469,0.9048,0.8156,0.8196,0.6317,0.5090,0.8176,0.5626,0.8263,0.8028,0.8624,0.9287,0.9527,0.2698,0.8383,0.4499,0.6736,0.5300,0.7814,0.6116,0.3880,0.7702,0.9049,0.9211,0.1046,0.0235,0.0099,0.9316,0.4561,0.3458,0.9289,0.8195,0.7954,0.6306,0.9625,0.2061,0.3427,0.8019,0.0493,0.0555,0.5867,0.0607,0.7339,0.5395,0.5579,0.3374,0.7992,0.4381,0.6121,0.6449,0.1752,0.0037,0.0724,0.0783,0.5657,0.1068,0.5928,0.1909,0.5097,0.8879,0.1861,0.0992,0.5849,0.8114,0.8811,0.3624,0.1724,0.2358,0.8152,0.7631,0.6585,0.3057,0.4730,0.6660,0.3805,0.2283,0.1743,0.3462,0.1510,0.8403,0.7291,0.4898,0.9658,0.3241,0.9714,0.3919,0.3068,0.6938,0.8771,0.7052,0.0967,0.9962,0.1371,0.9820,0.6133,0.5664,0.1019,0.5356,0.9524,0.9844,0.1936,0.4116,0.4800,0.2652,0.3313,0.0989,0.8379,0.9171,0.6145,0.6523,0.4111,0.1602,0.1335,0.8918,0.5002,0.5955,0.9581,0.8330,0.2910,0.2014,0.9590,0.8600,0.0570,0.2740,0.6226,0.8189,0.4428,0.5280,0.7379,0.2452,0.3105,0.4663,0.8571,0.1904,0.4886,0.0312,0.0576,0.4019,0.2984,0.7893,0.3257,0.4056,0.4032,0.8422,0.7267,0.9808,0.3726,0.8469,0.1161,0.7054,0.5707,0.8413,0.9189,0.1468,0.4157,0.7356,0.6599,0.5285,0.3702,0.1335,0.9645,0.8700,0.7519,0.6791,0.3719,0.3440,0.0460,0.2623,0.5845,0.8119,0.9585,0.0978,0.8391,0.8245,0.6762,0.3873,0.2217,0.7367,0.5322,0.1158,0.9335,0.3543,0.1180,0.1614,0.3381,0.1295,0.0199,0.7045,0.4797,0.5706,0.2034,0.1742,0.9372,0.7761,0.3851,0.3790,0.2271,0.4191,0.9953,0.9381,0.8051,0.0945,0.5363,0.4417,0.6750,0.6951,0.4735,0.6223,0.2437,0.2637,0.0585,0.1541,0.4565,0.2950,0.2318,0.8682,0.2390,0.2499,0.9643,0.3275,0.3418,0.7429,0.8355,0.9248,0.3173,0.9338,0.1227,0.3813,0.5866,0.0896,0.2141,0.0708,0.0591,0.8316,0.4570,0.9885,0.3356,0.2478,0.9731,0.8951,0.9959,0.6844,0.3406,0.2146,0.2425,0.8277,0.3624,0.1712,0.3343,0.6823,0.4320,0.0945,0.3668,0.0394,0.2746,0.2328,0.6310,0.1046,0.7192,0.9883,0.7806,0.2873,0.1274,0.4977,0.1406,0.3754,0.5824,0.4497,0.1761,0.6156,0.7941,0.7714,0.6551,0.7073,0.5061,0.2069,0.9276,0.8062,0.9796,0.7640,0.3115,0.7403,0.3821,0.1299,0.1015,0.5430,0.8030,0.0020,0.7801,0.6033,0.5819,0.5547,0.1146,0.0074,0.7701,0.4362,0.3402,0.0101,0.3380,0.8391,0.6854,0.0013,0.2371,0.2690,0.5447,0.9002,0.8344,0.2622,0.6464,0.6276,0.7604,0.1030,0.8291,0.5494,0.3378,0.4658,0.7082,0.3760,0.3490,0.7723,0.4702,0.5461,0.3077,0.2307,0.8495,0.1068,0.0406,0.0066,0.6238,0.2496,0.7592,0.4242,0.3566,0.4789,0.7965,0.9033,0.5483,0.1970,0.2018,0.5525,0.2213,0.8087,0.9483,0.8307,0.5404,0.1655,0.6846]',
+'doc_2',
+1106414922019871190,
+'FT content #2 word58 word37 word90 word17 word55 word65',
+'medium content #2 k590 k830 k826 k364 k665 k322 k110 k326 k135 k202',
+'c1_key_2_28c0c1e1079cdffee77a37988dd019864dbf889279296e230',
+'LT#2_846 LT#2_586 LT#2_608 LT#2_826 LT#2_877 LT#2_218 LT#2_983 LT#2_332 LT#2_149 LT#2_241 LT#2_329 LT#2_624 LT#2_25 LT#2_224 LT#2_29 LT#2_431 LT#2_357 LT#2_883 LT#2_854 LT#2_141 LT#2_343 LT#2_570 LT#2_936 LT#2_681 LT#2_134 LT#2_209 LT#2_644 LT#2_550 LT#2_282 LT#2_892 LT#2_329 LT#2_598 LT#2_427 LT#2_913 LT#2_115 LT#2_20 LT#2_732 LT#2_709 LT#2_944 LT#2_96 LT#2_581 LT#2_188 LT#2_530 LT#2_200 LT#2_84 LT#2_139 LT#2_594 LT#2_655 LT#2_576 LT#2_250',
+'c3_key_2_b740f1244b8636487fa050bc163d960ab6549772870',
+-138442885
+);
+UPDATE ddlkitty_1762917603700860
+SET seed = 1
+WHERE NOT EXISTS (
+SELECT 1 FROM ddlkitty_1762917779973866 LIMIT 1
+);
+drop table if exists ddlkitty_1762917603700860;
+drop table if exists ddlkitty_1762917779973866;
+alter system set _enable_defensive_check=1;
+alter system set _enable_hybrid_vector_index=false;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT ('ob_embed_endpoint');
+call DBMS_AI_SERVICE.DROP_AI_MODEL ('ob_embed');
