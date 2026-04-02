@@ -471,7 +471,7 @@ private:
                                 vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_ITERATIVE_FILTER));
   }
   inline bool check_if_can_retry() { return is_adaptive_filter() && (vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_ITERATIVE_FILTER 
-                                                                 || vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER)
+                                                                 || vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER) 
                                                                  && vec_aux_ctdef_->relevance_col_cnt_ == 0;}
   bool is_parallel_with_block_granule();
   bool check_need_force_switch_run_path();
@@ -496,7 +496,7 @@ private:
   int build_extra_info_range(const ObNewRange &range, const ObNewRange *&const_extra_range);
 private:
   static const uint64_t MAX_VSAG_QUERY_RES_SIZE = 16384;
-  static const uint64_t VSAG_MAX_EF_SEARCH = 160000;
+  static const uint64_t VSAG_MAX_EF_SEARCH = 1000;
   static constexpr double FIXED_MAGNIFICATION_RATIO = 2.0;
   static constexpr double SPARSE_FIXED_MAGNIFICATION_RATIO = 50.0;
   static constexpr double ITER_CONSIDER_LAST_SEARCH_SELETIVITY = 0.05;
