@@ -117,7 +117,6 @@ protected:
       transaction::ObTxReadSnapshot *snapshot,
       storage::ObTableScanParam &scan_param);
   int build_rowkey_domain_range();
-  int check_is_need_multi_get();
   int concat_row();
   int concat_rows(int64_t &count, int64_t capacity);
   int sorted_merge_join_row();
@@ -162,10 +161,14 @@ protected:
   int multi_get_row();
   int multi_get_rows(int64_t &count, int64_t capacity);
   int check_is_emb_vec_domain(int64_t iter_idx, bool &is_emb_vec);
+  int check_is_emb_vec_domain_by_table_id(int64_t table_id, bool &is_emb_vec);
+  int check_use_rowkey_vid_tbl_by_table_id(int64_t table_id, bool &use_rowkey_vid_tbl);
+  int check_table_need_add_part_key(int64_t table_id, int64_t &part_key_num, const ObDASScanCtDef *ctdef);
   int reset_rowkey_domain_iter_scan_range(int64_t iter_idx, const common::ObRowkey &data_table_rowkey);
   int fill_null_domain_id_in_data_table(const ObDASScanCtDef *ctdef,
                                        ObDASScanRtDef *rtdef,
                                        common::ObIAllocator &allocator);
+  int get_sync_interval_type(int64_t table_id, ObVectorIndexSyncIntervalType &sync_interval_type);
 private:
   bool need_filter_rowkey_domain_;
   bool is_no_sample_;
