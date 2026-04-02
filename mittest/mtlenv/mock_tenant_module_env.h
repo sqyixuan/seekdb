@@ -500,12 +500,7 @@ int MockTenantModuleEnv::init_dir()
 {
   system(("rm -rf " + run_dir_).c_str());
 
-#ifdef __APPLE__
-  char buf[PATH_MAX];
-  curr_dir_ = getcwd(buf, sizeof(buf));
-#else
   curr_dir_ = get_current_dir_name();
-#endif
 
   int ret = OB_SUCCESS;
   sstable_dir_ = env_dir_ + "/sstable";
@@ -802,7 +797,6 @@ int MockTenantModuleEnv::init()
       oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
       MTL_BIND2(ObTenantIOManager::mtl_new, ObTenantIOManager::mtl_init, mtl_start_default, mtl_stop_default, nullptr, ObTenantIOManager::mtl_destroy);
       MTL_BIND2(mtl_new_default, omt::ObSharedTimer::mtl_init, omt::ObSharedTimer::mtl_start, omt::ObSharedTimer::mtl_stop, omt::ObSharedTimer::mtl_wait, mtl_destroy_default);
-      MTL_BIND2(ObTimerService::mtl_new, nullptr, ObTimerService::mtl_start, ObTimerService::mtl_stop, ObTimerService::mtl_wait, ObTimerService::mtl_destroy);
       MTL_BIND2(mtl_new_default, ObTenantSchemaService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
       MTL_BIND2(ObTenantMetaMemMgr::mtl_new, mtl_init_default, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
       MTL_BIND2(mtl_new_default, share::ObSharedMemAllocMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);

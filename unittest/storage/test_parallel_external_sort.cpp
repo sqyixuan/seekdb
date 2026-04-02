@@ -195,6 +195,7 @@ void TestParallelExternalSort::SetUp()
   ASSERT_EQ(OB_SUCCESS, common::ObClockGenerator::init());
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpBlockCache::get_instance().init("tmp_block_cache", 1));
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("sn_tmp_page_cache", 1));
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
   ObTenantIOManager *io_service = nullptr;
@@ -202,12 +203,6 @@ void TestParallelExternalSort::SetUp()
   EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   EXPECT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
-  tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
   EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -236,11 +231,9 @@ void TestParallelExternalSort::TearDown()
   TestDataFilePrepare::TearDown();
   common::ObClockGenerator::destroy();
   destroy_tenant_mgr();
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
 }
 
 int TestParallelExternalSort::init_tenant_mgr()
@@ -314,13 +307,7 @@ int TestParallelExternalSort::generate_items(const int64_t item_nums, const bool
     }
 
     if (OB_SUCC(ret) && !is_sorted) {
-#ifdef __APPLE__
-      std::random_device rd;
-      std::mt19937 rng(rd());
-      std::shuffle(items.begin(), items.end(), rng);
-#else
       std::random_shuffle(items.begin(), items.end());
-#endif
     }
   }
   return ret;
@@ -358,13 +345,7 @@ int TestParallelExternalSort::generate_items_dup(const int64_t item_nums, const 
     }
 
     if (OB_SUCC(ret) && !is_sorted) {
-#ifdef __APPLE__
-      std::random_device rd;
-      std::mt19937 rng(rd());
-      std::shuffle(items.begin(), items.end(), rng);
-#else
       std::random_shuffle(items.begin(), items.end());
-#endif
     }
   }
   return ret;
@@ -375,9 +356,8 @@ int TestParallelExternalSort::shuffle_items(const int64_t task_id, const int64_t
 {
   int ret = OB_SUCCESS;
   const int64_t total_item_cnt = total_items.size();
-  const int64_t start_idx = std::max<int64_t>(0, total_item_cnt * task_id / task_cnt);
-  const int64_t end_idx = std::min<int64_t>(total_item_cnt - 1,
-                                            total_item_cnt * (task_id + 1) / task_cnt - 1);
+  int64_t start_idx = std::max(0L, total_item_cnt * task_id / task_cnt);
+  int64_t end_idx = std::min(total_item_cnt - 1, total_item_cnt * (task_id + 1) / task_cnt - 1);
   task_items.reset();
   for (int64_t i = start_idx; i <= end_idx; ++i) {
     if (OB_FAIL(task_items.push_back(total_items[i]))) {

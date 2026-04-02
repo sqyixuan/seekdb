@@ -204,6 +204,7 @@ void TestBackupMacroIndexMerger::SetUp()
   // set observer memory limit
   CHUNK_MGR.set_limit(8L * 1024L * 1024L * 1024L);
   ASSERT_EQ(OB_SUCCESS, tmp_file::ObTmpPageCache::get_instance().init("sn_tmp_page_cache", 1));
+  ASSERT_EQ(OB_SUCCESS, ObTimerService::get_instance().start());
 
   static ObTenantBase tenant_ctx(OB_SYS_TENANT_ID);
   ObTenantEnv::set_tenant(&tenant_ctx);
@@ -212,11 +213,6 @@ void TestBackupMacroIndexMerger::SetUp()
   EXPECT_EQ(OB_SUCCESS, ObTenantIOManager::mtl_init(io_service));
   EXPECT_EQ(OB_SUCCESS, io_service->start());
   tenant_ctx.set(io_service);
-
-  ObTimerService *timer_service = nullptr;
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
-  tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
   EXPECT_EQ(OB_SUCCESS, mtl_new_default(tf_mgr));
@@ -235,11 +231,9 @@ void TestBackupMacroIndexMerger::TearDown()
   tmp_file::ObTmpPageCache::get_instance().destroy();
   ObKVGlobalCache::get_instance().destroy();
   common::ObClockGenerator::destroy();
-  ObTimerService *timer_service = MTL(ObTimerService *);
-  ASSERT_NE(nullptr, timer_service);
-  timer_service->stop();
-  timer_service->wait();
-  timer_service->destroy();
+  ObTimerService::get_instance().stop();
+  ObTimerService::get_instance().wait();
+  ObTimerService::get_instance().destroy();
 }
 
 void TestBackupMacroIndexMerger::clean_env_()
@@ -251,12 +245,7 @@ void TestBackupMacroIndexMerger::inner_init_()
 {
   int ret = OB_SUCCESS;
   ObBackupIoAdapter util;
-#ifdef __APPLE__
-  char buf[PATH_MAX];
-  ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_macro_block_index_merger_dir", getcwd(buf, sizeof(buf)));
-#else
   ret = databuff_printf(test_dir_, sizeof(test_dir_), "%s/test_backup_macro_block_index_merger_dir", get_current_dir_name());
-#endif
   EXPECT_EQ(OB_SUCCESS, ret);
   ret = databuff_printf(test_dir_uri_, sizeof(test_dir_uri_), "file://%s", test_dir_);
   EXPECT_EQ(OB_SUCCESS, ret);
