@@ -1,0 +1,104 @@
+# owner: dingjincheng.djc
+# owner group: SQL1
+# tags: optimizer
+
+connect (connsys, $OBMYSQL_MS0, root, "", oceanbase, $OBMYSQL_PORT);
+
+--disable_warnings
+#drop tenant if exists duptable force;
+#drop resource pool if exists duptable_pool1;
+--enable_warnings
+
+let $zone_count = 2;
+--disable_query_log
+#eval create resource pool duptable_pool1 unit = '2c2g', unit_num = 1, zone_list = ('$zone1', '$zone2');
+#eval CREATE TENANT duptable REPLICA_NUM = $zone_count, primary_zone='$zone1;$zone2', RESOURCE_POOL_LIST = ('duptable_pool1') set ob_tcp_invited_nodes='%';
+--enable_query_log
+--source mysql_test/include/check_tenant_sync.inc
+
+let $__tenant_name__ = 'sys';
+--source mysql_test/include/get_tenant_server.inc
+connect (conn2,$TE_SERVER_IP,root,,*NO-ONE*,$TE_SERVER_PORT);
+connection conn2;
+--result_format 4
+use test;
+--disable_warnings
+drop table if exists t1;
+drop table if exists t2;
+drop table if exists dup_t1;
+drop table if exists dup_t2;
+--enable_warnings
+
+create table t1 (c1 int, c2 int, c3 int, primary key(c1));
+create table t2 (c1 int, c2 int, c3 int, primary key(c1));
+
+create table dup_t1 (c1 int, c2 int, c3 int, primary key(c1));
+create table dup_t2 (c1 int, c2 int, c3 int, primary key(c1));
+
+insert into t1 values(1, 1, 1);
+insert into t1 values(2, 2, 2);
+insert into t1 values(3, 3, 3);
+
+insert into t2 values(1, 1, 1);
+insert into t2 values(2, 2, 2);
+insert into t2 values(4, 4, 4);
+
+insert into dup_t1 select * from t1;
+insert into dup_t2 select * from t2;
+
+connection connsys;
+sleep 5;
+
+let $database_id = query_get_value(select database_id from __all_virtual_database where database_name = 'TEST', database_id, 1);
+
+## get table id
+let $t1_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't1' and database_id = $database_id, table_id, 1);
+let $t2_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 't2' and database_id = $database_id, table_id, 1);
+let $dup_t1_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 'dup_t1' and database_id = $database_id, table_id, 1);
+let $dup_t2_table_id = query_get_value(select table_id from __all_virtual_table where table_name = 'dup_t2' and database_id = $database_id, table_id, 1);
+
+## get ls id
+
+##########################################
+## get the ip:port of dup table follower 
+#let $dup_t1_follow_ip = query_get_value(select SVR_IP from __all_virtual_ls_info where tenant_id = $tenant_id and ls_id = $dup_t1_ls_id and ls_state = 'FOLLOWER' ORDER BY SVR_PORT, SVR_IP, 1);
+#let $dup_t1_follow_port = query_get_value(select SVR_PORT from __all_virtual_ls_info where tenant_id = $tenant_id and ls_id = $dup_t1_ls_id and ls_state = 'FOLLOWER' ORDER BY SVR_PORT, SVR_PORT, 1);
+
+
+--disable_query_log
+#eval alter system switch replica leader ls=$dup_t1_ls_id server='$dup_t1_follow_ip:$dup_t1_follow_port' tenant='sys';
+#eval alter system switch replica leader ls=$dup_t2_ls_id server='$dup_t1_follow_ip:$dup_t1_follow_port' tenant='sys';
+#eval alter system switch replica leader ls=$t1_ls_id server='$dup_t1_leader_ip:$dup_t1_leader_port' tenant='sys';
+#eval alter system switch replica leader ls=$t2_ls_id server='$dup_t1_leader_ip:$dup_t1_leader_port' tenant='sys';
+--enable_query_log
+
+connection conn2;
+sleep 15;
+
+explain select * from dup_t1;
+explain select * from dup_t1 for update;
+set autocommit = 0;
+insert into dup_t1 values (4,4,4);
+explain select * from dup_t1 where c1 = 4;
+set autocommit = 1;
+
+explain select * from t1, t2 where t1.c1 = t2.c1 and exists(select 1 from dup_t1, dup_t2 where dup_t1.c1 = dup_t2.c1);
+explain select * from t1, t2 where t1.c1 = t2.c1 and exists(select 1 from dup_t1);
+explain select * from t1, t2 where t1.c1 = t2.c1 and exists(select 1 from dup_t2);
+
+set autocommit = 0;
+insert into dup_t1 values (5,5,5);
+explain select * from t1, t2 where t1.c1 = t2.c1 and t1.c2 = 5 and exists(select 1 from dup_t1, dup_t2 where dup_t1.c1 = dup_t2.c1);
+explain select * from t1, t2 where t1.c1 = t2.c1 and t1.c2 = 5 and exists(select 1 from dup_t1);
+explain select * from t1, t2 where t1.c1 = t2.c1 and t1.c2 = 5 and exists(select 1 from dup_t2);
+set autocommit = 1;
+
+drop table t1;
+drop table t2;
+drop table dup_t1;
+drop table dup_t2;
+
+connection connsys;
+
+#drop tenant if exists duptable force;
+#drop resource pool if exists duptable_pool1;
