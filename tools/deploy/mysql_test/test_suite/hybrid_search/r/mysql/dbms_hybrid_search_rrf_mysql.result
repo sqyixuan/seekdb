@@ -1,0 +1,681 @@
+# ----------------------------------------------------------------------
+# Test of hybrid search rrf.
+# ----------------------------------------------------------------------
+alter system set _enable_index_merge=true;
+drop table if exists books;
+CREATE TABLE books (
+book_id INT,
+title VARCHAR(200),
+author VARCHAR(100),
+category VARCHAR(50),
+description TEXT,
+price DECIMAL(8,2),
+vector_embedding vector(4),
+vector index idx_vector(vector_embedding) with (distance=l2, type=hnsw, lib=vsag),
+fulltext index idx_title(title),
+fulltext index idx_author(author),
+fulltext index idx_category(category),
+fulltext index idx_description(description)
+);
+INSERT INTO books (book_id, title, author, category, description, price, vector_embedding) VALUES 
+(1, 'The Great Gatsby', 'F. Scott Fitzgerald', 'Fiction', 'A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.', 12.99, '[0.1,0.2,0.3,0.4]'),
+(2, 'To Kill a Mockingbird', 'Harper Lee', 'Fiction', 'A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.', 14.50, '[0.5,0.6,0.7,0.8]'),
+(3, '1984', 'George Orwell', 'Science Fiction', 'A dystopian novel about totalitarianism and surveillance society, featuring Winston Smith and Big Brother.', 11.99, '[0.9,0.1,0.2,0.3]'),
+(4, 'Pride and Prejudice', 'Jane Austen', 'Romance', 'A beloved romance novel about Elizabeth Bennet and Mr. Darcy, exploring themes of love and social class.', 13.75, '[0.4,0.5,0.6,0.7]'),
+(5, 'The Hobbit', 'J.R.R. Tolkien', 'Fantasy', 'An adventure story about Bilbo Baggins, a hobbit who embarks on a journey with thirteen dwarves to reclaim their homeland.', 15.25, '[0.8,0.9,0.1,0.2]'),
+(6, 'Moby-Dick', 'Herman Melville', 'Fiction', 'A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.', 10.99, '[0.2,0.3,0.4,0.5]'),
+(7, 'The Catcher in the Rye', 'J.D. Salinger', 'Fiction', 'Holden Caulfield recounts days in New York City after being expelled from prep school.', 9.99, '[0.3,0.4,0.5,0.6]'),
+(8, 'Brave New World', 'Aldous Huxley', 'Science Fiction', 'A dystopian future of engineered citizens and state control.', 12.50, '[0.6,0.7,0.2,0.1]'),
+(9, 'The Lord of the Rings', 'J.R.R. Tolkien', 'Fantasy', 'An epic journey to destroy the One Ring in the fires of Mount Doom.', 29.99, '[0.7,0.1,0.3,0.8]'),
+(10, 'Crime and Punishment', 'Fyodor Dostoevsky', 'Classic', 'Raskolnikov wrestles with guilt after committing a murder.', 13.20, '[0.15,0.25,0.35,0.45]'),
+(11, 'The Alchemist', 'Paulo Coelho', 'Fiction', 'A shepherd boy embarks on a journey to find his personal legend.', 8.80, '[0.22,0.18,0.44,0.31]'),
+(12, 'Sapiens', 'Yuval Noah Harari', 'Nonfiction', 'A brief history of humankind exploring cognitive revolution and modern society.', 18.00, '[0.55,0.12,0.33,0.21]'),
+(13, 'Thinking, Fast and Slow', 'Daniel Kahneman', 'Nonfiction', 'Explores the dual systems of thought that drive decisions.', 16.50, '[0.11,0.22,0.66,0.33]'),
+(14, 'The Name of the Rose', 'Umberto Eco', 'Mystery', 'A friar investigates a series of murders in a medieval monastery.', 11.70, '[0.25,0.36,0.47,0.58]'),
+(15, 'Dune', 'Frank Herbert', 'Science Fiction', 'The story of Paul Atreides on the desert planet Arrakis.', 17.40, '[0.9,0.2,0.4,0.6]');
+set @query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  }
+}';
+SELECT dbms_hybrid_search.get_sql('books', @query_param);
+dbms_hybrid_search.get_sql('books', @query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`category`, `_vs`.`category`) as `category`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, ifnull(`_fts`.`price`, `_vs`.`price`) as `price`, ifnull(`_fts`.`vector_embedding`, `_vs`.`vector_embedding`) as `vector_embedding`, (ifnull(`_fts`.`_keyword_score`, 0) + ifnull(`_vs`.`_semantic_score`, 0)) as `_score` FROM ((SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200) `_fts` full join (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT dbms_hybrid_search.search('books', @query_param);
+dbms_hybrid_search.search('books', @query_param)
+[{"price": 12.99, "title": "The Great Gatsby", "_score": 4.916354679288223, "author": "F. Scott Fitzgerald", "book_id": 1, "category": "Fiction", "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.", "vector_embedding": "[0.1,0.2,0.3,0.4]"}, {"price": 14.50, "title": "To Kill a Mockingbird", "_score": 1.5588561755691193, "author": "Harper Lee", "book_id": 2, "category": "Fiction", "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.", "vector_embedding": "[0.5,0.6,0.7,0.8]"}, {"price": 13.20, "title": "Crime and Punishment", "_score": 0.90909092, "author": "Fyodor Dostoevsky", "book_id": 10, "category": "Classic", "description": "Raskolnikov wrestles with guilt after committing a murder.", "vector_embedding": "[0.15,0.25,0.35,0.45]"}, {"price": 10.99, "title": "Moby-Dick", "_score": 0.83333333, "author": "Herman Melville", "book_id": 6, "category": "Fiction", "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.", "vector_embedding": "[0.2,0.3,0.4,0.5]"}, {"price": 8.80, "title": "The Alchemist", "_score": 0.82908065, "author": "Paulo Coelho", "book_id": 11, "category": "Fiction", "description": "A shepherd boy embarks on a journey to find his personal legend.", "vector_embedding": "[0.22,0.18,0.44,0.31]"}, {"price": 11.70, "title": "The Name of the Rose", "_score": 0.75145216, "author": "Umberto Eco", "book_id": 14, "category": "Mystery", "description": "A friar investigates a series of murders in a medieval monastery.", "vector_embedding": "[0.25,0.36,0.47,0.58]"}]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 60
+    }
+  }
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`category`, `_vs`.`category`) as `category`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, ifnull(`_fts`.`price`, `_vs`.`price`) as `price`, ifnull(`_fts`.`vector_embedding`, `_vs`.`vector_embedding`) as `vector_embedding`, (ifnull(1 / (`_fts`.`_keyword_rank` + 60), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 60), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "price": 12.99,
+    "title": "The Great Gatsby",
+    "_score": 0.0328,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "category": "Fiction",
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "vector_embedding": "[0.1,0.2,0.3,0.4]"
+  },
+  {
+    "price": 14.50,
+    "title": "To Kill a Mockingbird",
+    "_score": 0.0161,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "category": "Fiction",
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "vector_embedding": "[0.5,0.6,0.7,0.8]"
+  },
+  {
+    "price": 13.20,
+    "title": "Crime and Punishment",
+    "_score": 0.0161,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "category": "Classic",
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "vector_embedding": "[0.15,0.25,0.35,0.45]"
+  },
+  {
+    "price": 10.99,
+    "title": "Moby-Dick",
+    "_score": 0.0159,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "category": "Fiction",
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "vector_embedding": "[0.2,0.3,0.4,0.5]"
+  },
+  {
+    "price": 8.80,
+    "title": "The Alchemist",
+    "_score": 0.0156,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "category": "Fiction",
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "vector_embedding": "[0.22,0.18,0.44,0.31]"
+  },
+  {
+    "price": 11.70,
+    "title": "The Name of the Rose",
+    "_score": 0.0154,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "category": "Mystery",
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "vector_embedding": "[0.25,0.36,0.47,0.58]"
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 10
+    }
+  }
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`category`, `_vs`.`category`) as `category`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, ifnull(`_fts`.`price`, `_vs`.`price`) as `price`, ifnull(`_fts`.`vector_embedding`, `_vs`.`vector_embedding`) as `vector_embedding`, (ifnull(1 / (`_fts`.`_keyword_rank` + 10), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 10), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `category`, `description`, `price`, `vector_embedding`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "price": 12.99,
+    "title": "The Great Gatsby",
+    "_score": 0.1818,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "category": "Fiction",
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "vector_embedding": "[0.1,0.2,0.3,0.4]"
+  },
+  {
+    "price": 14.50,
+    "title": "To Kill a Mockingbird",
+    "_score": 0.0833,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "category": "Fiction",
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "vector_embedding": "[0.5,0.6,0.7,0.8]"
+  },
+  {
+    "price": 13.20,
+    "title": "Crime and Punishment",
+    "_score": 0.0833,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "category": "Classic",
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "vector_embedding": "[0.15,0.25,0.35,0.45]"
+  },
+  {
+    "price": 10.99,
+    "title": "Moby-Dick",
+    "_score": 0.0769,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "category": "Fiction",
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "vector_embedding": "[0.2,0.3,0.4,0.5]"
+  },
+  {
+    "price": 8.80,
+    "title": "The Alchemist",
+    "_score": 0.0714,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "category": "Fiction",
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "vector_embedding": "[0.22,0.18,0.44,0.31]"
+  },
+  {
+    "price": 11.70,
+    "title": "The Name of the Rose",
+    "_score": 0.0667,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "category": "Mystery",
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "vector_embedding": "[0.25,0.36,0.47,0.58]"
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 1
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, `_keyword_rank`, `_semantic_rank`, (ifnull(1 / (`_fts`.`_keyword_rank` + 1), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 1), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `description`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `description`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "title": "The Great Gatsby",
+    "_score": 1.0000,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "_keyword_rank": 1,
+    "_semantic_rank": 1
+  },
+  {
+    "title": "To Kill a Mockingbird",
+    "_score": 0.3333,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "_keyword_rank": 2,
+    "_semantic_rank": null
+  },
+  {
+    "title": "Crime and Punishment",
+    "_score": 0.3333,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "_keyword_rank": null,
+    "_semantic_rank": 2
+  },
+  {
+    "title": "Moby-Dick",
+    "_score": 0.2500,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "_keyword_rank": null,
+    "_semantic_rank": 3
+  },
+  {
+    "title": "The Alchemist",
+    "_score": 0.2000,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "_keyword_rank": null,
+    "_semantic_rank": 4
+  },
+  {
+    "title": "The Name of the Rose",
+    "_score": 0.1667,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "_keyword_rank": null,
+    "_semantic_rank": 5
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, `_keyword_rank`, `_semantic_rank`, (ifnull(1 / (`_fts`.`_keyword_rank` + 60), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 60), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `description`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `description`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "title": "The Great Gatsby",
+    "_score": 0.0328,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "_keyword_rank": 1,
+    "_semantic_rank": 1
+  },
+  {
+    "title": "To Kill a Mockingbird",
+    "_score": 0.0161,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "_keyword_rank": 2,
+    "_semantic_rank": null
+  },
+  {
+    "title": "Crime and Punishment",
+    "_score": 0.0161,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "_keyword_rank": null,
+    "_semantic_rank": 2
+  },
+  {
+    "title": "Moby-Dick",
+    "_score": 0.0159,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "_keyword_rank": null,
+    "_semantic_rank": 3
+  },
+  {
+    "title": "The Alchemist",
+    "_score": 0.0156,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "_keyword_rank": null,
+    "_semantic_rank": 4
+  },
+  {
+    "title": "The Name of the Rose",
+    "_score": 0.0154,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "_keyword_rank": null,
+    "_semantic_rank": 5
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_constant" : 10
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, `_keyword_rank`, `_semantic_rank`, (ifnull(1 / (`_fts`.`_keyword_rank` + 10), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 10), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `description`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 200)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `description`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "title": "The Great Gatsby",
+    "_score": 0.1818,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "_keyword_rank": 1,
+    "_semantic_rank": 1
+  },
+  {
+    "title": "To Kill a Mockingbird",
+    "_score": 0.0833,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "_keyword_rank": 2,
+    "_semantic_rank": null
+  },
+  {
+    "title": "Crime and Punishment",
+    "_score": 0.0833,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "_keyword_rank": null,
+    "_semantic_rank": 2
+  },
+  {
+    "title": "Moby-Dick",
+    "_score": 0.0769,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "_keyword_rank": null,
+    "_semantic_rank": 3
+  },
+  {
+    "title": "The Alchemist",
+    "_score": 0.0714,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "_keyword_rank": null,
+    "_semantic_rank": 4
+  },
+  {
+    "title": "The Name of the Rose",
+    "_score": 0.0667,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "_keyword_rank": null,
+    "_semantic_rank": 5
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 15
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+dbms_hybrid_search.get_sql('books', @rrf_query_param)
+SELECT ifnull(`_fts`.`book_id`, `_vs`.`book_id`) as `book_id`, ifnull(`_fts`.`title`, `_vs`.`title`) as `title`, ifnull(`_fts`.`author`, `_vs`.`author`) as `author`, ifnull(`_fts`.`description`, `_vs`.`description`) as `description`, `_keyword_rank`, `_semantic_rank`, (ifnull(1 / (`_fts`.`_keyword_rank` + 60), 0) + ifnull(1 / (`_vs`.`_semantic_rank` + 60), 0)) as `_score` FROM ((SELECT *, RANK() over( ORDER BY `_keyword_score` DESC) as `_keyword_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */`__pk_increment`, `book_id`, `title`, `author`, `description`, GREATEST(match(`title`) against('fiction American Dream' in natural language mode), match(`author`) against('fiction American Dream' in natural language mode), match(`description`) against('fiction American Dream' in natural language mode)) as `_keyword_score` FROM `test`.`books` WHERE match(`title`) against('fiction American Dream' in natural language mode) OR match(`author`) against('fiction American Dream' in natural language mode) OR match(`description`) against('fiction American Dream' in natural language mode) ORDER BY `_keyword_score` DESC LIMIT 300)) `_fts` full join (SELECT *, RANK() over( ORDER BY `_semantic_score` DESC) as `_semantic_rank` FROM (SELECT /*+ opt_param('hidden_column_visible', 'true') */l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]') as `_distance`, `__pk_increment`, `book_id`, `title`, `author`, `description`, round(1 / (1 + l2_distance(`vector_embedding`, '[0.1, 0.2, 0.3, 0.4]')), 8) as `_semantic_score` FROM `test`.`books` ORDER BY `_distance` APPROXIMATE LIMIT 5)) `_vs` on `_fts`.`__pk_increment` = `_vs`.`__pk_increment`) ORDER BY `_score` DESC, ifnull(`_vs`.`__pk_increment`, `_fts`.`__pk_increment`) LIMIT 10
+SELECT json_pretty(dbms_hybrid_search.search('books', @rrf_query_param));
+json_pretty(dbms_hybrid_search.search('books', @rrf_query_param))
+[
+  {
+    "title": "The Great Gatsby",
+    "_score": 0.0328,
+    "author": "F. Scott Fitzgerald",
+    "book_id": 1,
+    "description": "A classic American novel about the Jazz Age and the American Dream, featuring Jay Gatsby and his mysterious past.",
+    "_keyword_rank": 1,
+    "_semantic_rank": 1
+  },
+  {
+    "title": "To Kill a Mockingbird",
+    "_score": 0.0161,
+    "author": "Harper Lee",
+    "book_id": 2,
+    "description": "A powerful story about racial injustice in the American South, told through the eyes of young Scout Finch.",
+    "_keyword_rank": 2,
+    "_semantic_rank": null
+  },
+  {
+    "title": "Crime and Punishment",
+    "_score": 0.0161,
+    "author": "Fyodor Dostoevsky",
+    "book_id": 10,
+    "description": "Raskolnikov wrestles with guilt after committing a murder.",
+    "_keyword_rank": null,
+    "_semantic_rank": 2
+  },
+  {
+    "title": "Moby-Dick",
+    "_score": 0.0159,
+    "author": "Herman Melville",
+    "book_id": 6,
+    "description": "A sailor Ishmael narrates the obsessive quest of Ahab for the white whale Moby Dick.",
+    "_keyword_rank": null,
+    "_semantic_rank": 3
+  },
+  {
+    "title": "The Alchemist",
+    "_score": 0.0156,
+    "author": "Paulo Coelho",
+    "book_id": 11,
+    "description": "A shepherd boy embarks on a journey to find his personal legend.",
+    "_keyword_rank": null,
+    "_semantic_rank": 4
+  },
+  {
+    "title": "The Name of the Rose",
+    "_score": 0.0154,
+    "author": "Umberto Eco",
+    "book_id": 14,
+    "description": "A friar investigates a series of murders in a medieval monastery.",
+    "_keyword_rank": null,
+    "_semantic_rank": 5
+  }
+]
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 15
+    }
+  },
+  "size" : 20,
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR HY000: The value should be no less than the limit
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 0
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR HY000: Invalid argument
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 0
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR HY000: Invalid argument
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : "abc",
+      "rank_constant" : 2
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR HY000: Invalid argument
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 2
+    },
+    "field" : "c1"
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use
+set @rrf_query_param = '{
+  "query": {
+    "query_string": {
+      "fields": ["title", "author", "description"],
+      "query": "fiction American Dream"
+    }
+  },
+  "knn" : {
+    "field": "vector_embedding",
+    "k": 5,
+    "query_vector": [0.1, 0.2, 0.3, 0.4]
+  },
+  "rank" : {
+    "rrf" : {
+      "rank_window_size" : 10,
+      "rank_constant" : 2,
+      "field" : "c1"
+    }
+  },
+  "_source" : ["book_id", "title", "author", "description", "_keyword_rank", "_semantic_rank"]
+}';
+SELECT dbms_hybrid_search.get_sql('books', @rrf_query_param);
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your OceanBase version for the right syntax to use
+drop table books;
+alter system set _enable_index_merge=false;
