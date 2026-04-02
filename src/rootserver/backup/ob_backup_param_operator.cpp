@@ -132,7 +132,7 @@ int ObBackupParamOperator::construct_tenant_param_sql_(const uint64_t tenant_id,
 int ObBackupParamOperator::construct_cluster_param_sql_(common::ObSqlString &sql)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(sql.assign_fmt("select name, value from %s", OB_ALL_SYS_PARAMETER_TNAME))) {
+  if (OB_FAIL(sql.assign_fmt("select name, value from %s", OB_ALL_VIRTUAL_SYS_PARAMETER_TNAME))) {
     LOG_WARN("failed to assign fmt", K(ret));
   } else if (OB_FAIL(sql.append(" where zone='' and svr_ip='ANY' and scope='CLUSTER'"))) {
     LOG_WARN("failed to apend sql", K(ret));
