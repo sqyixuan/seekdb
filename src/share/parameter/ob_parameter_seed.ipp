@@ -459,7 +459,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//[INTERNAL_URL]
+//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -2276,10 +2276,10 @@ DEF_BOOL(_allow_skip_replay_redo_after_detete_tablet, OB_CLUSTER_PARAMETER, "FAL
          "The default value is FALSE. Value: TRUE means we allow skip replaying this invalid redo log, False means we do not alow such behavior.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
-//check os params
+// Deprecated: strict OS parameter check has been removed. Keep for compatibility only.
 DEF_BOOL(strict_check_os_params, OB_CLUSTER_PARAMETER, "False",
-         "A switch that determines whether to enable strict OS parameter check mode, defaulting to true and can be set to false to bypass strict checks."
-         "Value: True: allowed; False: allowed but not suggested",
+         "Deprecated. The strict OS parameter check logic has been removed and this parameter has no effect. "
+         "Default: False. Value: True/False are accepted for compatibility only.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
 DEF_BOOL(_enable_tree_based_io_scheduler, OB_CLUSTER_PARAMETER, "True",
          "A switch that allows enabling the tree-based IO scheduler."
@@ -2417,6 +2417,9 @@ DEF_INT(ob_vector_memory_limit_percentage, OB_CLUSTER_PARAMETER, "0",
         "[0,100)",
         "Used to control the upper limit percentage of memory resources that the vector_index module can use. Range:[0, 100)."
         "The system will adjust automatically if ob_vector_memory_limit_percentage set to 0(by default).",
+        ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_BOOL(vector_index_memory_saving_mode, OB_CLUSTER_PARAMETER, "True",
+        "Specifies whether to enable the vector index memory saving mode. This can reduce the memory used by the partition table vector index rebuild.",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
 DEF_STR_WITH_CHECKER(ob_storage_s3_url_encode_type, OB_CLUSTER_PARAMETER, "default",
@@ -2594,7 +2597,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// [INTERNAL_URL]
+// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
