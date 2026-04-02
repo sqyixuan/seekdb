@@ -18,6 +18,8 @@
 
 
 #include "ob_table_scan_op.h"
+#include "sql/das/ob_das_attach_define.h"
+#include "sql/das/ob_das_vec_define.h"
 #include "sql/executor/ob_task_spliter.h"
 #include "lib/geo/ob_geo_utils.h"
 #include "share/ob_ddl_checksum.h"
@@ -37,6 +39,27 @@ using namespace share::schema;
 namespace sql
 {
 #define MY_CTDEF (MY_SPEC.tsc_ctdef_)
+
+namespace
+{
+// Recursively find ObDASVecAuxScanCtDef with skip_delta_buffer_ in the attach hierarchy.
+// Used for HNSW+async: when index lookup finds deleted row, skip it instead of 4377.
+bool find_skip_delta_buffer_in_ctdef(const ObDASBaseCtDef *ctdef)
+{
+  bool found = false;
+  if (!OB_ISNULL(ctdef)) {
+    if (DAS_OP_VEC_SCAN == ctdef->op_type_) {
+      const ObDASVecAuxScanCtDef *vec_ctdef = static_cast<const ObDASVecAuxScanCtDef *>(ctdef);
+      found = vec_ctdef->skip_delta_buffer_;
+    } else {
+      for (int i = 0; !found && i < ctdef->children_cnt_; ++i) {
+        found = find_skip_delta_buffer_in_ctdef(ctdef->children_[i]);
+      }
+    }
+  }
+  return found;
+}
+}  // anonymous namespace
 
 int FlashBackItem::set_flashback_query_info(ObEvalCtx &eval_ctx, ObDASScanRtDef &scan_rtdef) const
 {
@@ -1070,6 +1093,27 @@ int ObTableScanOp::init_attach_scan_rtdef(const ObDASBaseCtDef *attach_ctdef,
       for (int i = 0; OB_SUCC(ret) && i < attach_ctdef->children_cnt_; ++i) {
         if (OB_FAIL(init_attach_scan_rtdef(attach_ctdef->children_[i], attach_rtdef->children_[i]))) {
           LOG_WARN("init attach scan rtdef failed", K(ret));
+        }
+      }
+      // HNSW+async: when index lookup finds deleted row, skip it instead of 4377
+      if (OB_SUCC(ret) && find_skip_delta_buffer_in_ctdef(attach_ctdef)) {
+        ObDASScanRtDef *target_scan_rtdef = nullptr;
+        if (DAS_OP_VEC_SCAN == attach_ctdef->op_type_) {
+          const ObDASVecAuxScanCtDef *vec_aux_ctdef = static_cast<const ObDASVecAuxScanCtDef *>(attach_ctdef);
+          if (attach_rtdef->children_cnt_ > vec_aux_ctdef->get_com_aux_tbl_idx()) {
+            ObDASBaseRtDef *com_aux_rtdef = attach_rtdef->children_[vec_aux_ctdef->get_com_aux_tbl_idx()];
+            if (OB_NOT_NULL(com_aux_rtdef) && DAS_OP_TABLE_SCAN == com_aux_rtdef->op_type_) {
+              target_scan_rtdef = static_cast<ObDASScanRtDef *>(com_aux_rtdef);
+            }
+          }
+        } else if ((DAS_OP_TABLE_LOOKUP == attach_ctdef->op_type_
+                    || DAS_OP_INDEX_PROJ_LOOKUP == attach_ctdef->op_type_)
+                   && attach_ctdef->children_cnt_ >= 2
+                   && OB_NOT_NULL(attach_ctdef->children_[0])) {
+          target_scan_rtdef = static_cast<ObDASTableLookupRtDef *>(attach_rtdef)->get_lookup_scan_rtdef();
+        }
+        if (OB_NOT_NULL(target_scan_rtdef)) {
+          target_scan_rtdef->scan_flag_.set_skip_4377_for_async_index_lookup(true);
         }
       }
     }
@@ -3451,38 +3495,36 @@ int ObTableScanOp::multivalue_get_pure_data(
   }
 
   if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(extend_domain_obj_buffer(record_num))) {
+    LOG_WARN("failed to extend obobj buffer.", K(ret));
   } else if (use_docid) {
     uint32_t pure_data_size = 0;
     rowkey_end = column_count - 1;
     rowkey_start = rowkey_end - data_rowkey_cnt;
-    if (OB_FAIL(extend_domain_obj_buffer(SAPTIAL_INDEX_DEFAULT_ROW_COUNT))) { // or record_num
-      LOG_WARN("failed to extend obobj buffer.", K(ret));
-    } else {
-      ObObj tmp_objs[column_count];
+    ObObj tmp_objs[column_count];
 
-      for (uint32_t j = rowkey_start; OB_SUCC(ret) && j < rowkey_end; ++j) {
-        tmp_objs[j].set_nop_value();
-        ObDatum *datum = nullptr;
-        ObExpr *expr = exprs.at(j);
+    for (uint32_t j = rowkey_start; OB_SUCC(ret) && j < rowkey_end; ++j) {
+      tmp_objs[j].set_nop_value();
+      ObDatum *datum = nullptr;
+      ObExpr *expr = exprs.at(j);
 
-        if (j == domain_index_.domain_column_idx_) {
-        } else if (OB_FAIL(expr->eval(eval_ctx_, datum))) {
-          LOG_WARN("expression evaluate failed", K(ret));
-        } else if (OB_FAIL(datum->to_obj(tmp_objs[j], expr->obj_meta_))) {
-          LOG_WARN("stored row to new row obj failed", K(ret), K(*datum), K(expr->obj_meta_));
-        } else {
-          pure_data_size += tmp_objs[j].get_serialize_size();
-        }
+      if (j == domain_index_.domain_column_idx_) {
+      } else if (OB_FAIL(expr->eval(eval_ctx_, datum))) {
+        LOG_WARN("expression evaluate failed", K(ret));
+      } else if (OB_FAIL(datum->to_obj(tmp_objs[j], expr->obj_meta_))) {
+        LOG_WARN("stored row to new row obj failed", K(ret), K(*datum), K(expr->obj_meta_));
+      } else {
+        pure_data_size += tmp_objs[j].get_serialize_size();
       }
+    }
 
-      if (OB_SUCC(ret)) {
-        if (record_num < 6) {
-          is_save_rowkey = true;
-        } else if (pure_data_size > 48 && scan_ctdef.table_param_.is_partition_table()) {
-          is_save_rowkey = false;
-        } else {
-          is_save_rowkey = true;
-        }
+    if (OB_SUCC(ret)) {
+      if (record_num < 6) {
+        is_save_rowkey = true;
+      } else if (pure_data_size > 48 && scan_ctdef.table_param_.is_partition_table()) {
+        is_save_rowkey = false;
+      } else {
+        is_save_rowkey = true;
       }
     }
   }
