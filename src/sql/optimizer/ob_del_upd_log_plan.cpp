@@ -137,7 +137,7 @@ int ObDelUpdLogPlan::inner_compute_dml_dop_by_auto_dop(const ObDelUpdStmt &stmt,
     LOG_WARN("failed to get insert cost", K(ret));
   } else {
     int64_t server_cnt = 1;
-    const double cost_threshold_us = 1000.0 * std::max(static_cast<int64_t>(10), opt_ctx.get_parallel_min_scan_time_threshold());
+    const double cost_threshold_us = 1000.0 * std::max(10L, opt_ctx.get_parallel_min_scan_time_threshold());
     const int64_t calc_dop_limit = opt_ctx.get_parallel_degree_limit(server_cnt);
     int64_t calc_dop = op_cost / cost_threshold_us;
     dop = std::min(calc_dop, calc_dop_limit);
@@ -2237,7 +2237,7 @@ int ObDelUpdLogPlan::check_vec_hnsw_index_vid_opt(
                                                                        col_expr->get_column_id()))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get null column item", K(ret), KPC(col_expr));
-        } else if (OB_FAIL(ObVectorIndexUtil::check_column_has_vector_index(*index_schema, schema_guard, column_item->base_cid_,
+        } else if (OB_FAIL(ObVectorIndexUtil::check_column_has_vector_index(*index_schema, schema_guard, column_item->base_cid_, 
                                                                             is_col_has_vec_idx, index_type))) {
           LOG_WARN("failed to check column has vector index", K(ret));
         } else if (is_col_has_vec_idx && (index_type == ObIndexType::INDEX_TYPE_VEC_DELTA_BUFFER_LOCAL || index_type == INDEX_TYPE_HYBRID_INDEX_LOG_LOCAL)) {
