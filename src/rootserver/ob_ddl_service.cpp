@@ -416,7 +416,7 @@ int ObDDLService::create_inner_expr_index(ObMySQLTransaction &trans,
     }
     if (OB_SUCC(ret)) {
       if (!has_lob_in_origin_table && is_add_hybrid_embedded_vec_column &&
-          OB_FAIL(ObDDLService::create_aux_lob_table_if_need(new_table_schema, schema_guard, ddl_operator, trans,
+          OB_FAIL(ObDDLService::create_aux_lob_table_if_need(new_table_schema, schema_guard, ddl_operator, trans, 
                                                true/*need_sync_schema_version*/, is_add_lob, is_add_hybrid_embedded_vec_column))) {
           LOG_WARN("fail to create_aux_lob_table_if_need", K(ret), K(new_table_schema));
       }
@@ -2293,7 +2293,7 @@ int ObDDLService::create_tablets_in_trans_(ObIArray<ObTableSchema> &table_schema
     } else if (OB_FAIL(table_creator.init(true/*need_tablet_cnt_check*/))) {
       LOG_WARN("fail to init table creator", KR(ret));
     }
-
+    
     if (OB_SUCC(ret) && OB_INVALID_ID != first_table->get_tablegroup_id()) {
       if (OB_FAIL(schema_guard.get_tablegroup_schema(
           first_table->get_tenant_id(),
@@ -7254,7 +7254,7 @@ int ObDDLService::generate_aux_index_schema_(
         }
       }
       if (!has_lob_in_origin_table && is_add_hybrid_embedded_vec_column &&
-          OB_FAIL(create_aux_lob_table_if_need(nonconst_data_schema, schema_guard, ddl_operator, trans,
+          OB_FAIL(create_aux_lob_table_if_need(nonconst_data_schema, schema_guard, ddl_operator, trans, 
                                                true/*need_sync_schema_version*/, is_add_lob, is_add_hybrid_embedded_vec_column))) {
           LOG_WARN("fail to create_aux_lob_table_if_need", K(ret), K(nonconst_data_schema));
       }
@@ -18840,7 +18840,7 @@ int ObDDLService::alter_table(obrpc::ObAlterTableArg &alter_table_arg,
         LOG_WARN("fail to check location constraint", KR(ret), K(alter_table_arg.alter_table_schema_));
       }
     }
-
+    
     //do alter table in transaction
     if (OB_SUCC(ret)) {
       uint64_t data_version = 0;
@@ -21495,7 +21495,7 @@ int ObDDLService::reconstruct_index_schema(obrpc::ObAlterTableArg &alter_table_a
             bool is_add_lob = false;
             if (!has_lob_in_origin_table) {
               new_table_schema.set_in_offline_ddl_white_list(true);
-              if (OB_FAIL(create_aux_lob_table_if_need(new_table_schema, schema_guard, ddl_operator, trans,
+              if (OB_FAIL(create_aux_lob_table_if_need(new_table_schema, schema_guard, ddl_operator, trans, 
                   true/*need_sync_schema_version*/, is_add_lob, true))) {
                 LOG_WARN("fail to create_aux_lob_table_if_need", K(ret), K(new_table_schema));
               }
@@ -34315,6 +34315,18 @@ int ObDDLSQLTransaction::serialize_inc_schemas_(
   UNUSED(tenant_schemas);
   UNUSED(database_schemas);
   UNUSED(table_schemas);
+  // Register DDL_TRANS MDS so that Change Stream Fetcher can detect DDL transactions.
+  // Upstream serializes full incremental schema dict here (via ObDataDictStorage),
+  // but SeekDB only needs the MDS type signal, not the data content.
+  char dummy = '\0';
+  if (OB_FAIL(register_tx_data(
+      tenant_id_,
+      SYS_LS,
+      transaction::ObTxDataSourceType::DDL_TRANS,
+      &dummy,
+      sizeof(dummy)))) {
+    LOG_WARN("register DDL_TRANS MDS failed", KR(ret), K_(tenant_id));
+  }
   return ret;
 }
 
