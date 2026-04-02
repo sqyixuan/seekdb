@@ -21,28 +21,28 @@
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 
-namespace oceanbase
+namespace oceanbase 
 {
-namespace sql
+namespace sql 
 {
 ObExprAIEmbed::ObExprAIEmbed(common::ObIAllocator &alloc)
-    : ObFuncExprOperator(alloc,
-                        T_FUN_SYS_AI_EMBED,
-                        N_AI_EMBED,
+    : ObFuncExprOperator(alloc, 
+                        T_FUN_SYS_AI_EMBED, 
+                        N_AI_EMBED, 
                         MORE_THAN_ZERO,
-                        NOT_VALID_FOR_GENERATED_COL,
-                        NOT_ROW_DIMENSION)
+                        NOT_VALID_FOR_GENERATED_COL, 
+                        NOT_ROW_DIMENSION) 
 {
 }
 
-ObExprAIEmbed::~ObExprAIEmbed()
+ObExprAIEmbed::~ObExprAIEmbed() 
 {
 }
 
 int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
                                      ObExprResType *types_stack,
                                      int64_t param_num,
-                                     common::ObExprTypeCtx &type_ctx) const
+                                     common::ObExprTypeCtx &type_ctx) const 
 {
   UNUSED(type_ctx);
   UNUSED(types_stack);
@@ -64,7 +64,7 @@ int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
       } else {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("dimension parameter must be an integer, not a decimal or float", K(ret), K(types_stack[DIM_IDX].get_type()));
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be an integer, not a decimal or float");
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dimension parameter must be an integer, not a decimal or float");
       }
     }
     type.set_varchar();
@@ -74,7 +74,7 @@ int ObExprAIEmbed::calc_result_typeN(ObExprResType &type,
   return ret;
 }
 
-int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
+int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res) 
 {
   INIT_SUCC(ret);
   ObDatum *arg_model_id = nullptr;
@@ -86,7 +86,7 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
   } else if (arg_model_id->is_null() || arg_content->is_null()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("model id or content is null", K(ret));
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or content is null");
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "model id or content is null");
     res.set_null();
   } else {
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
@@ -102,7 +102,7 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     if (model_id.empty() || content.empty()) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("model id or input is empty", K(ret));
-      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or input is empty");
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "model id or input is empty");
       res.set_null();
     }
     int64_t dim = 0;
@@ -114,7 +114,7 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
       if (dim <= 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("dimension parameter must be a positive integer", K(ret), K(dim));
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dimension parameter must be a positive integer");
         res.set_null();
       } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object(temp_allocator, config))) {
         LOG_WARN("fail to get json object", K(ret));
@@ -135,7 +135,7 @@ int ObExprAIEmbed::eval_ai_embed(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     } else if (OB_FAIL(ai_service_guard.get_ai_endpoint_by_ai_model_name(model_id, endpoint_info))) {
       LOG_WARN("failed to get endpoint info", K(ret), K(model_id));
     } else if (OB_ISNULL(endpoint_info)) {
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_ERR_UNEXPECTED;  
       LOG_WARN("endpoint info is null", K(ret));
     } else {
       ObAIFuncModel model(temp_allocator, *info, *endpoint_info);
@@ -188,7 +188,7 @@ int ObExprAIEmbed::get_vector_params(const ObExpr &expr,
       if (dim <= 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("dimension parameter must be a positive integer", K(ret), K(dim));
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dimension parameter must be a positive integer");
       }
     }
     if (OB_SUCC(ret)) {
@@ -209,7 +209,7 @@ int ObExprAIEmbed::get_vector_params(const ObExpr &expr,
         } else if (content.empty()) {
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("input is empty", K(ret));
-          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, input is empty");
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "input is empty");
         } else if (OB_FAIL(contents.push_back(content))) {
           LOG_WARN("fail to push back content", K(ret), K(idx));
         }
@@ -220,14 +220,14 @@ int ObExprAIEmbed::get_vector_params(const ObExpr &expr,
   return ret;
 }
 
-int ObExprAIEmbed::pack_json_array_to_res_vector(const ObExpr &expr,
+int ObExprAIEmbed::pack_json_array_to_res_vector(const ObExpr &expr, 
                                                 ObEvalCtx &ctx,
                                                 ObIAllocator &allocator,
                                                 ObArray<ObJsonObject *> &responses,
                                                 const ObBitVector &skip,
                                                 const EvalBound &bound,
                                                 const ObAiModelEndpointInfo &endpoint_info,
-                                                ObIVector *res_vec)
+                                                ObIVector *res_vec) 
 {
   int ret = OB_SUCCESS;
   ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
@@ -306,7 +306,7 @@ int ObExprAIEmbed::eval_ai_embed_vector(const ObExpr &expr, ObEvalCtx &ctx,
     ObJsonObject *body = nullptr;
     ObJsonObject *config = nullptr;
     ObJsonInt *dim_json = nullptr;
-    ObArray<ObJsonObject *> responses;
+    ObArray<ObJsonObject *> responses;   
     ObAIFuncClient ai_client;
     if (dim > 0) {
       if (OB_FAIL(ObAIFuncJsonUtils::get_json_int(temp_allocator, dim, dim_json))) {
@@ -328,12 +328,12 @@ int ObExprAIEmbed::eval_ai_embed_vector(const ObExpr &expr, ObEvalCtx &ctx,
     } else if (OB_FAIL(ai_service_guard.get_ai_endpoint_by_ai_model_name(model_id, endpoint_info))) {
       LOG_WARN("failed to get endpoint info", K(ret), K(model_id));
     } else if (OB_ISNULL(endpoint_info)) {
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_ERR_UNEXPECTED;  
       LOG_WARN("endpoint info is null", K(ret));
-    } else if (!ObAIFuncUtils::is_dense_embedding_type(info)) {
+    } else if (!ObAIFuncUtils::is_dense_embedding_type(info)) { 
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("model type must be DENSE_EMBEDDING", K(ret));
-      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model type must be DENSE_EMBEDDING");
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "model type must be DENSE_EMBEDDING");
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && i < contents.count(); ++i) {
         ObArray<ObString> contents_array;
@@ -407,7 +407,7 @@ int ObExprAIEmbed::eval_ai_embed_vector_v2(const ObExpr &expr, ObEvalCtx &ctx,
         } else if (OB_FAIL(ai_service_guard.get_ai_endpoint_by_ai_model_name(model_id, endpoint_info))) {
           LOG_WARN("failed to get endpoint info", K(ret), K(model_id));
         } else if (OB_ISNULL(endpoint_info)) {
-          ret = OB_ERR_UNEXPECTED;
+          ret = OB_ERR_UNEXPECTED;  
           LOG_WARN("endpoint info is null", K(ret));
         } else if (OB_FAIL(ObAIFuncUtils::check_info_type_dense_embedding(info))) {
           LOG_WARN("fail to check model type", K(ret));
@@ -426,14 +426,14 @@ int ObExprAIEmbed::eval_ai_embed_vector_v2(const ObExpr &expr, ObEvalCtx &ctx,
   return ret;
 }
 
-int ObExprAIEmbed::pack_json_object_to_res_vector(const ObExpr &expr,
+int ObExprAIEmbed::pack_json_object_to_res_vector(const ObExpr &expr, 
                                                 ObEvalCtx &ctx,
                                                 ObIAllocator &allocator,
                                                 ObJsonObject *response,
                                                 const ObBitVector &skip,
                                                 const EvalBound &bound,
                                                 const ObAiModelEndpointInfo &endpoint_info,
-                                                ObIVector *res_vec)
+                                                ObIVector *res_vec) 
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(response)) {
@@ -450,9 +450,9 @@ int ObExprAIEmbed::pack_json_object_to_res_vector(const ObExpr &expr,
   return ret;
 }
 
-int ObExprAIEmbed::cg_expr(ObExprCGCtx &expr_cg_ctx,
+int ObExprAIEmbed::cg_expr(ObExprCGCtx &expr_cg_ctx, 
                            const ObRawExpr &raw_expr,
-                           ObExpr &rt_expr) const
+                           ObExpr &rt_expr) const 
 {
   int ret = OB_SUCCESS;
   // TODO: support schema version match in plan cache for ai func
