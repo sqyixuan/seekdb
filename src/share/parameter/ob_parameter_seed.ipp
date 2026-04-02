@@ -459,7 +459,7 @@ DEF_STR_WITH_CHECKER(_use_hash_rollup, OB_CLUSTER_PARAMETER, "AUTO",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
          "auto, forced, disabled");
 
-//[INTERNAL_URL]
+//https://yuque.antfin.com/ob/product_functionality_review/quy4ol4wtu9ihkpx
 DEF_BOOL(_enable_constant_type_demotion, OB_CLUSTER_PARAMETER, "True",
          "Controls whether to enable constant type demotion to optimize comparisons between "
          "constants and columns by downgrading the constant's type to match the column's type.",
@@ -2594,7 +2594,7 @@ DEF_BOOL(_enable_obdal, OB_CLUSTER_PARAMETER, "False",
 
 // for new created tenant, _ob_enable_truncate_partition_preserve_global_index will be True
 
-// [INTERNAL_URL]
+// https://yuque.antfin.com/ob/product_functionality_review/vkv87bipgrf22tpi
 DEF_BOOL(_ob_enable_truncate_partition_preserve_global_index, OB_CLUSTER_PARAMETER, "False",
          "Specifies Whether to allow global indexes to be preserved when truncating/dropping the main table partition.",
          ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
