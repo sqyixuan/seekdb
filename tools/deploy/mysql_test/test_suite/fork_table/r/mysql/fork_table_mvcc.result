@@ -1,0 +1,203 @@
+drop database if exists db_fork_mvcc;
+create database db_fork_mvcc;
+use db_fork_mvcc;
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+# 启用debug sync
+alter system set debug_sync_timeout = '120s';
+set ob_global_debug_sync = 'reset';
+# 加速major freeze
+alter system set merger_check_interval = '10s' tenant sys;
+alter system set ob_compaction_schedule_interval = '3s' tenant sys;
+============================================
+Case 1: WAIT_FREEZE_END阶段多次minor merge + MVCC行版本
+预期迭代出的行是：first:1, uncommitted:0, shadow:1, compact:1, ghost:0, last:0, reserved:0, flag:13
+============================================
+drop table if exists t1;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t1'
+drop table if exists t1_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t1_fork'
+create table t1 (
+id int primary key,
+c1 int,
+c2 varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# Step 1: insert一行并触发minor merge
+insert into t1 values (1, 10, 'v1');
+alter system minor freeze;
+# Step 2: update并触发minor merge
+update t1 set c1 = 20, c2 = 'v2' where id = 1;
+alter system minor freeze;
+# Step 3: 再次update
+update t1 set c1 = 30, c2 = 'v3' where id = 1;
+# Step 4: 新连接开启事务并插入一行（不提交）
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+insert into t1 values (2, 40, 'txn_v1');
+# Step 5: 提交前触发minor merge
+alter system minor freeze;
+# Step 6: 新连接提交事务
+commit;
+# Step 7: fork table
+fork table t1 to t1_fork;
+# 等待fork任务完成
+# 验证源表与fork表数据
+select * from t1 order by id;
+id	c1	c2
+1	30	v3
+2	40	txn_v1
+select * from t1_fork order by id;
+id	c1	c2
+1	30	v3
+2	40	txn_v1
+============================================
+Case 2: 未提交事务minor freeze后再提交
+============================================
+drop table if exists t2;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t2'
+drop table if exists t2_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t2_fork'
+create table t2 (
+id int primary key,
+c1 int,
+c2 varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+预期迭代出的行是first:1, uncommitted:0, shadow:0, compact:0, ghost:0, last:1, reserved:0, flag:33
+# Step 1: insert一行并触发minor freeze
+insert into t2 values (1, 10, 'v1');
+alter system minor freeze;
+# Step 2: 新连接开启事务并update（不提交）
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+update t2 set c1 = 20, c2 = 'v2' where id = 1;
+# Step 3: default session触发minor freeze
+alter system minor freeze;
+# Step 4: 提交事务
+commit;
+# Step 5: fork table
+fork table t2 to t2_fork;
+# 验证源表与fork表数据
+select * from t2 order by id;
+id	c1	c2
+1	20	v2
+select * from t2_fork order by id;
+id	c1	c2
+1	20	v2
+============================================
+Case 3: 多版本行 + 3张mini sstable触发minor merge
+============================================
+drop table if exists t3;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t3'
+drop table if exists t3_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t3_fork'
+create table t3 (
+id int primary key,
+c1 int,
+c2 varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+预期迭代出的行是first:1, uncommitted:0, shadow:0, ghost:0, last:0
+# Step 1: 第一次insert并触发minor freeze
+insert into t3 values (1, 10, 'v1');
+alter system minor freeze;
+# Step 2: 第二次insert并触发minor freeze
+insert into t3 values (2, 20, 'v2');
+alter system minor freeze;
+# Step 3: 新连接事务update（不提交）
+SET wait_timeout=30000000;
+SET ob_trx_timeout = 100000000;
+SET ob_query_timeout = 100000000;
+start transaction;
+update t3 set c1 = 30, c2 = 'v3' where id = 1;
+# Step 4: default session触发minor freeze（形成第3张mini sstable）
+alter system minor freeze;
+# Step 5: 提交事务
+commit;
+# Step 6: fork table
+fork table t3 to t3_fork;
+# 验证源表与fork表数据
+select * from t3 order by id;
+id	c1	c2
+1	30	v3
+2	20	v2
+select * from t3_fork order by id;
+id	c1	c2
+1	30	v3
+2	20	v2
+============================================
+Case 4: WAIT_FREEZE_END阶段触发major freeze
+============================================
+drop table if exists t4;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t4'
+drop table if exists t4_fork;
+Warnings:
+Note	1051	Unknown table 'db_fork_mvcc.t4_fork'
+create table t4 (
+id int primary key,
+c1 int,
+c2 varchar(50)
+) partition by range(id) (
+partition p0 values less than (100),
+partition p1 values less than (200)
+);
+# Step 1: 插入两行数据
+insert into t4 values (1, 10, 'v1');
+insert into t4 values (2, 20, 'v2');
+# Step 2: 执行minor freeze
+alter system minor freeze;
+# Step 3: 更新一行数据
+update t4 set c1 = 30, c2 = 'v3' where id = 1;
+# Step 4: fork table卡在WAIT_FREEZE_END阶段
+set ob_global_debug_sync = 'FORK_TABLE_WAIT_FREEZE_END wait_for mvcc_signal_4 execute 10000';
+fork table t4 to t4_fork;
+# 等待fork进入WAIT_FREEZE_END阶段
+# Step 5: 更新另一行数据
+update t4 set c1 = 40, c2 = 'v4' where id = 2;
+# Step 6: 执行major freeze
+alter system major freeze;
+# Step 7: 继续fork执行
+set ob_global_debug_sync = 'FORK_TABLE_WAIT_FREEZE_END clear';
+set ob_global_debug_sync = 'now signal mvcc_signal_4';
+# 等待fork任务完成
+# 验证源表与fork表数据
+select * from t4 order by id;
+id	c1	c2
+1	30	v3
+2	40	v4
+select * from t4_fork order by id;
+id	c1	c2
+1	30	v3
+2	20	v2
+============================================
+清理
+============================================
+drop table if exists t1;
+drop table if exists t1_fork;
+drop table if exists t2;
+drop table if exists t2_fork;
+drop table if exists t3;
+drop table if exists t3_fork;
+drop table if exists t4;
+drop table if exists t4_fork;
+drop database if exists db_fork_mvcc;
+set ob_global_debug_sync = 'reset';
