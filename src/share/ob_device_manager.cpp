@@ -20,6 +20,7 @@
 #include "share/ob_server_struct.h"
 #include "share/io/ob_io_manager.h"
 #include "share/ob_local_device.h"
+#include "share/external_table/ob_hdfs_table_device.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_local_cache_device.h"
 #endif
@@ -244,18 +245,10 @@ int parse_storage_info(common::ObString storage_type_prefix, ObIODevice*& device
     device_type = OB_STORAGE_AZBLOB;
     mem = allocator.alloc(sizeof(ObObjectDevice));
     if (NULL != mem) {new(mem)ObObjectDevice;}
-  } else if (storage_type_prefix.prefix_match(OB_OSS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "OSS storage");
-    OB_LOG(WARN, "OSS storage is not supported", K(ret), K(storage_type_prefix));
-  } else if (storage_type_prefix.prefix_match(OB_COS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "COS storage");
-    OB_LOG(WARN, "COS storage is not supported", K(ret), K(storage_type_prefix));
   } else if (storage_type_prefix.prefix_match(OB_HDFS_PREFIX)) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "HDFS storage");
-    OB_LOG(WARN, "HDFS storage is not supported", K(ret), K(storage_type_prefix));
+    device_type = OB_STORAGE_HDFS;
+    mem = allocator.alloc(sizeof(share::ObHDFSTableDevice));
+    if (NULL != mem) {new(mem)share::ObHDFSTableDevice;}
   } else {
     ret = OB_INVALID_BACKUP_DEST;
     OB_LOG(WARN, "invaild device name info!", K(storage_type_prefix));
@@ -625,6 +618,7 @@ int ObDeviceManager::get_device_key_(
     }
   } else if (storage_type_prefix.prefix_match(OB_COS_PREFIX)
              || storage_type_prefix.prefix_match(OB_S3_PREFIX)
+             || storage_type_prefix.prefix_match(OB_HDFS_PREFIX)
              || storage_type_prefix.prefix_match(OB_AZBLOB_PREFIX)) {
     const int64_t storage_info_key_len = storage_info.get_device_map_key_len();
     char storage_info_key_str[storage_info_key_len];
