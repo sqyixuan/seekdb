@@ -18,16 +18,13 @@
 #include "observer/ob_server.h"
 #include "observer/omt/ob_tenant.h"
 #include "logservice/ob_log_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_disk_space_manager.h"
-#endif
 
 using namespace oceanbase;
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
 using namespace oceanbase::observer;
 using namespace oceanbase::omt;
-using namespace logservice;
+using namespace oceanbase::logservice;
 
 ObAllVirtualUnit::ObAllVirtualUnit()
     : ObVirtualTableScannerIterator(),
@@ -106,7 +103,7 @@ int ObAllVirtualUnit::inner_open()
       ret = OB_ERR_UNEXPECTED;
       SERVER_LOG(WARN, "fail to get locality manager from GCTX", KR(ret));
     } else {
-      // Loacality cache will be loaded shortly after ObServer starts. 
+      // Loacality cache will be loaded shortly after ObServer starts.
       // Before that, two columns ZONE_TYPE and REGION of the local unit rows will be set to NULL.
       if (OB_FAIL(locality_manager_->get_server_zone_type(addr_, zone_type_))) {
         if (OB_ENTRY_NOT_EXIST != ret) {

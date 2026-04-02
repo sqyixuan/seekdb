@@ -218,8 +218,7 @@ int ObLogRestoreProxyUtil::init(const uint64_t tenant_id,
   if (OB_UNLIKELY(inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObLogRestoreProxyUtil already init", K(inited_));
-  } else if (OB_UNLIKELY(!is_user_tenant(tenant_id))
-      || OB_UNLIKELY(server_list.count() <= 0)
+  } else if (OB_UNLIKELY(server_list.count() <= 0)
       || OB_ISNULL(user_name)
       || OB_ISNULL(user_password)
       || OB_ISNULL(db_name)) {
@@ -280,6 +279,16 @@ int ObLogRestoreProxyUtil::init_with_service_attr(
   return ret;
 }
 
+int ObLogRestoreProxyUtil::get_sql_proxy(common::ObMySQLProxy *&proxy)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+  } else {
+    proxy = &sql_proxy_;
+  }
+  return ret;
+}
 
 void ObLogRestoreProxyUtil::destroy()
 {
@@ -390,50 +399,8 @@ int ObLogRestoreProxyUtil::get_cluster_id(uint64_t tenant_id, int64_t &cluster_i
 int ObLogRestoreProxyUtil::check_different_cluster_with_same_cluster_id(
     const int64_t source_cluster_id, bool &res)
 {
-  int ret = OB_SUCCESS;
+  int ret = OB_NOT_SUPPORTED;
   res = false;
-
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-  } else if (GCONF.cluster_id == source_cluster_id) {
-    // get one machine ip from the source cluster, then check if that machine is in current
-    // cluster's __all_server table
-    SMART_VAR(ObMySQLProxy::MySQLResult, result) { 
-      ObSqlString sql;
-      char svr_ip_buf[common::OB_IP_STR_BUFF] = {0};
-      common::ObAddr primary_server;
-      if (OB_FAIL(server_prover_.get_server(0, primary_server))) {
-        LOG_WARN("fail to get primary server", K(ret));
-      } else if (!primary_server.ip_to_string(svr_ip_buf, common::OB_IP_STR_BUFF)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to convert ip to string", K(ret));
-      } else if (OB_FAIL(sql.assign_fmt(
-                     "SELECT COUNT(*) AS cnt FROM %s WHERE svr_ip='%s' AND inner_port=%d",
-                     OB_ALL_SERVER_TNAME, svr_ip_buf, primary_server.get_port()))) {
-        LOG_WARN("fail to generate sql", K(ret));
-      } else if (OB_ISNULL(GCTX.sql_proxy_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("sql proxy is null", K(ret));
-      } else if (OB_FAIL(GCTX.sql_proxy_->read(result, sql.ptr()))) {
-        LOG_WARN("fail to get __all_server", K(ret), K(sql));
-      } else if (OB_ISNULL(result.get_result())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("query result is null", K(sql));
-      } else if (OB_FAIL(result.get_result()->next())) {
-        LOG_WARN("get result next failed", K(sql));
-      } else {
-        int64_t cnt = 0;
-        EXTRACT_INT_FIELD_MYSQL(*result.get_result(), "cnt", cnt, int64_t);
-        if (OB_FAIL(ret)) {
-          LOG_WARN("fail to get sql result", K(ret), K(sql));
-        } else if (0 == cnt) {
-          res = true;
-        }
-        LOG_INFO("check if cluster_id duplicated", K(res), K(cnt), K(sql));
-      }
-    }
-  }
-
   return ret;
 }
 
@@ -483,58 +450,14 @@ int ObLogRestoreProxyUtil::get_compatibility_mode(const uint64_t tenant_id, ObCo
 int ObLogRestoreProxyUtil::check_begin_lsn(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
-
-  if (!is_user_tenant(tenant_id)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
-  } else {
-    RESTORE_RETRY(
-      SMART_VAR(ObMySQLProxy::MySQLResult, result) {
-        ObSqlString sql;
-        if (OB_FAIL(sql.assign_fmt("SELECT COUNT(*) AS CNT FROM %s OB_LS LEFT JOIN"
-              "(SELECT TENANT_ID, LS_ID, BEGIN_LSN FROM %s WHERE ROLE= 'LEADER' AND TENANT_ID = %lu) LOG_STAT "
-                    "ON OB_LS.LS_ID = LOG_STAT.LS_ID "
-                    "WHERE (BEGIN_LSN IS NULL OR BEGIN_LSN != 0)"
-                    "AND OB_LS.STATUS NOT IN ('TENANT_DROPPING', 'CREATE_ABORT', 'PRE_TENANT_DROPPING')",
-                    OB_DBA_OB_LS_TNAME, OB_GV_OB_LOG_STAT_TNAME, tenant_id))) {
-          LOG_WARN("fail to generate sql", KR(ret), K(tenant_id));
-        } else if (OB_FAIL(sql_proxy_.read(result, sql.ptr()))) {
-          LOG_WARN("check_begin_lsn failed", KR(ret), K(tenant_id), K(sql));
-          RESTORE_PROXY_USER_ERROR("tenant ls begin_lsn failed");
-          ret = OB_INVALID_ARGUMENT;
-        } else if (OB_ISNULL(result.get_result())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("config result is null", KR(ret), K(tenant_id), K(sql));
-        } else if (OB_FAIL(result.get_result()->next())) {
-          LOG_WARN("get result next failed", K(sql));
-        } else {
-          uint64_t cnt = 0;
-          EXTRACT_INT_FIELD_MYSQL(*result.get_result(), "CNT", cnt, uint64_t);
-          if (OB_FAIL(ret)) {
-            LOG_WARN("failed to get result", KR(ret), K(tenant_id), K(sql));
-          } else if (cnt > 0) {
-            ret = OB_OP_NOT_ALLOW;
-            LOG_WARN("primary tenant LS log may be recycled, create standby tenant is not allow", KR(ret), K(tenant_id), K(sql));
-            LOG_USER_ERROR(OB_OP_NOT_ALLOW, "primary tenant LS log may be recycled, create standby tenant is");
-          }
-          LOG_INFO("check begion lsn", K(cnt), K(sql));
-        }
-      }
-    )
-  }
   return ret;
 }
 
 int ObLogRestoreProxyUtil::get_server_ip_list(const uint64_t tenant_id, common::ObArray<common::ObAddr> &addrs)
 {
   int ret = OB_SUCCESS;
-  ObSqlString sql;
-  if (OB_FAIL(
-          sql.assign_fmt("SELECT SVR_IP, SQL_PORT AS SVR_PORT FROM %s WHERE TENANT_ID=%ld",
-                         OB_DBA_OB_ACCESS_POINT_TNAME, tenant_id))) {
-    LOG_WARN("fail to generate sql");
-  } else if (OB_FAIL(construct_server_ip_list(sql, addrs))) {
-    LOG_WARN("failed to get server ip list", KR(ret), K(sql));
+  if (OB_FAIL(addrs.push_back(GCTX.self_addr()))) {
+    LOG_WARN("fail to push back self addr", KR(ret));
   }
   return ret;
 }
@@ -763,6 +686,43 @@ int64_t ObLogRestoreProxyUtil::cal_timeout_() {
   LOG_INFO("[RESTORE PROXY] set time out,",
     K(abs_timeout_ts), K(curr_ts), K(abs_timeout), K(final_timeout), K(DEFAULT_MAX_TIMEOUT));
   return final_timeout;
+}
+
+int ObLogRestoreProxyUtil::get_max_log_info(const ObLSID &id, palf::AccessMode &mode, SCN &scn)
+{
+ // TODO
+ return OB_SUCCESS;
+}
+
+int ObLogRestoreProxyUtil::refresh_conn(const common::ObIArray<common::ObAddr> &addr_array,
+    const char *user_name,
+    const char *user_password,
+    const char *db_name)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_UNLIKELY(addr_array.count() <= 0)
+      || OB_ISNULL(user_name)
+      || OB_ISNULL(user_password)
+      || OB_ISNULL(db_name)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(server_prover_.set_restore_source_server(addr_array))) {
+    LOG_WARN("set_restore_source_server failed", K(addr_array));
+  } else if (!is_user_changed_(user_name, user_password)) {
+    // do nothing
+  } else if (OB_FAIL(connection_.set_db_param(user_name, user_password, db_name))) {
+    LOG_WARN("set db param failed", K(user_name), K(user_password), K(db_name));
+  }
+  // fix string user_name_ and user_password_ is enough to hold these two params
+  else if (OB_FAIL(user_name_.assign(user_name))) {
+    LOG_ERROR("user_name_ assign failed", K(user_name));
+  } else if (OB_FAIL(user_password_.assign(user_password))) {
+    LOG_ERROR("user_password_ assign failed", K(user_password));
+  } else {
+    LOG_INFO("log restore proxy connection refresh", K(user_name_));
+  }
+  return ret;
 }
 
 } // namespace share
